@@ -1,0 +1,16 @@
+.DS_Store
+Library
+Temp
+Release
+*.csproj
+*.pidb
+*.unityproj
+*.sln
+*.userprefs
+*.DotSettings
+[Oo]bj/
+_ReSharper*/
+*.resharper
+~$*
+UnityVS
+UnityVS.meta
