@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEditor;
+using UnityEngine;
 
 public class BuildAllSettings 
 {
@@ -30,26 +31,40 @@ public class BuildAllSettings
 
     private static void WriteHashTable(Dictionary<string, string> settings, string filename)
     {
-        if(File.Exists(filename))
-            File.Delete(filename);
-
-        var file = File.CreateText(filename);
-
-        foreach (var k in settings.Keys)
+        try
         {
-            file.WriteLine("[" + k + "]");
-            file.WriteLine(settings[k]);
+            if (File.Exists(filename))
+                File.Delete(filename);
+
+            var file = File.CreateText(filename);
+
+            foreach (var k in settings.Keys)
+            {
+                file.WriteLine("[" + k + "]");
+                file.WriteLine(settings[k]);
+            }
+
+            file.Close();
+        }
+        catch (Exception e)
+        {
+            Debug.LogError("Unable to write settings file for BuildAll. This may results in a corrupt file. Error Details: " + e.ToString() );
+            
         }
 
-        file.Close();
     }
 
     private static Dictionary<string, string> ReadHashTable(string filename)
     {
-        var file = File.OpenText(filename);
+        
         var returnData = new Dictionary<string, string>();
         var currentSetting = "";
         var currentValue = "";
+
+        try
+        {
+
+        var file = File.OpenText(filename);
 
         while (!file.EndOfStream)
         {
@@ -83,5 +98,12 @@ public class BuildAllSettings
         returnData.Add(currentSetting, currentValue);
 
         return returnData;
+
+        }
+        catch (Exception e)
+        {
+            Debug.LogError(e.ToString());
+            return returnData;
+        }
     }
 }

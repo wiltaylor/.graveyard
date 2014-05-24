@@ -109,7 +109,13 @@ public class BuildAll : EditorWindow
     public static void CreateFolders()
     {
         var projectFolder = Application.dataPath + "/../";
-        var folders = new[] { projectFolder + "NonUnityAssets", projectFolder + "Release", projectFolder + "Documents" };
+        var folders = new[]
+        {
+            projectFolder + "NonUnityAssets", projectFolder + "Release", projectFolder + "Documents",
+            Application.dataPath + "/Scripts", Application.dataPath + "/Scenes", Application.dataPath + "/Prefabs", 
+            Application.dataPath + "/Animation", Application.dataPath + "/Sounds", Application.dataPath + "/Sprites",
+            Application.dataPath + "/Models", Application.dataPath + "/Materials"
+        };
 
         foreach (var f in folders.Where(f => !Directory.Exists(f)))
             Directory.CreateDirectory(f);
