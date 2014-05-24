@@ -20,6 +20,6 @@ To change other build settings like scenses etc use their respective native unit
 ## License ##
 This software has the following licenses:
 
-[Apache 2.0](license.txt "Apache 2.0")
+[Apache 2.0](License.txt "Apache 2.0")
 
-[7Zip  - GPL](Assets\Packages\BuildAll\Tools\7zipLicence.txt "7Zip")
+[7Zip  - GPL](Assets/Packages/BuildAll/Tools/7zipLicence.txt "7Zip")
