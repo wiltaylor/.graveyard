@@ -9,7 +9,7 @@ This was designed with Ludum Dare in mind where you want to build your project a
 To run this package you must have a pro version of unity.
 
 ## How To Use ##
-Simply download the BuildAll.unitypackage file and import it into your project.
+Simply download the [BuildAll.unitypackage](https://github.com/wiltaylor/buildall/releases/tag/Release_1) file and import it into your project.
 
 Then Select File>BuildAll>Settings to configure your build settings.
 
