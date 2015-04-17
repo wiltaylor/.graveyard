@@ -3,65 +3,50 @@ using UnityEngine;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using Debug = UnityEngine.Debug;
 
 public class BuildAll : EditorWindow
 {
-    private string _binaryName = "";
     private static readonly string ReleaseFolder = Application.dataPath + "/../Release/";
-    private string _release = "";
-    private string _publishRoot = "";
-    private string _packageFolder = "";
-    private bool _buildWindows;
-    private bool _buildWindows64;
-    private bool _buildLinux;
-    private bool _buildWeb;
-    private bool _buildPackage;
-    private bool _buildAndroid;
 
-    [MenuItem("File/BuildAll/Settings", priority=3)]
+    private BuildAllSettings _settings;
+
+    [MenuItem("File/Build All Settings", false, 3)]
     public static void OpenSettings()
     {
         GetWindow<BuildAll>();
     }
 
-    public BuildAll()
+    public void OnEnable()
     {
         title = "Build All";
 
-        _binaryName = BuildAllSettings.GetSetting("BinaryName");
-        _release = BuildAllSettings.GetSetting("Release");
-        _publishRoot = BuildAllSettings.GetSetting("PublishRoot");
-        _packageFolder = BuildAllSettings.GetSetting("PackageFolder");
-        _buildWindows = bool.Parse(BuildAllSettings.GetSetting("BuildWindows"));
-        _buildWindows64 = bool.Parse(BuildAllSettings.GetSetting("BuildWindows64"));
-        _buildLinux = bool.Parse(BuildAllSettings.GetSetting("BuildLinux"));
-        _buildWeb = bool.Parse(BuildAllSettings.GetSetting("BuildWeb"));
-        _buildPackage = bool.Parse(BuildAllSettings.GetSetting("BuildPackage"));
-        _buildAndroid = bool.Parse(BuildAllSettings.GetSetting("BuildAndroid"));
+        _settings = (BuildAllSettings)AssetDatabase.LoadMainAssetAtPath("Assets/Packages/BuildAll/Editor/Settings.asset");
     }
 
     public void OnGUI()
     {         
 
         GUILayout.Label("Binary Name: ");
-        _binaryName = GUILayout.TextField(_binaryName);
+        _settings.BinaryName = GUILayout.TextField(_settings.BinaryName);
 
         GUILayout.Label("Release Version: ");
-        _release = GUILayout.TextField(_release);
+        _settings.Release = GUILayout.TextField(_settings.Release);
 
         GUILayout.Label("Publish Root Folder: ");
-        _publishRoot = GUILayout.TextField(_publishRoot);
+        _settings.PublishRoot = GUILayout.TextField(_settings.PublishRoot);
 
         GUILayout.Label("Package Root Folder: ");
-        _packageFolder = GUILayout.TextField(_packageFolder);
+        _settings.PackageFolder = GUILayout.TextField(_settings.PackageFolder);
 
         GUILayout.Label("Build Targets: ");
-        _buildWindows = GUILayout.Toggle(_buildWindows, "Windows");
-        _buildWindows64 = GUILayout.Toggle(_buildWindows64, "Windows 64");
-        _buildLinux = GUILayout.Toggle(_buildLinux, "Linux");
-        _buildWeb = GUILayout.Toggle(_buildWeb, "Web");
-        _buildAndroid = GUILayout.Toggle(_buildAndroid, "Android");
-        _buildPackage = GUILayout.Toggle(_buildPackage, "Package");
+        _settings.BuildWindows = GUILayout.Toggle(_settings.BuildWindows, "Windows");
+        _settings.BuildWindows64 = GUILayout.Toggle(_settings.BuildWindows64, "Windows 64");
+        _settings.BuildLinux = GUILayout.Toggle(_settings.BuildLinux, "Linux");
+        _settings.BuildWeb = GUILayout.Toggle(_settings.BuildWeb, "Web");
+        _settings.BuildWebGL = GUILayout.Toggle(_settings.BuildWebGL, "WebGL");
+        _settings.BuildAndroid = GUILayout.Toggle(_settings.BuildAndroid, "Android");
+        _settings.BuildPackage = GUILayout.Toggle(_settings.BuildPackage, "Package");
 
         GUILayout.BeginHorizontal();
 
@@ -94,16 +79,7 @@ public class BuildAll : EditorWindow
 
     public void SaveSettings()
     {
-        BuildAllSettings.SetSetting("BinaryName", _binaryName);
-        BuildAllSettings.SetSetting("Release", _release);
-        BuildAllSettings.SetSetting("PublishRoot", _publishRoot);
-        BuildAllSettings.SetSetting("PackageFolder", _packageFolder);
-        BuildAllSettings.SetSetting("BuildWindows", _buildWindows.ToString());
-        BuildAllSettings.SetSetting("BuildWindows64", _buildWindows64.ToString());
-        BuildAllSettings.SetSetting("BuildLinux", _buildLinux.ToString());
-        BuildAllSettings.SetSetting("BuildWeb", _buildWeb.ToString());
-        BuildAllSettings.SetSetting("BuildPackage", _buildPackage.ToString());
-        BuildAllSettings.SetSetting("BuildAndroid", _buildAndroid.ToString());
+        EditorUtility.SetDirty(_settings);
     }
 
     public static void CreateFolders()
@@ -114,7 +90,7 @@ public class BuildAll : EditorWindow
             projectFolder + "NonUnityAssets", projectFolder + "Release", projectFolder + "Documents",
             Application.dataPath + "/Scripts", Application.dataPath + "/Scenes", Application.dataPath + "/Prefabs", 
             Application.dataPath + "/Animation", Application.dataPath + "/Sounds", Application.dataPath + "/Sprites",
-            Application.dataPath + "/Models", Application.dataPath + "/Materials"
+            Application.dataPath + "/Models", Application.dataPath + "/Materials", Application.dataPath + "/Data"
         };
 
         foreach (var f in folders.Where(f => !Directory.Exists(f)))
@@ -127,73 +103,64 @@ public class BuildAll : EditorWindow
             select a).First();
 
         File.Copy(gitfile, projectFolder + ".gitignore");
+
+        AssetDatabase.Refresh();
     }
 
-    [MenuItem("File/BuildAll/Build", priority = 1)]
+    [MenuItem("File/Build All", priority = 1)]
     public static void Build()
     {
         var scenes = (from s in EditorBuildSettings.scenes where s.enabled select s.path).ToArray();
-        var binaryName = BuildAllSettings.GetSetting("BinaryName");
-        var buildWindows = bool.Parse(BuildAllSettings.GetSetting("BuildWindows"));
-        var buildWindows64 = bool.Parse(BuildAllSettings.GetSetting("BuildWindows64"));
-        var buildLinux = bool.Parse(BuildAllSettings.GetSetting("BuildLinux"));
-        var buildWeb = bool.Parse(BuildAllSettings.GetSetting("BuildWeb"));
-        var buildPackage = bool.Parse(BuildAllSettings.GetSetting("BuildPackage"));
-        var buildAndroid = bool.Parse(BuildAllSettings.GetSetting("BuildAndroid"));
+        var settings = (BuildAllSettings)AssetDatabase.LoadMainAssetAtPath("Assets/Packages/BuildAll/Editor/Settings.asset");
 
 
         //Build Players - Add more or comment out as needed
-        if (buildWindows)
-            BuildPlayer(scenes, ReleaseFolder + "Windows", binaryName + ".exe", BuildTarget.StandaloneWindows, BuildOptions.None);
-        if (buildWindows64)
-            BuildPlayer(scenes, ReleaseFolder + "Windows 64", binaryName + "64.exe", BuildTarget.StandaloneWindows64, BuildOptions.None);
-        if (buildWeb)
-            BuildPlayer(scenes, ReleaseFolder + "Web", binaryName, BuildTarget.WebPlayer, BuildOptions.None);
-        if (buildLinux)
-            BuildPlayer(scenes, ReleaseFolder + "Linux", binaryName, BuildTarget.StandaloneLinuxUniversal, BuildOptions.None);
-        if(buildAndroid)
-            BuildPlayer(scenes, ReleaseFolder + "Android", binaryName + ".apk", BuildTarget.Android, BuildOptions.None);
+        if (settings.BuildWindows)
+            BuildPlayer(scenes, ReleaseFolder + "Windows", settings.BinaryName + ".exe", BuildTarget.StandaloneWindows, BuildOptions.None);
+        if (settings.BuildWindows64)
+            BuildPlayer(scenes, ReleaseFolder + "Windows 64", settings.BinaryName + "64.exe", BuildTarget.StandaloneWindows64, BuildOptions.None);
+        if (settings.BuildWeb)
+            BuildPlayer(scenes, ReleaseFolder + "Web", settings.BinaryName, BuildTarget.WebPlayer, BuildOptions.None);
+        if (settings.BuildWebGL)
+            BuildPlayer(scenes, ReleaseFolder + "WebGL", settings.BinaryName, BuildTarget.WebGL, BuildOptions.None);
+        if (settings.BuildLinux)
+            BuildPlayer(scenes, ReleaseFolder + "Linux", settings.BinaryName, BuildTarget.StandaloneLinuxUniversal, BuildOptions.None);
+        if (settings.BuildAndroid)
+            BuildPlayer(scenes, ReleaseFolder + "Android", settings.BinaryName + ".apk", BuildTarget.Android, BuildOptions.None);
 
         //Export packages 
-        if (buildPackage)
-            BuildPackage("Assets/Packages/BuildAll", ReleaseFolder + "Package", binaryName + ".unitypackage");
+        if (settings.BuildPackage)
+            BuildPackage("Assets/Packages/BuildAll", ReleaseFolder + "Package", settings.BinaryName + ".unitypackage");
 
         EditorUtility.DisplayDialog("Build Complete", "", "Ok");
     }
 
-    [MenuItem("File/BuildAll/Publish", priority = 2)]
+    [MenuItem("File/Publish", priority = 2)]
     public static void PublishAll()
     {
-        var publishRoot = BuildAllSettings.GetSetting("PublishRoot");
-        var release = BuildAllSettings.GetSetting("Release");
-        var binaryName = BuildAllSettings.GetSetting("BinaryName");
-        var publishFolder = publishRoot + "/Release" + release;
-        var buildWindows = bool.Parse(BuildAllSettings.GetSetting("BuildWindows"));
-        var buildWindows64 = bool.Parse(BuildAllSettings.GetSetting("BuildWindows64"));
-        var buildLinux = bool.Parse(BuildAllSettings.GetSetting("BuildLinux"));
-        var buildWeb = bool.Parse(BuildAllSettings.GetSetting("BuildWeb"));
-        var buildPackage = bool.Parse(BuildAllSettings.GetSetting("BuildPackage"));
-        var buildAndroid = bool.Parse(BuildAllSettings.GetSetting("BuildAndroid"));
+        var settings = (BuildAllSettings)AssetDatabase.LoadMainAssetAtPath("Assets/Packages/BuildAll/Editor/Settings.asset");
 
-        if (Directory.Exists(publishFolder))
+        if (Directory.Exists(settings.PublishRoot))
         {
-            Directory.Delete(publishFolder, true);
+            Directory.Delete(settings.PublishRoot, true);
         }
 
-        Directory.CreateDirectory(publishFolder);
+        Directory.CreateDirectory(settings.PublishRoot);
 
-        if (buildPackage)
-            File.Copy(ReleaseFolder + "Package/" + binaryName + ".unitypackage", publishFolder + "/" + binaryName + ".unitypackage");
-        if (buildAndroid)
-            File.Copy(ReleaseFolder + "Android/" + binaryName + ".apk", publishFolder + "/" + binaryName + ".apk");
-        if (buildWindows)
-            ZipFolder(ReleaseFolder + "Windows", publishFolder + "/" + binaryName + "-Windows.zip");
-        if (buildWindows64)
-            ZipFolder(ReleaseFolder + "Windows 64", publishFolder + "/" + binaryName + "-Windows64.zip");
-        if (buildLinux)
-            ZipFolder(ReleaseFolder + "Linux", publishFolder + "/" + binaryName + "-Linux-Universal.zip");
-        if (buildWeb)
-            CopyFolder(ReleaseFolder + "Web", publishFolder);
+        if (settings.BuildPackage)
+            File.Copy(ReleaseFolder + "Package/" + settings.BinaryName + ".unitypackage", settings.PublishRoot + "/" + settings.BinaryName + ".unitypackage");
+        if (settings.BuildAndroid)
+            File.Copy(ReleaseFolder + "Android/" + settings.BinaryName + ".apk", settings.PublishRoot + "/" + settings.BinaryName + ".apk");
+        if (settings.BuildWindows)
+            ZipFolder(ReleaseFolder + "Windows", settings.PublishRoot + "/" + settings.BinaryName + "-Windows.zip");
+        if (settings.BuildWindows64)
+            ZipFolder(ReleaseFolder + "Windows 64", settings.PublishRoot + "/" + settings.BinaryName + "-Windows64.zip");
+        if (settings.BuildLinux)
+            ZipFolder(ReleaseFolder + "Linux", settings.PublishRoot + "/" + settings.BinaryName + "-Linux-Universal.zip");
+        if (settings.BuildWebGL)
+            CopyFolder(ReleaseFolder + "Web", settings.PublishRoot);
+        if (settings.BuildWebGL)
+            CopyFolder(ReleaseFolder + "WebGL", settings.PublishRoot + "/WebGL");
 
         EditorUtility.DisplayDialog("Publish Complete", "", "Ok");
     }
