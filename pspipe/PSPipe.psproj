@@ -1,0 +1,11 @@
+﻿<Project>
+  <Version>1</Version>
+  <FileID>b17aa263-2687-49c0-b3c8-a6c595aceb89</FileID>
+  <ProjectType>1</ProjectType>
+  <Files>
+    <File ReferenceName="" Build="2">PSPipe.psd1</File>
+    <File ReferenceName="" Build="0">PSPipe.psm1</File>
+  </Files>
+  <StartupScript>
+  </StartupScript>
+</Project>
