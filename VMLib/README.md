@@ -1,7 +1,7 @@
-# VMLab
+# VMLib
 Welcome to the VMLib code repository.
 
-For details on how to use VMLab please visit the [wiki](https://github.com/wiltaylor/VMLib/wiki).
+For details on how to use VMLib please visit the [wiki](https://github.com/wiltaylor/VMLib/wiki).
 
 # Bug Reports:
 To report bugs please use this repository's issues section or email them to wil@win32.io.
