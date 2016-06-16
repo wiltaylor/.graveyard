@@ -5,6 +5,7 @@
 //------------------------------------------------------------------------------
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 
 [assembly: AssemblyTitle("VMLib")]
 [assembly: AssemblyDescription("Virtual Machine Control Library.")]
@@ -14,4 +15,6 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyFileVersion("0.0.0.0")]
 [assembly: AssemblyCopyright("Copyright Wil Taylor 2016")]
 [assembly: ComVisible(false)]
+
+[assembly: InternalsVisibleTo("VMLib.UnitTest")]
 

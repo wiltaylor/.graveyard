@@ -40,11 +40,21 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Exceptions\UnknownHypervisorException.cs" />
+    <Compile Include="HypervisorFactory.cs" />
+    <Compile Include="IHypervisor.cs" />
+    <Compile Include="IHypervisorInfo.cs" />
+    <Compile Include="IHypervisorConnectionInfo.cs" />
+    <Compile Include="IHypervisorFactory.cs" />
+    <Compile Include="IOC\IServiceDiscovery.cs" />
+    <Compile Include="IOC\ServiceDiscovery.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
-    <Folder Include="IOC\" />
     <Folder Include="VM\" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 

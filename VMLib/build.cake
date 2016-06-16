@@ -79,7 +79,8 @@ Task("RebuildVMLibAssemblyInfo")
             Company = "Wil Taylor",
             Title = "VMLib",
             Copyright = "Copyright Wil Taylor 2016",
-            ComVisible = false
+            ComVisible = false,
+            InternalsVisibleTo = new [] {"VMLib.UnitTest"}
         }));
 
 Task("RebuildVMLib.VMWareAssemblyInfo")
