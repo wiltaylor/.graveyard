@@ -28,14 +28,20 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Connect-Hypervisor.ps1" />
+    <Compile Include="Connect-Hypervisor.tests.ps1" />
     <Compile Include="Copy-FileFromVM.ps1" />
     <Compile Include="Copy-FileToVM.ps1" />
     <Compile Include="Copy-VM.ps1" />
+    <Compile Include="Fakes\Fake_HypervisorConnectionInfo.ps1" />
+    <Compile Include="Fakes\Fake_HypervisorFactory.ps1" />
     <Compile Include="Get-Hypervisor.ps1" />
+    <Compile Include="Get-Hypervisor.tests.ps1" />
     <Compile Include="Get-ProcessInVM.ps1" />
     <Compile Include="Get-VM.ps1" />
     <Compile Include="Get-VMShare.ps1" />
     <Compile Include="Get-VMSnapshot.ps1" />
+    <Compile Include="New-HypervisorInfo.ps1" />
+    <Compile Include="New-HypervisorInfo.tests.ps1" />
     <Compile Include="New-VM.ps1" />
     <Compile Include="New-VMHardware.ps1" />
     <Compile Include="New-VMInfo.ps1" />
@@ -56,6 +62,9 @@
     <Compile Include="Stop-ProcessInVM.ps1" />
     <Compile Include="Stop-VM.ps1" />
     <Compile Include="Test-ItemInVM.ps1" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="Fakes\" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <Target Name="Build" />

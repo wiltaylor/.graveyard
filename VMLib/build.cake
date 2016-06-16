@@ -320,12 +320,14 @@ Task("BuildPowershellModule.UnitTest")
     .Does(() =>
     {
         CopyFiles(SourceFiles + "/PSVMLib/*.ps1", BuildFolder + "/PSVMLib.UnitTest");
+        CopyFiles(SourceFiles + "/PSVMLib/Fakes/*.ps1", BuildFolder + "/PSVMLib.UnitTest/Fakes");
         CopyFiles(SourceFiles + "/PSVMLib/*.psd1", BuildFolder + "/PSVMLib.UnitTest");
         CopyFiles(SourceFiles + "/PSVMLib/*.psm1", BuildFolder + "/PSVMLib.UnitTest");
     });
 
 Task("CleanPowershellModule.UnitTest")
-    .Does(() => CleanDirectory(BuildFolder + "/PSVMLib.UnitTest"));
+    .Does(() => CleanDirectory(BuildFolder + "/PSVMLib.UnitTest"))
+    .Does(() => CleanDirectory(BuildFolder + "/PSVMLib.UnitTest/Fakes"));
 
 Task("UnitTest")
     .IsDependentOn("UnitTestVMLib")
@@ -363,7 +365,7 @@ Task("UnitTestPowershellModule")
     .IsDependentOn("BuildPowershellModule.UnitTest")
     .IsDependentOn("Restore")
     .Does(() => {
-        StartPowershellScript("Import-Module '" + NugetPackages + "\\Pester*\\tools\\Pester.psd1'; Invoke-Pester -script '" + BuildFolder + "\\PSVMLib.UnitTest\\*.Tests.ps1'");
+        StartPowershellScript("Import-Module '" + NugetPackages + "\\Pester*\\tools\\Pester.psd1'; Invoke-Pester -script '" + BuildFolder + "\\PSVMLib.UnitTest\\*.Tests.ps1' -OutputFile '" + ReportFolder + "\\PSVMlib" + Version + ".xml' -OutputFormat NUnitXml");
     });
 
 Task("Nuget")
