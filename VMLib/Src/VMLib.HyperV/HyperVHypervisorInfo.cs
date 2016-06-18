@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Xml.Schema;
 
 namespace VMLib.HyperV
 {
@@ -7,16 +6,16 @@ namespace VMLib.HyperV
     {
         public override string Name => "HyperV";
 
+        public HyperVHypervisorInfo()
+        {
+            AddTypeToIOC<IHypervisor, HyperVHypervisor>();
+        }
+
         public override IHypervisorConnectionInfo CreateConnectionInfo()
         {
             var info = new HyperVHypervisorConnectionInfo();
             info.Properties.Add("Host", "localhost");
             return info;
-        }
-
-        public override IHypervisor CreateHypervisor(IHypervisorConnectionInfo info)
-        {
-            throw new NotImplementedException();
         }
     }
 }

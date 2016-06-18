@@ -1,9 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
-using System.Threading.Tasks;
 using VMLib.IOC;
 
 namespace VMLib
@@ -14,7 +9,15 @@ namespace VMLib
 
         public abstract IHypervisorConnectionInfo CreateConnectionInfo();
 
-        public abstract IHypervisor CreateHypervisor(IHypervisorConnectionInfo info);
+        public IHypervisor CreateHypervisor(IHypervisorConnectionInfo info)
+        {
+            if(info == null)
+                throw new ArgumentNullException(nameof(info));
+
+            var hypervisor =  ServiceDiscovery.Instance.Resolve<IHypervisor>(Name);
+            hypervisor.SetConnectionSettings(info);
+            return hypervisor;
+        }
 
         protected void AddTypeToIOC<F, T>()
         {

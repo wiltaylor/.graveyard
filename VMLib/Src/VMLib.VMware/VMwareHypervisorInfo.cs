@@ -11,6 +11,8 @@ namespace VMLib.VMware
         public VMwareHypervisorInfo(IRegistryWrap reg)
         {
             _reg = reg;
+
+            AddTypeToIOC<IHypervisor, VMwareHypervisor>();
         }
 
         public override IHypervisorConnectionInfo CreateConnectionInfo()
@@ -43,11 +45,6 @@ namespace VMLib.VMware
             connectioninfo.Properties.Add("VMwareWorkstationPath", path);
 
             return connectioninfo;
-        }
-
-        public override IHypervisor CreateHypervisor(IHypervisorConnectionInfo info)
-        {
-            throw new System.NotImplementedException();
         }
     }
 }

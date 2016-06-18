@@ -80,7 +80,7 @@ Task("RebuildVMLibAssemblyInfo")
             Title = "VMLib",
             Copyright = "Copyright Wil Taylor 2016",
             ComVisible = false,
-            InternalsVisibleTo = new [] {"VMLib.UnitTest"}
+            InternalsVisibleTo = new [] {"VMLib.UnitTest", "VMLib.VMware.UnitTest", "VMLib.VirtualBox.UnitTest", "VMLib.HyperV.UnitTest"}
         }));
 
 Task("RebuildVMLib.VMWareAssemblyInfo")

@@ -2,6 +2,7 @@
 using SystemWrapper.Microsoft.Win32;
 using FakeItEasy;
 using NUnit.Framework;
+using VMLib.IOC;
 
 namespace VMLib.VirtualBox.UnitTest
 {
@@ -18,12 +19,29 @@ namespace VMLib.VirtualBox.UnitTest
             return sut;
         }
 
+        public IServiceDiscovery DefaultServiceDiscovery()
+        {
+            var srv = A.Fake<IServiceDiscovery>();
+            ServiceDiscovery.UnitTestInjection(srv);
+            return srv;
+        }
+
         [Test]
         public void Name_CheckNameProperty_IsVirtualBox()
         {
             var sut = DefaultVirtualBoxHypervisorInfo();
 
             Assert.That(sut.Name == "VirtualBox");
+        }
+
+        [Test]
+        public void Constructor_RegistersVirtualBoxHypervisorDuringConstruction()
+        {
+            var srv = DefaultServiceDiscovery();
+
+            var sut = DefaultVirtualBoxHypervisorInfo();
+
+            A.CallTo(() => srv.AddType<IHypervisor, VirtualBoxHypervisor>(sut.Name)).MustHaveHappened();
         }
 
         [TestCase("VirtualBoxPath")]

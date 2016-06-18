@@ -44,6 +44,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="HyperVHypervisor.cs" />
     <Compile Include="HyperVHypervisorConnectionInfo.cs" />
     <Compile Include="HyperVHypervisorInfo.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

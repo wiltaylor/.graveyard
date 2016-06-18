@@ -46,6 +46,7 @@
   <ItemGroup>
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="VMwareConnectionInfo.cs" />
+    <Compile Include="VMwareHypervisor.cs" />
     <Compile Include="VMwareHypervisorInfo.cs" />
   </ItemGroup>
   <ItemGroup>

@@ -17,4 +17,7 @@ using System.Runtime.CompilerServices;
 [assembly: ComVisible(false)]
 
 [assembly: InternalsVisibleTo("VMLib.UnitTest")]
+[assembly: InternalsVisibleTo("VMLib.VMware.UnitTest")]
+[assembly: InternalsVisibleTo("VMLib.VirtualBox.UnitTest")]
+[assembly: InternalsVisibleTo("VMLib.HyperV.UnitTest")]
 

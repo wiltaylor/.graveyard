@@ -11,6 +11,8 @@ namespace VMLib.VirtualBox
         public VirtualBoxHypervisorInfo(IRegistryWrap reg)
         {
             _reg = reg;
+
+            AddTypeToIOC<IHypervisor, VirtualBoxHypervisor>();
         }
 
         public override IHypervisorConnectionInfo CreateConnectionInfo()
@@ -31,11 +33,6 @@ namespace VMLib.VirtualBox
             info.Properties.Add("VirtualBoxPath", path);
 
             return info;
-        }
-
-        public override IHypervisor CreateHypervisor(IHypervisorConnectionInfo info)
-        {
-            throw new NotImplementedException();
         }
     }
 }

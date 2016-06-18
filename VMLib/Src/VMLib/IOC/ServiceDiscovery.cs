@@ -22,5 +22,10 @@ namespace VMLib.IOC
         {
             throw new System.NotImplementedException();
         }
+
+        public T Resolve<T>(string name)
+        {
+            throw new System.NotImplementedException();
+        }
     }
 }
