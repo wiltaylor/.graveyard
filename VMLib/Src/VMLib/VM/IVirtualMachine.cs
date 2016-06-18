@@ -29,5 +29,10 @@ namespace VMLib
         void KillProcess(ulong processid);
         void CopyToVM(string hostpath, string guestpath);
         void CopyFromVM(string guestpath, string hostpath);
+        bool FileExists(string path);
+        bool DirectoryExists(string path);
+        void DeleteFile(string path);
+        void DeleteDirectory(string path);
+        void WaitTillReady();
     }
 }

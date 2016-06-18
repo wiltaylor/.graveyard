@@ -557,5 +557,18 @@ namespace VMLib.VMware.UnitTest
             A.CallTo(() => vix.WaitForTools(A<IVM2>.Ignored)).MustHaveHappened();
         }
 
+        [Test]
+        public void WaitTillReady_WaitForVMToBecomeReady_CallToVix()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+
+            sut.WaitTillReady();
+
+            A.CallTo(() => vix.WaitForTools(A<IVM2>.Ignored)).MustHaveHappened();
+        }
+
+
+
     }
 }
