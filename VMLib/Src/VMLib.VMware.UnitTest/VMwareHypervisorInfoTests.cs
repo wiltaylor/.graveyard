@@ -3,6 +3,7 @@ using SystemWrapper.Microsoft.Win32;
 using FakeItEasy;
 using NUnit.Framework;
 using VMLib.IOC;
+using VMLib.UnitTest;
 
 namespace VMLib.VMware.UnitTest
 {
@@ -19,13 +20,6 @@ namespace VMLib.VMware.UnitTest
             return sut;
         }
 
-        public IServiceDiscovery DefaultServiceDiscovery()
-        {
-            var srv = A.Fake<IServiceDiscovery>();
-            ServiceDiscovery.UnitTestInjection(srv);
-            return srv;
-        }
-
         [Test]
         public void Name_CheckNameProperty_IsVMwareWorkstation()
         {
@@ -37,8 +31,7 @@ namespace VMLib.VMware.UnitTest
         [Test]
         public void Constructor_RegistersVMwareHypervisorDuringConstruction()
         {
-            var srv = DefaultServiceDiscovery();
-
+            var srv = FakeServiceDiscovery.ReturnTestableInstance();
             var sut = DefaultVMwareHypervisorInfoFactory();
 
             A.CallTo(() => srv.AddType<IHypervisor, VMwareHypervisor>(sut.Name)).MustHaveHappened();

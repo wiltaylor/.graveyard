@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using FakeItEasy;
 using NUnit.Framework;
 using VMLib.IOC;
@@ -10,13 +11,6 @@ namespace VMLib.UnitTest
     [TestFixture]
     public class HypervisorInfoBaseTests 
     {
-        public IServiceDiscovery DefaultServiceDiscovery()
-        {
-            var srv = A.Fake<IServiceDiscovery>();
-            ServiceDiscovery.UnitTestInjection(srv);
-            return srv;
-        }
-
         public TesableHyperVisorBase DefaultTestableHypervisorInfoBase()
         {
             var sut = new TesableHyperVisorBase();
@@ -28,7 +22,7 @@ namespace VMLib.UnitTest
         [Test]
         public void AddTypeToIOC_AddingATypeToIOC_CallsServiceDiscovery()
         {
-            var srv = DefaultServiceDiscovery();
+            var srv = FakeServiceDiscovery.ReturnTestableInstance();
             var sut = DefaultTestableHypervisorInfoBase();
             
             sut.TestInternal_AddTypeToIOC<IHypervisor, FakeHypervisor>();
@@ -39,7 +33,7 @@ namespace VMLib.UnitTest
         [Test]
         public void CreateHypervisor_CreateInstance_CallsServiceDiscoveryToRetrive()
         {
-            var srv = DefaultServiceDiscovery();
+            var srv = FakeServiceDiscovery.ReturnTestableInstance();
             var sut = DefaultTestableHypervisorInfoBase();
 
             var result = sut.CreateHypervisor(A.Fake<IHypervisorConnectionInfo>());
@@ -50,7 +44,7 @@ namespace VMLib.UnitTest
         [Test]
         public void CreateHypervisor_AddingPropertiesToHypervisor_HypervisorSetConnectionSettingsIsCalled()
         {
-            var srv = DefaultServiceDiscovery();
+            var srv = FakeServiceDiscovery.ReturnTestableInstance();
             var sut = DefaultTestableHypervisorInfoBase();
             var hypervisor = A.Fake<IHypervisor>();
 
@@ -73,6 +67,27 @@ namespace VMLib.UnitTest
     public class FakeHypervisor : IHypervisor
     {
         public void SetConnectionSettings(IHypervisorConnectionInfo settings)
+        {
+            throw new NotImplementedException();
+        }
+
+        public IVMCreationInfo CreateNewVMInfo()
+        {
+            throw new NotImplementedException();
+        }
+
+        public string Name => "Testable";
+        public IVirtualMachine CreateNewVM(IVMCreationInfo info)
+        {
+            throw new NotImplementedException();
+        }
+
+        public IVirtualMachine OpenVM(string path)
+        {
+            throw new NotImplementedException();
+        }
+
+        public IEnumerable<IVirtualMachine> GetAllRunningVM()
         {
             throw new NotImplementedException();
         }

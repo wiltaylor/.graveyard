@@ -3,6 +3,7 @@ using SystemWrapper.Microsoft.Win32;
 using FakeItEasy;
 using NUnit.Framework;
 using VMLib.IOC;
+using VMLib.UnitTest;
 
 namespace VMLib.VirtualBox.UnitTest
 {
@@ -18,14 +19,6 @@ namespace VMLib.VirtualBox.UnitTest
 
             return sut;
         }
-
-        public IServiceDiscovery DefaultServiceDiscovery()
-        {
-            var srv = A.Fake<IServiceDiscovery>();
-            ServiceDiscovery.UnitTestInjection(srv);
-            return srv;
-        }
-
         [Test]
         public void Name_CheckNameProperty_IsVirtualBox()
         {
@@ -37,7 +30,7 @@ namespace VMLib.VirtualBox.UnitTest
         [Test]
         public void Constructor_RegistersVirtualBoxHypervisorDuringConstruction()
         {
-            var srv = DefaultServiceDiscovery();
+            var srv = FakeServiceDiscovery.ReturnTestableInstance();
 
             var sut = DefaultVirtualBoxHypervisorInfo();
 

@@ -54,8 +54,13 @@
   <ItemGroup>
     <Compile Include="VMwareHypervisorInfoTests.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="VMwareHypervisorTests.cs" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\VMLib.UnitTest\VMLib.UnitTest.csproj">
+      <Project>{0dc5318a-2785-43c1-ab32-4cd7eba38406}</Project>
+      <Name>VMLib.UnitTest</Name>
+    </ProjectReference>
     <ProjectReference Include="..\VMLib\VMLib.csproj">
       <Project>{cdafa637-0129-4750-a9d9-9d9c13eabaf7}</Project>
       <Name>VMLib</Name>

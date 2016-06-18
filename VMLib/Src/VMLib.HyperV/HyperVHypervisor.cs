@@ -1,10 +1,7 @@
 ﻿namespace VMLib.HyperV
 {
-    public class HyperVHypervisor : IHypervisor
+    public class HyperVHypervisor : HypervisorBase
     {
-        public void SetConnectionSettings(IHypervisorConnectionInfo settings)
-        {
-            throw new System.NotImplementedException();
-        }
+        public override string Name => "HyperV";
     }
 }

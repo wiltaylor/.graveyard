@@ -1,10 +1,7 @@
 ﻿namespace VMLib.VirtualBox
 {
-    public class VirtualBoxHypervisor : IHypervisor
+    public class VirtualBoxHypervisor : HypervisorBase
     {
-        public void SetConnectionSettings(IHypervisorConnectionInfo settings)
-        {
-            throw new System.NotImplementedException();
-        }
+        public override string Name => "VirtualBox";
     }
 }

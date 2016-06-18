@@ -2,6 +2,7 @@
 using System.Linq;
 using FakeItEasy;
 using VMLib.IOC;
+using VMLib.UnitTest;
 
 namespace VMLib.HyperV.UnitTest
 {
@@ -15,13 +16,6 @@ namespace VMLib.HyperV.UnitTest
             return sut;
         }
 
-        public IServiceDiscovery DefaultServiceDiscovery()
-        {
-            var srv = A.Fake<IServiceDiscovery>();
-            ServiceDiscovery.UnitTestInjection(srv);
-            return srv;
-        }
-
         [Test]
         public void Name_CheckNameProperty_IsHyperV()
         {
@@ -33,7 +27,7 @@ namespace VMLib.HyperV.UnitTest
         [Test]
         public void Constructor_RegistersHyperVHypervisorDuringConstruction()
         {
-            var srv = DefaultServiceDiscovery();
+            var srv = FakeServiceDiscovery.ReturnTestableInstance();
 
             var sut = DefaultHyperVHypervisorInfoFactory();
 

@@ -48,20 +48,28 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Exceptions\HypervisorAlreadySetupException.cs" />
     <Compile Include="Exceptions\UnknownHypervisorException.cs" />
-    <Compile Include="HypervisorFactory.cs" />
-    <Compile Include="HypervisorInfoBase.cs" />
-    <Compile Include="IHypervisor.cs" />
-    <Compile Include="IHypervisorInfo.cs" />
-    <Compile Include="IHypervisorConnectionInfo.cs" />
-    <Compile Include="IHypervisorFactory.cs" />
+    <Compile Include="Hypervisor\HypervisorBase.cs" />
+    <Compile Include="Hypervisor\HypervisorFactory.cs" />
+    <Compile Include="Hypervisor\HypervisorInfoBase.cs" />
+    <Compile Include="Hypervisor\IHypervisor.cs" />
+    <Compile Include="Hypervisor\IHypervisorInfo.cs" />
+    <Compile Include="Hypervisor\IHypervisorConnectionInfo.cs" />
+    <Compile Include="Hypervisor\IHypervisorFactory.cs" />
     <Compile Include="IOC\IServiceDiscovery.cs" />
     <Compile Include="IOC\ServiceDiscovery.cs" />
+    <Compile Include="VM\IVirtualMachine.cs" />
+    <Compile Include="VM\IVMCreationInfo.cs" />
+    <Compile Include="VM\IVMDisk.cs" />
+    <Compile Include="VM\IVMFactory.cs" />
+    <Compile Include="VM\IVMHardware.cs" />
+    <Compile Include="VM\IVMNetwork.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="VM\VMCreationInfo.cs" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Utility\" />
-    <Folder Include="VM\" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

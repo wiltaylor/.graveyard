@@ -1,10 +1,9 @@
-﻿namespace VMLib.VMware
+﻿using VMLib.Exceptions;
+
+namespace VMLib.VMware
 {
-    public class VMwareHypervisor : IHypervisor
+    public class VMwareHypervisor : HypervisorBase
     {
-        public void SetConnectionSettings(IHypervisorConnectionInfo settings)
-        {
-            throw new System.NotImplementedException();
-        }
+        public override string Name => "VMwareWorkstation";
     }
 }
