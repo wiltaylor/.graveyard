@@ -45,8 +45,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Exceptions\VixException.cs" />
-    <Compile Include="VIXItems\VIX.cs" />
     <Compile Include="VIXItems\IVIX.cs" />
+    <Compile Include="VIXItems\VIX.cs" />
     <Compile Include="IVMXHelper.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="VIXItems\VixProcess.cs" />

@@ -10,6 +10,7 @@ using NUnit.Framework;
 using VMLib.Exceptions;
 using VMLib.IOC;
 using VMLib.UnitTest;
+using VMLib.VMware.VIXItems;
 
 namespace VMLib.VMware.UnitTest
 {

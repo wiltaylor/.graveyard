@@ -5,6 +5,7 @@ using System.Linq;
 using SystemWrapper.IO;
 using VMLib.Exceptions;
 using VMLib.IOC;
+using VMLib.VMware.VIXItems;
 
 namespace VMLib.VMware
 {

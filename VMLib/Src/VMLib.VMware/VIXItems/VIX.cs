@@ -14,7 +14,7 @@ namespace VMLib.VMware.VIXItems
         Suspended
     }
 
-    public class VIX : IVix
+    public class VIX : IVix 
     {
 
         private readonly VixLib _lib;
@@ -268,7 +268,15 @@ namespace VMLib.VMware.VIXItems
             WaitJobNoResults(vm.WaitForToolsInGuest(int.MaxValue, null));
         }
 
-        public IEnumerable<VixProcess> GetProcesses(IVM vm)
+        public string GetSnapshotName(ISnapshot snapshot)
+        {
+            var result = default(object);
+            CheckError(((IVixHandle2)snapshot).GetProperties(new[] {Constants.VIX_PROPERTY_SNAPSHOT_DISPLAYNAME}, ref result));
+
+            return ((object[]) result)[0].ToString();
+        }
+
+        public IEnumerable<VixProcess> GetProcesses(IVM2 vm)
         {
             var returndata = new List<VixProcess>();
             var job = vm.ListProcessesInGuest(0, null);
