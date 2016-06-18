@@ -17,5 +17,10 @@ namespace VMLib.IOC
         {
             throw new System.NotImplementedException();
         }
+
+        public void AddType<T, T1>(string name)
+        {
+            throw new System.NotImplementedException();
+        }
     }
 }

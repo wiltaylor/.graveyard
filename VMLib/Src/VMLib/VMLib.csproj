@@ -42,10 +42,15 @@
     <Reference Include="System.Data" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Xml" />
+    <Reference Include="SystemWrapper, Version=0.4.4190.25852, Culture=neutral, processorArchitecture=MSIL">
+      <HintPath>..\packages\SystemWrapper.0.4\lib\SystemWrapper.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Exceptions\UnknownHypervisorException.cs" />
     <Compile Include="HypervisorFactory.cs" />
+    <Compile Include="HypervisorInfoBase.cs" />
     <Compile Include="IHypervisor.cs" />
     <Compile Include="IHypervisorInfo.cs" />
     <Compile Include="IHypervisorConnectionInfo.cs" />
@@ -55,6 +60,7 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
+    <Folder Include="Utility\" />
     <Folder Include="VM\" />
   </ItemGroup>
   <ItemGroup>

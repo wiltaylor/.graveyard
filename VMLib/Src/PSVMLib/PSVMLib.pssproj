@@ -32,6 +32,7 @@
     <Compile Include="Copy-FileFromVM.ps1" />
     <Compile Include="Copy-FileToVM.ps1" />
     <Compile Include="Copy-VM.ps1" />
+    <Compile Include="Fakes\Fake_Hypervisor.ps1" />
     <Compile Include="Fakes\Fake_HypervisorConnectionInfo.ps1" />
     <Compile Include="Fakes\Fake_HypervisorFactory.ps1" />
     <Compile Include="Get-Hypervisor.ps1" />
