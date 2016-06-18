@@ -9,8 +9,11 @@ namespace VMLib.HyperV.UnitTest
     [TestFixture]
     public class HyperVHypervisorInfoTests
     {
-        public IHypervisorInfo DefaultHyperVHypervisorInfoFactory()
+        public IHypervisorInfo DefaultHyperVHypervisorInfoFactory(IServiceDiscovery srvDiscovery = null)
         {
+            if (srvDiscovery == null)
+                srvDiscovery = FakeServiceDiscovery.ReturnTestableInstance();
+
             var sut = new HyperVHypervisorInfo();
 
             return sut;
@@ -29,7 +32,7 @@ namespace VMLib.HyperV.UnitTest
         {
             var srv = FakeServiceDiscovery.ReturnTestableInstance();
 
-            var sut = DefaultHyperVHypervisorInfoFactory();
+            var sut = DefaultHyperVHypervisorInfoFactory(srvDiscovery: srv);
 
             A.CallTo(() => srv.AddType<IHypervisor, HyperVHypervisor>(sut.Name)).MustHaveHappened();
         }

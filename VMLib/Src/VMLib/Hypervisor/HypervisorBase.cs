@@ -17,7 +17,6 @@ namespace VMLib
             Settings = settings;
         }
 
-        public abstract IVMCreationInfo CreateNewVMInfo();
         public abstract string Name { get; }
 
         protected virtual IVMFactory CreateFactory()

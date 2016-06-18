@@ -24,15 +24,5 @@ namespace VMLib.VirtualBox.UnitTest
 
             Assert.That(sut.Name == "VirtualBox");
         }
-
-        [Test]
-        public void CreateNewVMInfo_CallMethod_ReturnsNewInstanceOfNewVMInfo()
-        {
-            var sut = DefaultVirtualBoxHypervisorFactory();
-
-            var result = sut.CreateNewVMInfo();
-
-            Assert.That(result != null);
-        }
     }
 }

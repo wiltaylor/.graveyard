@@ -49,6 +49,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Exceptions\HypervisorAlreadySetupException.cs" />
+    <Compile Include="Exceptions\InvalidVMCreationInfoException.cs" />
     <Compile Include="Exceptions\UnknownHypervisorException.cs" />
     <Compile Include="Hypervisor\HypervisorBase.cs" />
     <Compile Include="Hypervisor\HypervisorFactory.cs" />

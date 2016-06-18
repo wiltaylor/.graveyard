@@ -29,15 +29,5 @@ namespace VMLib.HyperV.UnitTest
 
             Assert.That(sut.Name == "HyperV");
         }
-
-        [Test]
-        public void CreateNewVMInfo_CallMethod_ReturnsNewInstanceOfNewVMInfo()
-        {
-            var sut = DefaultHyperVHypervisorFactory();
-
-            var result = sut.CreateNewVMInfo();
-
-            Assert.That(result != null);
-        }
     }
 }

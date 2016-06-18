@@ -10,8 +10,10 @@ namespace VMLib.VirtualBox.UnitTest
     [TestFixture]
     public class VirtualBoxHypervisorInfoTests
     {
-        public IHypervisorInfo DefaultVirtualBoxHypervisorInfo(IRegistryWrap reg = null)
+        public IHypervisorInfo DefaultVirtualBoxHypervisorInfo(IRegistryWrap reg = null, IServiceDiscovery srvDiscovery = null)
         {
+            if (srvDiscovery == null)
+                srvDiscovery = FakeServiceDiscovery.ReturnTestableInstance();
             if (reg == null)
                 reg = A.Fake<IRegistryWrap>();
 
@@ -32,7 +34,7 @@ namespace VMLib.VirtualBox.UnitTest
         {
             var srv = FakeServiceDiscovery.ReturnTestableInstance();
 
-            var sut = DefaultVirtualBoxHypervisorInfo();
+            var sut = DefaultVirtualBoxHypervisorInfo(srvDiscovery: srv);
 
             A.CallTo(() => srv.AddType<IHypervisor, VirtualBoxHypervisor>(sut.Name)).MustHaveHappened();
         }

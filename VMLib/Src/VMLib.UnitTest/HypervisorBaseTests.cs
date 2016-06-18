@@ -89,11 +89,6 @@ namespace VMLib.UnitTest
 
     public class TestableHypervisorBase : HypervisorBase
     {
-        public override IVMCreationInfo CreateNewVMInfo()
-        {
-            throw new NotImplementedException();
-        }
-
         public override string Name => "Testable";
     }
 }
