@@ -44,7 +44,9 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Exceptions\InvalidVMXSettingException.cs" />
     <Compile Include="Exceptions\VixException.cs" />
+    <Compile Include="Exceptions\VMXFileCorruptException.cs" />
     <Compile Include="VIXItems\IVIX.cs" />
     <Compile Include="VIXItems\VIX.cs" />
     <Compile Include="IVMXHelper.cs" />
@@ -55,6 +57,7 @@
     <Compile Include="VMwareHypervisor.cs" />
     <Compile Include="VMwareHypervisorInfo.cs" />
     <Compile Include="VMwareVMFactory.cs" />
+    <Compile Include="VMXHelper.cs" />
     <Compile Include="VMXSetting.cs" />
   </ItemGroup>
   <ItemGroup>

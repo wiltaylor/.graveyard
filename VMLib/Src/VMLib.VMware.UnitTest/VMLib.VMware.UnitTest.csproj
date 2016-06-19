@@ -57,6 +57,7 @@
     <Compile Include="VMwareHypervisorTests.cs" />
     <Compile Include="VMwareVirtualMachineTests.cs" />
     <Compile Include="VMwareVMFactoryTests.cs" />
+    <Compile Include="VMXHelperTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\VMLib.UnitTest\VMLib.UnitTest.csproj">

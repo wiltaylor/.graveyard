@@ -48,6 +48,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Exceptions\InvalidRemoteConnectionPropertiesException.cs" />
     <Compile Include="Exceptions\HypervisorAlreadySetupException.cs" />
     <Compile Include="Exceptions\InvalidVMCreationInfoException.cs" />
     <Compile Include="Exceptions\SnapshotDoesntExistExceptipon.cs" />
@@ -73,6 +74,7 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="VM\IVMProcess.cs" />
     <Compile Include="VM\VMCreationInfo.cs" />
+    <Compile Include="VM\VMNetwork.cs" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Utility\" />

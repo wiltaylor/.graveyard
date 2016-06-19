@@ -4,7 +4,7 @@ namespace VMLib.VMware
 {
     public interface IVMXHelper
     {
-        void WriteVMX(string setting, string value);
+        void WriteVMX(string name, string value);
         void WriteNetwork(IVMNetwork network);
         void WriteDisk(IVMDisk disk);
         string[] ToArray();
