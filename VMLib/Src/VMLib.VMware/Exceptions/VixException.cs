@@ -8,9 +8,11 @@ namespace VMLib.VMware.Exceptions
 {
     public class VixException : Exception
     {
+        public ulong ErrorCode { get; }
+
         public VixException(string message, ulong errorcode) : base(message)
         {
-            
+            ErrorCode = errorcode;
         }
     }
 }

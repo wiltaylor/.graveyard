@@ -276,6 +276,34 @@ namespace VMLib.VMware.VIXItems
             return ((object[]) result)[0].ToString();
         }
 
+        public string ReadVariable(IVM2 vm, string name, VixVariable environment)
+        {
+            var flags = 0;
+
+            if (environment == VixVariable.Environment)
+                flags = Constants.VIX_GUEST_ENVIRONMENT_VARIABLE;
+            if (environment == VixVariable.GuestVar)
+                flags = Constants.VIX_VM_GUEST_VARIABLE;
+            if (environment == VixVariable.VMX)
+                flags = Constants.VIX_VM_CONFIG_RUNTIME_ONLY;
+
+            return WaitJobResult<string>(vm.ReadVariable(flags, name, 0, null), new [] { Constants.VIX_PROPERTY_JOB_RESULT_VM_VARIABLE_STRING });
+        }
+
+        public void WriteVariable(IVM2 vm, string name, string value, VixVariable environment)
+        {
+            var flags = 0;
+
+            if (environment == VixVariable.Environment)
+                flags = Constants.VIX_GUEST_ENVIRONMENT_VARIABLE;
+            if (environment == VixVariable.GuestVar)
+                flags = Constants.VIX_VM_GUEST_VARIABLE;
+            if (environment == VixVariable.VMX)
+                flags = Constants.VIX_VM_CONFIG_RUNTIME_ONLY;
+
+            WaitJobNoResults(vm.WriteVariable(flags, name, value, 0, null));
+        }
+
         public IEnumerable<VixProcess> GetProcesses(IVM2 vm)
         {
             var returndata = new List<VixProcess>();

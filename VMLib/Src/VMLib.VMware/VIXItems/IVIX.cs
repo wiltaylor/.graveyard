@@ -3,6 +3,12 @@ using VixCOM;
 
 namespace VMLib.VMware.VIXItems
 {
+    public enum VixVariable
+    {
+        Environment, 
+        VMX,
+        GuestVar
+    }
     public interface IVix
     {
         void AddSharedFolder(IVM2 vm, string path, string sharename, bool writeaccess);
@@ -35,5 +41,7 @@ namespace VMLib.VMware.VIXItems
         void RevertToSnapshot(IVM2 vm, ISnapshot snapshot, bool supressPoweron);
         void WaitForTools(IVM2 vm);
         string GetSnapshotName(ISnapshot snapshot);
+        string ReadVariable(IVM2 vm, string name, VixVariable environment);
+        void WriteVariable(IVM2 vm, string name, string value, VixVariable environment);
     }
 }

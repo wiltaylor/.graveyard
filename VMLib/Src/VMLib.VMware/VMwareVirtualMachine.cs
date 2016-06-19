@@ -1,8 +1,11 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
+using SystemWrapper.Threading;
 using VixCOM;
 using VMLib.Exceptions;
+using VMLib.IOC;
 using VMLib.VM;
+using VMLib.VMware.Exceptions;
 using VMLib.VMware.VIXItems;
 
 namespace VMLib.VMware
@@ -12,11 +15,13 @@ namespace VMLib.VMware
         private readonly string _vmPath;
         private readonly IVix _vix;
         private readonly IVM2 _vm;
+        private readonly IVMXHelper _vmx;
 
-        public VMwareVirtualMachine(string vmPath, IVix vix)
+        public VMwareVirtualMachine(string vmPath, IVix vix, IVMXHelper vmx)
         {
             _vmPath = vmPath;
             _vix = vix;
+            _vmx = vmx;
             _vm = vix.ConnectToVM(vmPath);
         }
 
@@ -100,6 +105,8 @@ namespace VMLib.VMware
             from p in _vix.GetProcesses(_vm)
             select new VMProcess(p.Name, p.ProcessID);
 
+        public string HypervisorName => "VMwareWorkstation";
+
         public void RemoveSharedFolder(string name)
         {
             _vix.RemoveSharedFolder(_vm, name);
@@ -168,8 +175,122 @@ namespace VMLib.VMware
 
         public void WaitTillReady()
         {
+            while (true)
+            {
+                if(State == VMState.Off)
+                    throw new VMPoweredOffException("VM Powered off while waiting for it to become ready!");
 
-            _vix.WaitForTools(_vm);
+                try
+                {
+                    _vix.WaitForTools(_vm);
+                }
+                catch (VixException e) when (e.ErrorCode == Constants.VIX_E_TIMEOUT_WAITING_FOR_TOOLS)
+                {
+                    continue;
+                }
+
+                break;
+            }
+        }
+
+        public void WaitTillOff()
+        {
+            var thread = ServiceDiscovery.Instance.Resolve<IThreadWrap>(HypervisorName);
+            while (State != VMState.Off)
+            {
+                thread.Sleep(1000);
+            }
+        }
+
+        public string ReadEnvironment(string name)
+        {
+            WaitTillReady();
+            _vix.LoginToGuest(_vm, Username, Password, false);
+            return _vix.ReadVariable(_vm, name, VixVariable.Environment);
+        }
+
+        public string ReadGuestVariable(string name)
+        {
+            try
+            {
+                return State == VMState.Off ? 
+                    _vmx.ReadVMX($"guestinfo.{name}") : 
+                    _vix.ReadVariable(_vm, name, VixVariable.GuestVar);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        public string ReadVMSetting(string name)
+        {
+            return State == VMState.Off ? _vmx.ReadVMX(name) : _vix.ReadVariable(_vm, name, VixVariable.VMX);
+        }
+
+        public void WriteEnvironment(string name, string value)
+        {
+            WaitTillReady();
+            _vix.LoginToGuest(_vm, Username, Password, false);
+            _vix.WriteVariable(_vm, name, value, VixVariable.Environment);
+        }
+
+        public void WriteGuestVariable(string name, string value)
+        {
+            if(State == VMState.Off)
+                _vmx.WriteVMX($"guestinfo.{name}", value);
+            else
+                _vix.WriteVariable(_vm, name, value, VixVariable.GuestVar);
+        }
+
+        public void WriteVMSetting(string name, string value)
+        {
+            if(State == VMState.Off)
+                _vmx.WriteVMX(name, value);
+            else
+                _vix.WriteVariable(_vm, name, value, VixVariable.VMX);
+        }
+
+        public void AddNetworkCard(IVMNetwork network)
+        {
+            if(State != VMState.Off)
+                throw new VMPoweredOnException("Can't add network cards while vm is powered on!");
+
+            _vmx.WriteNetwork(network);
+        }
+
+        public IEnumerable<IVMNetwork> GetNetworkCards()
+        {
+            return _vmx.ReadNetwork();
+        }
+
+        public void RemoveNetworkCard(IVMNetwork network)
+        {
+            if (State != VMState.Off)
+                throw new VMPoweredOnException("Can't remove network cards while vm is powered on!");
+
+            _vmx.RemoveNetwork(network);
+        }
+
+        public void AddDisk(IVMDisk disk)
+        {
+            if (State != VMState.Off)
+                throw new VMPoweredOnException("Can't add disks while vm is powered on!");
+
+            _vmx.WriteDisk(disk);
+        }
+
+        public IEnumerable<IVMDisk> GetDisks()
+        {
+            return _vmx.ReadDisk();
+        }
+
+        public void RemoveDisk(IVMDisk disk)
+        {
+            if (State != VMState.Off)
+                throw new VMPoweredOnException("Can't remove disks while vm is powered on!");
+
+            _vmx.RemoveDisk(disk);
         }
     }
 }

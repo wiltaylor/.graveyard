@@ -23,6 +23,7 @@ namespace VMLib
         string Username { get; set; }
         string Password { get; set; }
         IEnumerable<IVMProcess> Processes { get; }
+        string HypervisorName { get; }
         void RemoveSharedFolder(string name);
         void ExecuteCommand(string path, string args, bool wait, bool interactive);
         object ExecutePowershell(string script);
@@ -34,5 +35,18 @@ namespace VMLib
         void DeleteFile(string path);
         void DeleteDirectory(string path);
         void WaitTillReady();
+        void WaitTillOff();
+        string ReadEnvironment(string name);
+        string ReadGuestVariable(string name);
+        string ReadVMSetting(string name);
+        void WriteEnvironment(string name, string value);
+        void WriteGuestVariable(string name, string value);
+        void WriteVMSetting(string name, string value);
+        void AddNetworkCard(IVMNetwork network);
+        IEnumerable<IVMNetwork> GetNetworkCards();
+        void RemoveNetworkCard(IVMNetwork network);
+        void AddDisk(IVMDisk disk);
+        IEnumerable<IVMDisk> GetDisks();
+        void RemoveDisk(IVMDisk disk);
     }
 }

@@ -53,6 +53,8 @@
     <Compile Include="Exceptions\SnapshotDoesntExistExceptipon.cs" />
     <Compile Include="Exceptions\UnknownHypervisorException.cs" />
     <Compile Include="Exceptions\UnsupportedVMFeature.cs" />
+    <Compile Include="Exceptions\VMPoweredOffException.cs" />
+    <Compile Include="Exceptions\VMPoweredOnException.cs" />
     <Compile Include="Hypervisor\HypervisorBase.cs" />
     <Compile Include="Hypervisor\HypervisorFactory.cs" />
     <Compile Include="Hypervisor\HypervisorInfoBase.cs" />

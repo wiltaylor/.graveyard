@@ -6,7 +6,12 @@ namespace VMLib.VMware
     {
         void WriteVMX(string setting, string value);
         void WriteNetwork(IVMNetwork network);
-        void WriteDisks(IVMDisk disk);
+        void WriteDisk(IVMDisk disk);
         string[] ToArray();
+        string ReadVMX(string setting);
+        IEnumerable<IVMNetwork> ReadNetwork();
+        void RemoveNetwork(IVMNetwork network);
+        IEnumerable<IVMDisk> ReadDisk();
+        void RemoveDisk(IVMDisk disk);
     }
 }

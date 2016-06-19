@@ -57,7 +57,7 @@ namespace VMLib.VMware
                 vmx.WriteNetwork(network);
 
             foreach(var disk in info.Disks)
-                vmx.WriteDisks(disk);
+                vmx.WriteDisk(disk);
 
             foreach(var setting in info.CustomSettings.Keys)
                 vmx.WriteVMX(setting, info.CustomSettings[setting]);
@@ -126,7 +126,7 @@ namespace VMLib.VMware
             if(!_file.Exists(path))
                 throw new FileNotFoundException($"Can't find VM at {path}");
 
-            return new VMwareVirtualMachine(path, _vix);
+            return new VMwareVirtualMachine(path, _vix, ServiceDiscovery.Instance.Resolve<IVMXHelper>(HypervisorName));
         }
 
         public IEnumerable<IVirtualMachine> GetAllRunning()

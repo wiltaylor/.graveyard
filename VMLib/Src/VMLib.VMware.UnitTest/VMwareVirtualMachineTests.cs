@@ -3,10 +3,14 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using SystemWrapper.Threading;
 using FakeItEasy;
 using NUnit.Framework;
 using VixCOM;
 using VMLib.Exceptions;
+using VMLib.IOC;
+using VMLib.UnitTest;
+using VMLib.VMware.Exceptions;
 using VMLib.VMware.VIXItems;
 
 namespace VMLib.VMware.UnitTest
@@ -14,7 +18,7 @@ namespace VMLib.VMware.UnitTest
     [TestFixture]
     public class VMwareVirtualMachineTests
     {
-        public IVirtualMachine DefaultVMwareVirtualMachineFactory(IVix vix = null, string vmpath = "c:\\testvm.vmx", IVM2 vm = null)
+        public IVirtualMachine DefaultVMwareVirtualMachineFactory(IVix vix = null, string vmpath = "c:\\testvm.vmx", IVM2 vm = null, IServiceDiscovery srvDiscovery = null, IVMXHelper vmx = null)
         {
             if (vix == null)
                 vix = A.Fake<IVix>();
@@ -22,11 +26,35 @@ namespace VMLib.VMware.UnitTest
             if (vm == null)
                 vm = A.Fake<IVM2>();
 
+            if (vmx == null)
+                vmx = A.Fake<IVMXHelper>();
+
+            if (srvDiscovery == null)
+                srvDiscovery = FakeServiceDiscovery.ReturnTestableInstance();
+
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Pending);
+
             A.CallTo(() => vix.ConnectToVM(vmpath)).Returns(vm);
 
-            var sut = new VMwareVirtualMachine(vmpath, vix);
+            var sut = new VMwareVirtualMachine(vmpath, vix, vmx);
 
             return sut;
+        }
+
+        public IVMNetwork DefaultVMwareNetwork(VMNetworkType type = VMNetworkType.Bridged, string macAddress = "00:00:00:00:00:00:00:00", IDictionary<string, string> customsettings = null)
+        {
+            if(customsettings == null)
+                customsettings = new Dictionary<string, string>();
+
+            if(!customsettings.ContainsKey("DeviceType"))
+                customsettings.Add("DeviceType", "E1000");
+
+            var fake = A.Fake<IVMNetwork>();
+            A.CallTo(() => fake.Type).Returns(type);
+            A.CallTo(() => fake.MACAddress).Returns(macAddress);
+            A.CallTo(() => fake.CustomSettings).Returns(customsettings);
+            return fake;
+
         }
 
         [TestCase(VixPowerState.Off, VMState.Off)]
@@ -568,7 +596,382 @@ namespace VMLib.VMware.UnitTest
             A.CallTo(() => vix.WaitForTools(A<IVM2>.Ignored)).MustHaveHappened();
         }
 
+        [Test]
+        public void WaitTillReady_TimeOutExceptionThrow_WillKeepWaiting()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.WaitForTools(A<IVM2>.Ignored))
+                .Throws(new VixException("Time out exception", Constants.VIX_E_TIMEOUT_WAITING_FOR_TOOLS)).Twice();
+
+            Assert.DoesNotThrow(() => sut.WaitTillReady());
+        }
+
+        [Test]
+        public void WaitTillReady_AnyOtherExceptionOtherThanTimeOut_WillThrow()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.WaitForTools(A<IVM2>.Ignored))
+                .Throws(new ApplicationException("AnyOtherException"));
+
+            Assert.Throws<ApplicationException>(() => sut.WaitTillReady());
+        }
+
+        [Test]
+        public void WaitTillReady_VMPoweredOff_WillThrow()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+
+            Assert.Throws<VMPoweredOffException>(() => sut.WaitTillReady());
+        }
+
+        [Test]
+        public void WaitTillOff_WillWaitForPowerOff_WillReturn()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off).Once(); //note: don't forget last in first out on call stack for fakeiteasy.
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Pending).Once();
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready).Once();
+
+            sut.WaitTillOff();
+
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).MustHaveHappened(Repeated.Like(i => i == 3));
+        }
+
+        [Test]
+        public void WaitTillOff_WillWaitASecondBetweenEachCall_CallToThreadSleepL()
+        {
+            var srvDiscovery = FakeServiceDiscovery.ReturnTestableInstance();
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, srvDiscovery: srvDiscovery);
+            var thread = A.Fake<IThreadWrap>();
+            A.CallTo(() => srvDiscovery.Resolve<IThreadWrap>(sut.HypervisorName)).Returns(thread);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off).Once();
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready).Once();
+
+            sut.WaitTillOff();
+
+            A.CallTo(() => thread.Sleep(1000)).MustHaveHappened();
+        }
+
+        [Test]
+        public void ReadEnvironment_WillRetriveEnvironmentFromOS_CallToVix()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.ReadVariable(A<IVM2>.Ignored, "MyVar", VixVariable.Environment)).Returns("MyValue");
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready);
+
+            var result = sut.ReadEnvironment("MyVar");
+
+            Assert.That(result == "MyValue");
+        }
+
+        [Test]
+        public void ReadEnvironment_WillThrowIfVMPoweredOff_CallToVix()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+
+            Assert.Throws<VMPoweredOffException>(() => sut.ReadEnvironment("MyVar"));
+        }
+
+        [Test]
+        public void ReadEnvironment_WillLoginToGuestOS_CallToVix()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready);
+            
+            sut.ReadEnvironment("MyVar");
+
+            A.CallTo(() => vix.LoginToGuest(A<IVM2>.Ignored, A<string>.Ignored, A<string>.Ignored, A<bool>.Ignored))
+                .MustHaveHappened();
+        }
+
+        [Test]
+        public void ReadGuestVariable_WillReadVariableFromVM_CallToVix()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready);
+            A.CallTo(() => vix.ReadVariable(A<IVM2>.Ignored, "MyVar", VixVariable.GuestVar)).Returns("MyValue");
+
+            var result = sut.ReadGuestVariable("MyVar");
+
+            Assert.That(result == "MyValue");
+        }
+
+        [Test]
+        public void ReadGuestVariable_VixThrowsException_NullReturned()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.ReadVariable(A<IVM2>.Ignored, "MyVar", VixVariable.GuestVar))
+                .Throws(new Exception("Any exception"));
+
+            var result = sut.ReadGuestVariable("MyVar");
+
+            Assert.IsNull(result);
+        }
+
+        [Test]
+        public void ReadGuestVariable_WhileVMPoweredOff_WillReturnValueFromVmxReader()
+        {
+            var vmx = A.Fake<IVMXHelper>();
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vmx: vmx, vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+            A.CallTo(() => vmx.ReadVMX("guestinfo.MyVar")).Returns("MyValue");
+
+            var result = sut.ReadGuestVariable("MyVar");
+
+            Assert.That(result == "MyValue");
+        }
+
+        [Test]
+        public void ReadVMSetting_ReadingVMXFilePoweredOn_WillReadFromVix()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.ReadVariable(A<IVM2>.Ignored, "myvmx.property", VixVariable.VMX)).Returns("MyValue");
+
+            var result = sut.ReadVMSetting("myvmx.property");
+
+            Assert.That(result == "MyValue");
+        }
+
+        [Test]
+        public void ReadVMSetting_ReadingVMXFilePoweredOff_WillReadfromVMXFile()
+        {
+            var vix = A.Fake<IVix>();
+            var vmx = A.Fake<IVMXHelper>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+            A.CallTo(() => vmx.ReadVMX("myvmx.property")).Returns("MyValue");
+
+            var result = sut.ReadVMSetting("myvmx.property");
+
+            Assert.That(result == "MyValue");
+        }
+
+        [Test]
+        public void WriteEnvironment_WhenGuestIsOn_WillCallVix()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+
+            sut.WriteEnvironment("MyVar", "MyValue");
+
+            A.CallTo(() => vix.WriteVariable(A<IVM2>.Ignored, "MyVar", "MyValue", VixVariable.Environment)).MustHaveHappened();
+        }
+
+        [Test]
+        public void WriteEnvironment_WhenGuestIsOff_WillThrow()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+
+            Assert.Throws<VMPoweredOffException>(() => sut.WriteEnvironment("MyVar", "MyValue"));
+        }
+
+        [Test]
+        public void WriteEnvironment_LogsInToGuestOS_CallsVix()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+
+            sut.WriteEnvironment("MyVar", "MyValue");
+
+            A.CallTo(() => vix.LoginToGuest(A<IVM2>.Ignored, A<string>.Ignored, A<string>.Ignored, A<bool>.Ignored))
+                .MustHaveHappened();
+        }
+
+        [Test]
+        public void WriteGuestVariable_WhenGuestIsOn_CallsVix()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+
+            sut.WriteGuestVariable("MySetting", "MyValue");
+
+            A.CallTo(() => vix.WriteVariable(A<IVM2>.Ignored, "MySetting", "MyValue", VixVariable.GuestVar))
+                .MustHaveHappened();
+        }
+
+        [Test]
+        public void WriteGuestVariable_WhenGuestIsOff_CallVMXHelper()
+        {
+            var vix = A.Fake<IVix>();
+            var vmx = A.Fake<IVMXHelper>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+
+            sut.WriteGuestVariable("MySetting", "MyValue");
+
+            A.CallTo(() => vmx.WriteVMX("guestinfo.MySetting", "MyValue")).MustHaveHappened();
+        }
+
+        [Test]
+        public void WriteVMSetting_WhenGuestIsOn_CallsVix()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready);
+
+            sut.WriteVMSetting("MySetting.Property", "MyValue");
+
+            A.CallTo(() => vix.WriteVariable(A<IVM2>.Ignored, "MySetting.Property", "MyValue", VixVariable.VMX))
+                .MustHaveHappened();
+        }
+
+        [Test]
+        public void WriteVMSetting_WhenGuestIsOff_CallsVmxHelper()
+        {
+            var vix = A.Fake<IVix>();
+            var vmx = A.Fake<IVMXHelper>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+
+            sut.WriteVMSetting("MySetting.Property", "MyValue");
+
+            A.CallTo(() => vmx.WriteVMX("MySetting.Property", "MyValue")).MustHaveHappened();
+        }
+
+        [Test]
+        public void AddNetworkCard_AddingNewCardToVM_WillcallVMXHelper()
+        {
+            var vix = A.Fake<IVix>();
+            var vmx = A.Fake<IVMXHelper>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx);
+            var network = DefaultVMwareNetwork();
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+
+            sut.AddNetworkCard(network);
+
+            A.CallTo(() => vmx.WriteNetwork(network)).MustHaveHappened();
+        }
+
+        [Test]
+        public void AddNetworkCard_WhileVMIsPoweredOn_WillThrow()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready);
+            var network = DefaultVMwareNetwork();
+
+            Assert.Throws<VMPoweredOnException>(() => sut.AddNetworkCard(network));
+        }
+
+        [Test]
+        public void GetNetworkCard_CallingMethod_WillReturnDataFromVMXHelper()
+        {
+
+            var vmx = A.Fake<IVMXHelper>();
+            var sut = DefaultVMwareVirtualMachineFactory(vmx: vmx);
+            var network = DefaultVMwareNetwork();
+            A.CallTo(() => vmx.ReadNetwork()).Returns(new[] {network});
+
+            var result = sut.GetNetworkCards();
+
+            Assert.AreSame(network, result.First());
+        }
+
+        [Test]
+        public void RemoveNetworkCard_WhileVMPoweredOff_WillPassRequestTOVMXHelper()
+        {
+            var vix = A.Fake<IVix>();
+            var vmx = A.Fake<IVMXHelper>();
+            var sut = DefaultVMwareVirtualMachineFactory(vmx: vmx, vix: vix);
+            var network = DefaultVMwareNetwork();
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+
+            sut.RemoveNetworkCard(network);
+
+            A.CallTo(() => vmx.RemoveNetwork(network)).MustHaveHappened();
+        }
+
+        [Test]
+        public void RemoveNetworkCard_WhileVMPoweredOn_WillThrow()
+        {
+            var vix = A.Fake<IVix>();
+            var vmx = A.Fake<IVMXHelper>();
+            var sut = DefaultVMwareVirtualMachineFactory(vmx: vmx, vix: vix);
+            var network = DefaultVMwareNetwork();
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready);
+
+            Assert.Throws<VMPoweredOnException>(() => sut.RemoveNetworkCard(network));
+        }
 
 
+        [Test]
+        public void AddDisk_WhileVMIsOff_WillCallVMXHelper()
+        {
+            var vmx = A.Fake<IVMXHelper>();
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+
+            sut.AddDisk(disk);
+
+            A.CallTo(() => vmx.WriteDisk(disk)).MustHaveHappened();
+        }
+
+        [Test]
+        public void AddDisk_WhileVMIsOn_WillThrow()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready);
+
+            Assert.Throws<VMPoweredOnException>(() => sut.AddDisk(disk));
+        }
+
+        [Test]
+        public void GetDisk_WillReturnListOfDisks_WillCallVMXHelper()
+        {
+            var vmx = A.Fake<IVMXHelper>();
+            var sut = DefaultVMwareVirtualMachineFactory(vmx: vmx);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => vmx.ReadDisk()).Returns(new[] {disk});
+
+            var result = sut.GetDisks();
+
+            Assert.AreSame(disk, result.First());
+        }
+
+        [Test]
+        public void RemoveDisk_WhenVMIsOff_WillCallVMXHelper()
+        {
+            var vmx = A.Fake<IVMXHelper>();
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+
+            sut.RemoveDisk(disk);
+
+            A.CallTo(() => vmx.RemoveDisk(disk)).MustHaveHappened();
+        }
+
+        [Test]
+        public void RemoveDisk_WhenVMIsOn_WillCallVMXHelper()
+        {
+            var vmx = A.Fake<IVMXHelper>();
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready);
+
+            Assert.Throws<VMPoweredOnException>(() => sut.RemoveDisk(disk));
+        }
     }
 }

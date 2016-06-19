@@ -241,7 +241,7 @@ namespace VMLib.VMware.UnitTest
 
             sut.Create(info);
 
-            A.CallTo(() => vmxhelper.WriteDisks(disk)).MustHaveHappened();
+            A.CallTo(() => vmxhelper.WriteDisk(disk)).MustHaveHappened();
         }
 
         [Test]
