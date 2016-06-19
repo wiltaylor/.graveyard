@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 
 namespace VMLib.VMware.Exceptions
 {
+    [Serializable]
     public class VMXFileCorruptException : Exception
     {
         public VMXFileCorruptException(string message) : base(message)

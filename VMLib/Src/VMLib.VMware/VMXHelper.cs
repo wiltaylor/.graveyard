@@ -10,6 +10,13 @@ namespace VMLib.VMware
     public class VMXHelper : IVMXHelper
     {
         public const int VMWareMaxNetworkAdapters = 10;
+        public const int VMwareMaxSCSIAdapter = 4;
+        public const int VMWareMaxSCSIDevicesPerAdapter = 15;
+        public const int VMwareMaxSATAAdapter = 4;
+        public const int VMwareMaxSATADrivecsPerAdapter = 30;
+        public const int VMwareMaxIDEAdapters = 1;
+        public const int VMwareMaxIDEDevicesPerAdapter = 2;
+        
 
         private readonly List<VMXSetting> _settings = new List<VMXSetting>();
 
@@ -96,7 +103,88 @@ namespace VMLib.VMware
 
         public void WriteDisk(IVMDisk disk)
         {
-            throw new NotImplementedException();
+            if(disk.Type == VMDiskType.Floppy)
+                WriteFloppyDisk(disk);
+
+            if (disk.Type == VMDiskType.CDRom)
+                WriteCDRom(disk);
+
+            if(disk.Type == VMDiskType.HardDisk)
+                WriteHD(disk);
+        }
+
+        private string GetFreeBusIndex(string bus)
+        {
+            var busindex = 0;
+            var deviceindex = -1;
+
+            while (true)
+            {
+                deviceindex++;
+
+                if ((bus == "scsi" && deviceindex >= VMWareMaxSCSIDevicesPerAdapter) || (bus == "sata" && deviceindex >= VMwareMaxSATADrivecsPerAdapter))
+                {
+                    deviceindex = 0;
+                    busindex += 1;
+
+                    if (bus == "scsi" && busindex >= VMwareMaxSCSIAdapter)
+                        throw new InvalidVMXSettingException("Maximum SCSI Adapters added and they are all full.");
+
+                    if (bus == "sata" && busindex >= VMwareMaxSATAAdapter)
+                        throw new InvalidVMXSettingException("Maximum Sata Adapters added and they are all full.");
+                }
+
+                if (_settings.Any(s => s.Name == $"{bus}{busindex}:{deviceindex}.present"))
+                    continue;
+                break;
+            }
+
+            return $"{busindex}:{deviceindex}";
+        }
+
+
+
+        private void WriteCDRom(IVMDisk disk)
+        {
+            var index = disk.CustomSettings.ContainsKey("VMwareIndex") ? 
+                disk.CustomSettings["VMwareIndex"] : GetFreeBusIndex("sata");
+
+            var busindex = index.Split(':')[0];
+            WriteVMX($"sata{busindex}.present", "TRUE");
+            WriteVMX($"sata{index}.present", "TRUE");
+            WriteVMX($"sata{index}.deviceType", "cdrom-image");
+            WriteVMX($"sata{index}.fileName", "c:\\mycdrom.iso");
+        }
+
+        private void WriteHD(IVMDisk disk)
+        {
+            var index = disk.CustomSettings.ContainsKey("VMwareIndex") ?
+                disk.CustomSettings["VMwareIndex"] : GetFreeBusIndex("scsi");
+            var busindex = index.Split(':')[0];
+
+            WriteVMX($"scsi{busindex}.present", "TRUE");
+            WriteVMX($"scsi{busindex}.virtualDev", "lsisas1068");
+            WriteVMX($"scsi{index}.present", "TRUE");
+            WriteVMX($"scsi{index}.fileName", disk.Path);
+        }
+
+        private void WriteFloppyDisk(IVMDisk disk)
+        {
+            var index = 0;
+
+            if (disk.CustomSettings.ContainsKey("VMwareIndex"))
+                index = int.Parse(disk.CustomSettings["VMwareIndex"]);
+            else
+            {
+                if (_settings.Any(s => s.Name == "floppy0.present" && s.Value == "TRUE"))
+                    index = 1;
+                if (_settings.Any(s => s.Name == "floppy1.present" && s.Value == "TRUE"))
+                    throw new InvalidVMXSettingException("Can't have more than 2 floppy drives in a vm!");
+            }
+
+            WriteVMX($"floppy{index}.present", "TRUE");
+            WriteVMX($"floppy{index}.fileType", "file");
+            WriteVMX($"floppy{index}.fileName", disk.Path);
         }
 
         public string[] ToArray()
@@ -170,7 +258,21 @@ namespace VMLib.VMware
 
         public void RemoveDisk(IVMDisk disk)
         {
-            throw new NotImplementedException();
+            if(!disk.CustomSettings.ContainsKey("VMwareIndex"))
+                throw new InvalidVMXSettingException("You can only remove disks retrived from virtual machine!");
+
+            var index = default(string);
+
+            if (disk.Type == VMDiskType.CDRom)
+                index = $"sata{disk.CustomSettings["VMwareIndex"]}";
+
+            if(disk.Type == VMDiskType.HardDisk)
+                index = $"scsi{disk.CustomSettings["VMwareIndex"]}";
+
+            if (disk.Type == VMDiskType.Floppy)
+                index = $"floppy{disk.CustomSettings["VMwareIndex"]}";
+
+            _settings.RemoveAll(s => s.Name.StartsWith(index));
         }
     }
 }

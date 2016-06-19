@@ -391,5 +391,328 @@ namespace VMLib.VMware.UnitTest
 
             Assert.That(sut.ToArray().All(l => l != "ethernet1.present = \"TRUE\""));
         }
+
+        [Test]
+        public void WriteDisk_WithFloppyDrive_WillCreateNewFloppyDrive()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.Floppy);
+
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "floppy0.present = \"TRUE\""));
+        }
+
+        [Test]
+        public void WriteDisk_AddingNewFloppyWithExisting_WillAddNewOne()
+        {
+            var lines = new[] {"floppy0.present = \"TRUE\""};
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.Floppy);
+
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "floppy1.present = \"TRUE\""));
+        }
+
+        [Test]
+        public void WriteDisk_AddingNewFloppyWhen2ExistAlready_WillThrow()
+        {
+            var lines = new[] { "floppy0.present = \"TRUE\"", "floppy1.present = \"TRUE\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.Floppy);
+
+            Assert.Throws<InvalidVMXSettingException>(() => sut.WriteDisk(disk));
+        }
+
+        [Test]
+        public void WriteDisk_AddingNewFloppy_WillSetDiskTypeToFile()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.Floppy);
+            
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "floppy0.fileType = \"file\""));
+        }
+
+        [Test]
+        public void WriteDisk_AddingNewFloppy_WillSetFilePath()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.Floppy);
+            A.CallTo(() => disk.Path).Returns("c:\\myfloppy.flp");
+
+            sut.WriteDisk(disk);
+
+            Assert.That(() => sut.ToArray().Any(l => l == "floppy0.fileName = \"c:\\myfloppy.flp\""));
+        }
+
+        [Test]
+        public void WriteDisk_UpdatingExistingDisk_WillWriteToIndexThatMAtchesVMwareIndex()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.Floppy);
+            A.CallTo(() => disk.CustomSettings).Returns(new Dictionary<string, string>
+            {
+                {"VMwareIndex", "1" }
+            });
+
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "floppy1.present = \"TRUE\""));
+        }
+
+        [Test]
+        public void WriteDisk_AddNewCDRom_WillCreateNewEntry()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.CDRom);
+            
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "sata0:0.present = \"TRUE\""));
+        }
+
+        [Test]
+        public void WriteDisk_AddNewCDRom_WillCreateNextFreeEntry()
+        {
+            var lines = new[] { "sata0:0.present = \"TRUE\""};
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.CDRom);
+
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "sata0:1.present = \"TRUE\""));
+        }
+
+        [Test]
+        public void WriteDisk_AddNewCDRom_WillCreateEntryForBus()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.CDRom);
+
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "sata0.present = \"TRUE\""));
+        }
+
+        [Test]
+        public void WriteDisk_AddNewCDRom_WillCreateEntryForFileType()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.CDRom);
+
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "sata0:0.deviceType = \"cdrom-image\""));
+        }
+
+        [Test]
+        public void WriteDisk_AddNewCDRom_WillCreateEntryForFile()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.CDRom);
+            A.CallTo(() => disk.Path).Returns("c:\\mycdrom.iso");
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "sata0:0.fileName = \"c:\\mycdrom.iso\""));
+        }
+
+        [Test]
+        public void WriteDisk_AddExistingCDROM_WillOverwrite()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.CDRom);
+            A.CallTo(() => disk.CustomSettings).Returns(new Dictionary<string, string>
+            {
+                {"VMwareIndex", "1:1" }
+            });
+
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "sata1:1.present = \"TRUE\""));
+        }
+
+        [Test]
+        public void WriteDisk_AddExistingHD_WillCreateNewEntry()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.HardDisk);
+
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "scsi0:0.present = \"TRUE\""));
+        }
+
+        [Test]
+        public void WriteDisk_AddNewHDWhenExistingHDsExist_WillCreateNewEntry()
+        {
+            var lines = new[] { "scsi0:0.present = \"TRUE\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.HardDisk);
+
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "scsi0:1.present = \"TRUE\""));
+        }
+
+        [Test]
+        public void WriteDisk_AddExistingHD_WillOverWrite()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.HardDisk);
+            A.CallTo(() => disk.CustomSettings).Returns(new Dictionary<string, string>
+            {
+                {"VMwareIndex", "1:1" }
+            });
+
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "scsi1:1.present = \"TRUE\""));
+        }
+
+        [Test]
+        public void WriteDisk_NewDisk_WillCreateEntryForBusHardwareType()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.HardDisk);
+
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "scsi0.virtualDev = \"lsisas1068\""));
+        }
+
+        [Test]
+        public void WriteDisk_NewDisk_WillCreateEntryForBus()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.HardDisk);
+
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "scsi0.present = \"TRUE\""));
+        }
+
+        [Test]
+        public void WriteDisk_NewDisk_WillCreateEntryForFileName()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.HardDisk);
+            A.CallTo(() => disk.Path).Returns("c:\\disk.vmdk");
+
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "scsi0:0.fileName = \"c:\\disk.vmdk\""));
+        }
+
+        [Test]
+        public void WriteDisk_AddingOver60HD_WillThrow()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.HardDisk);
+            A.CallTo(() => disk.Path).Returns("c:\\disk.vmdk");
+
+            Assert.Throws<InvalidVMXSettingException>(() =>
+            {
+                for (var i = 0; i < 61; i++)
+                    sut.WriteDisk(disk);
+            });
+        }
+
+        [Test]
+        public void WriteDisk_AddingOver120CDRoms_WillThrow()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.CDRom);
+            A.CallTo(() => disk.Path).Returns("c:\\disk.iso");
+
+            Assert.Throws<InvalidVMXSettingException>(() =>
+            {
+                for (var i = 0; i < 121; i++)
+                    sut.WriteDisk(disk);
+            });
+        }
+
+        [Test]
+        public void RemoveDisk_DiskNotCreateByGetDisk_WillThrow()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+
+            Assert.Throws<InvalidVMXSettingException>(() => sut.RemoveDisk(disk));
+        }
+
+        [Test]
+        public void RemoveDisk_RemoveExistingDisk_WillRemoveFromVMX()
+        {
+            var lines = new[] { "scsi0:0.present = \"TRUE\"", "scsi0:0.someothersetting = \"value\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.HardDisk);
+            A.CallTo(() => disk.CustomSettings).Returns(new Dictionary<string, string>
+            {
+                {"VMwareIndex", "0:0" }
+            });
+
+            sut.RemoveDisk(disk);
+
+            Assert.That(sut.ToArray().All(l => !l.StartsWith("scsi0:0")));
+        }
+
+        [Test]
+        public void RemoveDisk_RemoveExistingCDROM_WillRemoveFromVMX()
+        {
+            var lines = new[] { "sata0:0.present = \"TRUE\"", "sata0:0.someothersetting = \"value\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.CDRom);
+            A.CallTo(() => disk.CustomSettings).Returns(new Dictionary<string, string>
+            {
+                {"VMwareIndex", "0:0" }
+            });
+
+            sut.RemoveDisk(disk);
+
+            Assert.That(sut.ToArray().All(l => !l.StartsWith("sata0:0")));
+        }
+
+        [Test]
+        public void RemoveDisk_RemoveExistingFloppy_WillRemoveFromVMX()
+        {
+            var lines = new[] { "floppy0.present = \"TRUE\"", "floppy0.someothersetting = \"value\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.Floppy);
+            A.CallTo(() => disk.CustomSettings).Returns(new Dictionary<string, string>
+            {
+                {"VMwareIndex", "0" }
+            });
+
+            sut.RemoveDisk(disk);
+
+            Assert.That(sut.ToArray().All(l => !l.StartsWith("floppy0")));
+        }
+
     }
 }
