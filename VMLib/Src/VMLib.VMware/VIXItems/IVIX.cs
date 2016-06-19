@@ -43,5 +43,6 @@ namespace VMLib.VMware.VIXItems
         string GetSnapshotName(ISnapshot snapshot);
         string ReadVariable(IVM2 vm, string name, VixVariable environment);
         void WriteVariable(IVM2 vm, string name, string value, VixVariable environment);
+        void OpenLocalUI(string vmx, string vmwarepath);
     }
 }

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using VixCOM;
 using VMLib.VMware.Exceptions;
@@ -302,6 +303,15 @@ namespace VMLib.VMware.VIXItems
                 flags = Constants.VIX_VM_CONFIG_RUNTIME_ONLY;
 
             WaitJobNoResults(vm.WriteVariable(flags, name, value, 0, null));
+        }
+
+        public void OpenLocalUI(string vmx, string vmwarepath)
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = $"{vmwarepath}\\vmware.exe",
+                Arguments = $"-t -q \"{vmx}\""
+            });
         }
 
         public IEnumerable<VixProcess> GetProcesses(IVM2 vm)

@@ -126,7 +126,7 @@ namespace VMLib.VMware
             if(!_file.Exists(path))
                 throw new FileNotFoundException($"Can't find VM at {path}");
 
-            return new VMwareVirtualMachine(path, _vix, ServiceDiscovery.Instance.Resolve<IVMXHelper>(HypervisorName));
+            return new VMwareVirtualMachine(path, _vix, ServiceDiscovery.Instance.Resolve<IVMXHelper>(HypervisorName), _hypervisorConnectionInfo);
         }
 
         public IEnumerable<IVirtualMachine> GetAllRunning()

@@ -9,6 +9,13 @@ namespace VMLib
         Ready,
         Pending
     }
+
+    public enum RemoteProtocol
+    {
+        None,
+        RPD,
+        VNC
+    }
     public interface IVirtualMachine
     {
         VMState State { get; }
@@ -24,6 +31,9 @@ namespace VMLib
         string Password { get; set; }
         IEnumerable<IVMProcess> Processes { get; }
         string HypervisorName { get; }
+        RemoteProtocol RemoteAccessProtocol { get; }
+        int RemoteAccessPort { get; }
+        string RemoteAccessPassword { get; }
         void RemoveSharedFolder(string name);
         void ExecuteCommand(string path, string args, bool wait, bool interactive);
         object ExecutePowershell(string script);
@@ -48,5 +58,8 @@ namespace VMLib
         void AddDisk(IVMDisk disk);
         IEnumerable<IVMDisk> GetDisks();
         void RemoveDisk(IVMDisk disk);
+        void OpenLocalGUI();
+        void CreateRemoteConnection(int port, string password);
+        void RemoveRemoteConnection();
     }
 }

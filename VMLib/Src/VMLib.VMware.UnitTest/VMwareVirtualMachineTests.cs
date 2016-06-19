@@ -18,7 +18,7 @@ namespace VMLib.VMware.UnitTest
     [TestFixture]
     public class VMwareVirtualMachineTests
     {
-        public IVirtualMachine DefaultVMwareVirtualMachineFactory(IVix vix = null, string vmpath = "c:\\testvm.vmx", IVM2 vm = null, IServiceDiscovery srvDiscovery = null, IVMXHelper vmx = null)
+        public IVirtualMachine DefaultVMwareVirtualMachineFactory(IVix vix = null, string vmpath = "c:\\testvm.vmx", IVM2 vm = null, IServiceDiscovery srvDiscovery = null, IVMXHelper vmx = null, IHypervisorConnectionInfo info = null)
         {
             if (vix == null)
                 vix = A.Fake<IVix>();
@@ -32,11 +32,14 @@ namespace VMLib.VMware.UnitTest
             if (srvDiscovery == null)
                 srvDiscovery = FakeServiceDiscovery.ReturnTestableInstance();
 
+            if (info == null)
+                info = A.Fake<IHypervisorConnectionInfo>();
+
             A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Pending);
 
             A.CallTo(() => vix.ConnectToVM(vmpath)).Returns(vm);
 
-            var sut = new VMwareVirtualMachine(vmpath, vix, vmx);
+            var sut = new VMwareVirtualMachine(vmpath, vix, vmx, info);
 
             return sut;
         }
@@ -973,5 +976,168 @@ namespace VMLib.VMware.UnitTest
 
             Assert.Throws<VMPoweredOnException>(() => sut.RemoveDisk(disk));
         }
+
+        [Test]
+        public void OpenLocalGUI_MethodCalled_WillCallVix()
+        {
+            var vix = A.Fake<IVix>();
+            var info = A.Fake<IHypervisorConnectionInfo>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmpath: "c:\\myvm\\myvm.vmx", info: info);
+            A.CallTo(() => info.Properties).Returns(new Dictionary<string, string> { {"VMwareWorkstationPath", "C:\\Program Files (x86)\\VMware\\VMware Workstation\\"}});
+
+            sut.OpenLocalGUI();
+
+            A.CallTo(() => vix.OpenLocalUI("c:\\myvm\\myvm.vmx", "C:\\Program Files (x86)\\VMware\\VMware Workstation\\")).MustHaveHappened();
+        }
+
+        [Test]
+        public void RemoteAccessProtocol_DefaultValue_SetToNone()
+        {
+            var sut = DefaultVMwareVirtualMachineFactory();
+
+            var result = sut.RemoteAccessProtocol;
+
+            Assert.That(result == RemoteProtocol.None);
+        }
+
+        [Test]
+        public void CreateRemoteConnection_CallingWithPort_WillChangeConnectionRemoteAccessPortocolToVNC()
+        {
+            var sut = DefaultVMwareVirtualMachineFactory();
+
+            sut.CreateRemoteConnection(1337, "Password");
+
+            Assert.That(sut.RemoteAccessProtocol == RemoteProtocol.VNC);
+        }
+
+        [Test]
+        public void CreateRemoteConnection_CallingWithPort_WillStorePortInRemoteAccessPort()
+        {
+            var sut = DefaultVMwareVirtualMachineFactory();
+
+            sut.CreateRemoteConnection(1337, "Password");
+
+            Assert.That(sut.RemoteAccessPort == 1337);
+        }
+
+        [Test]
+        public void CreateRemoteConnection_CallingWithPassword_WillStorePasswordInRemoteAccessPassword()
+        {
+            var sut = DefaultVMwareVirtualMachineFactory();
+
+            sut.CreateRemoteConnection(1337, "Password");
+
+            Assert.That(sut.RemoteAccessPassword == "Password");
+        }
+
+        [TestCase("RemoteDisplay.vnc.enabled", "TRUE")]
+        [TestCase("RemoteDisplay.vnc.password", "Password")]
+        [TestCase("RemoteDisplay.vnc.port", "1337")]
+        public void CreateRemoteConnection_CallingWithPortWhileGuestOn_CallVix(string setting, string value)
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready);
+            
+            sut.CreateRemoteConnection(1337, "Password");
+
+            A.CallTo(() => vix.WriteVariable(A<IVM2>.Ignored, setting, value, VixVariable.VMX)).MustHaveHappened();
+        }
+
+        [TestCase("RemoteDisplay.vnc.enabled", "TRUE")]
+        [TestCase("RemoteDisplay.vnc.password", "Password")]
+        [TestCase("RemoteDisplay.vnc.port", "1337")]
+        public void CreateRemoteConnection_CallingWithPortWhileGuestOff_WillCallVMXHelper(string setting, string value)
+        {
+            var vix = A.Fake<IVix>();
+            var vmx = A.Fake<IVMXHelper>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+            
+            sut.CreateRemoteConnection(1337, "Password");
+
+            A.CallTo(() => vmx.WriteVMX(setting, value)).MustHaveHappened();
+        }
+
+        [TestCase(0)]
+        [TestCase(-1)]
+        [TestCase(1023)]
+        [TestCase(49152)] //Start Emphemeral ports.
+        public void CreateRemoteConnection_CallingWithInvalidPorts_WillThrow(int port)
+        {
+            var sut = DefaultVMwareVirtualMachineFactory();
+
+            Assert.Throws<InvalidRemoteConnectionPropertiesException>(() => sut.CreateRemoteConnection(port, "Password"));
+        }
+
+        [TestCase]
+        public void CreateRemoteConnection_CallingWithInvalidPassword_WillThrow()
+        {
+            var sut = DefaultVMwareVirtualMachineFactory();
+
+            Assert.Throws<InvalidRemoteConnectionPropertiesException>(() => sut.CreateRemoteConnection(1337, null));
+            Assert.Throws<InvalidRemoteConnectionPropertiesException>(() => sut.CreateRemoteConnection(1337, string.Empty));
+        }
+
+        [Test]
+        public void RemoveRemoteConnection_WhileGuestOn_WillCallVixToClearIt()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready);
+
+            sut.RemoveRemoteConnection();
+
+            A.CallTo(() => vix.WriteVariable(A<IVM2>.Ignored, "RemoteDisplay.vnc.enabled", "FALSE", VixVariable.VMX))
+                .MustHaveHappened();
+        }
+
+        [Test]
+        public void RemoveRemoteConnection_WhileGuestOff_WillCallVMXWriterToClearIt()
+        {
+            var vix = A.Fake<IVix>();
+            var vmx = A.Fake<IVMXHelper>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+
+            sut.RemoveRemoteConnection();
+
+            A.CallTo(() => vmx.WriteVMX("RemoteDisplay.vnc.enabled", "FALSE")).MustHaveHappened();
+        }
+
+        [Test]
+        public void RemoveRemoteConnection_AllStates_WillClearRemoteProtocol()
+        {
+            var sut = DefaultVMwareVirtualMachineFactory();
+            sut.CreateRemoteConnection(1337, "Password");
+
+            sut.RemoveRemoteConnection();
+
+            Assert.That(sut.RemoteAccessProtocol == RemoteProtocol.None);
+        }
+
+
+        [Test]
+        public void RemoveRemoteConnection_AllStates_WillClearRemotePort()
+        {
+            var sut = DefaultVMwareVirtualMachineFactory();
+            sut.CreateRemoteConnection(1337, "Password");
+
+            sut.RemoveRemoteConnection();
+
+            Assert.That(sut.RemoteAccessPort == 0);
+        }
+
+        [Test]
+        public void RemoveRemoteConnection_AllStates_WillClearRemotePassword()
+        {
+            var sut = DefaultVMwareVirtualMachineFactory();
+            sut.CreateRemoteConnection(1337, "Password");
+
+            sut.RemoveRemoteConnection();
+
+            Assert.That(sut.RemoteAccessPassword == null);
+        }
+
     }
 }

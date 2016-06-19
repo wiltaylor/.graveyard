@@ -16,13 +16,16 @@ namespace VMLib.VMware
         private readonly IVix _vix;
         private readonly IVM2 _vm;
         private readonly IVMXHelper _vmx;
+        private readonly IHypervisorConnectionInfo _hypervisorInfo;
 
-        public VMwareVirtualMachine(string vmPath, IVix vix, IVMXHelper vmx)
+        public VMwareVirtualMachine(string vmPath, IVix vix, IVMXHelper vmx, IHypervisorConnectionInfo hypervisorInfo)
         {
             _vmPath = vmPath;
             _vix = vix;
             _vmx = vmx;
+            _hypervisorInfo = hypervisorInfo;
             _vm = vix.ConnectToVM(vmPath);
+            RemoteAccessProtocol = RemoteProtocol.None;
         }
 
 
@@ -106,6 +109,9 @@ namespace VMLib.VMware
             select new VMProcess(p.Name, p.ProcessID);
 
         public string HypervisorName => "VMwareWorkstation";
+        public RemoteProtocol RemoteAccessProtocol { get; private set; }
+        public int RemoteAccessPort { get; private set; }
+        public string RemoteAccessPassword { get; private set; }
 
         public void RemoveSharedFolder(string name)
         {
@@ -291,6 +297,37 @@ namespace VMLib.VMware
                 throw new VMPoweredOnException("Can't remove disks while vm is powered on!");
 
             _vmx.RemoveDisk(disk);
+        }
+
+        public void OpenLocalGUI()
+        {
+            _vix.OpenLocalUI(_vmPath, _hypervisorInfo.Properties["VMwareWorkstationPath"]);
+        }
+
+        public void CreateRemoteConnection(int port, string password)
+        {
+            //Max and Min application ports as per TCP/Windows Standard.
+            if(port < 1024 || port > 49151)
+                throw new InvalidRemoteConnectionPropertiesException($"Invalid port number {port}. Port expected to be higher than 1023 and lower than 49152.");
+
+            if(string.IsNullOrEmpty(password))
+                throw new InvalidRemoteConnectionPropertiesException("You must have a password.");
+
+            RemoteAccessProtocol = RemoteProtocol.VNC;
+            RemoteAccessPort = port;
+            RemoteAccessPassword = password;
+
+            WriteVMSetting("RemoteDisplay.vnc.enabled", "TRUE");
+            WriteVMSetting("RemoteDisplay.vnc.password", password);
+            WriteVMSetting("RemoteDisplay.vnc.port", port.ToString());
+        }
+
+        public void RemoveRemoteConnection()
+        {
+            WriteVMSetting("RemoteDisplay.vnc.enabled", "FALSE");
+            RemoteAccessProtocol = RemoteProtocol.None;
+            RemoteAccessPort = 0;
+            RemoteAccessPassword = null;
         }
     }
 }
