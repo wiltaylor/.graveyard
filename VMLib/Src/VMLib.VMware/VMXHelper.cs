@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using VMLib.VM;
@@ -253,7 +254,55 @@ namespace VMLib.VMware
 
         public IEnumerable<IVMDisk> ReadDisk()
         {
-            throw new NotImplementedException();
+            var returndata = new List<IVMDisk>();
+
+            returndata.AddRange(GetFloppyObjects());
+
+            return returndata;
+        }
+
+        private IEnumerable<IVMDisk> GetFloppyObjects()
+        {
+            var floppylist = new Dictionary<string, Dictionary<string,string>>();
+
+            var returndata = new List<IVMDisk>();
+
+            foreach (var s in _settings)
+            {
+                var match = Regex.Match(s.Name, "(floppy[0-9]{1})");
+                if (match.Success)
+                {
+                    var diskname = match.Groups[1].Value;
+
+                    if(!floppylist.ContainsKey(diskname))
+                        floppylist.Add(diskname, new Dictionary<string, string>());
+
+                    floppylist[diskname].Add(s.Name, s.Value);
+                }
+            }
+
+            foreach (var floppy in floppylist)
+            {
+
+                if (!floppy.Value.ContainsKey($"{floppy.Key}.present"))
+                    break;
+                if (floppy.Value[$"{floppy.Key}.present"] != "TRUE")
+                    break;
+
+                var obj = new VMFloppyDisk { CustomSettings = new Dictionary<string, string>() };
+
+                if (floppy.Value.ContainsKey($"{floppy.Key}.fileName"))
+                    obj.Path = floppy.Value[$"{floppy.Key}.fileName"];
+
+                foreach (var key in floppy.Value.Keys)
+                {
+                    obj.CustomSettings.Add(key, floppy.Value[key]);
+                }
+
+                returndata.Add(obj);
+            }
+
+            return returndata;
         }
 
         public void RemoveDisk(IVMDisk disk)

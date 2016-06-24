@@ -714,5 +714,73 @@ namespace VMLib.VMware.UnitTest
             Assert.That(sut.ToArray().All(l => !l.StartsWith("floppy0")));
         }
 
+        [Test]
+        public void ReadDisk_WithNoDiskInVMX_WillReturnEmptyCollection()
+        {
+            var sut = DefaultVMXHelpderFactory();
+
+            var result = sut.ReadDisk();
+
+            Assert.IsEmpty(result);
+        }
+
+        [Test]
+        public void ReadDisk_FloppyDiskInVMX_WillRetrunFloppyDiskObject()
+        {
+            var lines = new[] { "floppy0.present = \"TRUE\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+
+            var result = sut.ReadDisk();
+
+            Assert.That(result.First().Type == VMDiskType.Floppy);
+        }
+
+        [TestCase("floppy0.somesetting", "TRUE")]
+        [TestCase("floppy0.someothersetting", "myvalue")]
+        public void ReadDisk_FloppyDiskProperties_WillBeStoredOnFloppyObject(string setting, string value)
+        {
+            var lines = new[] { "floppy0.present = \"TRUE\"", $"{setting} = \"{value}\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+
+            var result = sut.ReadDisk();
+
+            Assert.That(result.First().CustomSettings[setting] == value);
+        }
+
+        [Test]
+        public void ReadDisk_FloppyHasPresentSetFalse_WillNotReturn()
+        {
+            var lines = new[] { "floppy0.present = \"FALSE\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+
+            var result = sut.ReadDisk();
+
+            Assert.That(!result.Any());
+        }
+
+        [Test]
+        public void ReadDisk_MissingPresent_WillNotReturn()
+        {
+            var lines = new[] { "floppy0.someothersetting = \"TRUE\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+
+            var result = sut.ReadDisk();
+
+            Assert.That(!result.Any());
+        }
+
+        [Test]
+        public void ReadDisk_FloppyDiskPathPassed_WillReturnPathInFloppyObject()
+        {
+            var lines = new[] { "floppy0.present = \"TRUE\"", "floppy0.fileName = \"c:\\floppy.flp\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+
+            var result = sut.ReadDisk();
+
+            Assert.That(result.First().Path == "c:\\floppy.flp");
+        }
+
+
+
     }
 }
