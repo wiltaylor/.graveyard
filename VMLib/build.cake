@@ -436,4 +436,10 @@ Task("PowershellModule")
         CopyFiles(BuildFolder + "/PSVMLib/*.*", ReleaseFolder + "/PSVMLib" + PSVersion);
     });
 
+Task("Interactive")
+    .IsDependentOn("PowershellModule")
+    .Does(() => {
+        StartProcess("powershell.exe", "-noexit -command \"Import-Module \".\\Build\\PSVMLib\\psvmlib.psd1\"");
+    });
+
 RunTarget(target);
