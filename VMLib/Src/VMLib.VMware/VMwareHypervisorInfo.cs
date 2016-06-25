@@ -1,4 +1,5 @@
-﻿using SystemWrapper.Microsoft.Win32;
+﻿using System;
+using SystemWrapper.Microsoft.Win32;
 
 namespace VMLib.VMware
 {
@@ -11,7 +12,7 @@ namespace VMLib.VMware
         public VMwareHypervisorInfo(IRegistryWrap reg)
         {
             _reg = reg;
-
+            Console.WriteLine("XXXXXXXXXXXX");
             AddTypeToIOC<IHypervisor, VMwareHypervisor>();
         }
 

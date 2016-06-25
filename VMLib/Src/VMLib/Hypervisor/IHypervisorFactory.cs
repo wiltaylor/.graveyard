@@ -8,7 +8,7 @@ namespace VMLib
         /// Returns the names of all the hypervisors supported by VMLib.
         /// </summary>
         /// <returns>List of supported hypervisors.</returns>
-        string[] GetHypervisorNames();
+        IEnumerable<string> GetHypervisorNames();
 
         /// <summary>
         /// Creates a connection info object for target hypervisor. Use this object to set hypervisor specific settings

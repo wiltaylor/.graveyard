@@ -12,38 +12,49 @@ namespace VMLib
     {
         public HypervisorFactory()
         {
-            var dllfolder = System.IO.Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            //Load all internal DI.
+            var bootstrap = new BootStrap();
+            bootstrap.Load();
 
+            var dllfolder = System.IO.Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
 
             if (string.IsNullOrEmpty(dllfolder))
                 throw new ApplicationException("Unable to find directory dll is running from. Not sure why this happened.");
 
-            foreach (var file in Directory.GetFiles(dllfolder, "vmlib.*.dll"))
+            foreach (var file in Directory.GetFiles(dllfolder, "*.dll"))
             {
-                try
-                {
+                //try
+                //{
                     Assembly.LoadFile(file);
-                }
-                catch { /* Skip libs that can't be loaded */}
+                //}
+                //catch { /* Skip libs that can't be loaded */}
             }
 
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
+                Console.WriteLine("asm: " + asm.FullName);
                 foreach (var typ in asm.GetTypes())
                 {
-                    if (typ.IsAssignableFrom(typeof(IHypervisorInfo)) && typ != typeof(IHypervisorInfo))
+
+                    if (typeof(IHypervisorInfo).IsAssignableFrom(typ))
                     {
+                        if(typ == typeof(object))
+                            continue;
+                        if(typ.IsInterface)
+                            continue;
+                        if(typ.IsAbstract)
+                            continue;
+                        Console.WriteLine("typ: " + typ.FullName);
                         ServiceDiscovery.Instance.AddType(typeof(IHypervisorInfo), typ);
                     }
                 }
             }
-            
         }
 
         internal HypervisorFactory(bool unitTest)
         {
             //Don't load dlls during unit test.
-        }
+        }     
 
         public IEnumerable<string> GetHypervisorNames()
         {

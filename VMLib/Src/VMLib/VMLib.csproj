@@ -48,6 +48,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="BootStrap.cs" />
     <Compile Include="Exceptions\InvalidRemoteConnectionPropertiesException.cs" />
     <Compile Include="Exceptions\HypervisorAlreadySetupException.cs" />
     <Compile Include="Exceptions\InvalidVMCreationInfoException.cs" />
