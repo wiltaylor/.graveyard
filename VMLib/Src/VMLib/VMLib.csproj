@@ -73,8 +73,10 @@
     <Compile Include="VM\IVMNetwork.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="VM\IVMProcess.cs" />
+    <Compile Include="VM\VMCDRom.cs" />
     <Compile Include="VM\VMCreationInfo.cs" />
     <Compile Include="VM\VMFloppyDisk.cs" />
+    <Compile Include="VM\VMHardDisk.cs" />
     <Compile Include="VM\VMNetwork.cs" />
   </ItemGroup>
   <ItemGroup>

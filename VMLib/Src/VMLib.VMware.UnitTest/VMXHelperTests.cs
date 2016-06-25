@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using FakeItEasy;
 using NUnit.Framework;
+using VMLib.IOC;
 using VMLib.VMware.Exceptions;
 
 namespace VMLib.VMware.UnitTest
@@ -11,16 +12,21 @@ namespace VMLib.VMware.UnitTest
     public class VMXHelperTests
     {
 
-        public IVMXHelper DefaultVMXHelpderFactory(string[] lines = null )
+        public IVMXHelper DefaultVMXHelpderFactory(string[] lines = null, IServiceDiscovery srvDiscovery = null )
         {
-            if(lines == null)
+            if (srvDiscovery == null)
+                srvDiscovery = A.Fake<IServiceDiscovery>();
+
+            ServiceDiscovery.UnitTestInjection(srvDiscovery);
+
+            if (lines == null)
                 lines = new string[] {};
 
             var sut = new VMXHelper(lines);
             return sut;
         }
 
-        public IVMNetwork DefaultVMwareNetwork(VMNetworkType type = VMNetworkType.Bridged, string macAddress = "00:00:00:00:00:00:00:00", IDictionary<string, string> customsettings = null)
+        public IVMNetwork DefaultVMwareNetwork(VMNetworkType type = VMNetworkType.Bridged, string macAddress = "00:00:00:00:00:00:00:00", IDictionary<string, string> customsettings = null, string isolatedNetwork = null)
         {
             if (customsettings == null)
                 customsettings = new Dictionary<string, string>();
@@ -32,6 +38,7 @@ namespace VMLib.VMware.UnitTest
             A.CallTo(() => fake.Type).Returns(type);
             A.CallTo(() => fake.MACAddress).Returns(macAddress);
             A.CallTo(() => fake.CustomSettings).Returns(customsettings);
+            A.CallTo(() => fake.IsolatedNetworkName).Returns(isolatedNetwork);
             return fake;
 
         }
@@ -177,58 +184,28 @@ namespace VMLib.VMware.UnitTest
         }
 
         [Test]
-        public void WriteNetwork_AddingIsolatedNIC_WillWriteNetworkTypePvn()
+        public void WriteNetwork_AddingIsolatedNIC_WillLookUpPVN()
         {
-            var sut = DefaultVMXHelpderFactory();
-            var network = DefaultVMwareNetwork(type: VMNetworkType.Isolated,
-                customsettings: new Dictionary<string, string>
-                {
-                    { "pvnID", "00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 00"}
-                });
+            var srvDiscovery = A.Fake<IServiceDiscovery>();
+            var network = DefaultVMwareNetwork(type: VMNetworkType.Isolated, isolatedNetwork: "MyIsolatedNetwork");
+            var PVNHelper = A.Fake<IPVNHelper>();
+            var sut = DefaultVMXHelpderFactory(srvDiscovery: srvDiscovery);
+            A.CallTo(() => srvDiscovery.Resolve<IPVNHelper>(A<string>.Ignored)).Returns(PVNHelper);
+            A.CallTo(() => PVNHelper.GetPVN(A<string>.Ignored))
+                .Returns("00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 00");
 
             sut.WriteNetwork(network);
 
-            Assert.That(sut.ToArray().Any(l => l == "ethernet0.connectionType = \"pvn\""));
+            A.CallTo(() => PVNHelper.GetPVN("MyIsolatedNetwork")).MustHaveHappened();
         }
 
         [Test]
-        public void WriteNetwork_AddingIsolatedNICWithoutPVNID_WillThrow()
+        public void WriteNetwork_AddingIsolatedNICWithoutSettingIsolatedNetworkName_WillThrow()
         {
             var sut = DefaultVMXHelpderFactory();
             var network = DefaultVMwareNetwork(type: VMNetworkType.Isolated);
 
             Assert.Throws<InvalidVMXSettingException>(() => sut.WriteNetwork(network));
-        }
-
-        [TestCase("BadString")]
-        [TestCase("00 00 00 00 00 00 00 00-00 00 00 00 00 00 00")] //Missing one
-        [TestCase("00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 0G")] //Non Heximal
-        [TestCase("00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00")] //Missing middle divider
-        public void WriteNetwork_AddingIsolatedNICWithbadlyformedpvn_WillThrow(string pvn)
-        {
-            var sut = DefaultVMXHelpderFactory();
-            var network = DefaultVMwareNetwork(type: VMNetworkType.Isolated,
-                customsettings: new Dictionary<string, string>
-                {
-                    { "pvnID", pvn}
-                });
-
-            Assert.Throws<InvalidVMXSettingException>(() => sut.WriteNetwork(network));
-        }
-
-        [Test]
-        public void WriteNetwork_AddingIsolatedNIC_WillWritePvnIDToVmx()
-        {
-            var sut = DefaultVMXHelpderFactory();
-            var network = DefaultVMwareNetwork(type: VMNetworkType.Isolated,
-                customsettings: new Dictionary<string, string>
-                {
-                    { "pvnID", "00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 00"}
-                });
-
-            sut.WriteNetwork(network);
-
-            Assert.That(sut.ToArray().Any(l => l == "ethernet0.pvnID = \"00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 00\""));
         }
 
         [Test]
@@ -531,6 +508,17 @@ namespace VMLib.VMware.UnitTest
         }
 
         [Test]
+        public void WriteDisk_AddNewCDRom_WillCreateStartConnectedEntry()
+        {
+            var sut = DefaultVMXHelpderFactory();
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => disk.Type).Returns(VMDiskType.CDRom);
+            sut.WriteDisk(disk);
+
+            Assert.That(sut.ToArray().Any(l => l == "sata0:0.startConnected = \"TRUE\""));
+        }
+
+        [Test]
         public void WriteDisk_AddExistingCDROM_WillOverwrite()
         {
             var sut = DefaultVMXHelpderFactory();
@@ -780,7 +768,62 @@ namespace VMLib.VMware.UnitTest
             Assert.That(result.First().Path == "c:\\floppy.flp");
         }
 
+        [Test]
+        public void ReadDisk_HDDrive_WillReturnCDRomObject()
+        {
+            var lines = new[] {"scsi0:0.present = \"TRUE\""};
+            var sut = DefaultVMXHelpderFactory(lines: lines);
 
+            var result = sut.ReadDisk();
 
+            Assert.That(result.First().Type == VMDiskType.HardDisk);
+        }
+
+        [Test]
+        public void ReadDisk_HDDrive_WillReturnObjectWithDiskPath()
+        {
+            var lines = new[] { "scsi0:0.present = \"TRUE\"", "scsi0:0.fileName = \"MyDisk.vmdk\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+
+            var result = sut.ReadDisk();
+
+            Assert.That(result.First().Path == "MyDisk.vmdk");
+        }
+
+        [Test]
+        public void ReadDisk_HDDrive_WillHaveVMwareIndexSet()
+        {
+            var lines = new[] { "scsi0:0.present = \"TRUE\"", "scsi0:0.fileName = \"MyDisk.vmdk\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+
+            var result = sut.ReadDisk();
+
+            Assert.That(result.First().CustomSettings["VMwareIndex"] == "0:0");
+        }
+
+        [TestCase("scsi0:0.MySetting", "TRUE")]
+        [TestCase("scsi0:0.AnotherSetting", "TRUE")]
+        public void ReadDIsk_HDDrive_WillWriteOtherVMXDataToCustomSettings(string setting, string value)
+        {
+            var lines = new[] { "scsi0:0.present = \"TRUE\"", $"{setting} = \"{value}\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+
+            var result = sut.ReadDisk();
+
+            Assert.That(result.First().CustomSettings[setting] == value);
+        }
+
+        [TestCase("cdrom-image")]
+        [TestCase("atapi-cdrom")]
+        [TestCase("cdrom-raw")]
+        public void ReadDisk_CDROM_WillReturnCDRomObject(string devicetype)
+        {
+            var lines = new[] { "sata0:0.present = \"TRUE\"", $"sata0:0.deviceType = \"{devicetype}\"" };
+            var sut = DefaultVMXHelpderFactory(lines: lines);
+
+            var result = sut.ReadDisk();
+
+            Assert.That(result.First().Type == VMDiskType.CDRom);
+        }
     }
 }

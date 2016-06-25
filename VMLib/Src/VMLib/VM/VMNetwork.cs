@@ -6,6 +6,7 @@ namespace VMLib.VM
     {
         public VMNetworkType Type { get; set; }
         public string MACAddress { get; set; }
+        public string IsolatedNetworkName { get; set; }
         public IDictionary<string, string> CustomSettings { get; set; }
     }
 }

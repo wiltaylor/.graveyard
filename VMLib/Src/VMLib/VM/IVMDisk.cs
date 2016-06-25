@@ -15,7 +15,5 @@ namespace VMLib
         VMDiskType Type { get; }
         string Path { get; set; }
         IDictionary<string, string> CustomSettings { get; set; }
-
-
     }
 }

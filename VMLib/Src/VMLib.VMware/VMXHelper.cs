@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using VMLib.IOC;
 using VMLib.VM;
 using VMLib.VMware.Exceptions;
 
@@ -17,7 +18,7 @@ namespace VMLib.VMware
         public const int VMwareMaxSATADrivecsPerAdapter = 30;
         public const int VMwareMaxIDEAdapters = 1;
         public const int VMwareMaxIDEDevicesPerAdapter = 2;
-        
+        public const string HypervisorName = "VMwareWorkstation";
 
         private readonly List<VMXSetting> _settings = new List<VMXSetting>();
 
@@ -86,11 +87,13 @@ namespace VMLib.VMware
             {
                 networktype = "pvn";
 
-                if(!network.CustomSettings.ContainsKey("pvnID"))
-                    throw new InvalidVMXSettingException("Expected pvnID in custom settings.");
+                var pvnhelper = ServiceDiscovery.Instance.Resolve<IPVNHelper>(HypervisorName);
 
-                if(!Regex.IsMatch(network.CustomSettings["pvnID"], "[0-9a-fA-F]{2} [0-9a-fA-F]{2} [0-9a-fA-F]{2} [0-9a-fA-F]{2} [0-9a-fA-F]{2} [0-9a-fA-F]{2} [0-9a-fA-F]{2} [0-9a-fA-F]{2}-[0-9a-fA-F]{2} [0-9a-fA-F]{2} [0-9a-fA-F]{2} [0-9a-fA-F]{2} [0-9a-fA-F]{2} [0-9a-fA-F]{2} [0-9a-fA-F]{2} [0-9a-fA-F]{2}"))
-                    throw new InvalidVMXSettingException("PVNID is not formed correctly.");
+                if(string.IsNullOrEmpty(network.IsolatedNetworkName))
+                    throw new InvalidVMXSettingException("You must specify a Isolated Network name when using this network type!");
+
+                network.CustomSettings.Add("pvnID", pvnhelper.GetPVN(network.IsolatedNetworkName));
+
             }
 
             WriteVMX($"ethernet{index}.present", "TRUE");
@@ -155,6 +158,7 @@ namespace VMLib.VMware
             WriteVMX($"sata{index}.present", "TRUE");
             WriteVMX($"sata{index}.deviceType", "cdrom-image");
             WriteVMX($"sata{index}.fileName", "c:\\mycdrom.iso");
+            WriteVMX($"sata{index}.startConnected", "TRUE");
         }
 
         private void WriteHD(IVMDisk disk)
@@ -254,9 +258,55 @@ namespace VMLib.VMware
 
         public IEnumerable<IVMDisk> ReadDisk()
         {
+            var disklist = new Dictionary<string, Dictionary<string, string>>();
             var returndata = new List<IVMDisk>();
 
             returndata.AddRange(GetFloppyObjects());
+
+            foreach (var s in _settings)
+            {
+                var match = Regex.Match(s.Name, "(ide|scsi|sata)([0-9]{1,3}):([0-9]{1,3})");
+
+                if(!match.Success)
+                    continue;
+
+                var bus = match.Groups[1].Value;
+                var index = match.Groups[2].Value;
+                var subindex = match.Groups[3].Value;
+                var diskname = $"{bus}{index}:{subindex}";
+
+                if(!disklist.ContainsKey(diskname))
+                    disklist.Add(diskname, new Dictionary<string, string>());
+
+                disklist[diskname].Add(s.Name, s.Value);
+            }
+
+            foreach (var d in disklist)
+            {
+                var match = Regex.Match(d.Key, "(ide|scsi|sata)([0-9]{1,3}):([0-9]{1,3})");
+                var bus = match.Groups[1].Value;
+                var index = match.Groups[2].Value;
+                var subindex = match.Groups[3].Value;
+                var diskname = $"{bus}{index}:{subindex}";
+
+                IVMDisk disk;
+
+                if (d.Value.ContainsKey($"{diskname}.deviceType") &&
+                     new[] { "cdrom-image", "atapi-cdrom", "cdrom-raw" }.Contains(d.Value[$"{diskname}.deviceType"]))
+                        disk = new VMCDRom {CustomSettings = new Dictionary<string, string>()};
+                else
+                    disk = new VMHardDisk { CustomSettings = new Dictionary<string, string>() };
+
+                if (d.Value.ContainsKey($"{d.Key}.fileName"))
+                    disk.Path = d.Value[$"{d.Key}.fileName"];
+
+                disk.CustomSettings.Add("VMwareIndex", $"{index}:{subindex}");
+
+                foreach(var k in d.Value.Keys)
+                    disk.CustomSettings.Add(k, d.Value[k]);
+                
+                returndata.Add(disk);
+            }
 
             return returndata;
         }
