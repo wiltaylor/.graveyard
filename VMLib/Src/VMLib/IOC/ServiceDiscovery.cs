@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using Ninject;
 
 namespace VMLib.IOC
@@ -29,6 +30,11 @@ namespace VMLib.IOC
         public void AddType<T, T1>(string name)
         {
             _container.Bind(typeof(T)).To(typeof(T1)).Named(name);
+        }
+
+        public void AddType(Type Interface, Type concrete)
+        {
+            _container.Bind(Interface).To(concrete);
         }
 
         public T Resolve<T>(string name)

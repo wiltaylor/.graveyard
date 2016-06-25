@@ -57,6 +57,7 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="HypervisorInfoBaseTests.cs" />
     <Compile Include="FakeServiceDiscovery.cs" />
+    <Compile Include="ServiceDiscoveryTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\VMLib\VMLib.csproj">

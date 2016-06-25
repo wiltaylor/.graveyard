@@ -12,7 +12,7 @@ namespace VMLib.UnitTest
 
         private IHypervisorFactory DefaultHypervisorFactory()
         {
-            return new HypervisorFactory();
+            return new HypervisorFactory(unitTest: true);
         }
 
         private IServiceDiscovery CreateFakeServiceDiscovery()
