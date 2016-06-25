@@ -188,15 +188,15 @@ namespace VMLib.VMware.UnitTest
         {
             var srvDiscovery = A.Fake<IServiceDiscovery>();
             var network = DefaultVMwareNetwork(type: VMNetworkType.Isolated, isolatedNetwork: "MyIsolatedNetwork");
-            var PVNHelper = A.Fake<IPVNHelper>();
+            var pvnHelper = A.Fake<IPVNHelper>();
             var sut = DefaultVMXHelpderFactory(srvDiscovery: srvDiscovery);
-            A.CallTo(() => srvDiscovery.Resolve<IPVNHelper>(A<string>.Ignored)).Returns(PVNHelper);
-            A.CallTo(() => PVNHelper.GetPVN(A<string>.Ignored))
+            A.CallTo(() => srvDiscovery.Resolve<IPVNHelper>(A<string>.Ignored)).Returns(pvnHelper);
+            A.CallTo(() => pvnHelper.GetPVN(A<string>.Ignored))
                 .Returns("00 00 00 00 00 00 00 00-00 00 00 00 00 00 00 00");
 
             sut.WriteNetwork(network);
 
-            A.CallTo(() => PVNHelper.GetPVN("MyIsolatedNetwork")).MustHaveHappened();
+            A.CallTo(() => pvnHelper.GetPVN("MyIsolatedNetwork")).MustHaveHappened();
         }
 
         [Test]
