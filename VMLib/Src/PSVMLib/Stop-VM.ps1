@@ -18,6 +18,6 @@ function Stop-VM
 
 	Process 
 	{
-
+		$VM.Stop($Force)
 	}
 }

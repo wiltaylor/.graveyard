@@ -20,6 +20,6 @@ function Save-VMSnapshot
 
 	Process 
 	{
-
+		$VM.CreateSnapshot($Name)
 	}
 }

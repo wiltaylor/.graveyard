@@ -18,6 +18,6 @@ function Get-VMSnapshot
 
 	Process 
 	{
-
+		foreach($i in $VM.Snapshots) { $i }
 	}
 }

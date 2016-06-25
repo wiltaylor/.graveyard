@@ -21,6 +21,12 @@ function Get-ProcessInVM
 
 	Process 
 	{
-
+		foreach($p in $vm.Processes) { 
+			if([string]::IsNullOrEmpty($Name)) { 
+				$p 
+			} else{
+				if($Name.ToLower() -eq $p.Name.ToLower()) { $p }
+			}
+		}
 	}
 }

@@ -10,19 +10,23 @@
 .PARAMETER Info
 	Info object to use to create virtual machine. See New-VMInfo for more information on 
 	how to create one fo these.
+.PARAMETER Hypervisor
+	Hypervisor to create the vm on.
 .EXAMPLE
 	Create a new virtual machine
 	New-VM -Name MyVM -Path c:\VMs\Myvm.vmx -Info $MyVMinfoObject
+.INPUTS 
+	A hypervisor object.
 .OUTPUTS
 	A IVirtualMachine object.
 #> 
 [CmdletBinding]
 function New-VM
 {
-	param([Parameter(Mandatory=$true)][string]$Name, [Parameter(Mandatory=$true)][string]$Path,[Parameter(Mandatory=$true)]$Info)
+	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$Hypervisor, [Parameter(Mandatory=$true)][string]$Name, [Parameter(Mandatory=$true)][string]$Path,[Parameter(Mandatory=$true)]$Info)
 
 	Process 
 	{
-
+		$Hypervisor.CreateNewVM($Info)
 	}
 }

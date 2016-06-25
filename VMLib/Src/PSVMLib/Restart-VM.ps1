@@ -18,6 +18,6 @@ function Restart-VM
 
 	Process 
 	{
-
+		$VM.Restart($Force)
 	}
 }

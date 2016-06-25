@@ -8,21 +8,36 @@
 	The object this cmdlet returns has a Settings property that can be changed
 	for more fine tuned control of the hardware item being added. This will
 	included hypervisor specific settings.
-.PARAMETER Type
-	Type of hardware to create. Available types are Network, Disk, Sound or Misc
+.PARAMETER Network
+	Create a network card.
+.PARAMETER Disk
+	Create a disk
+.PARAMETER DiskType
+	Used to specify the type of disk to create. Valid options are Floppy, HardDisk and CDRom.
 .EXAMPLE
 	Create a new Network card.
-	$nic = New-VMHardware -Type Network ; $nic.Settings["NetworkType"] = NAT
+	$nic = New-VMHardware -Network ; $nic.Settings["NetworkType"] = NAT
+.EXAMPLE
+	Create a HardDisk
+	$hd = New-VMHardware -Disk HardDisk
 .OUTPUTS
 	Returns a IVMHardware object.
 #> 
 [CmdletBinding]
 function New-VMHardware 
 {
-	param([Parameter(Mandatory=$true)][ValidateSet('Network', 'Disk', 'Sound', 'Misc')][string]$Type )
-
+	param([Parameter(ParameterSetName="Network")][Switch]$Network, [Parameter(ParameterSetName="Disk")][Switch]$Disk, 
+	[Parameter(ParameterSetName="Disk", Mandatory = $true, Position = 0)][ValidateSet("Floppy", "HardDisk", "CDRom")]$DiskType)
+		
 	Process 
 	{
+		if($Network) { New-Object VMNetwork}
 
+		if($Disk){
+			if($DiskType -eq "Floppy") { New-Object VMFloppyDisk}
+			if($DiskType -eq "CDRom") { New-Object VMCDrom}
+			if($DiskType -eq "HardDisk") { New-Object VMHardDisk}
+		}
+			
 	}
 }

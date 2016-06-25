@@ -20,6 +20,7 @@ function Rename-ItemInVM
 {
 	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$vm, 
 	      [Parameter(Mandatory=$true)][string]$Path,
+		  [Parameter(Mandatory=$true)][string]$NewName,
 		  [Parameter(Mandatory=$true)][ValidateSet('File', 'Directory')][string]$Type)
 
 	Process 

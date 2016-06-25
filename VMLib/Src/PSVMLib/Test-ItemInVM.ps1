@@ -22,6 +22,7 @@ function Test-ItemInVM
 
 	Process 
 	{
-
+		if($Type -eq "File") { $vm.FileExists($path)}
+		if($Type -eq "Directory") { $vm.DirectoryExists($path)}
 	}
 }

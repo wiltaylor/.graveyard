@@ -78,6 +78,7 @@
     <Compile Include="VM\VMFloppyDisk.cs" />
     <Compile Include="VM\VMHardDisk.cs" />
     <Compile Include="VM\VMNetwork.cs" />
+    <Compile Include="VM\VMProcess.cs" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Utility\" />

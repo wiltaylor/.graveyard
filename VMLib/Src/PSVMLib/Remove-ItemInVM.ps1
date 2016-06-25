@@ -8,13 +8,13 @@
 .PARAMETER Type
 	Can be either File or Directory.
 .EXAMPLE
-	Copy myutil from guest operating system
-	$vm | Rename-ItemInVM -Path c:\guestpath\file.txt -Type File
+	Remove myutil from guest operating system
+	$vm | Remove-ItemInVM -Path c:\guestpath\file.txt -Type File
 .INPUTS
-	IVMSnapshot
+	IVirtualMachine
 #> 
 [CmdletBinding]
-function Rename-ItemInVM
+function Remove-ItemInVM
 {
 	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$vm, 
 	      [Parameter(Mandatory=$true)][string]$Path,
@@ -22,6 +22,7 @@ function Rename-ItemInVM
 
 	Process 
 	{
-
+		if($Type -eq "File") { $vm.DeleteFile($Path)}
+		if($Type -eq "Directory") { $vm.DeleteDirectory($Path)}
 	}
 }

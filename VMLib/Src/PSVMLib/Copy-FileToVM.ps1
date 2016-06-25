@@ -22,6 +22,6 @@ function Copy-FileToVM
 
 	Process 
 	{
-
+		$vm.CopyToVM($Source, $Destination)
 	}
 }

@@ -16,6 +16,6 @@ function Start-VM
 
 	Process 
 	{
-
+		$VM.Start()
 	}
 }
