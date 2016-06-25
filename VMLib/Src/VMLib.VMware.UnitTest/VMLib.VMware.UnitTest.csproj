@@ -52,6 +52,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="PVNHelperTests.cs" />
     <Compile Include="VMwareHypervisorInfoTests.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="VMwareHypervisorTests.cs" />

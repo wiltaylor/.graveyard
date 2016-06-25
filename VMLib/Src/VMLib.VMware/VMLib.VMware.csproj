@@ -47,6 +47,8 @@
     <Compile Include="Exceptions\InvalidVMXSettingException.cs" />
     <Compile Include="Exceptions\VixException.cs" />
     <Compile Include="Exceptions\VMXFileCorruptException.cs" />
+    <Compile Include="IPVNHelper.cs" />
+    <Compile Include="PVNHelper.cs" />
     <Compile Include="VIXItems\IVIX.cs" />
     <Compile Include="VIXItems\VIX.cs" />
     <Compile Include="IVMXHelper.cs" />
