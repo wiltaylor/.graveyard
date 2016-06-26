@@ -184,12 +184,12 @@ namespace VMLib.VMware.VIXItems
 
         public bool FileExists(IVM2 vm, string path)
         {
-            return WaitJobResult<bool>(vm.FileExistsInGuest(path, null));
+            return WaitJobResult<bool>(vm.FileExistsInGuest(path, null), new []{Constants.VIX_PROPERTY_JOB_RESULT_GUEST_OBJECT_EXISTS });
         }
 
         public bool DirectoryExist(IVM2 vm, string path)
         {
-            return WaitJobResult<bool>(vm.DirectoryExistsInGuest(path, null));
+            return WaitJobResult<bool>(vm.DirectoryExistsInGuest(path, null), new[] { Constants.VIX_PROPERTY_JOB_RESULT_GUEST_OBJECT_EXISTS });
         }
 
         public void CopyFileToGuest(IVM2 vm, string hostpath, string guestpath)

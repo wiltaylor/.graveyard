@@ -43,7 +43,6 @@ namespace VMLib
                             continue;
                         if(typ.IsAbstract)
                             continue;
-                        Console.WriteLine("typ: " + typ.FullName);
                         ServiceDiscovery.Instance.AddType(typeof(IHypervisorInfo), typ);
                     }
                 }
