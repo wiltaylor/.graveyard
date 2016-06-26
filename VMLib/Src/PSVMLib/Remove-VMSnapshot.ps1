@@ -4,18 +4,18 @@
 .DESCRIPTION
 	Removes the target snapshot
 .EXAMPLE
-	Remove snapshot stored in $snapshot
-	$snapshot | Remove-VMSnapshot
+	Remove snapshot name mysnapshot
+	$VM | Remove-VMSnapshot -Name mysnapshot
 .INPUTS
-	IVMSnapshot
+	IVirtualMachine
 #> 
 [CmdletBinding]
 function Remove-VMSnapshot
 {
-	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$Snapshot, [string]$Name)
+	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$VM, [string]$Name)
 
 	Process 
 	{
-		
+		$VM.RemoveSnapshot($Name)
 	}
 }

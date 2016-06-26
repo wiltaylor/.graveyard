@@ -68,6 +68,7 @@
     <Compile Include="Remove-VMShare.ps1" />
     <Compile Include="Remove-VMShare.tests.ps1" />
     <Compile Include="Remove-VMSnapshot.ps1" />
+    <Compile Include="Remove-VMSnapshot.tests.ps1" />
     <Compile Include="Rename-ItemInVM.ps1" />
     <Compile Include="Restart-VM.ps1" />
     <Compile Include="Restart-VM.tests.ps1" />
