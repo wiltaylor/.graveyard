@@ -85,6 +85,7 @@
     <Compile Include="Stop-VM.tests.ps1" />
     <Compile Include="Test-ItemInVM.ps1" />
     <Compile Include="Test-ItemInVM.tests.ps1" />
+    <Compile Include="Write-VMSetting.ps1" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="Fakes\" />
