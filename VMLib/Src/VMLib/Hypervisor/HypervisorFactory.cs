@@ -23,16 +23,15 @@ namespace VMLib
 
             foreach (var file in Directory.GetFiles(dllfolder, "*.dll"))
             {
-                //try
-                //{
+                try
+                {
                     Assembly.LoadFile(file);
-                //}
-                //catch { /* Skip libs that can't be loaded */}
+                }
+                catch { /* Skip libs that can't be loaded */}
             }
 
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
-                Console.WriteLine("asm: " + asm.FullName);
                 foreach (var typ in asm.GetTypes())
                 {
 
