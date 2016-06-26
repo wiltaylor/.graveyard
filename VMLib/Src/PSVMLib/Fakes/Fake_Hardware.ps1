@@ -24,13 +24,13 @@ class VMNetwork {
 }
 
 class VMCreationInfo {
-        [string] $Path;
-        [string] $Name;
-        [string] $GuestOS;
-        [int] $Memory;
-        [int] $CPU;
-        [int] $Cores;
-        [HashTable] $CustomSettings;
-        [object] $Disks;
-        [object] $Networks;
+		[string] $Path;
+		[string] $Name;
+		[string] $GuestOS;
+		[int] $Memory;
+		[int] $CPU;
+		[int] $Cores;
+		[HashTable] $CustomSettings;
+		[object] $Disks;
+		[object] $Networks;
 }

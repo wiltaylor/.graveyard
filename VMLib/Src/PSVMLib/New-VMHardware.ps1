@@ -1,3 +1,6 @@
+using namespace VMLib.VM;
+
+
 <# 
 .SYNOPSIS
 	Creates new vm hardware object.

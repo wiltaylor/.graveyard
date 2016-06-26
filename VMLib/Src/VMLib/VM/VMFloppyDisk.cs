@@ -1,6 +1,6 @@
 ﻿using System.Collections.Generic;
 
-namespace VMLib
+namespace VMLib.VM
 {
     public class VMFloppyDisk : IVMDisk
     {
