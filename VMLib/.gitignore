@@ -66,6 +66,10 @@ _TeamCity*
 # but keep track of directories ending in .cache
 !*.[Cc]ache/
 
+#NCrunch files
+*.ncrunchproject
+
+
  #Ignore generated folders
 tools/
 reports/

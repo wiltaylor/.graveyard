@@ -1,13 +1,14 @@
 <# 
 .SYNOPSIS
 	Connects to a hypervisor.
-.DESCRIPTION	This command will connect to a hypervisor ready to interacte with Virtual Machines. You must call this before any other cmdlet.
+.DESCRIPTION
+	This command will connect to a hypervisor ready to interacte with Virtual Machines. You must call this before any other cmdlet.
 	
 	To get a list of available hypervisors run Get-Hypervisors.
 .PARAMETER Name
 	Hypervisor to connect to.
-.PARAMETER Properties
-	Optional hash table to pass through to hypervisor. This is generally only required for remote connections.
+.PARAMETER Settings
+	Info object passed in to detail connection details for cmdlet. Use Net-HypervisorInfo to create this object.
 .EXAMPLE
 	Connect to vmware workstation
 	Connect-Hypervisor -Name VMwareWorkstation
@@ -16,10 +17,10 @@
 function Connect-Hypervisor
 {
 	
-	param([parameter(Mandatory = $true)][string]$Name, [HashTable]$Properties)
+	param([parameter(Mandatory = $true)][string]$Name, [parameter(Mandatory = $true)]$Settings)
 
 	Process
 	{
-		
+		$script:HypervisorFactory.CreateHypervisor($Name, $Settings)
 	}
 }

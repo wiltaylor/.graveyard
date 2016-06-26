@@ -20,16 +20,19 @@
 	IVirtualMachine
 #> 
 [CmdletBinding]
-function Start-ProcessInVM
+function Invoke-ProcessInVM
 {
 	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$VM, 
-		  [Paramter(Mandatory=$true)][string]$Path,
-		  [Paramter(Mandatory=$true)][string]$Arguments,
-		  [Paramter(Mandatory=$true)][PSCredential]$Credential,
+		  [Parameter(Mandatory=$true)][string]$Path,
+		  [Parameter(Mandatory=$true)][string]$Arguments,
+		  [Parameter(Mandatory=$true)][string]$Username,
+		  [Parameter(Mandatory=$true)][string]$Password,
 		  [switch]$Wait, [switch]$Interactive)
 
 	Process 
 	{
-
+		$VM.Username = $Username
+		$VM.Password= $Password
+		$VM.ExecuteCommand($path, $args, $Wait, $Interactive)
 	}
 }

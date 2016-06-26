@@ -20,10 +20,10 @@
 [CmdletBinding]
 function New-VMShare
 {
-	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$VM, [switch]$ReadOnly, [Parameter(Mandatory=$true)][string]$Path)
+	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$VM, [Parameter(Mandatory=$true)][string]$Name, [switch]$ReadOnly, [Parameter(Mandatory=$true)][string]$Path)
 
 	Process 
 	{
-
+		$VM.AddSharedFolder($Name, $Path, -not($ReadOnly))
 	}
 }

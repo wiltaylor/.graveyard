@@ -14,10 +14,10 @@
 [CmdletBinding]
 function Remove-VMShare
 {
-	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$VM)
+	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$VM, [Parameter(Mandatory=$true)][string]$Name)
 
 	Process 
 	{
-
+		$vm.RemoveSharedFolder($Name)
 	}
 }

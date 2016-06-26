@@ -16,6 +16,6 @@ function Remove-VMSnapshot
 
 	Process 
 	{
-
+		
 	}
 }

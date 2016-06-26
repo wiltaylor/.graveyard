@@ -18,6 +18,6 @@ function Get-Hypervisor
 	
 	Process
 	{
-
+		foreach($i in $script:HypervisorFactory.GetHypervisorNames()) { $i }
 	}
 }

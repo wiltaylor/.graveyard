@@ -28,34 +28,65 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Connect-Hypervisor.ps1" />
+    <Compile Include="Connect-Hypervisor.tests.ps1" />
     <Compile Include="Copy-FileFromVM.ps1" />
+    <Compile Include="Copy-FileFromVM.tests.ps1" />
     <Compile Include="Copy-FileToVM.ps1" />
+    <Compile Include="Copy-FileToVM.tests.ps1" />
     <Compile Include="Copy-VM.ps1" />
+    <Compile Include="Fakes\Fake_Hardware.ps1" />
+    <Compile Include="Fakes\Fake_VM.ps1" />
+    <Compile Include="Fakes\Fake_Hypervisor.ps1" />
+    <Compile Include="Fakes\Fake_HypervisorConnectionInfo.ps1" />
+    <Compile Include="Fakes\Fake_HypervisorFactory.ps1" />
     <Compile Include="Get-Hypervisor.ps1" />
+    <Compile Include="Get-Hypervisor.tests.ps1" />
     <Compile Include="Get-ProcessInVM.ps1" />
+    <Compile Include="Get-ProcessInVM.tests.ps1" />
     <Compile Include="Get-VM.ps1" />
+    <Compile Include="Get-VM.tests.ps1" />
     <Compile Include="Get-VMShare.ps1" />
     <Compile Include="Get-VMSnapshot.ps1" />
+    <Compile Include="Get-VMSnapshot.tests.ps1" />
+    <Compile Include="Invoke-PowershellInVM.tests.ps1" />
+    <Compile Include="Invoke-ProcessInVM.tests.ps1" />
+    <Compile Include="New-HypervisorInfo.ps1" />
+    <Compile Include="New-HypervisorInfo.tests.ps1" />
     <Compile Include="New-VM.ps1" />
+    <Compile Include="New-VM.tests.ps1" />
     <Compile Include="New-VMHardware.ps1" />
+    <Compile Include="New-VMHardware.tests.ps1" />
     <Compile Include="New-VMInfo.ps1" />
+    <Compile Include="New-VMInfo.tests.ps1" />
     <Compile Include="New-VMShare.ps1" />
+    <Compile Include="New-VMShare.tests.ps1" />
     <Compile Include="PSVMLib.psd1" />
     <Compile Include="PSVMLib.psm1" />
     <Compile Include="Remove-ItemInVM.ps1" />
+    <Compile Include="Remove-ItemInVM.tests.ps1" />
     <Compile Include="Remove-VM.ps1" />
     <Compile Include="Remove-VMShare.ps1" />
+    <Compile Include="Remove-VMShare.tests.ps1" />
     <Compile Include="Remove-VMSnapshot.ps1" />
     <Compile Include="Rename-ItemInVM.ps1" />
     <Compile Include="Restart-VM.ps1" />
+    <Compile Include="Restart-VM.tests.ps1" />
     <Compile Include="Restore-VMSnapshot.ps1" />
+    <Compile Include="Restore-VMSnapshot.tests.ps1" />
     <Compile Include="Save-VMSnapshot.ps1" />
-    <Compile Include="Start-PowershellInVM.ps1" />
-    <Compile Include="Start-ProcessInVM.ps1" />
+    <Compile Include="Save-VMSnapshot.tests.ps1" />
+    <Compile Include="Invoke-PowershellInVM.ps1" />
+    <Compile Include="Invoke-ProcessInVM.ps1" />
     <Compile Include="Start-VM.ps1" />
+    <Compile Include="Start-VM.tests.ps1" />
     <Compile Include="Stop-ProcessInVM.ps1" />
     <Compile Include="Stop-VM.ps1" />
+    <Compile Include="Stop-VM.tests.ps1" />
     <Compile Include="Test-ItemInVM.ps1" />
+    <Compile Include="Test-ItemInVM.tests.ps1" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="Fakes\" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <Target Name="Build" />

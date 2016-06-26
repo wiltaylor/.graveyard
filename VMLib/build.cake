@@ -79,7 +79,8 @@ Task("RebuildVMLibAssemblyInfo")
             Company = "Wil Taylor",
             Title = "VMLib",
             Copyright = "Copyright Wil Taylor 2016",
-            ComVisible = false
+            ComVisible = false,
+            InternalsVisibleTo = new [] {"VMLib.UnitTest", "VMLib.VMware.UnitTest", "VMLib.VirtualBox.UnitTest", "VMLib.HyperV.UnitTest"}
         }));
 
 Task("RebuildVMLib.VMWareAssemblyInfo")
@@ -319,12 +320,14 @@ Task("BuildPowershellModule.UnitTest")
     .Does(() =>
     {
         CopyFiles(SourceFiles + "/PSVMLib/*.ps1", BuildFolder + "/PSVMLib.UnitTest");
+        CopyFiles(SourceFiles + "/PSVMLib/Fakes/*.ps1", BuildFolder + "/PSVMLib.UnitTest/Fakes");
         CopyFiles(SourceFiles + "/PSVMLib/*.psd1", BuildFolder + "/PSVMLib.UnitTest");
         CopyFiles(SourceFiles + "/PSVMLib/*.psm1", BuildFolder + "/PSVMLib.UnitTest");
     });
 
 Task("CleanPowershellModule.UnitTest")
-    .Does(() => CleanDirectory(BuildFolder + "/PSVMLib.UnitTest"));
+    .Does(() => CleanDirectory(BuildFolder + "/PSVMLib.UnitTest"))
+    .Does(() => CleanDirectory(BuildFolder + "/PSVMLib.UnitTest/Fakes"));
 
 Task("UnitTest")
     .IsDependentOn("UnitTestVMLib")
@@ -362,7 +365,7 @@ Task("UnitTestPowershellModule")
     .IsDependentOn("BuildPowershellModule.UnitTest")
     .IsDependentOn("Restore")
     .Does(() => {
-        StartPowershellScript("Import-Module '" + NugetPackages + "\\Pester*\\tools\\Pester.psd1'; Invoke-Pester -script '" + BuildFolder + "\\PSVMLib.UnitTest\\*.Tests.ps1'");
+        StartPowershellScript("Import-Module '" + NugetPackages + "\\Pester*\\tools\\Pester.psd1'; Invoke-Pester -script '" + BuildFolder + "\\PSVMLib.UnitTest\\*.Tests.ps1' -OutputFile '" + ReportFolder + "\\PSVMlib" + Version + ".xml' -OutputFormat NUnitXml");
     });
 
 Task("Nuget")
@@ -431,6 +434,12 @@ Task("PowershellModule")
     .Does(() => {
         CleanDirectory(ReleaseFolder + "/PSVMLib" + PSVersion);
         CopyFiles(BuildFolder + "/PSVMLib/*.*", ReleaseFolder + "/PSVMLib" + PSVersion);
+    });
+
+Task("Interactive")
+    .IsDependentOn("PowershellModule")
+    .Does(() => {
+        StartProcess("powershell.exe", "-noexit -command \"Import-Module \".\\Build\\PSVMLib\\psvmlib.psd1\"");
     });
 
 RunTarget(target);

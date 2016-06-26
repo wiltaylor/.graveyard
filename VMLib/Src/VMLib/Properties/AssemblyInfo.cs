@@ -5,13 +5,19 @@
 //------------------------------------------------------------------------------
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 
 [assembly: AssemblyTitle("VMLib")]
 [assembly: AssemblyDescription("Virtual Machine Control Library.")]
 [assembly: AssemblyCompany("Wil Taylor")]
 [assembly: AssemblyProduct("VMLib")]
-[assembly: AssemblyVersion("0.0.0.0")]
-[assembly: AssemblyFileVersion("0.0.0.0")]
+[assembly: AssemblyVersion("0.0.0.40")]
+[assembly: AssemblyFileVersion("0.0.0.40")]
 [assembly: AssemblyCopyright("Copyright Wil Taylor 2016")]
 [assembly: ComVisible(false)]
+
+[assembly: InternalsVisibleTo("VMLib.UnitTest")]
+[assembly: InternalsVisibleTo("VMLib.VMware.UnitTest")]
+[assembly: InternalsVisibleTo("VMLib.VirtualBox.UnitTest")]
+[assembly: InternalsVisibleTo("VMLib.HyperV.UnitTest")]
 

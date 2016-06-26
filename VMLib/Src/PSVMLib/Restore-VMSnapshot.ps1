@@ -3,19 +3,21 @@
 	Restores snapshot of VM.
 .DESCRIPTION
 	Creates a snapshot of target VM.
+.PARAMETER Name
+	Name of snapshot to restore.
 .EXAMPLE
 	Restores snapshot in $snapshot object.
-	$snapshot | Restore-VMSnapshot
+	$VM | Restore-VMSnapshot -Name MySnapshot
 .INPUTS
-	IVMSnapshot
+	IVirtualMachine
 #> 
 [CmdletBinding]
 function Restore-VMSnapshot
 {
-	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$Snapshot, [string]$Name)
+	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$VM, [string]$Name)
 
 	Process 
 	{
-
+		$VM.RestoreSnapshot($Name)
 	}
 }

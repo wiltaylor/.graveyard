@@ -38,8 +38,15 @@
     <Reference Include="System.Data" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Xml" />
+    <Reference Include="SystemWrapper, Version=0.4.4190.25852, Culture=neutral, processorArchitecture=MSIL">
+      <HintPath>..\packages\SystemWrapper.0.4\lib\SystemWrapper.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="HyperVHypervisor.cs" />
+    <Compile Include="HyperVHypervisorConnectionInfo.cs" />
+    <Compile Include="HyperVHypervisorInfo.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -47,6 +54,9 @@
       <Project>{cdafa637-0129-4750-a9d9-9d9c13eabaf7}</Project>
       <Name>VMLib</Name>
     </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
