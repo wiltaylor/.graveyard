@@ -34,7 +34,7 @@ namespace VMLib.HyperV.UnitTest
 
             var sut = DefaultHyperVHypervisorInfoFactory(srvDiscovery: srv);
 
-            A.CallTo(() => srv.AddType<IHypervisor, HyperVHypervisor>(sut.Name)).MustHaveHappened();
+            A.CallTo(() => srv.AddSingletonType<IHypervisor, HyperVHypervisor>(sut.Name)).MustHaveHappened();
         }
 
         [TestCase("Host")]

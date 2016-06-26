@@ -36,7 +36,7 @@ namespace VMLib.VirtualBox.UnitTest
 
             var sut = DefaultVirtualBoxHypervisorInfo(srvDiscovery: srv);
 
-            A.CallTo(() => srv.AddType<IHypervisor, VirtualBoxHypervisor>(sut.Name)).MustHaveHappened();
+            A.CallTo(() => srv.AddSingletonType<IHypervisor, VirtualBoxHypervisor>(sut.Name)).MustHaveHappened();
         }
 
         [TestCase("VirtualBoxPath")]

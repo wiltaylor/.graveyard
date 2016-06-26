@@ -27,7 +27,7 @@ namespace VMLib.UnitTest
             
             sut.TestInternal_AddTypeToIOC<IHypervisor, FakeHypervisor>();
 
-            A.CallTo(() => srv.AddType<IHypervisor, FakeHypervisor>("Testable")).MustHaveHappened();
+            A.CallTo(() => srv.AddSingletonType<IHypervisor, FakeHypervisor>("Testable")).MustHaveHappened();
         }
 
         [Test]
