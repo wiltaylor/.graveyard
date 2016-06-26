@@ -3,7 +3,7 @@
     public class VixProcess
     {
         public string Name { get; set; }
-        public ulong ProcessID { get; set; }
+        public long ProcessID { get; set; }
         public string Owner { get; set; }
         public string Command { get; set; }
     }

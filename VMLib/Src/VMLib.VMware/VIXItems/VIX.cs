@@ -324,22 +324,24 @@ namespace VMLib.VMware.VIXItems
 
             for (var i = 0; i < proccount; i++)
             {
-                var result = new object[] { };
+                var result = default(object);
                 CheckError(job.GetNthProperties(i, new[]
                 {
                     Constants.VIX_PROPERTY_JOB_RESULT_ITEM_NAME,
                     Constants.VIX_PROPERTY_JOB_RESULT_PROCESS_ID,
                     Constants.VIX_PROPERTY_JOB_RESULT_PROCESS_OWNER,
                     Constants.VIX_PROPERTY_JOB_RESULT_PROCESS_COMMAND
-                }, result));
+                },ref result));
 
-                returndata.Add(new VixProcess
-                {
-                    Name = result[0] as string,
-                    ProcessID = ulong.Parse((string)result[1]),
-                    Owner = result[2] as string,
-                    Command =  result[3] as string
-                });
+                var unpackedresult = (object[]) result;
+
+                var item = new VixProcess();
+                item.Name = unpackedresult[0] as string;
+                item.ProcessID = (long)unpackedresult[1];
+                item.Owner = unpackedresult[2] as string;
+                item.Command = unpackedresult[3] as string;
+
+                returndata.Add(item);
             }
 
 

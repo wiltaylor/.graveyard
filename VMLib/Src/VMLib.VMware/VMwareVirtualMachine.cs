@@ -10,7 +10,7 @@ using VMLib.VMware.VIXItems;
 
 namespace VMLib.VMware
 {
-    public class VMwareVirtualMachine :IVirtualMachine
+    public class VMwareVirtualMachine : IVirtualMachine
     {
         private readonly string _vmPath;
         private readonly IVix _vix;
@@ -49,7 +49,7 @@ namespace VMLib.VMware
             }
         }
 
-        public IEnumerable<string> Snapshots => 
+        public IEnumerable<string> Snapshots =>
             from s in _vix.GetSnapshots(_vm)
             select _vix.GetSnapshotName(s);
 
@@ -77,7 +77,7 @@ namespace VMLib.VMware
         {
             var snapshot = _vix.GetSnapshots(_vm).FirstOrDefault(s => _vix.GetSnapshotName(s) == name);
 
-            if(snapshot == null)
+            if (snapshot == null)
                 throw new SnapshotDoesntExistExceptipon($"Can't restore to snapshot {name} because it doesn't exist!");
 
             _vix.RevertToSnapshot(_vm, snapshot, false);
@@ -104,11 +104,17 @@ namespace VMLib.VMware
         public string Username { get; set; }
         public string Password { get; set; }
 
-        public IEnumerable<IVMProcess> Processes => 
-            from p in _vix.GetProcesses(_vm)
-            select new VMProcess(p.Name, p.ProcessID);
+        public IEnumerable<IVMProcess> Processes
+        { 
+            get
+            {
+                _vix.WaitForTools(_vm);
+                _vix.LoginToGuest(_vm, Username, Password, false);
+                return from p in _vix.GetProcesses(_vm) select new VMProcess(p.Name, p.ProcessID);
+            }
+        }
 
-        public string HypervisorName => "VMwareWorkstation";
+    public string HypervisorName => "VMwareWorkstation";
         public RemoteProtocol RemoteAccessProtocol { get; private set; }
         public int RemoteAccessPort { get; private set; }
         public string RemoteAccessPassword { get; private set; }

@@ -2,13 +2,13 @@
 {
     public class VMProcess : IVMProcess
     {
-        public VMProcess(string name, ulong processID)
+        public VMProcess(string name, long processID)
         {
             Name = name;
             ProcessID = processID;
         }
 
         public string Name { get; }
-        public ulong ProcessID { get; }
+        public long ProcessID { get; }
     }
 }
