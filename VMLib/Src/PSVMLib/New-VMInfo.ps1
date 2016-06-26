@@ -1,3 +1,5 @@
+using namespace VMLib.VM;
+
 <# 
 .SYNOPSIS
 	Creates a new VMInfo Object
