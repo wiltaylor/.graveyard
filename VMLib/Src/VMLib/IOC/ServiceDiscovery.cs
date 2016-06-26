@@ -46,5 +46,11 @@ namespace VMLib.IOC
         {
             return _container.Get<T>();
         }
+
+        public void AddSingletonType<T, T1>(string name)
+        {
+            if(!_container.CanResolve<T>(name))
+                _container.Bind(typeof(T)).To(typeof(T1)).InSingletonScope().Named(name);
+        }
     }
 }

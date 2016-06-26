@@ -1,5 +1,6 @@
 ﻿using System;
 using SystemWrapper.Microsoft.Win32;
+using VMLib.VMware.VIXItems;
 
 namespace VMLib.VMware
 {
@@ -11,9 +12,11 @@ namespace VMLib.VMware
 
         public VMwareHypervisorInfo(IRegistryWrap reg)
         {
-            _reg = reg;
-            Console.WriteLine("XXXXXXXXXXXX");
             AddTypeToIOC<IHypervisor, VMwareHypervisor>();
+            AddTypeToIOC<IVMFactory, VMwareVMFactory>();
+            AddTypeToIOC<IVix, VIX>();
+            AddTypeToIOC<IVMXHelper, VMXHelper>();
+            _reg = reg;
         }
 
         public override IHypervisorConnectionInfo CreateConnectionInfo()

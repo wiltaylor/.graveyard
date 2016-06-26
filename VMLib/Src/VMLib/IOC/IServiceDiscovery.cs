@@ -12,5 +12,6 @@ namespace VMLib.IOC
         void AddType(Type Interface, Type concrete);
         T Resolve<T>(string name);
         T Resolve<T>();
+        void AddSingletonType<T, T1>(string name);
     }
 }

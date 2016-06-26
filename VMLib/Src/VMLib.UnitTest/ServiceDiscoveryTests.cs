@@ -65,5 +65,30 @@ namespace VMLib.UnitTest
 
             Assert.IsInstanceOf<Test1>(result);
         }
+
+        [Test]
+        public void AddSingletonType_AsSingleTon_WillReturnTheSameInstanceMultipleTimes()
+        {
+            var sut = DefaultServiceDiscoveryFactory();
+
+            sut.AddSingletonType<ITest, Test1>("MyName");
+            var result1 = sut.Resolve<ITest>("MyName");
+            var result2 = sut.Resolve<ITest>("MyName");
+
+            Assert.AreSame(result1, result2);
+
+        }
+
+        [Test]
+        public void AddSingletonType_MultipleTimes_WillOnblyRegisterOnce()
+        {
+            var sut = DefaultServiceDiscoveryFactory();
+
+            sut.AddSingletonType<ITest, Test1>("MyName");
+            sut.AddSingletonType<ITest, Test1>("MyName");
+            var result = sut.Resolve<ITest>("MyName");
+
+            Assert.NotNull(result);
+        }
     }
 }

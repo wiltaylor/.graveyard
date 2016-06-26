@@ -19,9 +19,9 @@ namespace VMLib
             return hypervisor;
         }
 
-        protected void AddTypeToIOC<F, T>()
+        protected void AddTypeToIOC<TF, T>()
         {
-            ServiceDiscovery.Instance.AddType<F,T>(Name);
+            ServiceDiscovery.Instance.AddSingletonType<TF,T>(Name);
         }
     }
 }

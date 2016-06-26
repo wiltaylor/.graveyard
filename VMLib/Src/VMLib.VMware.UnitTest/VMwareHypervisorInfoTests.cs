@@ -34,7 +34,7 @@ namespace VMLib.VMware.UnitTest
             var srv = FakeServiceDiscovery.ReturnTestableInstance();
             var sut = DefaultVMwareHypervisorInfoFactory();
 
-            A.CallTo(() => srv.AddType<IHypervisor, VMwareHypervisor>(sut.Name)).MustHaveHappened();
+            A.CallTo(() => srv.AddSingletonType<IHypervisor, VMwareHypervisor>(sut.Name)).MustHaveHappened();
         }
 
         [TestCase("VMwareWorkstationPath")]
