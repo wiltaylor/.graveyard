@@ -6,7 +6,7 @@ Describe "Copy-FileFromVM" {
 		
 		$script:TestFlag = $false
 		$FakeVM = New-FakeVM -CopyFromVM {	
-			param($hostpath, $guestpath) 
+			param($guestpath, $hostpath) 
 
 			if($hostpath -eq "c:\\hostpath.txt" -and $guestpath -eq "c:\\guestpath.txt") {
 				$script:TestFlag = $true
