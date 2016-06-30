@@ -30,7 +30,7 @@ namespace VMLib.VMware
 
         private static VMXSetting ParseLine(string line)
         {
-            var match = Regex.Match(line, "(.+) = \"(.+)\"");
+            var match = Regex.Match(line, "(.+) = \"(.+|)\"");
 
             if(!match.Success)
                 throw new VMXFileCorruptException($"Invalid VMX file on line: {line}");

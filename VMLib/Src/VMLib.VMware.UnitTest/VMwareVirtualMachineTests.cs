@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using SystemWrapper.IO;
 using SystemWrapper.Threading;
 using FakeItEasy;
 using NUnit.Framework;
@@ -16,7 +17,7 @@ namespace VMLib.VMware.UnitTest
     [TestFixture]
     public class VMwareVirtualMachineTests
     {
-        public IVirtualMachine DefaultVMwareVirtualMachineFactory(IVix vix = null, string vmpath = "c:\\testvm.vmx", IVM2 vm = null, IServiceDiscovery srvDiscovery = null, IVMXHelper vmx = null, IHypervisorConnectionInfo info = null)
+        public IVirtualMachine DefaultVMwareVirtualMachineFactory(IVix vix = null, string vmpath = "c:\\testvm.vmx", IVM2 vm = null, IServiceDiscovery srvDiscovery = null, IVMXHelper vmx = null, IHypervisorConnectionInfo info = null, IFileWrap file = null)
         {
             if (vix == null)
                 vix = A.Fake<IVix>();
@@ -33,11 +34,14 @@ namespace VMLib.VMware.UnitTest
             if (info == null)
                 info = A.Fake<IHypervisorConnectionInfo>();
 
+            if (file == null)
+                file = A.Fake<IFileWrap>();
+
             A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Pending);
 
             A.CallTo(() => vix.ConnectToVM(vmpath)).Returns(vm);
 
-            var sut = new VMwareVirtualMachine(vmpath, vix, vmx, info);
+            var sut = new VMwareVirtualMachine(vmpath, vix, vmx, info, file);
 
             return sut;
         }
@@ -820,6 +824,21 @@ namespace VMLib.VMware.UnitTest
         }
 
         [Test]
+        public void WriteGuestVariable_WhenGuestIsOff_WillWriteToDisk()
+        {
+            var vix = A.Fake<IVix>();
+            var vmx = A.Fake<IVMXHelper>();
+            var file = A.Fake<IFileWrap>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx, file: file, vmpath: "c:\\myvm.vmx");
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+            A.CallTo(() => vmx.ToArray()).Returns(new [] { "VMXData"});
+            
+            sut.WriteGuestVariable("MySetting", "MyValue");
+
+            A.CallTo(() => file.WriteAllLines("c:\\myvm.vmx", A<string[]>.Ignored)).MustHaveHappened();
+        }
+
+        [Test]
         public void WriteVMSetting_WhenGuestIsOn_CallsVix()
         {
             var vix = A.Fake<IVix>();
@@ -846,6 +865,21 @@ namespace VMLib.VMware.UnitTest
         }
 
         [Test]
+        public void WriteVMSetting_WhenGuestIsOff_WritesToDisk()
+        {
+            var vix = A.Fake<IVix>();
+            var vmx = A.Fake<IVMXHelper>();
+            var file = A.Fake<IFileWrap>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx, vmpath: "c:\\myvm.vmx", file: file);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+            A.CallTo(() => vmx.ToArray()).Returns(new [] { "VMXData"});
+
+            sut.WriteVMSetting("MySetting.Property", "MyValue");
+
+            A.CallTo(() => file.WriteAllLines("c:\\myvm.vmx", A<string[]>.Ignored)).MustHaveHappened();
+        }
+
+        [Test]
         public void AddNetworkCard_AddingNewCardToVM_WillcallVMXHelper()
         {
             var vix = A.Fake<IVix>();
@@ -857,6 +891,22 @@ namespace VMLib.VMware.UnitTest
             sut.AddNetworkCard(network);
 
             A.CallTo(() => vmx.WriteNetwork(network)).MustHaveHappened();
+        }
+
+        [Test]
+        public void AddNetworkCard_AddingNewCardToVM_WriteToDisk()
+        {
+            var vix = A.Fake<IVix>();
+            var vmx = A.Fake<IVMXHelper>();
+            var file = A.Fake<IFileWrap>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx, vmpath: "c:\\myvm.vmx", file: file);
+            var network = DefaultVMwareNetwork();
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+            A.CallTo(() => vmx.ToArray()).Returns(new[] { "VMXData" });
+
+            sut.AddNetworkCard(network);
+
+            A.CallTo(() => file.WriteAllLines("c:\\myvm.vmx", A<string[]>.Ignored)).MustHaveHappened();
         }
 
         [Test]
@@ -899,6 +949,22 @@ namespace VMLib.VMware.UnitTest
         }
 
         [Test]
+        public void RemoveNetworkCard_WhileVMPoweredOff_WillWriteToDisk()
+        {
+            var vix = A.Fake<IVix>();
+            var vmx = A.Fake<IVMXHelper>();
+            var file = A.Fake<IFileWrap>();
+            var sut = DefaultVMwareVirtualMachineFactory(vmx: vmx, vix: vix, vmpath: "c:\\myvm.vmx", file: file);
+            var network = DefaultVMwareNetwork();
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+            A.CallTo(() => vmx.ToArray()).Returns(new[] { "VMXData" });
+
+            sut.RemoveNetworkCard(network);
+
+            A.CallTo(() => file.WriteAllLines("c:\\myvm.vmx", A<string[]>.Ignored)).MustHaveHappened();
+        }
+
+        [Test]
         public void RemoveNetworkCard_WhileVMPoweredOn_WillThrow()
         {
             var vix = A.Fake<IVix>();
@@ -923,6 +989,22 @@ namespace VMLib.VMware.UnitTest
             sut.AddDisk(disk);
 
             A.CallTo(() => vmx.WriteDisk(disk)).MustHaveHappened();
+        }
+
+        [Test]
+        public void AddDisk_WhileVMIsOff_WillWriteToDisk()
+        {
+            var vmx = A.Fake<IVMXHelper>();
+            var vix = A.Fake<IVix>();
+            var file = A.Fake<IFileWrap>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx, vmpath: "c:\\myvm.vmx", file: file);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+            A.CallTo(() => vmx.ToArray()).Returns(new[] { "VMXData" });
+
+            sut.AddDisk(disk);
+
+            A.CallTo(() => file.WriteAllLines("c:\\myvm.vmx", A<string[]>.Ignored)).MustHaveHappened();
         }
 
         [Test]
@@ -961,6 +1043,22 @@ namespace VMLib.VMware.UnitTest
             sut.RemoveDisk(disk);
 
             A.CallTo(() => vmx.RemoveDisk(disk)).MustHaveHappened();
+        }
+
+        [Test]
+        public void RemoveDisk_WhenVMIsOff_WillWriteToDisk()
+        {
+            var vmx = A.Fake<IVMXHelper>();
+            var vix = A.Fake<IVix>();
+            var file = A.Fake<IFileWrap>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix, vmx: vmx, vmpath: "c:\\myvm.vmx", file: file);
+            var disk = A.Fake<IVMDisk>();
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+            A.CallTo(() => vmx.ToArray()).Returns(new[] { "VMXData" });
+
+            sut.RemoveDisk(disk);
+
+            A.CallTo(() => file.WriteAllLines("c:\\myvm.vmx", A<string[]>.Ignored)).MustHaveHappened();
         }
 
         [Test]
@@ -1136,6 +1234,6 @@ namespace VMLib.VMware.UnitTest
 
             Assert.That(sut.RemoteAccessPassword == null);
         }
-
+        
     }
 }

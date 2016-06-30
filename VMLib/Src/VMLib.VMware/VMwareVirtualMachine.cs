@@ -1,5 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
+using SystemWrapper.IO;
 using SystemWrapper.Threading;
 using VixCOM;
 using VMLib.Exceptions;
@@ -17,8 +18,9 @@ namespace VMLib.VMware
         private readonly IVM2 _vm;
         private readonly IVMXHelper _vmx;
         private readonly IHypervisorConnectionInfo _hypervisorInfo;
+        private readonly IFileWrap _file;
 
-        public VMwareVirtualMachine(string vmPath, IVix vix, IVMXHelper vmx, IHypervisorConnectionInfo hypervisorInfo)
+        public VMwareVirtualMachine(string vmPath, IVix vix, IVMXHelper vmx, IHypervisorConnectionInfo hypervisorInfo, IFileWrap file)
         {
             _vmPath = vmPath;
             _vix = vix;
@@ -26,6 +28,7 @@ namespace VMLib.VMware
             _hypervisorInfo = hypervisorInfo;
             _vm = vix.ConnectToVM(vmPath);
             RemoteAccessProtocol = RemoteProtocol.None;
+            _file = file;
         }
 
 
@@ -249,16 +252,25 @@ namespace VMLib.VMware
 
         public void WriteGuestVariable(string name, string value)
         {
-            if(State == VMState.Off)
+            if (State == VMState.Off)
+            {
                 _vmx.WriteVMX($"guestinfo.{name}", value);
+                WriteVMX();
+            }
             else
                 _vix.WriteVariable(_vm, name, value, VixVariable.GuestVar);
+
+            
+
         }
 
         public void WriteVMSetting(string name, string value)
         {
-            if(State == VMState.Off)
+            if (State == VMState.Off)
+            {
                 _vmx.WriteVMX(name, value);
+                WriteVMX();
+            }
             else
                 _vix.WriteVariable(_vm, name, value, VixVariable.VMX);
         }
@@ -269,6 +281,7 @@ namespace VMLib.VMware
                 throw new VMPoweredOnException("Can't add network cards while vm is powered on!");
 
             _vmx.WriteNetwork(network);
+            WriteVMX();
         }
 
         public IEnumerable<IVMNetwork> GetNetworkCards()
@@ -282,6 +295,7 @@ namespace VMLib.VMware
                 throw new VMPoweredOnException("Can't remove network cards while vm is powered on!");
 
             _vmx.RemoveNetwork(network);
+            WriteVMX();
         }
 
         public void AddDisk(IVMDisk disk)
@@ -290,6 +304,7 @@ namespace VMLib.VMware
                 throw new VMPoweredOnException("Can't add disks while vm is powered on!");
 
             _vmx.WriteDisk(disk);
+            WriteVMX();
         }
 
         public IEnumerable<IVMDisk> GetDisks()
@@ -303,6 +318,7 @@ namespace VMLib.VMware
                 throw new VMPoweredOnException("Can't remove disks while vm is powered on!");
 
             _vmx.RemoveDisk(disk);
+            WriteVMX();
         }
 
         public void OpenLocalGUI()
@@ -334,6 +350,11 @@ namespace VMLib.VMware
             RemoteAccessProtocol = RemoteProtocol.None;
             RemoteAccessPort = 0;
             RemoteAccessPassword = null;
+        }
+
+        private void WriteVMX()
+        {
+            _file.WriteAllLines(_vmPath, _vmx.ToArray());
         }
     }
 }
