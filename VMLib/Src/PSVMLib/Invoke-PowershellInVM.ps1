@@ -5,6 +5,8 @@
 	Executes a powershell script in VM.
 .PARAMETER Code
 	Script block to execute.
+.PARAMETER Arguments
+	Hashtable of arguments to pass to script. These will be serialised and copied into the virtual environment.
 .PARAMETER Username
 	Guest OS username to run the powershell script as.
 .PARAMETER Password
@@ -22,6 +24,7 @@ function Invoke-PowershellInVM
 {
 	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$VM, 
 		  [Parameter(Mandatory=$true)][ScriptBlock]$Code,
+		  [Parameter(Mandatory=$false)][HashTable]$Arguments,
 		  [Parameter(Mandatory=$true)][string]$Username,
 		  [Parameter(Mandatory=$true)][string]$Password)
 

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -321,7 +322,7 @@ namespace VMLib.VMware.UnitTest
         {
             var sut = DefaultVMwareVirtualMachineFactory();
 
-            Assert.Throws<UnsupportedVMFeature>(() => sut.ExecutePowershell("#Any powershell script"));
+            Assert.Throws<UnsupportedVMFeature>(() => sut.ExecutePowershell("#Any powershell script", null));
         }
 
         [Test]
@@ -340,7 +341,7 @@ namespace VMLib.VMware.UnitTest
 
             var result = sut.Processes;
 
-            Assert.That(result.FirstOrDefault().ProcessID == 1000 );
+            Assert.That(result.FirstOrDefault().ProcessID == 1000);
         }
 
         [Test]

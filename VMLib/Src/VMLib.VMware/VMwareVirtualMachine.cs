@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using SystemWrapper.IO;
@@ -120,7 +121,7 @@ namespace VMLib.VMware
             }
         }
 
-    public string HypervisorName => "VMwareWorkstation";
+        public string HypervisorName => "VMwareWorkstation";
         public RemoteProtocol RemoteAccessProtocol { get; private set; }
         public int RemoteAccessPort { get; private set; }
         public string RemoteAccessPassword { get; private set; }
@@ -137,7 +138,7 @@ namespace VMLib.VMware
             _vix.ExecuteCommand(_vm, path, args, interactive, wait);
         }
 
-        public object ExecutePowershell(string script)
+        public object ExecutePowershell(string script, Hashtable arguments)
         {
             throw new UnsupportedVMFeature("VMware workstation doesn't support direct execiution of powershell scripts!");
         }
