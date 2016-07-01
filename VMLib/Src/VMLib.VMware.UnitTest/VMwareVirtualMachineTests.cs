@@ -655,7 +655,7 @@ namespace VMLib.VMware.UnitTest
             var vix = A.Fake<IVix>();
             var sut = DefaultVMwareVirtualMachineFactory(vix: vix, srvDiscovery: srvDiscovery);
             var thread = A.Fake<IThreadWrap>();
-            A.CallTo(() => srvDiscovery.Resolve<IThreadWrap>(sut.HypervisorName)).Returns(thread);
+            A.CallTo(() => srvDiscovery.Resolve<IThreadWrap>()).Returns(thread);
             A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off).Once();
             A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready).Once();
 
