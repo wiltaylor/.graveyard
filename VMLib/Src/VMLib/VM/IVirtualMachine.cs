@@ -61,5 +61,8 @@ namespace VMLib
         void OpenLocalGUI();
         void CreateRemoteConnection(int port, string password);
         void RemoveRemoteConnection();
+
+        string VMPath { get; }
+        string VMDirectory { get; }
     }
 }

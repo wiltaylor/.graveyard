@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using SystemWrapper.IO;
 using SystemWrapper.Threading;
@@ -29,6 +30,8 @@ namespace VMLib.VMware
             _vm = vix.ConnectToVM(vmPath);
             RemoteAccessProtocol = RemoteProtocol.None;
             _file = file;
+            VMPath = vmPath;
+            VMDirectory = Path.GetDirectoryName(vmPath);
         }
 
 
@@ -351,6 +354,9 @@ namespace VMLib.VMware
             RemoteAccessPort = 0;
             RemoteAccessPassword = null;
         }
+
+        public string VMPath { get; private set; }
+        public string VMDirectory { get; private set; }
 
         private void WriteVMX()
         {

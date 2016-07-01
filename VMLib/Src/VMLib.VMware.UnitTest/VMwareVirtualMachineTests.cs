@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using SystemWrapper.IO;
 using SystemWrapper.Threading;
@@ -1234,6 +1235,21 @@ namespace VMLib.VMware.UnitTest
 
             Assert.That(sut.RemoteAccessPassword == null);
         }
-        
+
+        [Test]
+        public void Constructor_WhenPassingInVMPath_WillGetPathPropertySet()
+        {
+            var sut = DefaultVMwareVirtualMachineFactory(vmpath: "c:\\testvm\\myvm.vmx");
+            
+            Assert.That(sut.VMPath == "c:\\testvm\\myvm.vmx");
+        }
+
+        [Test]
+        public void Constructor_WhenPassingInVMPath_WillGetVMDirectoryPropertySet()
+        {
+            var sut = DefaultVMwareVirtualMachineFactory(vmpath: "c:\\testvm\\myvm.vmx");
+
+            Assert.That(sut.VMDirectory == "c:\\testvm");
+        }
     }
 }
