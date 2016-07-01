@@ -50,6 +50,7 @@
     <Compile Include="Get-VMSnapshot.tests.ps1" />
     <Compile Include="Invoke-PowershellInVM.tests.ps1" />
     <Compile Include="Invoke-ProcessInVM.tests.ps1" />
+    <Compile Include="New-FloppyImage.ps1" />
     <Compile Include="New-HypervisorInfo.ps1" />
     <Compile Include="New-HypervisorInfo.tests.ps1" />
     <Compile Include="New-VM.ps1" />
