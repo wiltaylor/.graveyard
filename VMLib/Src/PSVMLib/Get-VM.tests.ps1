@@ -11,10 +11,14 @@ Describe "Get-VM" {
 				 New-FakeVM -State "FakeState"
 			}
 		}		
+
+		Mock Convert-Path { return "c:\Expected.vmx" } -ParameterFilter { $path -eq "c:\Expected.vmx" }
 	
 		It "Calling expected Path returns object" {
 			$result = $FakeHypervisor | Get-VM -Path "c:\Expected.vmx"
 			$result.State | should be "FakeState"
 		}
+
+
 	}
 }

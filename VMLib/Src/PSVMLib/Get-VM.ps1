@@ -22,6 +22,6 @@ function Get-VM
 
 	Process 
 	{
-		$Hypervisor.OpenVM($Path)
+		$Hypervisor.OpenVM((Convert-Path $Path))
 	}
 }
