@@ -1,5 +1,6 @@
 ﻿using SystemWrapper.IO;
 using SystemWrapper.Microsoft.Win32;
+using SystemWrapper.Threading;
 using VMLib.IOC;
 
 namespace VMLib
@@ -13,6 +14,7 @@ namespace VMLib
             container.AddType<IRegistryWrap, RegistryWrap>();
             container.AddType<IRegistryKeyWrap, RegistryKeyWrap>();
             container.AddType<IFileWrap, FileWrap>();
+            container.AddType<IThreadWrap, ThreadWrap>();
         }
     }
 }

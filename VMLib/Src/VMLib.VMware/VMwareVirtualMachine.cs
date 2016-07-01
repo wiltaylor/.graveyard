@@ -213,7 +213,7 @@ namespace VMLib.VMware
 
         public void WaitTillOff()
         {
-            var thread = ServiceDiscovery.Instance.Resolve<IThreadWrap>(HypervisorName);
+            var thread = ServiceDiscovery.Instance.Resolve<IThreadWrap>();
             while (State != VMState.Off)
             {
                 thread.Sleep(1000);
