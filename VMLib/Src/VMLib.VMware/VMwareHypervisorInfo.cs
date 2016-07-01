@@ -1,5 +1,6 @@
 ﻿using System;
 using SystemWrapper.Microsoft.Win32;
+using VMLib.Disk;
 using VMLib.VMware.VIXItems;
 
 namespace VMLib.VMware
@@ -16,6 +17,7 @@ namespace VMLib.VMware
             AddTypeToIOC<IVMFactory, VMwareVMFactory>();
             AddTypeToIOC<IVix, VIX>();
             AddTypeToIOC<IVMXHelper, VMXHelper>();
+            AddTypeToIOC<IDiskBuilder, VMwareDiskBuilder>();
             _reg = reg;
         }
 

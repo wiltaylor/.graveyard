@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using VMLib.Disk;
 using VMLib.Exceptions;
 using VMLib.IOC;
 
@@ -42,6 +43,11 @@ namespace VMLib
         {
             var factory = CreateFactory();
             return factory.GetAllRunning();
+        }
+
+        public IDiskBuilder GetDiskBuilder()
+        {
+            return ServiceDiscovery.Instance.Resolve<IDiskBuilder>(Name);
         }
     }
 }

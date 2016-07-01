@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using VMLib.Disk;
 
 namespace VMLib
 {
@@ -9,5 +10,6 @@ namespace VMLib
         IVirtualMachine CreateNewVM(IVMCreationInfo info);
         IVirtualMachine OpenVM(string path);
         IEnumerable<IVirtualMachine> GetAllRunningVM();
+        IDiskBuilder GetDiskBuilder();
     }
 }

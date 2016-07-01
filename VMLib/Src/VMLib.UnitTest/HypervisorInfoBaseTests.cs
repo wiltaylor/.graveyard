@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using FakeItEasy;
 using NUnit.Framework;
+using VMLib.Disk;
 using VMLib.IOC;
 
 namespace VMLib.UnitTest
@@ -88,6 +89,11 @@ namespace VMLib.UnitTest
         }
 
         public IEnumerable<IVirtualMachine> GetAllRunningVM()
+        {
+            throw new NotImplementedException();
+        }
+
+        public IDiskBuilder GetDiskBuilder()
         {
             throw new NotImplementedException();
         }

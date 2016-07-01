@@ -55,6 +55,7 @@
     <Compile Include="New-HypervisorInfo.tests.ps1" />
     <Compile Include="New-VM.ps1" />
     <Compile Include="New-VM.tests.ps1" />
+    <Compile Include="New-VMDisk.ps1" />
     <Compile Include="New-VMHardware.ps1" />
     <Compile Include="New-VMHardware.tests.ps1" />
     <Compile Include="New-VMInfo.ps1" />
