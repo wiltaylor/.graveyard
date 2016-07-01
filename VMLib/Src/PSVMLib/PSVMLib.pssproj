@@ -78,9 +78,12 @@
     <Compile Include="Save-VMSnapshot.tests.ps1" />
     <Compile Include="Invoke-PowershellInVM.ps1" />
     <Compile Include="Invoke-ProcessInVM.ps1" />
+    <Compile Include="Show-VM.ps1" />
+    <Compile Include="Show-VM.tests.ps1" />
     <Compile Include="Start-VM.ps1" />
     <Compile Include="Start-VM.tests.ps1" />
     <Compile Include="Stop-ProcessInVM.ps1" />
+    <Compile Include="Stop-ProcessInVM.tests.ps1" />
     <Compile Include="Stop-VM.ps1" />
     <Compile Include="Stop-VM.tests.ps1" />
     <Compile Include="Test-ItemInVM.ps1" />

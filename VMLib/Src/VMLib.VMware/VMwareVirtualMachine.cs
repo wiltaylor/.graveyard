@@ -117,7 +117,7 @@ namespace VMLib.VMware
             {
                 _vix.WaitForTools(_vm);
                 _vix.LoginToGuest(_vm, Username, Password, false);
-                return from p in _vix.GetProcesses(_vm) select new VMProcess(p.Name, p.ProcessID);
+                return from p in _vix.GetProcesses(_vm) select new VMProcess(p.Name, p.ProcessID, this);
             }
         }
 

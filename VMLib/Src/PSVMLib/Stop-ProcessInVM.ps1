@@ -16,6 +16,9 @@ function Stop-ProcessInVM
 
 	Process 
 	{
+		$vm = $Process.VM
+		$procid = $Process.ProcessID
 
+		$vm.KillProcess($procid)
 	}
 }

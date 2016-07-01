@@ -4,6 +4,7 @@
     {
         string Name { get; }
         long ProcessID { get; }
+        IVirtualMachine VM { get; }
     }
 }
 
