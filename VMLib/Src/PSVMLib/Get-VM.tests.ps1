@@ -10,7 +10,9 @@ Describe "Get-VM" {
 			if($Path -eq "c:\Expected.vmx") {
 				 New-FakeVM -State "FakeState"
 			}
-		}		
+		} -GetAllRunningVM {
+			New-FakeVM -State "RunningState"
+		}	
 
 		Mock Convert-Path { return "c:\Expected.vmx" } -ParameterFilter { $path -eq "c:\Expected.vmx" }
 	
@@ -19,6 +21,9 @@ Describe "Get-VM" {
 			$result.State | should be "FakeState"
 		}
 
-
+		It "Calling AllVMs" {
+			$result = $FakeHypervisor | Get-VM -AllRunning
+			$result.State | should be "RunningState"
+		}
 	}
 }

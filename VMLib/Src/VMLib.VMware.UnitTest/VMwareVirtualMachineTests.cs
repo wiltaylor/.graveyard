@@ -341,7 +341,7 @@ namespace VMLib.VMware.UnitTest
 
             var result = sut.Processes;
 
-            Assert.That(result.FirstOrDefault().ProcessID == 1000);
+            Assert.That(result.First().ProcessID == 1000);
         }
 
         [Test]

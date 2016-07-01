@@ -168,7 +168,9 @@ namespace VMLib.VMware.VIXItems
 
         public IEnumerable<string> GetAllRunning()
         {
-            return WaitJobResultList<string>(_host.FindItems(Constants.VIX_FIND_RUNNING_VMS, null, -1, null));
+            var callback = new RunningVMCallback(_lib);
+            WaitJobNoResults(_host.FindItems(Constants.VIX_FIND_RUNNING_VMS, null, -1, callback));
+            return callback.RunningVMs;
         }
 
         public void LoginToGuest(IVM2 vm, string username, string password, bool interactive)
@@ -351,6 +353,35 @@ namespace VMLib.VMware.VIXItems
         public void KillProcess(IVM2 vm, ulong processID)
         {
             WaitJobNoResults(vm.KillProcessInGuest(processID, 0, null));
+        }
+    }
+
+    public class RunningVMCallback : ICallback
+    {
+        private readonly IVixLib _lib;
+
+        public List<string> RunningVMs { get; private set; }
+
+        public RunningVMCallback(IVixLib lib)
+        {
+            _lib = lib;
+            RunningVMs = new List<string>();
+        }
+
+        public void OnVixEvent(IJob job, int eventType, IVixHandle moreEventInfo)
+        {
+            if (eventType != Constants.VIX_EVENTTYPE_FIND_ITEM)
+                return;
+
+            object results = null;
+
+            var err = moreEventInfo.GetProperties(new[] {Constants.VIX_PROPERTY_FOUND_ITEM_LOCATION}, ref results);
+
+            if (_lib.ErrorIndicatesFailure(err))
+                return;
+
+            var vmname = (string)((object[])results)[0];
+            RunningVMs.Add(vmname);
         }
     }
 }

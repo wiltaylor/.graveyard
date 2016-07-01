@@ -18,10 +18,14 @@
 [CmdletBinding]
 function Get-VM
 {
-	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$Hypervisor,[Parameter(Mandatory=$true)][string]$Path)
+	param([Parameter(Mandatory = $true, ValueFromPipeline = $true)]$Hypervisor,[Parameter(Mandatory=$true, ParameterSetName="VM")][string]$Path,[Parameter(Mandatory=$true, ParameterSetName="AllVM")][Switch]$AllRunning)
 
 	Process 
 	{
-		$Hypervisor.OpenVM((Convert-Path $Path))
+		if($AllRunning) {
+			foreach($vm in $Hypervisor.GetAllRunningVM()) { $vm }
+		} else {
+			$Hypervisor.OpenVM((Convert-Path $Path))
+		}
 	}
 }
