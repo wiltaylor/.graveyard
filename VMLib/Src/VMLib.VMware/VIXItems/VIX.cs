@@ -209,6 +209,11 @@ namespace VMLib.VMware.VIXItems
             WaitJobNoResults(vm.DeleteFileInGuest(path, null));
         }
 
+        public void RenameFileInGuest(IVM2 vm, string path, string newname)
+        {
+            WaitJobNoResults(vm.RenameFileInGuest(path, newname, 0, null, null));
+        }
+
         public void DeleteDirectoryInGuest(IVM2 vm, string path)
         {
             WaitJobNoResults(vm.DeleteDirectoryInGuest(path, 0, null));

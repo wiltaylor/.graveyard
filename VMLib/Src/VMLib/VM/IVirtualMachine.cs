@@ -68,5 +68,8 @@ namespace VMLib
         string Name { get; set; }
         void Clone(string path, string snapshot, bool linked);
         void DeleteVM();
+
+        void RenameFile(string path, string newPath);
+        void RenameDirectory(string path, string newPath);
     }
 }

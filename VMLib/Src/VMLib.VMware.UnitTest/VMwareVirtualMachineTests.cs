@@ -1323,5 +1323,51 @@ namespace VMLib.VMware.UnitTest
 
             A.CallTo(() => vix.PowerOff(A<IVM2>.Ignored, true)).MustHaveHappened();
         }
+
+        [Test]
+        public void RenameFolder_NotSupported_WillThrow()
+        {
+            var sut = DefaultVMwareVirtualMachineFactory();
+
+            Assert.Throws<UnsupportedVMFeature>(() => sut.RenameDirectory("C:\\anyfolder", "c:\\newfoldername"));
+        }
+
+        [Test]
+        public void RenameFile_ExistingFileInVM_WillCallVix()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+
+            sut.RenameFile("c:\\myfile.txt", "c:\\newfilename.txt");
+
+            A.CallTo(() => vix.RenameFileInGuest(A<IVM2>.Ignored, "c:\\myfile.txt", "c:\\newfilename.txt"))
+                .MustHaveHappened();
+        }
+
+        [Test]
+        public void RenameFile_NeedsToBeReady_WillCallVixToWaitTillToolsReady()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+
+            sut.RenameFile("c:\\myfile.txt", "c:\\newfilename.txt");
+
+            A.CallTo(() => vix.WaitForTools(A<IVM2>.Ignored)).MustHaveHappened();
+
+        }
+
+        [Test]
+        public void RenameFile_NeedsToBeLoggedIn_WillCallVixToLogin()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            sut.Username = "Username";
+            sut.Password = "Password";
+
+            sut.RenameFile("c:\\myfile.txt", "c:\\newfilename.txt");
+
+            A.CallTo(() => vix.LoginToGuest(A<IVM2>.Ignored, "Username", "Password", false)).MustHaveHappened();
+        }
+
     }
 }

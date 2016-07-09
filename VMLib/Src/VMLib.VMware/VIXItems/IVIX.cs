@@ -21,6 +21,7 @@ namespace VMLib.VMware.VIXItems
         void Delete(IVM2 vm);
         void DeleteDirectoryInGuest(IVM2 vm, string path);
         void DeleteFileInGuest(IVM2 vm, string path);
+        void RenameFileInGuest(IVM2 vm, string path, string newname);
         bool DirectoryExist(IVM2 vm, string path);
         void DisableSharedFolders(IVM2 vm);
         void EnableSharedFolders(IVM2 vm);

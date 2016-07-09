@@ -385,6 +385,18 @@ namespace VMLib.VMware
             _vix.Delete(_vm);
         }
 
+        public void RenameFile(string path, string newPath)
+        {
+            WaitTillReady();
+            _vix.LoginToGuest(_vm, Username, Password, false);
+            _vix.RenameFileInGuest(_vm, path, newPath);
+        }
+
+        public void RenameDirectory(string path, string newPath)
+        {
+            throw new UnsupportedVMFeature("VMware workstation doesn't support renaming of folders!");
+        }
+
         private void WriteVMX()
         {
             _file.WriteAllLines(_vmPath, _vmx.ToArray());

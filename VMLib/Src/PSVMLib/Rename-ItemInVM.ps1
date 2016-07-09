@@ -25,6 +25,10 @@ function Rename-ItemInVM
 
 	Process 
 	{
-
+		switch($Type)
+		{
+			"File" { $vm.RenameFile($Path, $NewName) }
+			"Directory" { $vm.RenameDirectory($Path, $NewName) }
+		}
 	}
 }
