@@ -1252,5 +1252,29 @@ namespace VMLib.VMware.UnitTest
 
             Assert.That(sut.VMDirectory == "c:\\testvm");
         }
+
+        [Test]
+        public void Clone_CallingCloneWithLinkedSetFalse_WillCallVIX()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            
+            sut.Clone("c:\\cloned\\vm.vmx", "MySnapshot", false);
+
+            A.CallTo(() => vix.Clone("c:\\cloned\\vm.vmx", A<IVM2>.Ignored, A<ISnapshot>.Ignored, false))
+                .MustHaveHappened();
+        }
+
+        [Test]
+        public void Clone_CallingCloneWithLinkedSetTrue_WillCallVix()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+
+            sut.Clone("c:\\cloned\\vm.vmx", "MySnapshot", true);
+
+            A.CallTo(() => vix.Clone("c:\\cloned\\vm.vmx", A<IVM2>.Ignored, A<ISnapshot>.Ignored, true))
+                .MustHaveHappened();
+        }
     }
 }

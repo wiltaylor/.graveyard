@@ -65,5 +65,6 @@ namespace VMLib
 
         string VMPath { get; }
         string VMDirectory { get; }
+        void Clone(string path, string snapshot, bool linked);
     }
 }

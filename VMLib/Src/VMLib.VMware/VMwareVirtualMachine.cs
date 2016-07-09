@@ -359,6 +359,13 @@ namespace VMLib.VMware
         public string VMPath { get; private set; }
         public string VMDirectory { get; private set; }
 
+        public void Clone(string path, string snapshot, bool linked)
+        {
+            var snap = _vix.GetSnapshots(_vm).FirstOrDefault(s => _vix.GetSnapshotName(s) == snapshot);
+
+            _vix.Clone(path, _vm, snap, linked);
+        }
+
         private void WriteVMX()
         {
             _file.WriteAllLines(_vmPath, _vmx.ToArray());
