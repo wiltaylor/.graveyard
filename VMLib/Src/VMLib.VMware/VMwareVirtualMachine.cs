@@ -1,4 +1,5 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -358,6 +359,16 @@ namespace VMLib.VMware
 
         public string VMPath { get; private set; }
         public string VMDirectory { get; private set; }
+
+        public string Name
+        {
+            get { return _vmx.ReadVMX("displayName"); }
+
+            set
+            {
+                WriteVMSetting("displayName", value);
+            }
+        }
 
         public void Clone(string path, string snapshot, bool linked)
         {

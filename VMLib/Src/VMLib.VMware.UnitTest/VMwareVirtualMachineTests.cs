@@ -1276,5 +1276,28 @@ namespace VMLib.VMware.UnitTest
             A.CallTo(() => vix.Clone("c:\\cloned\\vm.vmx", A<IVM2>.Ignored, A<ISnapshot>.Ignored, true))
                 .MustHaveHappened();
         }
+
+        [Test]
+        public void Name_RetrivingVMName_WillReturnNameFromVMX()
+        {
+            var vmx = A.Fake<IVMXHelper>();
+            var sut = DefaultVMwareVirtualMachineFactory(vmx: vmx);
+            A.CallTo(() => vmx.ReadVMX("displayName")).Returns("MyVMName");
+
+            Assert.That(sut.Name == "MyVMName");
+        }
+
+        [Test]
+        public void Name_SettingVMName_WillCallVMX()
+        {
+            var vmx = A.Fake<IVMXHelper>();
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vmx: vmx, vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+
+            sut.Name = "MyVM";
+
+            A.CallTo(() => vmx.WriteVMX("displayName", "MyVM")).MustHaveHappened();
+        }
     }
 }
