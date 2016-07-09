@@ -377,6 +377,14 @@ namespace VMLib.VMware
             _vix.Clone(path, _vm, snap, linked);
         }
 
+        public void DeleteVM()
+        {
+            if (State != VMState.Off)
+                Stop(true);
+
+            _vix.Delete(_vm);
+        }
+
         private void WriteVMX()
         {
             _file.WriteAllLines(_vmPath, _vmx.ToArray());

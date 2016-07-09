@@ -16,6 +16,6 @@ function Remove-VM
 
 	Process 
 	{
-		
+		$VM.DeleteVM()
 	}
 }

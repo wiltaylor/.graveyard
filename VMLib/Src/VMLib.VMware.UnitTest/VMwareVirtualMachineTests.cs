@@ -1299,5 +1299,29 @@ namespace VMLib.VMware.UnitTest
 
             A.CallTo(() => vmx.WriteVMX("displayName", "MyVM")).MustHaveHappened();
         }
+
+        [Test]
+        public void DeleteVM_PowerOff_WillCallVixToRemoveVM()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Off);
+
+            sut.DeleteVM();
+
+            A.CallTo(() => vix.Delete(A<IVM2>.Ignored)).MustHaveHappened();
+        }
+
+        [Test]
+        public void DeleteVM_PoweredOn_WillStopVMFirst()
+        {
+            var vix = A.Fake<IVix>();
+            var sut = DefaultVMwareVirtualMachineFactory(vix: vix);
+            A.CallTo(() => vix.GetState(A<IVM2>.Ignored)).Returns(VixPowerState.Ready);
+
+            sut.DeleteVM();
+
+            A.CallTo(() => vix.PowerOff(A<IVM2>.Ignored, true)).MustHaveHappened();
+        }
     }
 }
