@@ -32,6 +32,10 @@ function Invoke-PowershellInVM
 	{
 		$VM.Username = $Username
 		$VM.Password= $Password
-		$VM.ExecutePowershell($Code.ToString())
+		$result = $VM.ExecutePowershell($Code.ToString(), $Arguments)
+
+		foreach($i in $result.Result) { Write-Output $i }
+
+		foreach($i in $result.Error) { Write-Error $i }
 	}
 }

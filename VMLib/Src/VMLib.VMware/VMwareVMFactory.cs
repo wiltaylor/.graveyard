@@ -5,6 +5,7 @@ using System.Linq;
 using SystemWrapper.IO;
 using VMLib.Exceptions;
 using VMLib.IOC;
+using VMLib.Shims;
 using VMLib.VMware.VIXItems;
 
 namespace VMLib.VMware
@@ -126,9 +127,13 @@ namespace VMLib.VMware
             if(!_file.Exists(path))
                 throw new FileNotFoundException($"Can't find VM at {path}");
 
-           var helper = new VMXHelper(_file.ReadAllLines(path));
+            var helper = new VMXHelper(_file.ReadAllLines(path));
 
-            return new VMwareVirtualMachine(path, _vix, helper, _hypervisorConnectionInfo, ServiceDiscovery.Instance.Resolve<IFileWrap>());
+            var vm = new VMwareVirtualMachine(path, _vix, helper, _hypervisorConnectionInfo, ServiceDiscovery.Instance.Resolve<IFileWrap>());
+            var shimedvm = vm
+                .AddShim<ShimRenameFolderByShell>()
+                .AddShim<ShimPowershellWithFileAndCommand>();
+            return shimedvm;
         }
 
         public IEnumerable<IVirtualMachine> GetAllRunning()
