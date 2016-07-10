@@ -72,6 +72,9 @@
     <Compile Include="Hypervisor\IHypervisorFactory.cs" />
     <Compile Include="IOC\IServiceDiscovery.cs" />
     <Compile Include="IOC\ServiceDiscovery.cs" />
+    <Compile Include="Shims\ShimHelperMethods.cs" />
+    <Compile Include="Shims\ShimRenameFolderByShell.cs" />
+    <Compile Include="Shims\ShimVirtualMachineBase.cs" />
     <Compile Include="VM\IVirtualMachine.cs" />
     <Compile Include="VM\IVMCreationInfo.cs" />
     <Compile Include="VM\IVMDisk.cs" />
