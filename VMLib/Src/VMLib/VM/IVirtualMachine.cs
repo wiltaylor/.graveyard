@@ -37,7 +37,7 @@ namespace VMLib
         string RemoteAccessPassword { get; }
         void RemoveSharedFolder(string name);
         void ExecuteCommand(string path, string args, bool wait, bool interactive);
-        object ExecutePowershell(string script, Hashtable arguments);
+        PowershellResults ExecutePowershell(string script, Hashtable arguments);
         void KillProcess(ulong processid);
         void CopyToVM(string hostpath, string guestpath);
         void CopyFromVM(string guestpath, string hostpath);

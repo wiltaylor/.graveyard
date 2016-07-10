@@ -58,6 +58,8 @@
     <Compile Include="HypervisorInfoBaseTests.cs" />
     <Compile Include="FakeServiceDiscovery.cs" />
     <Compile Include="ServiceDiscoveryTests.cs" />
+    <Compile Include="Shims\ShimPowershellWithFileAndCommandTests.cs" />
+    <Compile Include="Shims\ShimREnameFolderByShellTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\VMLib\VMLib.csproj">

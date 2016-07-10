@@ -131,7 +131,8 @@ namespace VMLib.VMware
 
             var vm = new VMwareVirtualMachine(path, _vix, helper, _hypervisorConnectionInfo, ServiceDiscovery.Instance.Resolve<IFileWrap>());
             var shimedvm = vm
-                .AddShim<ShimRenameFolderByShell>();
+                .AddShim<ShimRenameFolderByShell>()
+                .AddShim<ShimPowershellWithFileAndCommand>();
             return shimedvm;
         }
 

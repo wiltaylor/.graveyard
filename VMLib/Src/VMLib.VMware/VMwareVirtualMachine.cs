@@ -139,7 +139,7 @@ namespace VMLib.VMware
             _vix.ExecuteCommand(_vm, path, args, interactive, wait);
         }
 
-        public object ExecutePowershell(string script, Hashtable arguments)
+        public PowershellResults ExecutePowershell(string script, Hashtable arguments)
         {
             throw new UnsupportedVMFeature("VMware workstation doesn't support direct execiution of powershell scripts!");
         }

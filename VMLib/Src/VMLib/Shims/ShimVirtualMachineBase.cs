@@ -83,7 +83,7 @@ namespace VMLib.Shims
             Basevm.ExecuteCommand(path, args, wait, interactive);
         }
 
-        public virtual object ExecutePowershell(string script, Hashtable arguments)
+        public virtual PowershellResults ExecutePowershell(string script, Hashtable arguments)
         {
             return Basevm.ExecutePowershell(script, arguments);
         }
