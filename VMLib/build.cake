@@ -23,6 +23,7 @@ GetCurrentVersion(out MajorVersion, out MinorVersion, out PatchVersion, out Buil
 
 var Version = string.Format("{0}.{1}.{2}.{3}", MajorVersion, MinorVersion, PatchVersion, BuildCount);
 var PSVersion = string.Format("{0}.{1}.{2}", MajorVersion, MinorVersion, PatchVersion);
+var NugetVer = PSVersion + "-prerelease";
 
 void GetCurrentVersion(out int Major, out int Minor, out int Patch, out int Build)
 {
@@ -380,7 +381,7 @@ Task("Nuget")
 
         NuGetPack(new NuGetPackSettings {
             Id = "VMLib",
-            Version = Version,
+            Version = NugetVer,
             Title = "VMLib Library",
             Authors = new[] {"Wil Taylor"},
             Owners = new[] {"Wil Taylor"},
@@ -440,6 +441,16 @@ Task("Interactive")
     .IsDependentOn("PowershellModule")
     .Does(() => {
         StartProcess("powershell.exe", "-noexit -command \"Import-Module \".\\Build\\PSVMLib\\psvmlib.psd1\"");
+    });
+
+Task("PublishNuget")
+    .IsDependentOn("Nuget")
+    .Does(() => {
+        NuGetPush(ReleaseFolder + string.Format("/VMLib.{0}.nupkg", NugetVer),
+        new NuGetPushSettings {
+            Source = "https://www.nuget.org/api/v2/package",
+            ApiKey = EnvironmentVariable("NUGETAPIKey")
+        });
     });
 
 RunTarget(target);

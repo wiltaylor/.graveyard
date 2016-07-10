@@ -11,8 +11,8 @@ using System.Runtime.CompilerServices;
 [assembly: AssemblyDescription("Virtual Machine Control Library.")]
 [assembly: AssemblyCompany("Wil Taylor")]
 [assembly: AssemblyProduct("VMLib")]
-[assembly: AssemblyVersion("0.0.0.114")]
-[assembly: AssemblyFileVersion("0.0.0.114")]
+[assembly: AssemblyVersion("0.1.0.123")]
+[assembly: AssemblyFileVersion("0.1.0.123")]
 [assembly: AssemblyCopyright("Copyright Wil Taylor 2016")]
 [assembly: ComVisible(false)]
 

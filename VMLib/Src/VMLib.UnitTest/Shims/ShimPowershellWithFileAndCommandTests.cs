@@ -92,7 +92,7 @@ namespace VMLib.UnitTest.Shims
 
             sut.ExecutePowershell("#MyScript", null);
 
-            var script = "@\"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -executionpolicy bypass -noprofile -noninteractive -file \"c:\\windows\\temp\\{RANDOMGUID}.ps1\" > \"c:\\windows\\temp\\{RANDOMGUID}.stdout\" 2> \"c:\\windows\\temp\\{RANDOMGUID}.stderr\"";
+            var script = "@\"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -executionpolicy bypass -outputformat xml -noprofile -noninteractive -file \"c:\\windows\\temp\\{RANDOMGUID}.ps1\" > \"c:\\windows\\temp\\{RANDOMGUID}.stdout\" 2> \"c:\\windows\\temp\\{RANDOMGUID}.stderr\"";
             A.CallTo(() => file.WriteAllText("c:\\temp\\{RANDOMGUID}.cmd", script)).MustHaveHappened();
         }
 
