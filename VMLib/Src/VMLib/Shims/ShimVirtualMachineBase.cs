@@ -213,6 +213,25 @@ namespace VMLib.Shims
         public virtual string Name {
             get { return Basevm.Name; }
             set { Basevm.Name = value; } }
+
+        public virtual int Memory
+        {
+            get { return Basevm.Memory; }
+            set { Basevm.Memory = value; }
+        }
+
+        public virtual int CPU
+        {
+            get { return Basevm.CPU; }
+            set { Basevm.CPU = value; }
+        }
+
+        public virtual int CPUCores
+        {
+            get { return Basevm.CPUCores; }
+            set { Basevm.CPUCores = value; }
+        }
+
         public virtual void Clone(string path, string snapshot, bool linked)
         {
             Basevm.Clone(path, snapshot, linked);

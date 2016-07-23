@@ -370,6 +370,47 @@ namespace VMLib.VMware
             }
         }
 
+        public int Memory
+        {
+            get { return int.Parse(_vmx.ReadVMX("memsize")); }
+            set {_vmx.WriteVMX("memsize", value.ToString()); }
+        }
+
+        public int CPU
+        {
+            get
+            {
+                var vcpu = int.Parse(_vmx.ReadVMX("numvcpus"));
+                var corespercpu = int.Parse(_vmx.ReadVMX("cpuid.coresPerSocket"));
+
+                return vcpu/corespercpu;
+            }
+            set
+            {
+                var corespercpu = int.Parse(_vmx.ReadVMX("cpuid.coresPerSocket"));
+                var vcpu = value*corespercpu;
+                _vmx.WriteVMX("numvcpus", vcpu.ToString());
+            }
+        }
+
+        public int CPUCores
+        {
+            get
+            {
+                return int.Parse(_vmx.ReadVMX("cpuid.coresPerSocket"));
+            }
+            set
+            {
+                var vcpu = int.Parse(_vmx.ReadVMX("numvcpus"));
+                var corespercpu = int.Parse(_vmx.ReadVMX("cpuid.coresPerSocket"));
+                var currentcpus = vcpu/corespercpu;
+                corespercpu = value;
+                vcpu = currentcpus*corespercpu;
+                _vmx.WriteVMX("numcpus", vcpu.ToString());
+                _vmx.WriteVMX("cpuid.coresPerSocket", corespercpu.ToString());
+            }
+        }
+
         public void Clone(string path, string snapshot, bool linked)
         {
             var snap = _vix.GetSnapshots(_vm).FirstOrDefault(s => _vix.GetSnapshotName(s) == snapshot);

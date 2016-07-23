@@ -66,6 +66,9 @@ namespace VMLib
         string VMPath { get; }
         string VMDirectory { get; }
         string Name { get; set; }
+        int Memory { get; set; }
+        int CPU { get; set; }
+        int CPUCores { get; set; }
         void Clone(string path, string snapshot, bool linked);
         void DeleteVM();
 
