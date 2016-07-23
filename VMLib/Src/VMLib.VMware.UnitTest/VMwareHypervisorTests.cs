@@ -1,4 +1,5 @@
-﻿using FakeItEasy;
+﻿using SystemWrapper.IO;
+using FakeItEasy;
 using NUnit.Framework;
 using VMLib.Exceptions;
 using VMLib.UnitTest;
@@ -14,7 +15,7 @@ namespace VMLib.VMware.UnitTest
             if (connectionInfo == null)
                 connectionInfo = A.Fake<IHypervisorConnectionInfo>();
 
-            var sut = new VMwareHypervisor();
+            var sut = new VMwareHypervisor(A.Fake<IDirectoryWrap>());
             sut.SetConnectionSettings(connectionInfo);
 
             return sut;

@@ -97,6 +97,11 @@ namespace VMLib.UnitTest
         {
             throw new NotImplementedException();
         }
+
+        public string[] GetAllVMsInFolder(string path)
+        {
+            throw new NotImplementedException();
+        }
     }
 
     public class TesableHyperVisorBase : HypervisorInfoBase

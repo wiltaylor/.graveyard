@@ -49,5 +49,8 @@ namespace VMLib
         {
             return ServiceDiscovery.Instance.Resolve<IDiskBuilder>(Name);
         }
+
+        public abstract string[] GetAllVMsInFolder(string path);
+
     }
 }

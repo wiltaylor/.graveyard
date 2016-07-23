@@ -11,5 +11,6 @@ namespace VMLib
         IVirtualMachine OpenVM(string path);
         IEnumerable<IVirtualMachine> GetAllRunningVM();
         IDiskBuilder GetDiskBuilder();
+        string[] GetAllVMsInFolder(string path);
     }
 }

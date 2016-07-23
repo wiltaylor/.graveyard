@@ -90,5 +90,9 @@ namespace VMLib.UnitTest
     public class TestableHypervisorBase : HypervisorBase
     {
         public override string Name => "Testable";
+        public override string[] GetAllVMsInFolder(string path)
+        {
+            throw new NotImplementedException();
+        }
     }
 }
