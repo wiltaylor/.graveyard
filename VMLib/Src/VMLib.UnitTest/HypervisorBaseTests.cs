@@ -94,5 +94,7 @@ namespace VMLib.UnitTest
         {
             throw new NotImplementedException();
         }
+
+        public override string Extension => "test";
     }
 }

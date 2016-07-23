@@ -102,6 +102,8 @@ namespace VMLib.UnitTest
         {
             throw new NotImplementedException();
         }
+
+        public string Extension => "";
     }
 
     public class TesableHyperVisorBase : HypervisorInfoBase

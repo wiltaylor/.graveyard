@@ -51,6 +51,6 @@ namespace VMLib
         }
 
         public abstract string[] GetAllVMsInFolder(string path);
-
+        public abstract string Extension { get; }
     }
 }

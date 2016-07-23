@@ -19,5 +19,7 @@ namespace VMLib.VMware
         {
             return _directory.GetFiles(path, "*.vmx", SearchOption.AllDirectories);
         }
+
+        public override string Extension => "vmx";
     }
 }

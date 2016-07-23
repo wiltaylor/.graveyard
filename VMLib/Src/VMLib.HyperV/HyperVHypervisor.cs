@@ -7,5 +7,7 @@
         {
             throw new System.NotImplementedException();
         }
+
+        public override string Extension => "xml";
     }
 }
