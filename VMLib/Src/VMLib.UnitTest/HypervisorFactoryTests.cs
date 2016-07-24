@@ -1,7 +1,9 @@
 ﻿using System.Linq;
 using FakeItEasy;
 using NUnit.Framework;
+using Serilog;
 using VMLib.Exceptions;
+using VMLib.Hypervisor;
 using VMLib.IOC;
 
 namespace VMLib.UnitTest
@@ -12,7 +14,7 @@ namespace VMLib.UnitTest
 
         private IHypervisorFactory DefaultHypervisorFactory()
         {
-            return new HypervisorFactory();
+            return new HypervisorFactory(A.Fake<ILogger>());
         }
 
         private IServiceDiscovery CreateFakeServiceDiscovery()

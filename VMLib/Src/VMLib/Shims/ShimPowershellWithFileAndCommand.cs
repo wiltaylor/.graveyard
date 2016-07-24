@@ -14,6 +14,7 @@ namespace VMLib.Shims
 
         public override PowershellResults ExecutePowershell(string script, Hashtable arguments)
         {
+            
             var env = ServiceDiscovery.Instance.Resolve<IEnvironmentHelper>();
             var file = ServiceDiscovery.Instance.Resolve<IFileWrap>();
             var guid = env.GetGUID();

@@ -1,4 +1,5 @@
-$script:HypervisorFactory = New-Object VMLib.HypervisorFactory
+
+$script:HypervisorFactory = [VMLib.Hypervisor.HypervisorFactory]::GetInstance()
 
 foreach($file in Get-ChildItem -Path $PSScriptRoot -File)
 {
