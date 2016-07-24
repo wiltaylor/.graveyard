@@ -28,15 +28,6 @@ namespace VMLib.VMware.UnitTest
             Assert.That(sut.Name == "VMwareWorkstation");
         }
 
-        [Test]
-        public void Constructor_RegistersVMwareHypervisorDuringConstruction()
-        {
-            var srv = FakeServiceDiscovery.ReturnTestableInstance();
-            var sut = DefaultVMwareHypervisorInfoFactory();
-
-            A.CallTo(() => srv.AddSingletonType<IHypervisor, VMwareHypervisor>(sut.Name)).MustHaveHappened();
-        }
-
         [TestCase("VMwareWorkstationPath")]
         public void CreateConnectionInfo_CheckForExpectedProperties_ContainsExpectedProperties(string property)
         {

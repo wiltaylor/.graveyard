@@ -6,11 +6,6 @@ namespace VMLib.HyperV
     {
         public override string Name => "HyperV";
 
-        public HyperVHypervisorInfo()
-        {
-            AddTypeToIOC<IHypervisor, HyperVHypervisor>();
-        }
-
         public override IHypervisorConnectionInfo CreateConnectionInfo()
         {
             var info = new HyperVHypervisorConnectionInfo();

@@ -18,10 +18,5 @@ namespace VMLib
             hypervisor.SetConnectionSettings(info);
             return hypervisor;
         }
-
-        protected void AddTypeToIOC<TF, T>()
-        {
-            ServiceDiscovery.Instance.AddSingletonType<TF,T>(Name);
-        }
     }
 }

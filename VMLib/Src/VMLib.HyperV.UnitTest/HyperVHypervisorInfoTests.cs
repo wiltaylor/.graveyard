@@ -27,16 +27,6 @@ namespace VMLib.HyperV.UnitTest
             Assert.That(sut.Name == "HyperV");
         }
 
-        [Test]
-        public void Constructor_RegistersHyperVHypervisorDuringConstruction()
-        {
-            var srv = FakeServiceDiscovery.ReturnTestableInstance();
-
-            var sut = DefaultHyperVHypervisorInfoFactory(srvDiscovery: srv);
-
-            A.CallTo(() => srv.AddSingletonType<IHypervisor, HyperVHypervisor>(sut.Name)).MustHaveHappened();
-        }
-
         [TestCase("Host")]
         public void CreateConnectionInfo_CheckForExpectedProperties_ContainsExpectedPRoperties(string property)
         {

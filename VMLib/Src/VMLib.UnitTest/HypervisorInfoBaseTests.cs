@@ -21,17 +21,6 @@ namespace VMLib.UnitTest
         }
 
         [Test]
-        public void AddTypeToIOC_AddingATypeToIOC_CallsServiceDiscovery()
-        {
-            var srv = FakeServiceDiscovery.ReturnTestableInstance();
-            var sut = DefaultTestableHypervisorInfoBase();
-            
-            sut.TestInternal_AddTypeToIOC<IHypervisor, FakeHypervisor>();
-
-            A.CallTo(() => srv.AddSingletonType<IHypervisor, FakeHypervisor>("Testable")).MustHaveHappened();
-        }
-
-        [Test]
         public void CreateHypervisor_CreateInstance_CallsServiceDiscoveryToRetrive()
         {
             var srv = FakeServiceDiscovery.ReturnTestableInstance();
@@ -109,11 +98,6 @@ namespace VMLib.UnitTest
     public class TesableHyperVisorBase : HypervisorInfoBase
     {
         public override string Name => "Testable";
-
-        public void TestInternal_AddTypeToIOC<F, T>()
-        {
-            AddTypeToIOC<F,T>();
-        }
 
         public override IHypervisorConnectionInfo CreateConnectionInfo()
         {

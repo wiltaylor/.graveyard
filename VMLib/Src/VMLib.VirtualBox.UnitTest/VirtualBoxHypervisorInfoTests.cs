@@ -29,16 +29,6 @@ namespace VMLib.VirtualBox.UnitTest
             Assert.That(sut.Name == "VirtualBox");
         }
 
-        [Test]
-        public void Constructor_RegistersVirtualBoxHypervisorDuringConstruction()
-        {
-            var srv = FakeServiceDiscovery.ReturnTestableInstance();
-
-            var sut = DefaultVirtualBoxHypervisorInfo(srvDiscovery: srv);
-
-            A.CallTo(() => srv.AddSingletonType<IHypervisor, VirtualBoxHypervisor>(sut.Name)).MustHaveHappened();
-        }
-
         [TestCase("VirtualBoxPath")]
         public void CreateConnectionInfo_CheckForExpectedProperties_ContainsExpectedPRoperties(string property)
         {

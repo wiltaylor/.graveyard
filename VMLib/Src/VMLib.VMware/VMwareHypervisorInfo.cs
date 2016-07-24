@@ -1,7 +1,4 @@
-﻿using System;
-using SystemWrapper.Microsoft.Win32;
-using VMLib.Disk;
-using VMLib.VMware.VIXItems;
+﻿using SystemWrapper.Microsoft.Win32;
 
 namespace VMLib.VMware
 {
@@ -13,11 +10,6 @@ namespace VMLib.VMware
 
         public VMwareHypervisorInfo(IRegistryWrap reg)
         {
-            AddTypeToIOC<IHypervisor, VMwareHypervisor>();
-            AddTypeToIOC<IVMFactory, VMwareVMFactory>();
-            AddTypeToIOC<IVix, VIX>();
-            AddTypeToIOC<IVMXHelper, VMXHelper>();
-            AddTypeToIOC<IDiskBuilder, VMwareDiskBuilder>();
             _reg = reg;
         }
 

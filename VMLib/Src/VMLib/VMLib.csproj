@@ -55,7 +55,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="BootStrap.cs" />
+    <Compile Include="IOC\BootStrap.cs" />
     <Compile Include="Disk\FloppyBuilder.cs" />
     <Compile Include="Disk\IDiskBuilder.cs" />
     <Compile Include="Disk\IFloppyBuilder.cs" />
