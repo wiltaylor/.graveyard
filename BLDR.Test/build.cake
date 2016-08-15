@@ -17,7 +17,7 @@ var Copyright = "Wil Taylor 2016";
 var ReleaseNotes = new[] {
         "some notes here",
         "here"
-    }
+    };
 
 var version = GitVersion(new GitVersionSettings{UpdateAssemblyInfo = true});
 var target = Argument("target", "Default");
@@ -26,29 +26,24 @@ var ReleaseFolder = RootDir + "/Release";
 var BuildFolder = RootDir + "/Build";
 var SourceFiles = RootDir +"/Src";
 
-//Check folder structure.
-CreateDirectory(ReportFolder);
-
-
 Task("Default")
     .IsDependentOn("Package");
 
-Task("Clean")
-    .IsDependentOn("CleanVMLab")
+Task("Clean");
 
 Task("Package")
     .Does(() => {       
         var nuGetPackSettings   = new NuGetPackSettings {
-                                        Id                      = "BLDR." + TemplateName,
+                                        Id                      = "BLDR." + TemplateID,
                                         Version                 = version.NuGetVersionV2,
                                         Title                   = TemplateTitle,
                                         Authors                 = Authors,
                                         Owners                  = Owners,
                                         Description             = Description,
                                         Summary                 = Description,
-                                        ProjectUrl              = ProjectURL,
-                                        IconUrl                 = IconURL,
-                                        LicenseUrl              = LicenseURL),
+                                        ProjectUrl              = new Uri(ProjectURL),
+                                        IconUrl                 = new Uri(IconURL),
+                                        LicenseUrl              = new Uri(LicenseURL),
                                         Copyright               = Copyright,
                                         ReleaseNotes            = ReleaseNotes,
                                         Tags                    = new [] {"BLDR"},
@@ -57,7 +52,7 @@ Task("Package")
                                         NoPackageAnalysis       = true,
                                         Files                   = new [] {
                                                                             new NuSpecContent {Source = SourceFiles + "/generator.json", Target = "bldr"},
-                                                                            new NuSpecContent {Source = SourceFiles + "/scriptcs_packages.config", Target = "bldr"},
+                                                                            /*new NuSpecContent {Source = SourceFiles + "/scriptcs_packages.config", Target = "bldr"},*/
                                                                             new NuSpecContent {Source = SourceFiles + "/Project.csx", Target = "bldr"},
                                                                             new NuSpecContent {Source = SourceFiles + "/Item.csx", Target = "bldr"}
                                                                         },
@@ -65,59 +60,10 @@ Task("Package")
                                         OutputDirectory         = ReleaseFolder
                                     };
                     
-        NuGetPack("./nuspec/TestNuget.nuspec", nuGetPackSettings);
+        NuGetPack(nuGetPackSettings);
     });
 
 Task("Publish");
-
-
-
-
-/*****************************************************************************************************
-VMLab
-*****************************************************************************************************/
-Task("CleanVMLab")
-    .Does(() => {
-        CleanDirectory(BuildFolder + "/VMlab");
-        CleanDirectory(BuildFolder + "/VMlab.tmp");
-    });
-
-Task("BuildVMLab")
-    .IsDependentOn("CleanVMLab")
-    .Does(() => {
-        MSBuild(SolutionFile, config =>
-            config.SetVerbosity(Verbosity.Minimal)
-            .UseToolVersion(MSBuildToolVersion.VS2015)
-            .WithTarget("VMLab")
-            .WithProperty("OutDir", BuildFolder + "/VMLab.tmp")
-            .SetMSBuildPlatform(MSBuildPlatform.x86)
-            .SetPlatformTarget(PlatformTarget.MSIL));
-
-            CopyFile(BuildFolder + "/VMLab.tmp/VMlab.dll", BuildFolder + "/VMLab/VMlab.dll");
-            CopyFile(BuildFolder + "/VMLab.tmp/VMlab.pdb", BuildFolder + "/VMLab/VMlab.pdb");
-            DeleteDirectory(BuildFolder + "/VMLab.tmp", true);
-        });
-
-Task("CleanVMLab.UnitTest")
-    .Does(() => CleanDirectory(BuildFolder + "/VMLab.UnitTest"));
-
-Task("BuildVMLab.UnitTest")
-    .IsDependentOn("CleanVMLab.UnitTest")
-    .Does(() => MSBuild(SolutionFile, config =>
-            config.SetVerbosity(Verbosity.Minimal)
-            .UseToolVersion(MSBuildToolVersion.VS2015)
-            .WithTarget("VMLab_UnitTest")
-            .WithProperty("OutDir", BuildFolder + "/VMLab.UnitTest")
-            .SetMSBuildPlatform(MSBuildPlatform.x86)
-            .SetPlatformTarget(PlatformTarget.MSIL)));
-
-Task("TestVMLab")
-    .IsDependentOn("BuildVMLab.UnitTest")
-    .Does(() => NUnit3(BuildFolder + "/VMLab.UnitTest/VMLab.UnitTest.dll", 
-        new NUnit3Settings{
-            Results = ReportFolder + "/VMLab.xml"
-        }));
-
 
 
 /*****************************************************************************************************
