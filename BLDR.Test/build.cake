@@ -30,7 +30,7 @@ Task("Default")
     .IsDependentOn("Package");
 
 Task("Clean")
-    .Does(() => CleanFolder(ReleaseFolder));
+    .Does(() => CleanDirectory(ReleaseFolder));
 
 Task("Package")
     .Does(() => {       
@@ -65,9 +65,9 @@ Task("Package")
     });
 
 Task("Publish")
-    .IsDependentOn()
+    .IsDependentOn("Package")
     .Does(() => {
-        NugetPush(ReleaseFolder + string.Format("/BLDR.{0}.{1}.nupkg", TemplateID, NugetVer),
+        NuGetPush(ReleaseFolder + string.Format("/BLDR.{0}.{1}.nupkg", TemplateID, version.NuGetVersionV2),
             new NuGetPushSettings {
                 Source = "https://www.nuget.org/api/v2/package",
                 ApiKey = EnvironmentVariable("NUGETAPIKey")
