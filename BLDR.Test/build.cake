@@ -29,7 +29,8 @@ var SourceFiles = RootDir +"/Src";
 Task("Default")
     .IsDependentOn("Package");
 
-Task("Clean");
+Task("Clean")
+    .Does(() => CleanFolder(ReleaseFolder));
 
 Task("Package")
     .Does(() => {       
@@ -63,7 +64,15 @@ Task("Package")
         NuGetPack(nuGetPackSettings);
     });
 
-Task("Publish");
+Task("Publish")
+    .IsDependentOn()
+    .Does(() => {
+        NugetPush(ReleaseFolder + string.Format("/BLDR.{0}.{1}.nupkg", TemplateID, NugetVer),
+            new NuGetPushSettings {
+                Source = "https://www.nuget.org/api/v2/package",
+                ApiKey = EnvironmentVariable("NUGETAPIKey")
+        });
+    });
 
 
 /*****************************************************************************************************
