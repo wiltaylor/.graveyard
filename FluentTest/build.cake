@@ -136,7 +136,8 @@ Task("TestFluentTest")
         HtmlReport = true,
         XmlReport = true,
         NoAppDomain = true,
-        OutputDirectory = ReportFolder + "/FluentTest"
+        OutputDirectory = ReportFolder + "/FluentTest",
+        WorkingDirectory = BuildFolder + "/FluentTest.UnitTest"
             
     }));
 
@@ -163,8 +164,8 @@ Task("PackageFluentTest.Nuget")
             Symbols                 = false,
             NoPackageAnalysis       = true,
             Files                   = new [] {
-                                                new NuSpecContent {Source = BuildFolder + "/FluentTest/FluentTest.dll", Target = "net462"},
-                                                new NuSpecContent {Source = BuildFolder + "/FluentTest/FluentTest.pdb", Target = "net462"}
+                                                new NuSpecContent {Source = BuildFolder + "/FluentTest/FluentTest.dll", Target = "net45"},
+                                                new NuSpecContent {Source = BuildFolder + "/FluentTest/FluentTest.pdb", Target = "net45"}
                                              },
             OutputDirectory         = ReleaseFolder
         })); 
