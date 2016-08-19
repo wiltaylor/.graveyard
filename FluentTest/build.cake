@@ -5,7 +5,6 @@ Author: Wil Taylor
 #tool "nuget:?package=GitVersion.CommandLine"
 #tool "nuget:?package=xunit.runner.console"
 #tool "nuget:?package=ILRepack"
-#addin nuget:?package=Cake.Git
 
 var gituser = EnvironmentVariable("GITHUBUSER");
 var gitpassword = EnvironmentVariable("GITHUBPASSWORD");
@@ -47,12 +46,15 @@ Task("Package")
     .IsDependentOn("PackageFluentTest");
 
 Task("Publish")
-    .IsDependentOn("Package");
+    .IsDependentOn("Package")
+    .IsDependentOn("GitHubPublish")
+    .IsDependentOn("PublishFluentTest");
 
 /*****************************************************************************************************
 Git and GitHub
 *****************************************************************************************************/
 Task("GitHubPublish")
+    .WithCriteria(version.BranchName == "master")
     .Does(() => {
         GitReleaseManagerCreate(gituser, gitpassword, gitrepoowner, gitreponame, new GitReleaseManagerCreateSettings {
             Milestone = version.SemVer,
@@ -173,6 +175,16 @@ Task("PackageFluentTest.Zip")
         CopyFiles(BuildFolder + "/FluentTest/*.*", BuildFolder + "/FluentTest.Zip");
         Zip(BuildFolder + "/FluentTest.Zip", ReleaseFolder + String.Format("/FluentTest-{0}.zip", version.SemVer));
     });
+
+Task("PublishFluentTest")
+    .IsDependentOn("PublishFluentTestToNuget");
+
+Task("PublishFluentTestToNuget")
+    .Does(() => NuGetPush(ReleaseFolder + string.Format("/FluentTest.{0}.nupkg", version.NuGetVersionV2),
+        new NuGetPushSettings {
+            Source = "https://www.nuget.org/api/v2/package",
+            ApiKey = EnvironmentVariable("NUGETAPIKey")
+        }));
         
 /*****************************************************************************************************
 End of script
