@@ -85,8 +85,8 @@ Task("RestoreAssemblyInfoFluentTest")
     .Does(() => {
             CreateDirectory(SourceFiles + "/FluentTest/Properties");
             CreateAssemblyInfo(SourceFiles + "/FluentTest/Properties/AssemblyInfo.cs", 
-                new AssemblyInfoSettings {Product = "FluentTest"})); // Don't bother setting versions, gitversion overwrites them.
-        }; 
+                new AssemblyInfoSettings {Product = "FluentTest"}); // Don't bother setting versions, gitversion overwrites them.
+    )}; 
 
 Task("RestoreAssemblyInfoFluentTest.UnitTest")
     .Does(() => {
