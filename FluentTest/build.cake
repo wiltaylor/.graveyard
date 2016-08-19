@@ -27,7 +27,12 @@ CreateDirectory(ReleaseFolder);
 CreateDirectory(BuildFolder);
 
 Task("Default")
+    .IsDependentOn("Restore")
     .IsDependentOn("Package");
+
+Task("Restore")
+    .IsDependentOn("RestoreNuget")
+    .IsDependentOn("RestoreFluentTest");
 
 Task("Clean")
     .IsDependentOn("CleanFluentTest");
@@ -61,10 +66,28 @@ Task("GitHubPublish")
         GitReleaseManagerPublish(gituser, gitpassword, gitrepoowner, gitreponame, version.SemVer);
     });
 /*****************************************************************************************************
+Global Nuget Tasks
+*****************************************************************************************************/
+Task("RestoreNuget")
+    .Does(() => NuGetRestore(SolutionFile));
+
+/*****************************************************************************************************
 FluentTest
 *****************************************************************************************************/
 Task("CleanFluentTest")
     .Does(() => CleanDirectory(BuildFolder + "/FluentTest"));
+
+Task("RestoreFluentTest")
+    .IsDependentOn("RestoreAssemblyInfoFluentTest")
+    .IsDependentOn("RestoreAssemblyInfoFluentTest.UnitTest");
+
+Task("RestoreAssemblyInfoFluentTest")
+    .Does(() => CreateAssemblyInfo(SourceFiles + "/FluentTest/Properties/AssemblyInfo.cs", new AssemblyInfoSettings {
+        Product = "FluentTest"})); // Don't bother setting versions, gitversion overwrites them.
+
+Task("RestoreAssemblyInfoFluentTest.UnitTest")
+    .Does(() => CreateAssemblyInfo(SourceFiles + "/FluentTest.UnitTest/Properties/AssemblyInfo.cs", new AssemblyInfoSettings {
+        Product = "FluentTest"})); // Don't bother setting versions, gitversion overwrites them.
 
 Task("BuildFluentTest")
     .IsDependentOn("CleanFluentTest")
