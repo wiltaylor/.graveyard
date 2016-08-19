@@ -73,7 +73,7 @@ Task("BuildFluentTest")
             config.SetVerbosity(Verbosity.Minimal)
             .UseToolVersion(MSBuildToolVersion.VS2015)
             .WithTarget("FluentTest")
-            .WithProperty("OutDir", BuildFolder + "/FluentTest.tmp")
+            .WithProperty("OutDir", BuildFolder + "/FluentTest")
             .SetMSBuildPlatform(MSBuildPlatform.x64)
             .SetPlatformTarget(PlatformTarget.MSIL));
         });
@@ -112,7 +112,6 @@ Task("PackageFluentTest")
 
 Task("PackageFluentTest.Nuget")
     .IsDependentOn("BuildFluentTest")
-    .IsDependentOn("BuildVMLib.VMwareWorkstation")
     .Does(() => NuGetPack(new NuGetPackSettings {
             Id                      = "FluentTest",
             Version                 = version.NuGetVersionV2,
@@ -140,7 +139,6 @@ Task("PackageFluentTest.Zip")
     .Does(() => {
         CleanDirectory(BuildFolder + "/FluentTest.Zip");
         CopyFiles(BuildFolder + "/FluentTest/*.*", BuildFolder + "/FluentTest.Zip");
-        CopyFiles(BuildFolder + "/VMlib.VMwareWorkstation/*.*", BuildFolder + "/FluentTest.Zip");
         Zip(BuildFolder + "/FluentTest.Zip", ReleaseFolder + String.Format("/FluentTest-{0}.zip", version.SemVer));
     });
         
