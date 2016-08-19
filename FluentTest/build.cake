@@ -82,12 +82,19 @@ Task("RestoreFluentTest")
     .IsDependentOn("RestoreAssemblyInfoFluentTest.UnitTest");
 
 Task("RestoreAssemblyInfoFluentTest")
-    .Does(() => CreateAssemblyInfo(SourceFiles + "/FluentTest/Properties/AssemblyInfo.cs", new AssemblyInfoSettings {
-        Product = "FluentTest"})); // Don't bother setting versions, gitversion overwrites them.
+    .Does(() => {
+            CreateDirectory(SourceFiles + "/FluentTest/Properties");
+            CreateAssemblyInfo(SourceFiles + "/FluentTest/Properties/AssemblyInfo.cs", 
+                new AssemblyInfoSettings {Product = "FluentTest"})); // Don't bother setting versions, gitversion overwrites them.
+        }; 
 
 Task("RestoreAssemblyInfoFluentTest.UnitTest")
-    .Does(() => CreateAssemblyInfo(SourceFiles + "/FluentTest.UnitTest/Properties/AssemblyInfo.cs", new AssemblyInfoSettings {
-        Product = "FluentTest"})); // Don't bother setting versions, gitversion overwrites them.
+    .Does(() => {
+            CreateDirectory(SourceFiles + "/FluentTest.UnitTest/Properties");
+            CreateAssemblyInfo(SourceFiles + "/FluentTest.UnitTest/Properties/AssemblyInfo.cs", 
+                new AssemblyInfoSettings { Product = "FluentTest"}); // Don't bother setting versions, gitversion overwrites them.
+        }); 
+    
 
 Task("BuildFluentTest")
     .IsDependentOn("CleanFluentTest")
