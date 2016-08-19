@@ -9,7 +9,7 @@ install:
   - choco install gitversion.portable -pre -y
 
 before_build:
-  - nuget restore
+  - ps: .\Build.ps1 -Target Restore
   - ps: gitversion /l console /output buildserver /updateAssemblyInfo
 build_script:
 - ps: >-
