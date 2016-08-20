@@ -5,17 +5,10 @@ environment:
     secure: f9WaafZZnjfL75Q+KWf0FNFJg3d+JrVRacP6h2QrQmiByV/quLEiJFyJwcBENP3G
 nuget:
   project_feed: true
-install:
-  - choco install gitversion.portable -pre -y
-
 before_build:
   - ps: .\Build.ps1 -Target Restore
-  - ps: gitversion /l console /output buildserver /updateAssemblyInfo
 build_script:
-- ps: >-
-    .\Build.ps1 -Target Restore
-
-    .\Build.ps1 -Target Package
+- ps: .\Build.ps1 -Target Package
 test_script:
 - ps: .\build.ps1 -Target Test
 artifacts:

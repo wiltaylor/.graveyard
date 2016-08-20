@@ -19,6 +19,7 @@ var SourceFiles = RootDir +"/Src";
 var SolutionFile = SourceFiles + "/FluentTest.sln";
 var ReportFolder = RootDir + "/Reports";
 var NugetPackages = SourceFiles + "/packages";
+var ToolsFolder = RootDir + "/tools"
 
 //Check folder structure.
 CreateDirectory(ReportFolder);
@@ -30,6 +31,7 @@ Task("Default")
     .IsDependentOn("Package");
 
 Task("Restore")
+    .IsDependentOn("AppveyorGitVersion")
     .IsDependentOn("RestoreNuget")
     .IsDependentOn("RestoreFluentTest");
 
@@ -67,6 +69,14 @@ Task("GitHubPublish")
 
         GitReleaseManagerPublish(gituser, gitpassword, gitrepoowner, gitreponame, version.SemVer);
     });
+/*****************************************************************************************************
+Appveyor Tasks
+*****************************************************************************************************/
+Task("AppveyorGitVersion")
+    .WithCriteria(EnvironmentVariable("CI") == "True")
+    .Does(() => StartProcess(ToolsFolder + "/GitVersion.CommandLine/tools/GitVersion.exe", 
+        "/l console /output buildserver /updateAssemblyInfo"));
+
 /*****************************************************************************************************
 Global Nuget Tasks
 *****************************************************************************************************/
