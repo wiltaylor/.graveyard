@@ -44,8 +44,10 @@
     <Compile Include="ActTarget.cs" />
     <Compile Include="ArrangeTarget.cs" />
     <Compile Include="AssertTarget.cs" />
+    <Compile Include="AssertTestInfo.cs" />
     <Compile Include="DataTarget.cs" />
-    <Compile Include="FluentTest.cs" />
+    <Compile Include="ITestInfo.cs" />
+    <Compile Include="TestInfo.cs" />
     <Compile Include="Exceptions\FluentTestAssertException.cs" />
     <Compile Include="TestConfigBase.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

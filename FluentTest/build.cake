@@ -7,6 +7,7 @@ Author: Wil Taylor
 #tool "nuget:?package=ILRepack"
 #tool "nuget:?package=JetBrains.dotCover.CommandLineTools"
 #addin "Cake.Json"
+#tool "nuget:?package=gitlink"
 
 var gituser = EnvironmentVariable("GITHUBUSER");
 var gitpassword = EnvironmentVariable("GITHUBPASSWORD");
@@ -119,10 +120,12 @@ Task("RestoreAssemblyInfoFluentTest.UnitTest")
 
             CreateAssemblyInfo(SourceFiles + "/FluentTest.UnitTest/Properties/AssemblyInfo.cs", 
                 new AssemblyInfoSettings { Product = "FluentTest" }); // Don't bother setting versions, gitversion overwrites them.
-        }); 
-    
+        });     
 
 Task("BuildFluentTest")
+    .IsDependentOn("BuildFluentTest.GitLink");
+
+Task("BuildFluentTest.Compile")
     .IsDependentOn("CleanFluentTest")
     .Does(() => {
         MSBuild(SolutionFile, config =>
@@ -133,6 +136,28 @@ Task("BuildFluentTest")
             .SetMSBuildPlatform(MSBuildPlatform.x64)
             .SetPlatformTarget(PlatformTarget.MSIL));
         });
+
+Task("BuildFluentTest.StageGitLinkFiles")
+    .IsDependentOn("BuildFluentTest.Compile")
+    .IsDependentOn("BuildFluentTest.UnitTest")
+    .Does(() => {
+        CleanDirectory(BuildFolder + "/FluentTest.GitLink");
+        CopyFiles(BuildFolder + "/FluentTest/*.pdb", BuildFolder + "/FluentTest.GitLink");
+        CopyFiles(BuildFolder + "/FluentTest.UnitTest/*.pdb", BuildFolder + "/FluentTest.GitLink");
+    });
+    
+
+Task("BuildFluentTest.GitLink")
+    .IsDependentOn("BuildFluentTest.StageGitLinkFiles")
+    .Does(() => {
+        GitLink(RootDir, new GitLinkSettings{
+            Branch = version.BranchName,
+            RepositoryUrl = "https://github.com/wiltaylor/FluentTest",
+            PdbDirectoryPath = BuildFolder + "/FluentTest.GitLink"
+        });
+
+        CopyFile(BuildFolder + "/FluentTest.GitLink/FluentTest.pdb", BuildFolder + "/FluentTest/FluentTest.pdb");
+    });
 
 Task("CleanFluentTest.UnitTest")
     .Does(() => {
@@ -204,9 +229,9 @@ Task("CoverFluentTest.HTMLReport")
 Task("CoverFluentTest.Check")
     .IsDependentOn("CoverFluentTest.JSONReport")
     .Does(() => {
-        var report = ParseJsonFromFile(ReportFolder + "/Cover.json");
-
-        if((int)report["CoveragePercent"] < 80)
+        var coverage = (int)(ParseJsonFromFile(ReportFolder + "/Cover.json")["CoveragePercent"]);
+        Information(string.Format("Code Coverage: {0}%", coverage));
+        if(coverage < 80)
             throw new Exception("Cover coverage to low!");
     });
 

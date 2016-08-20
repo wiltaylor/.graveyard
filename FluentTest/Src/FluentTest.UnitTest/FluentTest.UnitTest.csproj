@@ -72,9 +72,13 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="BasicTests.cs" />
+    <Compile Include="ActTargetTests.cs" />
+    <Compile Include="ArrangeTargetTests.cs" />
+    <Compile Include="AssertTargetTests.cs" />
+    <Compile Include="DataTargetTests.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
-    <Compile Include="TestConfig.cs" />
+    <Compile Include="Test.cs" />
+    <Compile Include="TestObjects\IFakeContainer.cs" />
     <Compile Include="TestObjects\IMockInterface.cs" />
     <Compile Include="TestObjects\TestSut.cs" />
   </ItemGroup>

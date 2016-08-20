@@ -1,4 +1,4 @@
-version: 1.0.{build}
+version: To be supplied by gitversion
 image: Visual Studio 2015
 environment:
   NUGETAPIKey:
@@ -13,7 +13,6 @@ test_script:
 - ps: .\build.ps1 -Target Test
 artifacts:
 - path: /Release/*.*
-- path: /Reports/*.*
 deploy_script:
 - ps: .\build.ps1 -Target publish
 notifications:

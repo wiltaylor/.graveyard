@@ -12,15 +12,13 @@ namespace FluentTest
             _config = config;
         }
 
-        public void Data(Func<IEnumerable<TData>> dataPredicate, Action<ArrangeTarget<TContainer, TSut, TMock,TData>> testPredicate)
+        public void Data(Func<IEnumerable<TData>> dataPredicate, Action<TestInfo<TContainer, TSut, TMock, TData>> testPredicate)
         {
-
             foreach (var d in dataPredicate())
             {
-                var info = new TestInfo<TSut, TMock,TData>();
-                info.Data = d;
+                var info = new TestInfo<TContainer, TSut, TMock, TData>(_config.BuildContainer());
                 
-                testPredicate(new ArrangeTarget<TContainer, TSut, TMock, TData>(_config, info));
+                testPredicate(info);
             }           
         }
     }
