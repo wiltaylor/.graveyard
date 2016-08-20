@@ -8,6 +8,7 @@ Author: Wil Taylor
 #tool "nuget:?package=JetBrains.dotCover.CommandLineTools"
 #addin "Cake.Json"
 #tool "nuget:?package=gitlink"
+#tool "nuget:?package=gitreleasemanager"
 
 var gituser = EnvironmentVariable("GITHUBUSER");
 var gitpassword = EnvironmentVariable("GITHUBPASSWORD");
