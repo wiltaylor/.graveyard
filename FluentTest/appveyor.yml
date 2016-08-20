@@ -3,6 +3,10 @@ image: Visual Studio 2015
 environment:
   NUGETAPIKey:
     secure: f9WaafZZnjfL75Q+KWf0FNFJg3d+JrVRacP6h2QrQmiByV/quLEiJFyJwcBENP3G
+  GITHUBUSER:
+    secure: irLWtZzcq0FuQbrlCmKys9xE9bH4/Nd+LMBxzQOXXHs=
+  GITHUBPASSWORD:
+    secure: LFtOYE+LHqF2hEq5XYyszg==
 nuget:
   project_feed: true
 before_build:
