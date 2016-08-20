@@ -1,4 +1,13 @@
 # Fluent Test
+[![GitHub version](https://badge.fury.io/gh/wiltaylor%2Ffluenttest.svg)](https://badge.fury.io/gh/wiltaylor%2Ffluenttest)
+[![Develop Build status](https://ci.appveyor.com/api/projects/status/hk5755di5488xrn9/branch/develop?svg=true&passingText=develop%20-%20OK&failingText=develop%20-%20FAIL&pendingText=develop%20-%20BUILDING)](https://ci.appveyor.com/project/wiltaylor/fluenttest/branch/develop)
+[![Master Build status](https://ci.appveyor.com/api/projects/status/hk5755di5488xrn9/branch/master?svg=true&passingText=master%20-%20OK&failingText=master%20-%20FAIL&pendingText=master%20-%20BUILDING)](https://ci.appveyor.com/project/wiltaylor/fluenttest/branch/master)
+[![Latest Docs status](https://readthedocs.org/projects/fluenttest/badge/?version=latest)](http://fluenttest.readthedocs.io/en/latest/)
+[![Develop Docs status](https://readthedocs.org/projects/fluenttest/badge/?version=develop)](http://fluenttest.readthedocs.io/en/develop/)
+[![NuGet version](https://badge.fury.io/nu/fluenttest.svg?label=Nuget)](https://badge.fury.io/nu/fluenttest)
+[![MIT license](http://img.shields.io/badge/license-MIT-brightgreen.svg)](http://opensource.org/licenses/MIT)
+
+
 Fluent test is an experimental framework I am working on to try and make the Arrange, Act and Assert phases of unit testing more readable and also enforces good practice.
 
 To illustrate how this works the following is a typical unit test:
@@ -29,7 +38,7 @@ You can install this package via NuGet in Visual Studio 2015+.
 You can also get a zipped version in the release section of this repository.
 
 ## Usage
-You can view a guide on how to use this library [here](docs/index.md).
+You can view a guide on how to use this library [here](http://fluenttest.readthedocs.io/en/latest/).
 
 ## Contributing
 1. Raise a issue in issues for the feature or bug you are fixing.
