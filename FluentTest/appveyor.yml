@@ -1,4 +1,5 @@
 version: 0.0.{build}
+skip_tags: true
 image: Visual Studio 2015
 environment:
   NUGETAPIKey:
