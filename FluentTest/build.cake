@@ -19,7 +19,7 @@ var SourceFiles = RootDir +"/Src";
 var SolutionFile = SourceFiles + "/FluentTest.sln";
 var ReportFolder = RootDir + "/Reports";
 var NugetPackages = SourceFiles + "/packages";
-var ToolsFolder = RootDir + "/tools"
+var ToolsFolder = RootDir + "/tools";
 
 //Check folder structure.
 CreateDirectory(ReportFolder);
