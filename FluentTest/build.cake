@@ -5,6 +5,8 @@ Author: Wil Taylor
 #tool "nuget:?package=GitVersion.CommandLine"
 #tool "nuget:?package=xunit.runner.console"
 #tool "nuget:?package=ILRepack"
+#tool "nuget:?package=JetBrains.dotCover.CommandLineTools"
+#addin "Cake.Json"
 
 var gituser = EnvironmentVariable("GITHUBUSER");
 var gitpassword = EnvironmentVariable("GITHUBPASSWORD");
@@ -42,7 +44,8 @@ Task("Build")
     .IsDependentOn("BuildFluentTest");
 
 Task("Test")
-    .IsDependentOn("TestFluentTest");
+    .IsDependentOn("TestFluentTest")
+    .IsDependentOn("CoverFluentTest");
 
 Task("Package")
     .IsDependentOn("PackageFluentTest");
@@ -51,6 +54,9 @@ Task("Publish")
     .IsDependentOn("Package")
     .IsDependentOn("GitHubPublish")
     .IsDependentOn("PublishFluentTest");
+
+Task("Update")
+    .IsDependentOn("UpdateNuget");
 
 /*****************************************************************************************************
 Git and GitHub
@@ -82,6 +88,12 @@ Global Nuget Tasks
 *****************************************************************************************************/
 Task("RestoreNuget")
     .Does(() => NuGetRestore(SolutionFile));
+
+Task("UpdateNuget")
+    .Does(() => {
+        foreach(var pkgfile in GetFiles(SourceFiles + "/**/packages.config"))
+            NuGetUpdate(pkgfile);
+    });
 
 /*****************************************************************************************************
 FluentTest
@@ -145,11 +157,58 @@ Task("TestFluentTest")
         Parallelism = ParallelismOption.All,
         HtmlReport = true,
         XmlReport = true,
-        NoAppDomain = true,
+        NoAppDomain = false,
         OutputDirectory = ReportFolder + "/FluentTest",
-        WorkingDirectory = BuildFolder + "/FluentTest.UnitTest"
-            
+        WorkingDirectory = BuildFolder + "/FluentTest.UnitTest",
+        ShadowCopy = true
+
     }));
+
+Task("CoverFluentTest")
+    .IsDependentOn("CoverFluentTest.JSONReport")
+    .IsDependentOn("CoverFluentTest.HTMLReport")
+    .IsDependentOn("CoverFluentTest.Check");
+
+Task("CleanFluentTest.Snapshot")
+    .Does(() => CleanDirectory(BuildFolder + "/FluentTest.Snapshot"));
+
+Task("CoverFluentTest.Snapshot")
+    .IsDependentOn("CleanFluentTest.Snapshot")
+    .IsDependentOn("BuildFluentTest.UnitTest")
+    .Does(() => DotCoverCover( tool =>
+        tool.XUnit2(BuildFolder + "/FluentTest.UnitTest/FluentTest.UnitTest.dll",
+            new XUnit2Settings {
+            Parallelism = ParallelismOption.All,
+            HtmlReport = true,
+            XmlReport = true,
+            NoAppDomain = false,
+            OutputDirectory = ReportFolder + "/FluentTest",
+            WorkingDirectory = BuildFolder + "/FluentTest.UnitTest",
+            ShadowCopy = true
+        }),
+        new FilePath(BuildFolder + "/FluentTest.Snapshot/CoverSnapshot.dcvr"),
+        new DotCoverCoverSettings {
+            ArgumentCustomization = args => args.Append("/ReturnTargetExitCode") 
+        }));
+
+Task("CoverFluentTest.JSONReport")
+    .IsDependentOn("CoverFluentTest.Snapshot")
+    .Does(() => StartProcess(ToolsFolder + "/JetBrains.dotCover.CommandLineTools/tools/dotCover.exe",
+        string.Format("r /source=\"{0}\" /output=\"{1}\" /ReportType=Json", BuildFolder + "/FluentTest.Snapshot/CoverSnapshot.dcvr", ReportFolder + "/Cover.json")));
+
+Task("CoverFluentTest.HTMLReport")
+    .IsDependentOn("CoverFluentTest.Snapshot")
+    .Does(() => StartProcess(ToolsFolder + "/JetBrains.dotCover.CommandLineTools/tools/dotCover.exe",
+        string.Format("r /source=\"{0}\" /output=\"{1}\" /ReportType=HTML", BuildFolder + "/FluentTest.Snapshot/CoverSnapshot.dcvr", ReportFolder + "/Cover.Html")));
+
+Task("CoverFluentTest.Check")
+    .IsDependentOn("CoverFluentTest.JSONReport")
+    .Does(() => {
+        var report = ParseJsonFromFile(ReportFolder + "/Cover.json");
+
+        if((int)report["CoveragePercent"] < 80)
+            throw new Exception("Cover coverage to low!");
+    });
 
 Task("PackageFluentTest")
     .IsDependentOn("PackageFluentTest.Nuget")
@@ -196,7 +255,6 @@ Task("PublishFluentTestToNuget")
             Source = "https://www.nuget.org/api/v2/package",
             ApiKey = EnvironmentVariable("NUGETAPIKey")
         }));
-        
 /*****************************************************************************************************
 End of script
 *****************************************************************************************************/

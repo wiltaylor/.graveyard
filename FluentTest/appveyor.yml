@@ -13,6 +13,7 @@ test_script:
 - ps: .\build.ps1 -Target Test
 artifacts:
 - path: /Release/*.*
+- path: /Reports/*.*
 deploy_script:
 - ps: .\build.ps1 -Target publish
 notifications:

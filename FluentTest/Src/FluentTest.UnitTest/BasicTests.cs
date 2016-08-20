@@ -43,7 +43,7 @@ namespace FluentTest.UnitTest
 
         [Fact]
         public void When_RunningTestWithMockThatFailsExpecationCheck_Should_PassExceptionUpStack() =>
-            Assert.Throws<ExpectationException>(() => 
+            Assert.Throws<ExpectationException>(() =>
                 new TestConfig().Create<TestSut, IMockInterface>()
                     .Arrange((container, context) =>
                     {
@@ -52,7 +52,7 @@ namespace FluentTest.UnitTest
                     })
                     .Act(sut => sut.AProperty = "5")
                     .Assert((sut, mock) => A.CallTo(() => mock.CallMe()).MustHaveHappened()));
-        
+
 
         [Fact]
         public void When_ComparingMockInAssert_Should_NotThrowIfTrueIsReturned()
@@ -76,7 +76,7 @@ namespace FluentTest.UnitTest
 
                     A.CallTo(() => context.Mock.TestProp).Returns("expected");
                 })
-                .Act((sut, mock )=> sut.AProperty = mock.TestProp)
+                .Act((sut, mock) => sut.AProperty = mock.TestProp)
                 .Assert(sut => sut.AProperty == "expected");
 
         [Fact]
@@ -98,27 +98,27 @@ namespace FluentTest.UnitTest
             .Assert(sut => sut.CallMock());
 
         [Fact]
-        public void When_PassingDataIn_Should_BeAccessableInActAndAssert() => new TestConfig().CreateWithData<TestSut,string>()
-            .Data(() => new [] {"first", "second"}, 
+        public void When_PassingDataIn_Should_BeAccessableInActAndAssert() => new TestConfig().CreateWithData<TestSut, string>()
+            .Data(() => new[] { "first", "second" },
             t => t
                 .Arrange((container, context) => context.Sut = container.Create<TestSut>())
-                .Act((sut, mock, data) =>  sut.AProperty = data)
+                .Act((sut, mock, data) => sut.AProperty = data)
                 .Assert((sut, mock, data) => sut.AProperty == data));
 
         [Fact]
         public void When_PassingDataToAssertThatReturnsFalse_Should_Throw() =>
-            Assert.Throws<FluentTestAssertException>( () => 
-            new TestConfig().CreateWithData<TestSut, string>()
-                .Data(() => new[] {"first", "second"},
-                    t => t
-                        .Arrange((container, context) => context.Sut = container.Create<TestSut>())
-                        .Act((sut, mock, data) => sut.AProperty = data)
-                        .Assert((sut, mock, data) => false)));
+            Assert.Throws<FluentTestAssertException>(() =>
+           new TestConfig().CreateWithData<TestSut, string>()
+               .Data(() => new[] { "first", "second" },
+                   t => t
+                       .Arrange((container, context) => context.Sut = container.Create<TestSut>())
+                       .Act((sut, mock, data) => sut.AProperty = data)
+                       .Assert((sut, mock, data) => false)));
 
         [Fact]
         public void When_PassingDataToAssertWithoutReturnData_Should_NotThrow()
             => new TestConfig().CreateWithData<TestSut, string>()
-                .Data(() => new [] {"first", "second"},
+                .Data(() => new[] { "first", "second" },
                     t => t
                         .Arrange((container, context) => context.Sut = container.Create<TestSut>())
                         .Act((sut, mock, data) => { })
