@@ -76,11 +76,12 @@
     <Compile Include="ArrangeTargetTests.cs" />
     <Compile Include="AssertTargetTests.cs" />
     <Compile Include="DataTargetTests.cs" />
+    <Compile Include="Examples\BasicSamples.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Test.cs" />
     <Compile Include="TestObjects\IFakeContainer.cs" />
     <Compile Include="TestObjects\IMockInterface.cs" />
-    <Compile Include="TestObjects\TestSut.cs" />
+    <Compile Include="TestObjects\TestObject.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="app.config" />

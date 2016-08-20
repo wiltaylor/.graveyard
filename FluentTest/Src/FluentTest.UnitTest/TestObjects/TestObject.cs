@@ -2,10 +2,10 @@
 
 namespace FluentTest.UnitTest
 {
-    public class TestSut
+    public class TestObject
     {
         private readonly IMockInterface _mock;
-        public TestSut(IMockInterface mock)
+        public TestObject(IMockInterface mock)
         {
             _mock = mock;
         }
