@@ -295,3 +295,5 @@ Task("version")
         Information("PreReleaseLabel: " + version.PreReleaseLabel);
     });
 RunTarget(target);
+
+
