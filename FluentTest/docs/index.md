@@ -78,8 +78,10 @@ c variable. This is the test context which contains all the useful properties an
 - Container - This is an instance of the container specified in the Test Configuration Class created at the start of the guide.
 - Sut - This is the System Under Test. You need to assign this variable in the Arrange phase.
 - Mock - This is the mock object being tested with. This can be left null if not needed. More on mock Objects below.
-- Stub - There are 2 method overloads called Stub. You can use Stub("MyStub", value) to set the stub and Stub("MyStub") to retrive it. More details on Mocks and Stubs below.
+- Stub - There are 2 method overloads called Stub. You can use Stub("MyStub", value) to set the stub and Stub("MyStub") to retrieve it. More details on Mocks and Stubs below.
+- Result - If the Action predicate returned a value. That value will be stored in this variable. This is handy for verifying the result returned by the sut.
 - Data - This is the current data object assigned to the test. More details on how this works in the Data section below.
+
 
 Note: When in the Assert phase the Test Context only has the Sut, Mock and Data properties. This is done to encourage better test design.
 
