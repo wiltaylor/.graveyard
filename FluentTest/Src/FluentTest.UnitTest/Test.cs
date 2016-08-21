@@ -7,6 +7,4 @@ namespace FluentTest.UnitTest
     {
         public override Fixture BuildContainer() => (Fixture) new Fixture().Customize(new AutoFakeItEasyCustomization());
     }
-
-
 }
