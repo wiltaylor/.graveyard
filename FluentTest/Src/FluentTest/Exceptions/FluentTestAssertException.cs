@@ -8,5 +8,10 @@ namespace FluentTest.Exceptions
         {
             
         }
+
+        public FluentTestAssertException(string message, Exception e) : base(message, e)
+        {
+
+        }
     }
 }

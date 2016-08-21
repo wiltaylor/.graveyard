@@ -193,3 +193,7 @@ As you can see there is now a Data block at the top and the Arrange, Act and Ass
 Arrange, Act and Assert will run for each object returned by Data which is an IEnumerable of whatever type you specified as the data type above.
 
 During each phase of the test you can get to the data by using the context object like `c.Data`.
+
+## Assert exceptions
+If you want to assert that the Act phase throws an exception you can swap `.Act(c => {})` out with `.ActAndAssertThrows<Exception>(c => {})`. Then it is just a matter of replacing Exception
+with the type of exception you want to trap. If the target exception or not exception is thrown FluentTest will throw a FluentTestAssertException.

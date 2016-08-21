@@ -28,6 +28,11 @@ namespace FluentTest.UnitTest.Examples
             .Arrange(c => c.Sut = c.Container.Create<TestObject>())
             .Act(c => c.Sut.AProperty = "Example")
             .Assert(c => c.Sut.AProperty == "Example");
-            
+
+        [Fact]
+        public void TestExceptionHandler() => new Test().CreateWithSut<TestObject>()
+            .Arrange(c => c.Sut = c.Container.Create<TestObject>())
+            .ActAndAssertThrows<Exception>(c => { throw new Exception("Example Exception"); });
+
     }
 }
