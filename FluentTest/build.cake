@@ -259,8 +259,8 @@ Task("PackageFluentTest.Nuget")
             Symbols                 = false,
             NoPackageAnalysis       = true,
             Files                   = new [] {
-                                                new NuSpecContent {Source = BuildFolder + "/FluentTest/FluentTest.dll", Target = "net45"},
-                                                new NuSpecContent {Source = BuildFolder + "/FluentTest/FluentTest.pdb", Target = "net45"}
+                                                new NuSpecContent {Source = BuildFolder + "/FluentTest/FluentTest.dll", Target = "lib\\net45"},
+                                                new NuSpecContent {Source = BuildFolder + "/FluentTest/FluentTest.pdb", Target = "lib\\net45"}
                                              },
             OutputDirectory         = ReleaseFolder
         })); 
