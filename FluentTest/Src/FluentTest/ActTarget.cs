@@ -12,11 +12,18 @@ namespace FluentTest
             _info = info;
         }
 
-        public AssertTarget<TContainer, TSut, TMock, TData> Act(Action<TestInfo<TContainer, TSut, TMock, TData>> predicate)
+        public AssertTarget<TContainer, TSut, TMock, TData, object> Act(Action<TestInfo<TContainer, TSut, TMock, TData>> predicate)
         {
             predicate(_info);
 
-            return new AssertTarget<TContainer, TSut, TMock, TData>(new AssertTestInfo<TContainer, TSut, TMock, TData>(_info));
+            return new AssertTarget<TContainer, TSut, TMock, TData, object>(new AssertTestInfo<TContainer, TSut, TMock, TData, object>(_info));
+        }
+
+        public AssertTarget<TContainer, TSut, TMock, TData, TResult> Act<TResult>(Func<TestInfo<TContainer, TSut, TMock, TData>, TResult> predicate)
+        {
+            var result = predicate(_info);
+
+            return new AssertTarget<TContainer, TSut, TMock, TData, TResult>(new AssertTestInfo<TContainer, TSut, TMock, TData, TResult>(_info, result));
         }
 
         public void ActAndAssertThrows<TException>(Action<TestInfo<TContainer, TSut, TMock, TData>> predicate) where TException : Exception

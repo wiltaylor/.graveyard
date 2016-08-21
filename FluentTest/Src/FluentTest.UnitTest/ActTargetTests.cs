@@ -53,5 +53,16 @@ namespace FluentTest.UnitTest
                     sut.ActAndAssertThrows<ApplicationException>(
                         c => { }));
         }
+
+        [Fact]
+        public void When_AssertReturnsValue_Should_BeAccessableInAssert()
+        {
+            var fixture = new Fixture().Customize(new AutoFakeItEasyCustomization());
+            var sut = fixture.Create<ActTarget<IFakeContainer, string, object, object>>();
+
+            sut.Act(c => "SomeValue")
+                .Assert(c => c.Result == "SomeValue");
+
+        }
     }
 }

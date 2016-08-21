@@ -14,8 +14,8 @@ namespace FluentTest.UnitTest
         {
             var fixture = new Fixture().Customize(new AutoFakeItEasyCustomization());
             var baseinfo = fixture.Freeze<TestInfo<IFakeContainer, bool, object, object>>();
-            var info = fixture.Freeze<AssertTestInfo<IFakeContainer, bool, object, object>>();
-            var sut = fixture.Create<AssertTarget<IFakeContainer, bool, object, object>>();
+            var info = fixture.Freeze<AssertTestInfo<IFakeContainer, bool, object, object,object>>();
+            var sut = fixture.Create<AssertTarget<IFakeContainer, bool, object, object,object>>();
             baseinfo.Sut = false;
 
             Assert.Throws<FluentTestAssertException>( () =>  sut.Assert(c => c.Sut));
@@ -26,8 +26,8 @@ namespace FluentTest.UnitTest
         {
             var fixture = new Fixture().Customize(new AutoFakeItEasyCustomization());
             var baseinfo = fixture.Freeze<TestInfo<IFakeContainer, bool, object, object>>();
-            var info = fixture.Freeze<AssertTestInfo<IFakeContainer, bool, object, object>>();
-            var sut = fixture.Create<AssertTarget<IFakeContainer, bool, object, object>>();
+            var info = fixture.Freeze<AssertTestInfo<IFakeContainer, bool, object, object,object>>();
+            var sut = fixture.Create<AssertTarget<IFakeContainer, bool, object, object, object>>();
             baseinfo.Sut = true;
 
             sut.Assert(c => c.Sut);
@@ -37,7 +37,7 @@ namespace FluentTest.UnitTest
         public void When_CallingAssertWithoutReturnValue_Should_NotThrow()
         {
             var fixture = new Fixture().Customize(new AutoFakeItEasyCustomization());
-            var sut = fixture.Create<AssertTarget<IFakeContainer, bool, object, object>>();
+            var sut = fixture.Create<AssertTarget<IFakeContainer, bool, object, object, object>>();
 
             sut.Assert(c => { });
         }
@@ -46,7 +46,7 @@ namespace FluentTest.UnitTest
         public void When_CallingAssertWithoutReturnValueThatThrows_Should_PassExceptionUpStack()
         {
             var fixture = new Fixture().Customize(new AutoFakeItEasyCustomization());
-            var sut = fixture.Create<AssertTarget<IFakeContainer, bool, object, object>>();
+            var sut = fixture.Create<AssertTarget<IFakeContainer, bool, object, object, object>>();
 
             Assert.Throws<Exception>(() => sut.Assert(c => { throw new Exception("Any exception"); }));
         }
