@@ -2,11 +2,11 @@
 	.SYNOPSIS
 	Allows the same block of script to be run multiple times.
 	.DESCRIPTION
-    This cmdlet lets the user trigger the a script block over and over again by simply pressing enter.
+    This cmdlet lets the user trigger a script block repeatedly by simply pressing enter.
 
-    This is really useful for development work flows where you need to run the same commands again and again.
+    This is useful for development work flows where you need to run the same commands again and again.
 
-    The commandlet can run in 2 modes. First mode is where you pass a script block via the Code parameter. This
+    The cmdlet can run in 2 modes. First mode is where you pass a script block via the Code parameter. This
     will simply just let the user press enter to rerun the script block. The second mode will read a shotgun.psd1 file
     from the current directory and present the user with options specified in that file.
 

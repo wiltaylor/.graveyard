@@ -1,10 +1,10 @@
 @{
 
 # Script module or binary module file associated with this manifest.
-ModuleToProcess = 'shotgun.psm1'
+RootModule = 'shotgun.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0.0'
+ModuleVersion = '1.1.0'
 
 # ID used to uniquely identify this module
 GUID = '5505a4d4-0a44-42b5-a724-b5245cdddebd'
@@ -40,7 +40,6 @@ PrivateData = @{
 
         # Keyword tags to help users find this module via navigations and search.
         Tags = @('shotgun')
-
 
         # Indicates this is a pre-release/testing version of the module.
         IsPrerelease = 'False'
