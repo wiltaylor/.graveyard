@@ -1,7 +1,6 @@
 ﻿using System.IO;
 using System.IO.Compression;
 using Semver;
-
 namespace EasyNuGet
 {
     public class PackageDownloader : IPackageDownloader
