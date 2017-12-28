@@ -1,6 +1,5 @@
 ﻿using System.IO;
 using System.IO.Compression;
-using Semver;
 namespace EasyNuGet
 {
     public class PackageDownloader : IPackageDownloader
@@ -51,9 +50,6 @@ namespace EasyNuGet
 
         }
 
-        public void Download(string name, SemVersion version, string path, bool force = false) =>
-            Download(name, version.ToString(), path, force);
-
         public void Download(Package package, string path, bool force = false) => Download(package.Id, package.Version.ToString(), path);
         public void DownloadArchive(string name, string version, string path)
         {
@@ -63,15 +59,19 @@ namespace EasyNuGet
             client.Dispose();
         }
 
-        public void DownloadArchive(string name, SemVersion version, string path) =>
-            Download(name, version.ToString(), path);
-
         public void DownloadArchive(Package package, string path) => DownloadArchive(package.Id, package.Version.ToString(), path);
-        public bool IsInstalled(string name, string version, string path) => Directory.Exists($"{path}\\{name}\\{version}");
-        public bool IsInstalled(string name, SemVersion version, string path)
+        public NuSpec DownloadNuSpec(string name, string version)
         {
-            throw new System.NotImplementedException();
+            var client = new System.Net.WebClient();
+            var url = $"{_serviceLocator.GetService("PackageBaseAddress/3.0.0")}{name.ToLowerInvariant()}/{version.ToLowerInvariant()}/{name.ToLowerInvariant()}.nuspec";
+
+            return NuSpec.Parse(client.DownloadString(url));
+
         }
+
+        public NuSpec DownloadNuSpec(Package package) => DownloadNuSpec(package.Id, package.Version);
+
+        public bool IsInstalled(string name, string version, string path) => Directory.Exists($"{path}\\{name}\\{version}");
 
         public bool IsInstalled(Package package, string path) => IsInstalled(package.Id, package.Version.ToString(), path);
     }

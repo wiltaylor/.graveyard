@@ -1,7 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Linq;
-using Semver;
 
 namespace EasyNuGet
 {
@@ -20,17 +19,17 @@ namespace EasyNuGet
             var client = new System.Net.WebClient();
             var json = JObject.Parse(client.DownloadString(searchUrl));
 
-            return (from pkg in (JArray) json["data"]
-                from ver in (JArray) pkg["versions"]
-                let tags = ((JArray) pkg["tags"]).Select(t => t.Value<string>()).ToArray()
-                let authors = ((JArray) pkg["authors"]).Select(t => t.Value<string>()).ToArray()
-                select new Package
-                {
-                    Id = pkg["id"].Value<string>(),
-                    Title = pkg["title"].Value<string>(),
-                    Tags = tags,
-                    Version = SemVersion.Parse(ver["version"].Value<string>())
-                }).ToList();
+            return (from pkg in (JArray)json["data"]
+                    from ver in (JArray)pkg["versions"]
+                    let tags = ((JArray)pkg["tags"]).Select(t => t.Value<string>()).ToArray()
+                    let authors = ((JArray)pkg["authors"]).Select(t => t.Value<string>()).ToArray()
+                    select new Package
+                    {
+                        Id = pkg["id"].Value<string>(),
+                        Title = pkg["title"].Value<string>(),
+                        Tags = tags,
+                        Version = ver["version"].Value<string>()
+                    }).ToList();
         }
     }
 }

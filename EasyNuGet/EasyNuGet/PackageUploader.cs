@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Text;
-using Semver;
 
 namespace EasyNuGet
 {
@@ -32,8 +31,5 @@ namespace EasyNuGet
             client.UploadValues(url, "DELETE", new NameValueCollection());
             client.Dispose();
         }
-
-        public void DeletePackage(string name, SemVersion version, string key) =>
-            DeletePackage(name, version.ToString(), key);
     }
 }
