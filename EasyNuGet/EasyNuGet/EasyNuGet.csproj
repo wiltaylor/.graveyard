@@ -1,7 +1,22 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <Version>0.1.0</Version>
+    <Authors>Wil Taylor</Authors>
+    <Company />
+    <Description>Simple library which can download and extract archives from nuget servers and also upload them.</Description>
+    <Copyright>2017 Wil Taylor</Copyright>
+    <PackageProjectUrl>https://github.com/wiltaylor/EasyNuGet</PackageProjectUrl>
+    <PackageLicenseUrl>https://github.com/wiltaylor/EasyNuGet/LICENSE.md</PackageLicenseUrl>
+    <PackageTags>nuget</PackageTags>
+    <FileVersion>0.1.0.0</FileVersion>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="10.0.3" />
+  </ItemGroup>
 
 </Project>
