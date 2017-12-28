@@ -3,7 +3,7 @@
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <Authors>Wil Taylor</Authors>
     <Company />
     <Description>Simple library which can download and extract archives from nuget servers and also upload them.</Description>
@@ -11,8 +11,8 @@
     <PackageProjectUrl>https://github.com/wiltaylor/EasyNuGet</PackageProjectUrl>
     <PackageLicenseUrl>https://github.com/wiltaylor/EasyNuGet/LICENSE.md</PackageLicenseUrl>
     <PackageTags>nuget</PackageTags>
-    <FileVersion>0.1.0.0</FileVersion>
-    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.1.0</FileVersion>
+    <AssemblyVersion>0.1.1.0</AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup>

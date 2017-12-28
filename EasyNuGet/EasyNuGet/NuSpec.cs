@@ -32,6 +32,8 @@ namespace EasyNuGet
                 {
                     var group = new DependancyGroup();
 
+                    group.Name = node.GetAttribute("targetFramework") ?? "";
+
                     foreach (XmlElement dep in node.GetElementsByTagName("dependency"))
                     {
                         group.Dependancies.Add(new Dependancy
