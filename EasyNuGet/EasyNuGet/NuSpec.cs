@@ -12,8 +12,8 @@ namespace EasyNuGet
             xmlDoc.LoadXml(xmlText);
             var metadata = xmlDoc.DocumentElement["metadata"];
 
-            result.Id = metadata["id"].Value;
-            result.Version = metadata["version"].Value;
+            result.Id = metadata.GetElementsByTagName("id").Item(0).InnerText;
+            result.Version = metadata.GetElementsByTagName("version").Item(0).InnerText;
 
             var dependancyNode = metadata["dependencies"];
 

@@ -1,5 +1,8 @@
-﻿using System.IO;
+﻿using System;
+using System.IO;
 using System.IO.Compression;
+using System.Linq;
+
 namespace EasyNuGet
 {
     public class PackageDownloader : IPackageDownloader
@@ -9,6 +12,15 @@ namespace EasyNuGet
         public PackageDownloader(IServiceLocator serviceLocator)
         {
             _serviceLocator = serviceLocator;
+        }
+
+        public void DownloadFromFile(string nugetFilePath, string path)
+        {
+            var spec = DownloadNuSpecFromFile(nugetFilePath);
+            var targetFolder = $"{path}\\{spec.Id}\\{spec.Version}";
+
+            ExtractPackage(spec.Id, spec.Version, new MemoryStream(File.ReadAllBytes(nugetFilePath)), targetFolder);
+
         }
 
         public void Download(string name, string version, string path, bool force = false)
@@ -25,6 +37,12 @@ namespace EasyNuGet
 
             var url = $"{_serviceLocator.GetService("PackageBaseAddress/3.0.0")}{name.ToLowerInvariant()}/{version.ToLowerInvariant()}/{name.ToLowerInvariant()}.{version.ToLowerInvariant()}.nupkg";
             var buffer = new MemoryStream(client.DownloadData(url));
+
+            ExtractPackage(name, version, buffer, targetFolder);
+        }
+
+        private static void ExtractPackage(string name, string version, MemoryStream buffer, string targetFolder)
+        {
             var zip = new ZipArchive(buffer);
 
             zip.ExtractToDirectory(targetFolder);
@@ -47,7 +65,6 @@ namespace EasyNuGet
             file.Close();
             buffer.Dispose();
             zip.Dispose();
-
         }
 
         public void Download(Package package, string path, bool force = false) => Download(package.Id, package.Version.ToString(), path);
@@ -70,6 +87,23 @@ namespace EasyNuGet
         }
 
         public NuSpec DownloadNuSpec(Package package) => DownloadNuSpec(package.Id, package.Version);
+        public NuSpec DownloadNuSpecFromFile(string path)
+        {
+            var zip = new ZipArchive(File.OpenRead(path));
+            var specEntry = zip.Entries.FirstOrDefault(e => e.FullName.Contains(".nuspec"));
+
+            if(specEntry == null)
+                throw new EasyNuGetException("Can't find nuspec manifest inside target file based nuget package!");
+
+            var specStream = new StreamReader(specEntry.Open());
+            var specText = specStream.ReadToEnd();
+
+            specStream.Dispose();
+            zip.Dispose();
+
+            return NuSpec.Parse(specText);
+
+        }
 
         public bool IsInstalled(string name, string version, string path) => Directory.Exists($"{path}\\{name}\\{version}");
 
