@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Newtonsoft.Json.Linq;
 
@@ -7,10 +8,12 @@ namespace EasyNuGet
     public class PackageSearcher : IPackageSearcher
     {
         private readonly IServiceLocator _serviceLocator;
+        private readonly IPackageDownloader _downloader;
 
-        public PackageSearcher(IServiceLocator serviceLocator)
+        public PackageSearcher(IServiceLocator serviceLocator, IPackageDownloader downloader)
         {
             _serviceLocator = serviceLocator;
+            _downloader = downloader;
         }
 
         public IEnumerable<Package> Search(string query, bool preRelease = false)
@@ -31,5 +34,14 @@ namespace EasyNuGet
                         Version = ver["version"].Value<string>()
                     }).ToList();
         }
+
+        public IEnumerable<Package> GetInstalledPackages(string path) => 
+            Directory.GetFiles(path, "*.nupkg", SearchOption.AllDirectories)
+                .Select(pkg => _downloader.DownloadNuSpecFromFile(pkg))
+                    .Select(spec => new Package
+                    {
+                        Id = spec.Id,
+                        Version = spec.Version
+                    });
     }
 }

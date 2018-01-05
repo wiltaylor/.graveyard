@@ -13,10 +13,13 @@ namespace TestApp
         {
             
             var loc = new ServiceLocator();
-            var search = new PackageSearcher(loc);
             var download = new PackageDownloader(loc);
+            var search = new PackageSearcher(loc, download);
 
-            download.DownloadFromFile("D:\\Project\\Tools\\EasyNuGet\\EasyNuGet\\bin\\Release\\EasyNuGet.0.1.2.nupkg", "D:\\Sandpit\\x");
+            //download.DownloadFromFile("D:\\Project\\Tools\\EasyNuGet\\EasyNuGet\\bin\\Release\\EasyNuGet.0.1.2.nupkg", "D:\\Sandpit\\x");
+
+            foreach(var itm  in search.GetInstalledPackages("D:\\Sandpit\\x"))
+                Console.WriteLine($"{itm.Id} - {itm.Version}");
       
       
 
