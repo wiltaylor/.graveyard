@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using AutoFixture;
 using EasyRoslynScript;
 using FakeItEasy;
@@ -10,6 +11,7 @@ using FlexibleConfigEngine.Core.Gather;
 using FlexibleConfigEngine.Core.Graph;
 using FlexibleConfigEngine.Core.Helper;
 using FlexibleConfigEngine.Core.Resource;
+using Newtonsoft.Json;
 using Xunit;
 
 namespace FlexibleConfigUnitTest.ConfigSession
@@ -433,7 +435,6 @@ namespace FlexibleConfigUnitTest.ConfigSession
             var fixture = Test.Fixture;
             var runList = fixture.CreateMany<ConfigItem>();
             var configMan = fixture.Freeze<IConfigManager>();
-            var configResult = fixture.Create<ConfigurationResult>();
             var sut = fixture.Create<Session>();
 
             A.CallTo(() => configMan.BuildRunList(A<Dictionary<string, string>>.Ignored)).Returns(runList);
@@ -444,6 +445,66 @@ namespace FlexibleConfigUnitTest.ConfigSession
             //Assert
             A.CallTo(() => configMan.Test(runList)).MustHaveHappened();
             A.CallTo(() => configMan.ApplyRunList(runList)).MustNotHaveHappened();
+        }
+
+        [Fact]
+        public void When_CallingApplyIfDataJSONExists_Should_BeLoadedIntoDataStore()
+        {
+            //Arrange
+            var fixture = Test.Fixture;
+            var datamanager = fixture.Freeze<IDataStore>();
+            var fileSystem = fixture.Freeze<IFileSystem>();
+            var jsonData = fixture.Create<string>();
+            var sut = fixture.Create<Session>();
+
+            A.CallTo(() => datamanager.GetPersistString(false)).Returns(jsonData);
+
+            //Act
+            sut.Apply("config.csx", null);
+
+            //Assert
+            A.CallTo(() => datamanager.GetPersistString(false)).MustHaveHappened();
+            A.CallTo(() => fileSystem.WriteFile("data.json", jsonData)).MustHaveHappened();
+
+        }
+
+        [Fact]
+        public void When_CallingApplyIfDataJSONExistsIT_Should_BeLoaded()
+        {
+            //Arrange
+            var fixture = Test.Fixture;
+            var datamanager = fixture.Freeze<IDataStore>();
+            var fileSystem = fixture.Freeze<IFileSystem>();
+            var sut = fixture.Create<Session>();
+
+            var dat = fixture.Create<Dictionary<string, Dictionary<string, string>>>();
+            var json = JsonConvert.SerializeObject(dat);
+            var firstkey = dat.Keys.First();
+
+            A.CallTo(() => fileSystem.FileExist("data.json")).Returns(true);
+            A.CallTo(() => fileSystem.ReadFile("data.json")).Returns(json);
+
+            //Act
+            sut.Apply("config.csx", null);
+
+
+            //Assert
+            A.CallTo(() => datamanager.Write(firstkey, A<Dictionary<string, string>>.Ignored, true)).MustHaveHappened();
+        }
+
+        [Fact]
+        public void When_CallingApply_Should_StoreResultsInResultsJson()
+        {
+            //Arrange
+            var fixture = Test.Fixture;
+            var fileSystem = fixture.Freeze<IFileSystem>();
+            var sut = fixture.Create<Session>();
+
+            //Act
+            sut.Apply("config.csx", null);
+
+            //Assert
+            A.CallTo(() => fileSystem.WriteFile("result.json", A<string>.Ignored)).MustHaveHappened();
 
         }
     }

@@ -72,7 +72,8 @@ namespace FlexibleConfigEngine.Core.ConfigSession
                 else
                     _environmentHelper.SetExitCode(ExitCodes.Ok);
         
-
+                _fileSystem.WriteFile("data.json", _dataStore.GetPersistString());
+                _fileSystem.WriteFile("result.json", JsonConvert.SerializeObject(results));
             }
             catch (Exception e)
             {
@@ -109,6 +110,17 @@ namespace FlexibleConfigEngine.Core.ConfigSession
 
         public bool Validate(string script)
         {
+            //Loading in data
+            if (_fileSystem.FileExist("data.json"))
+            {
+                var data =
+                    JsonConvert.DeserializeObject<Dictionary<string, Dictionary<string, string>>>(
+                        _fileSystem.ReadFile("data.json"));
+
+                foreach (var key in data.Keys)
+                    _dataStore.Write(key, data[key], true);
+            }
+
             try
             {
                 _runner.ExecuteFile(script);
