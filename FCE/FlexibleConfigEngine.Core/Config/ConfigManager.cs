@@ -94,6 +94,9 @@ namespace FlexibleConfigEngine.Core.Config
                    RanResource = false
                 };
 
+                foreach (var dyn in item.Dynamics)
+                    dyn(_dataStore, item);
+
                 returnData.Add(currentResult);
 
                 var driver = _pluginManager.GetResource(item.Resource);

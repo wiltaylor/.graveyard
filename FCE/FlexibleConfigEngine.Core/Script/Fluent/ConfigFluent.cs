@@ -51,5 +51,12 @@ namespace FlexibleConfigEngine.Core.Script.Fluent
 
             return this;
         }
+
+        public ConfigFluent Dynamic(Action<IDataStoreReadOnly, IRestrictedConfigItem> action)
+        {
+            _configItem.Dynamics.Add(action);
+
+            return this;
+        }
     }
 }
