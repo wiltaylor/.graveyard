@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using AutoFixture;
 using FakeItEasy;
@@ -241,9 +242,9 @@ namespace FlexibleConfigUnitTest.Config
             var pluginMan = fixture.Freeze<IPluginManager>();
             var sut = fixture.Create<ConfigManager>();
 
-            A.CallTo(() => pluginMan.GetResource(runList[0].Name)).Returns(drivers[0]);
-            A.CallTo(() => pluginMan.GetResource(runList[1].Name)).Returns(drivers[1]);
-            A.CallTo(() => pluginMan.GetResource(runList[2].Name)).Returns(drivers[2]);
+            A.CallTo(() => pluginMan.GetResource(runList[0].Resource)).Returns(drivers[0]);
+            A.CallTo(() => pluginMan.GetResource(runList[1].Resource)).Returns(drivers[1]);
+            A.CallTo(() => pluginMan.GetResource(runList[2].Resource)).Returns(drivers[2]);
 
             //Act
             sut.ApplyRunList(runList);
@@ -265,9 +266,9 @@ namespace FlexibleConfigUnitTest.Config
             var pluginMan = fixture.Freeze<IPluginManager>();
             var sut = fixture.Create<ConfigManager>();
 
-            A.CallTo(() => pluginMan.GetResource(runList[0].Name)).Returns(drivers[0]);
-            A.CallTo(() => pluginMan.GetResource(runList[1].Name)).Returns(drivers[1]);
-            A.CallTo(() => pluginMan.GetResource(runList[2].Name)).Returns(drivers[2]);
+            A.CallTo(() => pluginMan.GetResource(runList[0].Resource)).Returns(drivers[0]);
+            A.CallTo(() => pluginMan.GetResource(runList[1].Resource)).Returns(drivers[1]);
+            A.CallTo(() => pluginMan.GetResource(runList[2].Resource)).Returns(drivers[2]);
 
             A.CallTo(() => drivers[0].Test()).Returns(ResourceState.Configured);
             A.CallTo(() => drivers[1].Test()).Returns(ResourceState.NotConfigured);
@@ -293,9 +294,9 @@ namespace FlexibleConfigUnitTest.Config
             var pluginMan = fixture.Freeze<IPluginManager>();
             var sut = fixture.Create<ConfigManager>();
 
-            A.CallTo(() => pluginMan.GetResource(runList[0].Name)).Returns(drivers[0]);
-            A.CallTo(() => pluginMan.GetResource(runList[1].Name)).Returns(drivers[1]);
-            A.CallTo(() => pluginMan.GetResource(runList[2].Name)).Returns(drivers[2]);
+            A.CallTo(() => pluginMan.GetResource(runList[0].Resource)).Returns(drivers[0]);
+            A.CallTo(() => pluginMan.GetResource(runList[1].Resource)).Returns(drivers[1]);
+            A.CallTo(() => pluginMan.GetResource(runList[2].Resource)).Returns(drivers[2]);
 
             A.CallTo(() => drivers[0].Test()).Returns(ResourceState.NotConfigured);
             A.CallTo(() => drivers[1].Test()).Returns(ResourceState.NotConfigured);
@@ -324,7 +325,7 @@ namespace FlexibleConfigUnitTest.Config
             var pluginMan = fixture.Freeze<IPluginManager>();
             var sut = fixture.Create<ConfigManager>();
 
-            A.CallTo(() => pluginMan.GetResource(runList[0].Name)).Returns(drivers[0]);
+            A.CallTo(() => pluginMan.GetResource(runList[0].Resource)).Returns(drivers[0]);
 
             A.CallTo(() => drivers[0].Test()).Returns(ResourceState.NeedReboot);
 
@@ -344,7 +345,7 @@ namespace FlexibleConfigUnitTest.Config
             var pluginMan = fixture.Freeze<IPluginManager>();
             var sut = fixture.Create<ConfigManager>();
 
-            A.CallTo(() => pluginMan.GetResource(runList[0].Name)).Returns(drivers[0]);
+            A.CallTo(() => pluginMan.GetResource(runList[0].Resource)).Returns(drivers[0]);
             A.CallTo(() => drivers[0].Test()).Returns(ResourceState.NotConfigured).Once()
                 .Then.Returns(ResourceState.Configured).Once();
 
@@ -365,9 +366,9 @@ namespace FlexibleConfigUnitTest.Config
             var pluginMan = fixture.Freeze<IPluginManager>();
             var sut = fixture.Create<ConfigManager>();
 
-            A.CallTo(() => pluginMan.GetResource(runList[0].Name)).Returns(drivers[0]);
-            A.CallTo(() => pluginMan.GetResource(runList[1].Name)).Returns(drivers[1]);
-            A.CallTo(() => pluginMan.GetResource(runList[2].Name)).Returns(drivers[2]);
+            A.CallTo(() => pluginMan.GetResource(runList[0].Resource)).Returns(drivers[0]);
+            A.CallTo(() => pluginMan.GetResource(runList[1].Resource)).Returns(drivers[1]);
+            A.CallTo(() => pluginMan.GetResource(runList[2].Resource)).Returns(drivers[2]);
 
             A.CallTo(() => drivers[0].Test()).Returns(ResourceState.NotConfigured);
             A.CallTo(() => drivers[1].Test()).Returns(ResourceState.NotConfigured);
@@ -393,9 +394,9 @@ namespace FlexibleConfigUnitTest.Config
             var pluginMan = fixture.Freeze<IPluginManager>();
             var sut = fixture.Create<ConfigManager>();
 
-            A.CallTo(() => pluginMan.GetResource(runList[0].Name)).Returns(drivers[0]);
-            A.CallTo(() => pluginMan.GetResource(runList[1].Name)).Returns(drivers[1]);
-            A.CallTo(() => pluginMan.GetResource(runList[2].Name)).Returns(drivers[2]);
+            A.CallTo(() => pluginMan.GetResource(runList[0].Resource)).Returns(drivers[0]);
+            A.CallTo(() => pluginMan.GetResource(runList[1].Resource)).Returns(drivers[1]);
+            A.CallTo(() => pluginMan.GetResource(runList[2].Resource)).Returns(drivers[2]);
 
             A.CallTo(() => drivers[0].Test()).Returns(ResourceState.Configured);
             A.CallTo(() => drivers[1].Test()).Returns(ResourceState.Configured);

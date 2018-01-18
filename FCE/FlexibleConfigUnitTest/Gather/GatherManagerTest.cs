@@ -84,7 +84,7 @@ namespace FlexibleConfigUnitTest.Gather
             sut.Run();
 
             //Assert
-            A.CallTo(() => gatherdriver.SetProperties(A<IDictionary<string,string>>.Ignored)).MustHaveHappened();
+            A.CallTo(() => gatherdriver.SetProperties(A<Dictionary<string,string>>.Ignored)).MustHaveHappened();
         }
     }
 }

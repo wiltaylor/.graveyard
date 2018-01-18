@@ -164,7 +164,7 @@ namespace FlexibleConfigUnitTest.ConfigSession
             var sut = fixture.Create<Session>();
 
 
-            A.CallTo(() => datamanager.GetPersistString()).Returns("{json data}");
+            A.CallTo(() => datamanager.GetPersistString(true)).Returns("{json data}");
 
 
             //Act
@@ -186,7 +186,7 @@ namespace FlexibleConfigUnitTest.ConfigSession
             var sut = fixture.Create<Session>();
 
 
-            A.CallTo(() => datamanager.GetPersistString()).Returns("{json data}");
+            A.CallTo(() => datamanager.GetPersistString(true)).Returns("{json data}");
             A.CallTo(() => filesys.WriteFile(A<string>.Ignored, A<string>.Ignored)).Throws<Exception>();
 
 
