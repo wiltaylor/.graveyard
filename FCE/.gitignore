@@ -265,3 +265,8 @@ tools/
 
 #nCrunch
 *ncrunch*
+
+BootstrapScript/FCE
+BootstrapScript/*.log
+BootstrapScript/*.json
+BootstrapScript/*.zip

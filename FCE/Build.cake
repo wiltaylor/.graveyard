@@ -132,10 +132,13 @@ Task("FCE.Test.UnitTest")
             throw new Exception("Test failed!");
     });
 
-Task("FCE.Package");
+Task("FCE.Package")
+    .IsDependentOn("FCE.Package.Zip");
 
 Task("FCE.Package.Zip")
-    .Does(() => Zip(RepoRootFolder + "/FlexibleConfigEngine/bin/Release/netcoreapp2.0/win7-x86/publish", RepoRootFolder + "/FlexibleConfigEngine/bin/Release/FCE-" + version.SemVer + "-Win.zip"));
+    .IsDependentOn("FCE.Build")
+    .Does(() => Zip(RepoRootFolder + "/FlexibleConfigEngine/bin/Release/netcoreapp2.0/win7-x86/publish", RepoRootFolder + "/FlexibleConfigEngine/bin/Release/FCE-" + version.SemVer + "-Win.zip"))
+    .Does(() => CopyFile(RepoRootFolder + "/FlexibleConfigEngine/bin/Release/FCE-" + version.SemVer + "-Win.zip",RepoRootFolder + "/BootstrapScript/fce.zip" ));
 
 Task("FCE.Deploy");
 /*****************************************************************************************************

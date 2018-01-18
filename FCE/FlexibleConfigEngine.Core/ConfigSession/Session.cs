@@ -123,7 +123,7 @@ namespace FlexibleConfigEngine.Core.ConfigSession
 
             try
             {
-                _runner.ExecuteFile(script);
+                _runner.ExecuteFile(script).Wait();
             }
             catch (Exception e)
             {

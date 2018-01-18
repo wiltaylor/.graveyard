@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using CommandLineParser;
@@ -25,7 +26,7 @@ namespace FlexibleConfigEngine
             {
                 if (args.Length == 0)
                 {
-                    Environment.CurrentDirectory = "E:\\configtest";
+                    Environment.CurrentDirectory = Path.GetDirectoryName(Environment.CurrentDirectory) + "\\BootstrapScript";
 
 
                     Console.WriteLine("Current command line: " + string.Join(" ", args));
