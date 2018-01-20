@@ -32,8 +32,17 @@ param(
     
 )
 
+$zip64 = "https://github.com/wiltaylor/FCE/releases/download/v0.1.4/FCE-0.1.4-Win64.zip"
+$zip32 = "https://github.com/wiltaylor/FCE/releases/download/v0.1.4/FCE-0.1.4-Win86.zip"
+
+if(Test-Path "C:\Program Files (x86)")
+{
+    $ZipURL = $zip64
+}else{
+    $ZipURL = $zip32
+}
+
 $FCEEXE = ".\FCE\FlexibleConfigEngine.exe"
-$ZipURL = "https://github.com/wiltaylor/FCE/releases/download/TEST/FCE-0.1.0-unstable.2-Win.zip"
 
 if(!(Test-Path .\FCE) -and $Clean -ne $true)
 {
