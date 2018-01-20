@@ -27,6 +27,7 @@ namespace FlexibleConfigEngine.Core.Resource
             {
                 throw new ResourceException("Test method threw an unhandled exception, see inner exception for details", ex);
             }
+            
         }
 
         public abstract ResourceState Test(ConfigItem data);

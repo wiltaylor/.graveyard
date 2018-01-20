@@ -123,6 +123,7 @@ namespace FlexibleConfigEngine.Core.ConfigSession
 
             try
             {
+                _console.Information("Executing configuration script... This can take awhile if there are a lot of packages to load...");
                 _runner.ExecuteFile(script).Wait();
             }
             catch (Exception e)

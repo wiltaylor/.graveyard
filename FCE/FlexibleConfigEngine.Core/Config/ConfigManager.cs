@@ -106,6 +106,8 @@ namespace FlexibleConfigEngine.Core.Config
 
                 _console.Information("Current Status: {state}", testResult);
 
+                currentResult.State = testResult;
+
                 if (testResult == ResourceState.NeedReboot)
                 {
                     currentResult.State = ResourceState.NeedReboot;

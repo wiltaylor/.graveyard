@@ -58,7 +58,7 @@ if($Apply)
     if($Script -ne "") {$para += "-s $script "}
     if($Settings -ne "") {$para += "-c $Settings "}
 
-    Start-Process $FCEEXE -ArgumentList $para -Wait -NoNewWindow
+    $LASTEXITCODE = (Start-Process $FCEEXE -ArgumentList $para -Wait -NoNewWindow -PassThru).ExitCode
 }
 
 if($Test)
@@ -68,7 +68,7 @@ if($Test)
     if($Script -ne "") {$para += "-s $script "}
     if($Settings -ne "") {$para += "-c $Settings "}
 
-    Start-Process $FCEEXE -ArgumentList $para -Wait -NoNewWindow
+    $LASTEXITCODE = (Start-Process $FCEEXE -ArgumentList $para -Wait -NoNewWindow -PassThru).ExitCode
 }
 
 if($Validate)
@@ -76,7 +76,7 @@ if($Validate)
     $para = "valid "
     if($Script -ne "") {$para += "-s $script "}
 
-    Start-Process $FCEEXE -ArgumentList $para -Wait -NoNewWindow
+    $LASTEXITCODE = (Start-Process $FCEEXE -ArgumentList $para -Wait -NoNewWindow -PassThru).ExitCode
 }
 
 if($Gather)
@@ -86,12 +86,15 @@ if($Gather)
     if($Script -ne "") {$para += "-s $script "}
     if($Settings -ne "") {$para += "-o $Output "}
 
-    Start-Process $FCEEXE -ArgumentList $para -Wait -NoNewWindow
+    $LASTEXITCODE = (Start-Process $FCEEXE -ArgumentList $para -Wait -NoNewWindow -PassThru).ExitCode
 }
 
 if($Clean)
 {
+    Remove-Item .\Packages -Force -Recurse -ErrorAction SilentlyContinue
     Remove-Item .\FCE -Force -Recurse -ErrorAction SilentlyContinue
     Remove-Item *.log -Force -ErrorAction SilentlyContinue
     Remove-Item .\fce.zip -Force -ErrorAction SilentlyContinue
 }
+
+exit $LASTEXITCODE
