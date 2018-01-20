@@ -18,12 +18,14 @@ namespace FlexibleConfigEngine.Core.IOC
 
         private T Resolve<T>(string name)
         {
+            var asms = AppDomain.CurrentDomain.GetAssemblies();
+
             var asm = AppDomain.CurrentDomain.GetAssemblies()?
-                .Where(a => a.FullName.ToLower().Contains("flexibleconfigengine"));
+                .Where(a => a.FullName.ToLower().Contains("flexibleconfigengine") || a.FullName.ToLower().Contains("fce"));
 
             var types = asm.SelectMany(a => a.GetTypes()).Where(t => t.IsAssignableTo<T>() && !t.IsInterface);
 
-            var type = types.FirstOrDefault(t => string.Equals(t.GetCustomAttribute<FceItemAttribute>().Name, name, StringComparison.CurrentCultureIgnoreCase));
+            var type = types.FirstOrDefault(t => string.Equals(t.GetCustomAttribute<FceItemAttribute>()?.Name, name, StringComparison.CurrentCultureIgnoreCase));
 
             if (type == null)
                 return default(T);

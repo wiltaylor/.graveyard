@@ -5,8 +5,8 @@ namespace FlexibleConfigEngine.Core.Gather
 {
     public class DataStore : IDataStore
     {
-        private readonly IDictionary<string, IDictionary<string,string>> _data = new Dictionary<string, IDictionary<string, string>>();
-        private readonly IDictionary<string, IDictionary<string, string>> _persistantdata = new Dictionary<string, IDictionary<string, string>>();
+        private readonly Dictionary<string, Dictionary<string,string>> _data = new Dictionary<string, Dictionary<string, string>>();
+        private readonly Dictionary<string, Dictionary<string, string>> _persistantdata = new Dictionary<string, Dictionary<string, string>>();
 
         public string GetPersistString(bool all=false)
         {
@@ -15,6 +15,8 @@ namespace FlexibleConfigEngine.Core.Gather
 
         public void Write(string name, Dictionary<string,string> data, bool persist = false)
         {
+            name = name.ToLower();
+
             if (_data.ContainsKey(name))
                 _data[name] = data;
             else
@@ -34,11 +36,12 @@ namespace FlexibleConfigEngine.Core.Gather
             }
         }
 
-        public IDictionary<string,string> Read(string name)
+        public Dictionary<string,string> Read(string name)
         {
+            name = name.ToLower();
             return _data.ContainsKey(name) ? _data[name] : null;
         }
 
-        public IDictionary<string, string> this[string name] => _data.ContainsKey(name) ? _data[name] : null;
+        public Dictionary<string, string> this[string name] => _data.ContainsKey(name.ToLower()) ? _data[name.ToLower()] : null;
     }
 }

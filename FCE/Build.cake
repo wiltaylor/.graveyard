@@ -169,7 +169,10 @@ Task("FCE.Test.UnitTest")
 
 Task("FCE.Package")
     .IsDependentOn("FCE.Package.Zip.x86")
-    .IsDependentOn("FCE.Package.Zip.x64");
+    .IsDependentOn("FCE.Package.Zip.x64")
+    .IsDependentOn("FCE.Package.Zip.x86.Debug")
+    .IsDependentOn("FCE.Package.Zip.x64.Debug");
+
 
 Task("FCE.Package.Zip.x86")
     .IsDependentOn("FCE.Build")
@@ -179,6 +182,15 @@ Task("FCE.Package.Zip.x86")
 Task("FCE.Package.Zip.x64")
     .IsDependentOn("FCE.Build")
     .Does(() => Zip(RepoRootFolder + "/FlexibleConfigEngine/bin/Release/netcoreapp2.0/win7-x64/publish", RepoRootFolder + "/FlexibleConfigEngine/bin/Release/FCE-" + version.SemVer + "-Win64.zip"));
+
+    
+Task("FCE.Package.Zip.x86.Debug")
+    .IsDependentOn("FCE.Build.Windowsx86.Debug")
+    .Does(() => Zip(RepoRootFolder + "/FlexibleConfigEngine/bin/Debug/netcoreapp2.0/win7-x86/publish", RepoRootFolder + "/FlexibleConfigEngine/bin/Debug/FCE-" + version.SemVer + "-Win86-Debug.zip"));
+
+Task("FCE.Package.Zip.x64.Debug")
+    .IsDependentOn("FCE.Build.Windowsx64.Debug")
+    .Does(() => Zip(RepoRootFolder + "/FlexibleConfigEngine/bin/Debug/netcoreapp2.0/win7-x64/publish", RepoRootFolder + "/FlexibleConfigEngine/bin/Debug/FCE-" + version.SemVer + "-Win64-Debug.zip"));
 
 Task("FCE.Deploy")
     .IsDependentOn("FCE.Deploy.NuGet");

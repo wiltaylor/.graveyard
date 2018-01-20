@@ -315,25 +315,6 @@ namespace FlexibleConfigUnitTest.Config
             A.CallTo(() => drivers[1].Apply()).MustNotHaveHappened();
         }
 
-        [Fact]
-        public void When_CallingApplyAndAnItemReturnsNeedRebootOnTest_Should_Throw()
-        {
-            //Arrange
-            var fixture = Test.Fixture;
-            var runList = fixture.CreateMany<ConfigItem>().ToArray();
-            var drivers = new[] { A.Fake<IResourceDriver>(), A.Fake<IResourceDriver>(), A.Fake<IResourceDriver>() };
-            var pluginMan = fixture.Freeze<IPluginManager>();
-            var sut = fixture.Create<ConfigManager>();
-
-            A.CallTo(() => pluginMan.GetResource(runList[0].Resource)).Returns(drivers[0]);
-
-            A.CallTo(() => drivers[0].Test()).Returns(ResourceState.NeedReboot);
-
-            //Act & Assert
-            Assert.Throws<InvalidResourceState>(() => 
-                sut.ApplyRunList(runList)
-            );
-        }
 
         [Fact]
         public void When_CallingApplyAndItemIsUncofigured_Should_CallTestAgainIfWasSuccesful()

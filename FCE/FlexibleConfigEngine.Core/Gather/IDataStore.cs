@@ -10,7 +10,7 @@ namespace FlexibleConfigEngine.Core.Gather
 
     public interface IDataStoreReadOnly
     {
-        IDictionary<string, string> Read(string name);
-        IDictionary<string, string> this[string name] { get; }
+        Dictionary<string, string> Read(string name);
+        Dictionary<string, string> this[string name] { get; }
     }
 }

@@ -64,7 +64,8 @@ namespace FlexibleConfigEngine.Core.Config
                         continue;
                     }
 
-                    if (runList.Any(c => string.Equals(c.Name, configItem.Dependancy, StringComparison.CurrentCultureIgnoreCase)))
+                    if (runList.Any(c => string.Equals(c.Name, configItem.Dependancy, StringComparison.CurrentCultureIgnoreCase)) || 
+                        notToBeRun.Any(c => string.Equals(c.Name, configItem.Dependancy, StringComparison.CurrentCultureIgnoreCase)))
                         runList.Add(configItem);
                 }
 
@@ -105,8 +106,11 @@ namespace FlexibleConfigEngine.Core.Config
 
                 _console.Information("Current Status: {state}", testResult);
 
-                if(testResult == ResourceState.NeedReboot)
-                    throw new InvalidResourceState("A resource test returned reboot required. This is invalid.");
+                if (testResult == ResourceState.NeedReboot)
+                {
+                    currentResult.State = ResourceState.NeedReboot;
+                    return returnData;
+                }
 
                 if (testResult == ResourceState.NotConfigured)
                 {
