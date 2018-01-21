@@ -13,6 +13,7 @@ var ToolsFolder = RepoRootFolder + "/Tools";
 var target = Argument("target", "Default");
 
 var nugetAPIKey = EnvironmentVariable("NUGETAPIKEY");
+var nugetURL = EnvironmentVariable("NUGETURL);
     
 GitVersion version;
 
@@ -97,7 +98,7 @@ Task("FCE_Windows_Core.Deploy.NuGet")
     .Does(() => {
         NuGetPush(RepoRootFolder + "/FCE.Windows.Core/Bin/Release/FCE.Windows.Core." + version.SemVer + ".nupkg",
         new NuGetPushSettings{
-            Source = "https://api.nuget.org/v3/index.json",
+            Source = nugetURL,
             ApiKey = nugetAPIKey
         });
     });
