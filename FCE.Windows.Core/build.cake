@@ -13,7 +13,7 @@ var ToolsFolder = RepoRootFolder + "/Tools";
 var target = Argument("target", "Default");
 
 var nugetAPIKey = EnvironmentVariable("NUGETAPIKEY");
-var nugetURL = EnvironmentVariable("NUGETURL);
+var nugetURL = EnvironmentVariable("NUGETURL");
     
 GitVersion version;
 
