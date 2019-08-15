@@ -422,11 +422,11 @@ void D_CheckRecordFrom(void)
     if (!p)
         return;
 
-    filename = SV_Filename(myargv[p + 1][0] - '0');
+    filename = SV_Filename(M_GetArg(p + 1)[0] - '0');
     G_LoadGame(filename);
     G_DoLoadGame();             // load the gameskill etc info from savegame
 
-    G_RecordDemo(gameskill, 1, gameepisode, gamemap, myargv[p + 2]);
+    G_RecordDemo(gameskill, 1, gameepisode, gamemap, M_GetArg(p + 2));
     D_DoomLoop();               // never returns
     free(filename);
 }
@@ -804,7 +804,7 @@ void D_DoomMain(void)
     p = M_CheckParmWithArgs("-skill", 1);
     if (p)
     {
-        startskill = myargv[p + 1][0] - '1';
+        startskill = M_GetArg(p + 1)[0] - '1';
         autostart = true;
     }
 
@@ -819,7 +819,7 @@ void D_DoomMain(void)
     p = M_CheckParmWithArgs("-episode", 1);
     if (p)
     {
-        startepisode = myargv[p + 1][0] - '0';
+        startepisode = M_GetArg(p + 1)[0] - '0';
         startmap = 1;
         autostart = true;
     }
@@ -833,10 +833,10 @@ void D_DoomMain(void)
     //
 
     p = M_CheckParmWithArgs("-warp", 2);
-    if (p && p < myargc - 2)
+    if (p && p < M_ArgCount() - 2)
     {
-        startepisode = myargv[p + 1][0] - '0';
-        startmap = myargv[p + 2][0] - '0';
+        startepisode = M_GetArg(p + 1)[0] - '0';
+        startmap = M_GetArg(p + 2)[0] - '0';
         autostart = true;
     }
 
@@ -945,18 +945,18 @@ void D_DoomMain(void)
 
     if (p)
     {
-        char *uc_filename = strdup(myargv[p + 1]);
+        char *uc_filename = strdup(M_GetArg(p + 1));
         M_ForceUppercase(uc_filename);
 
         // In Vanilla, the filename must be specified without .lmp,
         // but make that optional.
         if (M_StringEndsWith(uc_filename, ".LMP"))
         {
-            M_StringCopy(file, myargv[p + 1], sizeof(file));
+            M_StringCopy(file, M_GetArg(p + 1), sizeof(file));
         }
         else
         {
-            DEH_snprintf(file, sizeof(file), "%s.lmp", myargv[p + 1]);
+            DEH_snprintf(file, sizeof(file), "%s.lmp", M_GetArg(p + 1));
         }
 
         free(uc_filename);
@@ -970,7 +970,7 @@ void D_DoomMain(void)
         {
             // The file failed to load, but copy the original arg as a
             // demo name to make tricks like -playdemo demo1 possible.
-            M_StringCopy(demolumpname, myargv[p + 1], sizeof(demolumpname));
+            M_StringCopy(demolumpname, M_GetArg(p + 1), sizeof(demolumpname));
         }
 
         printf("Playing demo %s.\n", file);
@@ -1105,7 +1105,7 @@ void D_DoomMain(void)
     p = M_CheckParmWithArgs("-record", 1);
     if (p)
     {
-        G_RecordDemo(startskill, 1, startepisode, startmap, myargv[p + 1]);
+        G_RecordDemo(startskill, 1, startepisode, startmap, M_GetArg(p + 1));
         D_DoomLoop();           // Never returns
     }
 
@@ -1133,11 +1133,11 @@ void D_DoomMain(void)
     //
 
     p = M_CheckParmWithArgs("-loadgame", 1);
-    if (p && p < myargc - 1)
+    if (p && p < M_ArgCount() - 1)
     {
         char *filename;
 
-	filename = SV_Filename(myargv[p + 1][0] - '0');
+	filename = SV_Filename(M_GetArg(p + 1)[0] - '0');
         G_LoadGame(filename);
 	free(filename);
     }

@@ -1223,8 +1223,8 @@ static void DonutOverrun(fixed_t *s3_floorheight, short *s3_floorpic,
             // DOSBox under XP:
             // 0000:0000    (00 00 00 F1) ?? ?? ?? 00-(07 00)
 
-            M_StrToInt(myargv[p + 1], &tmp_s3_floorheight);
-            M_StrToInt(myargv[p + 2], &tmp_s3_floorpic);
+            M_StrToInt(M_GetArg(p + 1), &tmp_s3_floorheight);
+            M_StrToInt(M_GetArg(p + 2), &tmp_s3_floorpic);
 
             if (tmp_s3_floorpic >= numflats)
             {

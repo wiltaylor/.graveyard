@@ -637,7 +637,7 @@ void P_SetupLevel(int episode, int map, int playermask, skill_t skill)
         parm = M_CheckParmWithArgs("-timer", 1);
         if (parm)
         {
-            TimerGame = atoi(myargv[parm + 1]) * 35 * 60;
+            TimerGame = atoi(M_GetArg(parm + 1)) * 35 * 60;
         }
     }
 

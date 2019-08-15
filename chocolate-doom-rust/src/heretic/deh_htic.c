@@ -113,7 +113,7 @@ void DEH_HereticInit(void)
 
     if (i > 0)
     {
-        SetHHEVersionByName(myargv[i + 1]);
+        SetHHEVersionByName(M_GetArg(i + 1));
     }
 
     // For v1.0 patches, we must apply a slight change to the states[]

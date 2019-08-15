@@ -196,7 +196,7 @@ static void InitConnectData(net_connect_data_t *connect_data)
 
     if (i > 0)
     {
-        connect_data->player_class = atoi(myargv[i + 1]);
+        connect_data->player_class = atoi(M_GetArg(i + 1));
     }
     else
     {

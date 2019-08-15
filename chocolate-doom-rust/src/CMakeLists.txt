@@ -7,7 +7,7 @@ endforeach()
 set(COMMON_SOURCE_FILES
     i_main.c
     i_system.c           i_system.h
-    m_argv.c             m_argv.h
+                         m_argv.h
     m_misc.c             m_misc.h)
 
 # Dedicated server (chocolate-server):
@@ -29,16 +29,20 @@ set(DEDSERV_FILES
     net_structrw.c      net_structrw.h
     z_native.c          z_zone.h)
 
+# Rust files
+add_subdirectory(refactor)
+set(RUST_LIBS refactor Threads::Threads dl)
+
 add_executable("${PROGRAM_PREFIX}server" WIN32 ${COMMON_SOURCE_FILES} ${DEDSERV_FILES})
 target_include_directories("${PROGRAM_PREFIX}server"
                            PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/../")
-target_link_libraries("${PROGRAM_PREFIX}server" SDL2::SDL2main SDL2::net)
+target_link_libraries("${PROGRAM_PREFIX}server" SDL2::SDL2main SDL2::net ${RUST_LIBS})
 
 # Source files used by the game binaries (chocolate-doom, etc.)
 
 set(GAME_SOURCE_FILES
     aes_prng.c          aes_prng.h
-    d_event.c           d_event.h
+                        d_event.h
                         doomkeys.h
                         doomtype.h
     d_iwad.c            d_iwad.h
@@ -129,10 +133,6 @@ if(PNG_FOUND)
     list(APPEND EXTRA_LIBS PNG::PNG)
 endif()
 
-# Rust files
-add_subdirectory(refactor)
-set(RUST_LIBS refactor Threads::Threads dl)
-
 if(WIN32)
     add_executable("${PROGRAM_PREFIX}doom" WIN32 ${SOURCE_FILES_WITH_DEH} "${CMAKE_CURRENT_BINARY_DIR}/resource.rc")
 else()
@@ -140,7 +140,7 @@ else()
 endif()
 
 target_include_directories("${PROGRAM_PREFIX}doom" PRIVATE ${GAME_INCLUDE_DIRS})
-target_link_libraries("${PROGRAM_PREFIX}doom" doom ${EXTRA_LIBS} ${RUST_LIBS})
+target_link_libraries("${PROGRAM_PREFIX}doom" doom ${RUST_LIBS} ${EXTRA_LIBS} )
 
 if(MSVC)
     set_target_properties("${PROGRAM_PREFIX}doom" PROPERTIES
@@ -221,12 +221,12 @@ if(MSVC)
                           LINK_FLAGS "/MANIFEST:NO")
 endif()
 
-add_executable(midiread midifile.c z_native.c i_system.c m_argv.c m_misc.c d_iwad.c deh_str.c m_config.c)
+add_executable(midiread midifile.c z_native.c i_system.c m_misc.c d_iwad.c deh_str.c m_config.c)
 target_compile_definitions(midiread PRIVATE "-DTEST")
 target_include_directories(midiread PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/../")
-target_link_libraries(midiread SDL2::SDL2main SDL2::SDL2)
+target_link_libraries(midiread SDL2::SDL2main SDL2::SDL2 ${RUST_LIBS})
 
-add_executable(mus2mid mus2mid.c memio.c z_native.c i_system.c m_argv.c m_misc.c d_iwad.c deh_str.c m_config.c)
+add_executable(mus2mid mus2mid.c memio.c z_native.c i_system.c m_misc.c d_iwad.c deh_str.c m_config.c)
 target_compile_definitions(mus2mid PRIVATE "-DSTANDALONE")
 target_include_directories(mus2mid PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/../")
-target_link_libraries(mus2mid SDL2::SDL2main SDL2::SDL2)
+target_link_libraries(mus2mid SDL2::SDL2main SDL2::SDL2 ${RUST_LIBS})

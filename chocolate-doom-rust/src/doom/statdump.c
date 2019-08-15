@@ -333,9 +333,9 @@ void StatDump(void)
 
         // Allow "-" as output file, for stdout.
 
-        if (strcmp(myargv[i + 1], "-") != 0)
+        if (strcmp(M_GetArg(i + 1), "-") != 0)
         {
-            dumpfile = fopen(myargv[i + 1], "w");
+            dumpfile = fopen(M_GetArg(i + 1), "w");
         }
         else
         {

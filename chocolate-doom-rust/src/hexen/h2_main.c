@@ -513,9 +513,9 @@ void D_DoomMain(void)
     //
 
     p = M_CheckParm("-record");
-    if (p && p < myargc - 1)
+    if (p && p < M_ArgCount() - 1)
     {
-        G_RecordDemo(startskill, 1, startepisode, startmap, myargv[p + 1]);
+        G_RecordDemo(startskill, 1, startepisode, startmap, M_GetArg(p + 1));
         H2_GameLoop();          // Never returns
     }
 
@@ -545,7 +545,7 @@ void D_DoomMain(void)
     p = M_CheckParmWithArgs("-loadgame", 1);
     if (p)
     {
-        G_LoadGame(atoi(myargv[p + 1]));
+        G_LoadGame(atoi(M_GetArg(p + 1)));
     }
 
     if (gameaction != ga_loadgame)
@@ -650,7 +650,7 @@ static void HandleArgs(void)
     if (p)
     {
         sc_FileScripts = true;
-        sc_ScriptsDir = myargv[p+1];
+        sc_ScriptsDir = M_GetArg(p+1);
     }
 
     //!
@@ -666,7 +666,7 @@ static void HandleArgs(void)
 
     if (p)
     {
-        startskill = myargv[p+1][0] - '1';
+        startskill = M_GetArg(p+1)[0] - '1';
         autostart = true;
     }
 
@@ -699,11 +699,11 @@ static void HandleArgs(void)
         char *uc_filename;
         char file[256];
 
-        M_StringCopy(file, myargv[p+1], sizeof(file));
+        M_StringCopy(file, M_GetArg(p+1), sizeof(file));
 
         // With Vanilla Hexen you have to specify the file without
         // extension, but make that optional.
-        uc_filename = strdup(myargv[p + 1]);
+        uc_filename = strdup(M_GetArg(p + 1));
         M_ForceUppercase(uc_filename);
 
         if (!M_StringEndsWith(uc_filename, ".LMP"))
@@ -722,10 +722,10 @@ static void HandleArgs(void)
         {
             // The file failed to load, but copy the original arg as a
             // demo name to make tricks like -playdemo demo1 possible.
-            M_StringCopy(demolumpname, myargv[p+1], sizeof(demolumpname));
+            M_StringCopy(demolumpname, M_GetArg(p+1), sizeof(demolumpname));
         }
 
-        ST_Message("Playing demo %s.\n", myargv[p+1]);
+        ST_Message("Playing demo %s.\n", M_GetArg(p+1));
     }
 
     //!
@@ -764,9 +764,9 @@ static void WarpCheck(void)
     //
 
     p = M_CheckParm("-warp");
-    if (p && p < myargc - 1)
+    if (p && p < M_ArgCount() - 1)
     {
-        WarpMap = atoi(myargv[p + 1]);
+        WarpMap = atoi(M_GetArg(p + 1));
         map = P_TranslateMap(WarpMap);
         if (map == -1)
         {                       // Couldn't find real map number
@@ -1093,13 +1093,13 @@ static void CheckRecordFrom(void)
     // to -loadgame <savenum> -record <demofile>.
     //
     p = M_CheckParm("-recordfrom");
-    if (!p || p > myargc - 2)
+    if (!p || p > M_ArgCount() - 2)
     {                           // Bad args
         return;
     }
-    G_LoadGame(atoi(myargv[p + 1]));
+    G_LoadGame(atoi(M_GetArg(p + 1)));
     G_DoLoadGame();             // Load the gameskill etc info from savegame
-    G_RecordDemo(gameskill, 1, gameepisode, gamemap, myargv[p + 2]);
+    G_RecordDemo(gameskill, 1, gameepisode, gamemap, M_GetArg(p + 2));
 
     H2_GameLoop();              // Never returns
 }

@@ -2006,7 +2006,7 @@ void M_LoadDefaults (void)
 
     if (i)
     {
-	doom_defaults.filename = myargv[i+1];
+	doom_defaults.filename = M_GetArg(i+1);
 	printf ("	default file: %s\n",doom_defaults.filename);
     }
     else
@@ -2028,7 +2028,7 @@ void M_LoadDefaults (void)
 
     if (i)
     {
-        extra_defaults.filename = myargv[i+1];
+        extra_defaults.filename = M_GetArg(i+1);
         printf("        extra configuration file: %s\n", 
                extra_defaults.filename);
     }
@@ -2285,7 +2285,7 @@ char *M_GetSaveGameDir(const char *iwadname)
     p = M_CheckParmWithArgs("-savedir", 1);
     if (p)
     {
-        savegamedir = myargv[p + 1];
+        savegamedir = M_GetArg(p + 1);
         if (!M_FileExists(savegamedir))
         {
             M_MakeDirectory(savegamedir);

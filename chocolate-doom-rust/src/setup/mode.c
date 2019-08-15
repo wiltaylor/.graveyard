@@ -349,7 +349,7 @@ void SetupMission(GameSelectCallback callback)
 
     if (p > 0)
     {
-        mission_name = myargv[p + 1];
+        mission_name = M_GetArg(p + 1);
 
         config = GetMissionForName(mission_name);
 

@@ -93,21 +93,21 @@ static int ArgumentNeedsEscape(char *arg)
 
 // Arguments passed to the setup tool should be passed through to the
 // game when launching a game.  Calling this adds all arguments from
-// myargv to the output context.
+// args to the output context.
 
 void PassThroughArguments(execute_context_t *context)
 {
     int i;
 
-    for (i = 1; i < myargc; ++i)
+    for (i = 1; i < M_ArgCount(); ++i)
     {
-        if (ArgumentNeedsEscape(myargv[i]))
+        if (ArgumentNeedsEscape(M_GetArg(i)))
         {
-            AddCmdLineParameter(context, "\"%s\"", myargv[i]);
+            AddCmdLineParameter(context, "\"%s\"", M_GetArg(i));
         }
         else
         {
-            AddCmdLineParameter(context, "%s", myargv[i]);
+            AddCmdLineParameter(context, "%s", M_GetArg(i));
         }
     }
 }
@@ -142,126 +142,7 @@ void AddCmdLineParameter(execute_context_t *context, const char *s, ...)
     va_end(args);
 }
 
-#if defined(_WIN32)
 
-boolean OpenFolder(const char *path)
-{
-    // "If the function succeeds, it returns a value greater than 32."
-    return (int)ShellExecute(NULL, "open", path, NULL, NULL, SW_SHOWDEFAULT) > 32;
-}
-
-// Wait for the specified process to exit.  Returns the exit code.
-static unsigned int WaitForProcessExit(HANDLE subprocess)
-{
-    DWORD exit_code;
-
-    for (;;)
-    {
-        WaitForSingleObject(subprocess, INFINITE);
-
-        if (!GetExitCodeProcess(subprocess, &exit_code))
-        {
-            return -1;
-        }
-
-        if (exit_code != STILL_ACTIVE)
-        {
-            return exit_code;
-        }
-    }
-}
-
-static void ConcatWCString(wchar_t *buf, const char *value)
-{
-    MultiByteToWideChar(CP_OEMCP, 0,
-                        value, strlen(value) + 1,
-                        buf + wcslen(buf), strlen(value) + 1);
-}
-
-// Build the command line string, a wide character string of the form:
-//
-// "program" "arg"
-
-static wchar_t *BuildCommandLine(const char *program, const char *arg)
-{
-    wchar_t exe_path[MAX_PATH];
-    wchar_t *result;
-    wchar_t *sep;
-
-    // Get the path to this .exe file.
-
-    GetModuleFileNameW(NULL, exe_path, MAX_PATH);
-
-    // Allocate buffer to contain result string.
-
-    result = calloc(wcslen(exe_path) + strlen(program) + strlen(arg) + 6,
-                    sizeof(wchar_t));
-
-    wcscpy(result, L"\"");
-
-    // Copy the path part of the filename (including ending \)
-    // into the result buffer:
-
-    sep = wcsrchr(exe_path, DIR_SEPARATOR);
-
-    if (sep != NULL)
-    {
-        wcsncpy(result + 1, exe_path, sep - exe_path + 1);
-        result[sep - exe_path + 2] = '\0';
-    }
-
-    // Concatenate the name of the program:
-
-    ConcatWCString(result, program);
-
-    // End of program name, start of argument:
-
-    wcscat(result, L"\" \"");
-
-    ConcatWCString(result, arg);
-
-    wcscat(result, L"\"");
-
-    return result;
-}
-
-static int ExecuteCommand(const char *program, const char *arg)
-{
-    STARTUPINFOW startup_info;
-    PROCESS_INFORMATION proc_info;
-    wchar_t *command;
-    int result = 0;
-
-    command = BuildCommandLine(program, arg);
-
-    // Invoke the program:
-
-    memset(&proc_info, 0, sizeof(proc_info));
-    memset(&startup_info, 0, sizeof(startup_info));
-    startup_info.cb = sizeof(startup_info);
-
-    if (!CreateProcessW(NULL, command,
-                        NULL, NULL, FALSE, 0, NULL, NULL,
-                        &startup_info, &proc_info))
-    {
-        result = -1;
-    }
-    else
-    {
-        // Wait for the process to finish, and save the exit code.
-
-        result = WaitForProcessExit(proc_info.hProcess);
-
-        CloseHandle(proc_info.hProcess);
-        CloseHandle(proc_info.hThread);
-    }
-
-    free(command);
-
-    return result;
-}
-
-#else
 
 boolean OpenFolder(const char *path)
 {
@@ -289,7 +170,7 @@ static char *GetFullExePath(const char *program)
     size_t result_len;
     unsigned int path_len;
 
-    sep = strrchr(myargv[0], DIR_SEPARATOR);
+    sep = strrchr(M_GetArg(0), DIR_SEPARATOR);
 
     if (sep == NULL)
     {
@@ -297,11 +178,11 @@ static char *GetFullExePath(const char *program)
     }
     else
     {
-        path_len = sep - myargv[0] + 1;
+        path_len = sep - M_GetArg(0) + 1;
         result_len = strlen(program) + path_len + 1;
         result = malloc(result_len);
 
-        M_StringCopy(result, myargv[0], result_len);
+        M_StringCopy(result, M_GetArg(0), result_len);
         result[path_len] = '\0';
 
         M_StringConcat(result, program, result_len);
@@ -347,8 +228,6 @@ static int ExecuteCommand(const char *program, const char *arg)
         }
     }
 }
-
-#endif
 
 int ExecuteDoom(execute_context_t *context)
 {

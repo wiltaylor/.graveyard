@@ -831,7 +831,7 @@ void D_IdentifyVersion(void)
         p = M_CheckParmWithArgs("-pack", 1);
         if (p > 0)
         {
-            SetMissionForPackName(myargv[p + 1]);
+            SetMissionForPackName(M_GetArg(p + 1));
         }
     }
 }
@@ -999,7 +999,7 @@ static void InitGameVersion(void)
     {
         for (i=0; gameversions[i].description != NULL; ++i)
         {
-            if (!strcmp(myargv[p+1], gameversions[i].cmdline))
+            if (!strcmp(M_GetArg(p+1), gameversions[i].cmdline))
             {
                 gameversion = gameversions[i].version;
                 break;
@@ -1016,7 +1016,7 @@ static void InitGameVersion(void)
                         gameversions[i].description);
             }
             
-            I_Error("Unknown game version '%s'", myargv[p+1]);
+            I_Error("Unknown game version '%s'", M_GetArg(p+1));
         }
     }
     else
@@ -1268,7 +1268,7 @@ void D_DoomMain (void)
 
     if (p)
     {
-        NET_QueryAddress(myargv[p+1]);
+        NET_QueryAddress(M_GetArg(p+1));
         exit(0);
     }
 
@@ -1388,8 +1388,8 @@ void D_DoomMain (void)
 	extern int forwardmove[2];
 	extern int sidemove[2];
 	
-	if (p<myargc-1)
-	    scale = atoi (myargv[p+1]);
+	if (p<M_ArgCount()-1)
+	    scale = atoi (M_GetArg(p+1));
 	if (scale < 10)
 	    scale = 10;
 	if (scale > 400)
@@ -1573,18 +1573,18 @@ void D_DoomMain (void)
 
     if (p)
     {
-        char *uc_filename = strdup(myargv[p + 1]);
+        char *uc_filename = strdup(M_GetArg(p + 1));
         M_ForceUppercase(uc_filename);
 
         // With Vanilla you have to specify the file without extension,
         // but make that optional.
         if (M_StringEndsWith(uc_filename, ".LMP"))
         {
-            M_StringCopy(file, myargv[p + 1], sizeof(file));
+            M_StringCopy(file, M_GetArg(p + 1), sizeof(file));
         }
         else
         {
-            DEH_snprintf(file, sizeof(file), "%s.lmp", myargv[p+1]);
+            DEH_snprintf(file, sizeof(file), "%s.lmp", M_GetArg(p+1));
         }
 
         free(uc_filename);
@@ -1600,7 +1600,7 @@ void D_DoomMain (void)
             // the demo in the same way as Vanilla Doom.  This makes
             // tricks like "-playdemo demo1" possible.
 
-            M_StringCopy(demolumpname, myargv[p + 1], sizeof(demolumpname));
+            M_StringCopy(demolumpname, M_GetArg(p + 1), sizeof(demolumpname));
         }
 
         printf("Playing demo %s.\n", file);
@@ -1723,7 +1723,7 @@ void D_DoomMain (void)
 
     if (p)
     {
-	startskill = myargv[p+1][0]-'1';
+	startskill = M_GetArg(p+1)[0]-'1';
 	autostart = true;
     }
 
@@ -1739,7 +1739,7 @@ void D_DoomMain (void)
 
     if (p)
     {
-	startepisode = myargv[p+1][0]-'0';
+	startepisode = M_GetArg(p+1)[0]-'0';
 	startmap = 1;
 	autostart = true;
     }
@@ -1758,7 +1758,7 @@ void D_DoomMain (void)
 
     if (p)
     {
-	timelimit = atoi(myargv[p+1]);
+	timelimit = atoi(M_GetArg(p+1));
     }
 
     //!
@@ -1789,14 +1789,14 @@ void D_DoomMain (void)
     if (p)
     {
         if (gamemode == commercial)
-            startmap = atoi (myargv[p+1]);
+            startmap = atoi (M_GetArg(p+1));
         else
         {
-            startepisode = myargv[p+1][0]-'0';
+            startepisode = M_GetArg(p+1)[0]-'0';
 
-            if (p + 2 < myargc)
+            if (p + 2 < M_ArgCount())
             {
-                startmap = myargv[p+2][0]-'0';
+                startmap = M_GetArg(p+2)[0]-'0';
             }
             else
             {
@@ -1835,7 +1835,7 @@ void D_DoomMain (void)
     
     if (p)
     {
-        startloadgame = atoi(myargv[p+1]);
+        startloadgame = atoi(M_GetArg(p+1));
     }
     else
     {
@@ -1891,7 +1891,7 @@ void D_DoomMain (void)
 
     if (p)
     {
-	G_RecordDemo (myargv[p+1]);
+	G_RecordDemo (M_GetArg(p+1));
 	autostart = true;
     }
 

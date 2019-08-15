@@ -469,10 +469,10 @@ void NET_OpenLog(void)
     p = M_CheckParmWithArgs("-netlog", 1);
     if (p > 0)
     {
-        net_debug = fopen(myargv[p + 1], "w");
+        net_debug = fopen(M_GetArg(p + 1), "w");
         if (net_debug == NULL)
         {
-            I_Error("Failed to open %s to write debug log.", myargv[p + 1]);
+            I_Error("Failed to open %s to write debug log.", M_GetArg(p + 1));
         }
         I_AtExit(CloseLog, true);
     }

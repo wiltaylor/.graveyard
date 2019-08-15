@@ -713,7 +713,7 @@ static void BuildIWADDirList(void)
 
     // Next check the directory where the executable is located. This might
     // be different from the current directory.
-    AddIWADDir(M_DirName(myargv[0]));
+    AddIWADDir(M_DirName(M_GetArg(0)));
 
     // Add DOOMWADDIR if it is in the environment
     env = getenv("DOOMWADDIR");
@@ -857,7 +857,7 @@ char *D_FindIWAD(int mask, GameMission_t *mission)
     {
         // Search through IWAD dirs for an IWAD with the given name.
 
-        iwadfile = myargv[iwadparm + 1];
+        iwadfile = M_GetArg(iwadparm + 1);
 
         result = D_FindWADByName(iwadfile);
 

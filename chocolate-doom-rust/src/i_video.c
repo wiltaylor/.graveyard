@@ -977,7 +977,7 @@ void I_GraphicsCheckCommandLine(void)
 
     if (i > 0)
     {
-        window_width = atoi(myargv[i + 1]);
+        window_width = atoi(M_GetArg(i + 1));
         fullscreen = false;
     }
 
@@ -992,7 +992,7 @@ void I_GraphicsCheckCommandLine(void)
 
     if (i > 0)
     {
-        window_height = atoi(myargv[i + 1]);
+        window_height = atoi(M_GetArg(i + 1));
         fullscreen = false;
     }
 
@@ -1009,7 +1009,7 @@ void I_GraphicsCheckCommandLine(void)
     {
         int w, h, s;
 
-        s = sscanf(myargv[i + 1], "%ix%i", &w, &h);
+        s = sscanf(M_GetArg(i + 1), "%ix%i", &w, &h);
         if (s == 2)
         {
             window_width = w;

@@ -369,7 +369,7 @@ static void ParseCommandLineArgs(void)
     i = M_CheckParmWithArgs("-nodes", 1);
     if (i > 0)
     {
-        expected_nodes = atoi(myargv[i + 1]);
+        expected_nodes = atoi(M_GetArg(i + 1));
     }
 }
 

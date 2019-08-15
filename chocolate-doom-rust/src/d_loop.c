@@ -362,7 +362,7 @@ void D_StartNetGame(net_gamesettings_t *settings,
     i = M_CheckParmWithArgs("-extratics", 1);
 
     if (i > 0)
-        settings->extratics = atoi(myargv[i+1]);
+        settings->extratics = atoi(M_GetArg(i+1));
     else
         settings->extratics = 1;
 
@@ -377,7 +377,7 @@ void D_StartNetGame(net_gamesettings_t *settings,
     i = M_CheckParmWithArgs("-dup", 1);
 
     if (i > 0)
-        settings->ticdup = atoi(myargv[i+1]);
+        settings->ticdup = atoi(M_GetArg(i+1));
     else
         settings->ticdup = 1;
 
@@ -484,12 +484,12 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
         if (i > 0)
         {
             net_sdl_module.InitClient();
-            addr = net_sdl_module.ResolveAddress(myargv[i+1]);
+            addr = net_sdl_module.ResolveAddress(M_GetArg(i+1));
             NET_ReferenceAddress(addr);
 
             if (addr == NULL)
             {
-                I_Error("Unable to resolve '%s'\n", myargv[i+1]);
+                I_Error("Unable to resolve '%s'\n", M_GetArg(i+1));
             }
         }
     }
