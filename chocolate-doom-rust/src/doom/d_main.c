@@ -150,6 +150,8 @@ void D_ProcessEvents (void)
 	    continue;               // menu ate the event
 	G_Responder (ev);
     }
+
+    free(ev);
 }
 
 
@@ -1211,6 +1213,7 @@ static void G_CheckDemoStatusAtExit (void)
 //
 void D_DoomMain (void)
 {
+   
     int p;
     char file[256];
     char demolumpname[9];

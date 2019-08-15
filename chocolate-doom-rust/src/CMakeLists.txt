@@ -129,6 +129,10 @@ if(PNG_FOUND)
     list(APPEND EXTRA_LIBS PNG::PNG)
 endif()
 
+# Rust files
+add_subdirectory(refactor)
+set(RUST_LIBS refactor Threads::Threads dl)
+
 if(WIN32)
     add_executable("${PROGRAM_PREFIX}doom" WIN32 ${SOURCE_FILES_WITH_DEH} "${CMAKE_CURRENT_BINARY_DIR}/resource.rc")
 else()
@@ -136,7 +140,7 @@ else()
 endif()
 
 target_include_directories("${PROGRAM_PREFIX}doom" PRIVATE ${GAME_INCLUDE_DIRS})
-target_link_libraries("${PROGRAM_PREFIX}doom" doom ${EXTRA_LIBS})
+target_link_libraries("${PROGRAM_PREFIX}doom" doom ${EXTRA_LIBS} ${RUST_LIBS})
 
 if(MSVC)
     set_target_properties("${PROGRAM_PREFIX}doom" PROPERTIES
@@ -150,7 +154,7 @@ else()
 endif()
 
 target_include_directories("${PROGRAM_PREFIX}heretic" PRIVATE ${GAME_INCLUDE_DIRS})
-target_link_libraries("${PROGRAM_PREFIX}heretic" heretic ${EXTRA_LIBS})
+target_link_libraries("${PROGRAM_PREFIX}heretic" heretic ${EXTRA_LIBS} ${RUST_LIBS})
 
 if(MSVC)
     set_target_properties("${PROGRAM_PREFIX}heretic" PROPERTIES
@@ -164,7 +168,7 @@ else()
 endif()
 
 target_include_directories("${PROGRAM_PREFIX}hexen" PRIVATE ${GAME_INCLUDE_DIRS})
-target_link_libraries("${PROGRAM_PREFIX}hexen" hexen ${EXTRA_LIBS})
+target_link_libraries("${PROGRAM_PREFIX}hexen" hexen ${EXTRA_LIBS} ${RUST_LIBS})
 
 if(MSVC)
     set_target_properties("${PROGRAM_PREFIX}hexen" PROPERTIES
@@ -178,7 +182,7 @@ else()
 endif()
 
 target_include_directories("${PROGRAM_PREFIX}strife" PRIVATE ${GAME_INCLUDE_DIRS})
-target_link_libraries("${PROGRAM_PREFIX}strife" strife ${EXTRA_LIBS})
+target_link_libraries("${PROGRAM_PREFIX}strife" strife ${EXTRA_LIBS} ${RUST_LIBS})
 
 if(MSVC)
     set_target_properties("${PROGRAM_PREFIX}strife" PROPERTIES
@@ -210,7 +214,7 @@ endif()
 
 target_include_directories("${PROGRAM_PREFIX}setup"
                            PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/../")
-target_link_libraries("${PROGRAM_PREFIX}setup" SDL2::SDL2main SDL2::SDL2 SDL2::mixer SDL2::net setup textscreen)
+target_link_libraries("${PROGRAM_PREFIX}setup" SDL2::SDL2main SDL2::SDL2 SDL2::mixer SDL2::net setup textscreen ${RUST_LIBS})
 
 if(MSVC)
     set_target_properties("${PROGRAM_PREFIX}setup" PROPERTIES
