@@ -1,0 +1,13 @@
+- name: Example
+  description: Some example tests to test all test states
+  command: python
+  arguments:  ['test.py', '{TESTNAME}']
+  tests: [ 'testpass', 'testignore', 'testwarn', 'testfail', 'testnoresponse']
+  timeout: 60
+
+- name: BadCommandLineTest
+  description: A test that fails to launch the command
+  command: someincorrectapplication
+  arguments: ["{TESTNAME}"]
+  tests: ['mytest']
+  timeout: 60
