@@ -26,3 +26,62 @@ $> go get
 $> go build
 ```
 
+There is also a buildall.sh script you can run which will build all
+the different supported operating system binaries in the build folder.
+
+## Testing
+You can self test spanr-test by running it against the test.yaml file 
+in the example folder. This test will report the expected result for
+each test.
+
+## Usage
+The tool is fairly simple to use, you just need to create a test suite 
+yaml file like the following.
+
+```yaml
+# You can create a list of test sets which will be run
+# Each test set is in the context of one script file.
+
+- name: TestSet1 #Name of test script (must have no spaces)
+  description: "This is my awesome test" #Description of your test
+  command: python #Executable to run tests with in this set.
+  arguments: ['myscript.py', '{TESTNAME}'] #Array of arguments to run
+    #on each test.
+    # {TESTNAME} is replaced with the name of the test and 
+    # {PWD} is replaced with the directory relative to the yaml file.
+    # The current directory is also changed to the same folder as the
+    # yaml file while its running too.
+  tests: ['test1', 'test2', 'test3'] # This is the list of tests in the
+    # test suite. The script is executed multiple times with each
+    # parameter from this list passed in where {TESTNAME} is in the
+    # arguments.
+  timeout: 90 # How long in seconds a test can run before it times out.
+
+- name: TestSet2
+  description: 'My 2nd awesome test set'
+  command: ruby
+  arguments: ['test.rb', '{TESTNAME}']        
+  tests: ['test4', 'myawesometest']
+  timeout: 180
+```
+
+Once you have a test file you can execute it by calling run.
+
+```bash
+$ spanr-test run ./test.yaml
+```
+
+You can also list the tests in a .yaml file
+
+```bash
+$ spanr-test list ./test.yaml
+```
+
+## License 
+Copyright 2019 Wil Taylor
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
