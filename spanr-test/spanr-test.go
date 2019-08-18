@@ -37,14 +37,14 @@ func main() {
 
 			if len(ctx.Args) != 1 {
 				fmt.Println("You need to pass in a path to your test suite!")
-				return 5
+				os.Exit(5)
 			}
 
 			tests, err := loadTests(ctx.Args[0])
 
 			if err != nil {
 				fmt.Println("Failed to load test suite! Error: {}", err)
-				return 5
+				os.Exit(5)
 			}
 			absPath, _ := filepath.Abs(ctx.Args[0])
 			workingDir := filepath.Dir(absPath)
@@ -74,25 +74,27 @@ func main() {
 
 				if err != nil {
 					fmt.Println("Failed to generate json data!")
-					return 5
+					os.Exit(5)
 				}
 
 				file, err := os.Create(outfile)
 
 				if err != nil {
 					fmt.Printf("Failed to create json file! %v Error: %v", outfile, err)
-					return 5
+					os.Exit(5)
 				}
 
 				_, err = file.Write(jsonData)
 
 				if err != nil {
 					fmt.Printf("Failed to create json file! %v Error: %v", outfile, err)
-					return 5
+					os.Exit(5)
 				}
 			}
 
-			return returnCode
+			os.Exit(returnCode)
+
+			return 0
 		},
 	}
 
@@ -103,14 +105,14 @@ func main() {
 
 			if len(ctx.Args) != 1 {
 				fmt.Println("You need to pass in a path to your test suite!")
-				return 5
+				os.Exit(5)
 			}
 
 			result, err := loadTests(ctx.Args[0])
 
 			if err != nil {
 				fmt.Println("Failed to load test suite! Error: {}", err)
-				return 5
+				os.Exit(5)
 			}
 
 			for _, v := range result {
@@ -126,6 +128,8 @@ func main() {
 				fmt.Println("")
 
 			}
+
+			os.Exit(0)
 
 			return 0
 		},
