@@ -58,6 +58,15 @@ func main() {
 			os.Chdir(oldWorkingDir)
 
 			outfile := ctx.Variable["output"]
+			returnCode := 0
+
+			for _, r := range result {
+				if r.Result == TestPassed || r.Result == TestIgnored {
+					continue
+				}
+
+				returnCode = 4
+			}
 
 			if outfile != "" {
 
@@ -83,7 +92,7 @@ func main() {
 				}
 			}
 
-			return 0
+			return returnCode
 		},
 	}
 

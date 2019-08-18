@@ -2,12 +2,14 @@
   description: Some example tests to test all test states
   command: python
   arguments:  ['test.py', '{TESTNAME}']
-  tests: [ 'testpass', 'testignore', 'testwarn', 'testfail', 'testnoresponse']
-  timeout: 60
+  tests: [ 'testpass', 'testignore', 'testwarn', 'testfail', 'testnoresponse', 'testtimeout']
+  timeout: 5
+  continueonerror: yes
 
 - name: BadCommandLineTest
   description: A test that fails to launch the command
   command: someincorrectapplication
   arguments: ["{TESTNAME}"]
-  tests: ['mytest']
+  tests: ['mytest', 'thistestshouldnotrun']
   timeout: 60
+  continueonerror: no

@@ -56,6 +56,7 @@ yaml file like the following.
     # parameter from this list passed in where {TESTNAME} is in the
     # arguments.
   timeout: 90 # How long in seconds a test can run before it times out.
+  continueonerror: yes #Should testing continue on a failed test.
 
 - name: TestSet2
   description: 'My 2nd awesome test set'
@@ -63,6 +64,7 @@ yaml file like the following.
   arguments: ['test.rb', '{TESTNAME}']        
   tests: ['test4', 'myawesometest']
   timeout: 180
+  continueonerror: no
 ```
 
 Once you have a test file you can execute it by calling run.
@@ -76,6 +78,13 @@ You can also list the tests in a .yaml file
 ```bash
 $ spanr-test list ./test.yaml
 ```
+
+## Return codes
+The tool has the following error codes:
+
+* 0 - All completed ok
+* 4 - Some tests failed (ignored tests don't count towards this)
+* 5 - There was an error in spanr-test
 
 ## License 
 Copyright 2019 Wil Taylor

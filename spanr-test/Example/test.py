@@ -10,5 +10,8 @@ if sys.argv[1] == "testwarn":
     print("##WARN##")
 if sys.argv[1] == "testfail":
     print("##FAIL##")
+if sys.argv[1] == "testtimeout":
+    while True:
+        pass
 
 sys.exit(0)

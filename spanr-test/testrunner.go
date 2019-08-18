@@ -31,9 +31,14 @@ func runTests(target string, tests []TestSet) []TestResultInfo {
 	targetList := strings.Split(target, ",")
 
 	var returnData []TestResultInfo
+	lastTestFailed := false
 
 	for _, set := range tests {
 		for _, test := range set.Tests {
+			if lastTestFailed && !set.ContinueOnError {
+				break
+			}
+
 			if target != "" {
 				found := false
 
@@ -64,6 +69,7 @@ func runTests(target string, tests []TestSet) []TestResultInfo {
 				returnData = append(returnData, result)
 				fmt.Printf(" - ERROR: %v\n", err)
 				fmt.Println(output)
+				lastTestFailed = true
 				continue
 			}
 
@@ -72,6 +78,7 @@ func runTests(target string, tests []TestSet) []TestResultInfo {
 				returnData = append(returnData, result)
 				fmt.Println(" - FAILED")
 				fmt.Println(output)
+				lastTestFailed = true
 				continue
 			}
 
@@ -80,6 +87,7 @@ func runTests(target string, tests []TestSet) []TestResultInfo {
 				result.Result = TestIgnored
 				returnData = append(returnData, result)
 				fmt.Println(" - IGNORE")
+				lastTestFailed = false
 				continue
 			}
 
@@ -88,6 +96,7 @@ func runTests(target string, tests []TestSet) []TestResultInfo {
 				result.Result = TestWarning
 				returnData = append(returnData, result)
 				fmt.Println(" - WARN")
+				lastTestFailed = true
 				continue
 			}
 
@@ -96,13 +105,17 @@ func runTests(target string, tests []TestSet) []TestResultInfo {
 				result.Result = TestPassed
 				returnData = append(returnData, result)
 				fmt.Println(" - PASS")
+				lastTestFailed = false
 				continue
 			}
 
 			fmt.Println(" - FAILED")
 			fmt.Println(output)
+			lastTestFailed = true
 			returnData = append(returnData, result)
 		}
+
+		lastTestFailed = false
 	}
 
 	return returnData

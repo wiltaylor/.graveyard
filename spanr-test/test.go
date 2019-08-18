@@ -8,12 +8,13 @@ import (
 
 //TestSet - A definition of a group of tests included in a file.
 type TestSet struct {
-	Name        string   //Name of test set
-	Description string   //Description of group of tests in current file.
-	Command     string   //Command used to run tests
-	Arguments   []string //Arguments passed to run tests. Put token {TESTNAME} to have test name passed into the arguments
-	Tests       []string //Names of tests included in test set.
-	TimeOut     int      //Length of time in seconds that tests can run before timing out.
+	Name            string   //Name of test set
+	Description     string   //Description of group of tests in current file.
+	Command         string   //Command used to run tests
+	Arguments       []string //Arguments passed to run tests. Put token {TESTNAME} to have test name passed into the arguments
+	Tests           []string //Names of tests included in test set.
+	TimeOut         int      //Length of time in seconds that tests can run before timing out.
+	ContinueOnError bool     //Continue on error
 }
 
 func loadTests(path string) ([]TestSet, error) {
