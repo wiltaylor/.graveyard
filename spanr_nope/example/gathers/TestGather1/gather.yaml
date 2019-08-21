@@ -1,0 +1,6 @@
+name: "TestGather1"
+description: "Example test gatherer"
+author: "Wil Taylor"
+version: "0.1.0"
+command: "python"
+arguments: ['test.py']
