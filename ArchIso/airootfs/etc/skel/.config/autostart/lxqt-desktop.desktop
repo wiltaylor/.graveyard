@@ -1,0 +1,8 @@
+[Desktop Entry]
+Exec=pcmanfm-qt --desktop --porofile=lxqt
+Hidden=true
+Name=Desktop
+OnlyShowIn=LXQt;
+TryExec=pcmanfm-qt
+Type=Application
+X-LXQt-Module=true
