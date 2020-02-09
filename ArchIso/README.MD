@@ -10,6 +10,8 @@ This iso also includes a firefox browser install.
 To build you need to be running on an Arch based distro (Manjaro, Arch, Endevor etc) and install the following:
 
 ```bash
+# chown root:root airootfs/etc -R
+# chown root:root airootfs/root -R
 # pacman -Syu archiso
 ```
 
