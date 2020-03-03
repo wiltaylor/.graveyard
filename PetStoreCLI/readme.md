@@ -5,7 +5,7 @@ This is a simple example application which demonstrates the following:
 * With example unit tests.
 
 ## Prerequisites
-* dotnet core 3.0(https://dotnet.microsoft.com/download/dotnet-core/3.0) or installed with Visual Studio 2019
+* [Dotnet Core 3.0](https://dotnet.microsoft.com/download/dotnet-core/3.0) or installed with [Visual Studio 2019](https://visualstudio.microsoft.com/)
 
 ## How to build
 ### Visual Studio 2019
