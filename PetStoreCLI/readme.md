@@ -23,6 +23,11 @@ dotnet build --configuration release
 
 Application binary files will be located in %SolutionFolder%\PetStoreCLI\bin\Release.
 
+## Usage
+To use the tool you simply run it from a terminal/console window and it will print the results out.
+
+You may also optionally pass the --clean command to cleanup categories and names which have invalid charecters in them.
+
  ## License
 Copyright (c) 2020 Wil Taylor
 
