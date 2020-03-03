@@ -4,7 +4,7 @@ This is a simple example application which demonstrates the following:
 * Prints pets sorted by Category and then by name in reverse order.
 * With example unit tests.
 
-##prerequisites
+## Prerequisites
 * dotnet core 3.0(https://dotnet.microsoft.com/download/dotnet-core/3.0) or installed with Visual Studio 2019
 
 ## How to build
