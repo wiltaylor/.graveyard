@@ -11,7 +11,7 @@ This is a simple example application which demonstrates the following:
 ### Visual Studio 2019
 * Open the project in Visual Studio
 * Change the project configuration to Release
-* Press f6 to build solution.
+* Press F6 to build solution.
 
 ### Commandline or Continous Intergration server
 Change directory into the directory containing the project then run the following commands:
