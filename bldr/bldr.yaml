@@ -1,0 +1,69 @@
+name: bldr
+folders: 
+        - host_path: .
+          virt_path: /prj
+actions:
+        - name: build
+          act_type: Meta
+          depend: ["build_linux_x64", "build_windows_x64", "build_macos_x64"]
+
+        - name: build_linux_x64
+          description: Build for linux
+          act_type: OneShot
+          image: bldr:rust
+          command: "cargo"
+          args: ["build", "--release", "--target", "x86_64-unknown-linux-gnu"]
+          working_dir: "/prj"
+
+        - name: build_windows_x64
+          description: Build for windows
+          act_type: OneShot
+          image: bldr:rust
+          command: "cargo"
+          args: ["build", "--release", "--target", "x86_64-pc-windows-gnu"]
+          working_dir: "/prj"
+
+        - name: build_macos_x64
+          description: Build for macOS
+          act_type: OneShot
+          image: bldr:rust
+          command: "cargo"
+          args: ["build", "--release", "--target", "x86_64-apple-darwin"]
+          working_dir: "/prj"
+
+        - name: package
+          act_type: Meta
+          depend: [ "package_linux_x64", "package_windows_x64", "package_macos_x64"]
+
+        - name: package_linux_x64
+          description: Package Linux binary
+          act_type: OneShot
+          image: bldr:rust
+          command: tar
+          args: ["-czvf", "bldr-linux.tar.gz", "./target/x86_64-unknown-linux-gnu/release/bldr"]
+          working_dir: "/prj"
+
+        - name: package_windows_x64
+          description: Package Windows binary
+          act_type: OneShot
+          image: bldr:rust
+          command: "zip"
+          args: ["-9", "bldr-windows.zip", "./target/x86_64-pc-windows-gnu/release/bldr.exe"]
+          working_dir: "/prj"
+
+        - name: package_macos_x64
+          description: Package macOS binary
+          act_type: OneShot
+          image: bldr:rust
+          command: "zip"
+          args: ["-9", "bldr-macos.zip", "./target/x86_64-apple-darwin/release/bldr"]
+          working_dir: "/prj"
+
+        - name: debug
+          description: Version of virtual environment
+          act_type: OneShot
+          image: bldr:rust
+          command: "zip"
+          args: ["--help"]
+
+

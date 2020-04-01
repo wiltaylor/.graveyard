@@ -1,0 +1,31 @@
+#RUST multi platform build
+
+FROM ubuntu as mac-buildchain
+RUN apt-get update -y && apt-get install curl build-essential cmake wget git -y
+RUN apt-get install clang gcc g++ zlib1g-dev libmpc-dev libmpfr-dev libgmp-dev \
+libxml2-dev libssl-dev -y 
+RUN git clone https://github.com/tpoechtrager/osxcross && \
+cd osxcross/tarballs && \
+wget -nc https://s3.dockerproject.org/darwin/v2/MacOSX10.10.sdk.tar.xz
+RUN cd osxcross && UNATTENDED=yes OSX_VERSION_MIN=10.7 ./build.sh
+
+FROM ubuntu as Linux_x86
+RUN apt-get update -y && apt-get install curl build-essential cmake wget git -y
+RUN useradd -ms /bin/bash builduser
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Windows compiler
+RUN apt-get install mingw-w64 -y
+RUN rustup toolchain install stable-x86_64-pc-windows-gnu
+RUN rustup target add x86_64-pc-windows-gnu
+
+# Mac os compiler
+RUN apt-get install clang gcc g++ zlib1g-dev libmpc-dev libmpfr-dev libgmp-dev libxml2-dev libssl-dev -y 
+RUN rustup toolchain install stable-x86_64-apple-darwin
+RUN rustup target add x86_64-apple-darwin
+COPY --from=mac-buildchain /osxcross /osxcross
+ENV PATH="/osxcross/target/bin:${PATH}"
+
+# adding zip support
+RUN apt-get install zip -y
