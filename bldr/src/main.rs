@@ -145,6 +145,7 @@ fn do_action(action: &String, args: &[String], doc: &Document) {
 
                     cmd.arg("run")
                        .arg("--rm")
+                       .arg("-i")
                        .arg("-t");
 
                     if act.net != "" {
