@@ -1,0 +1,2 @@
+main.o: src/main.cpp
+p_main.o: src/platform/desktop/p_main.cpp
