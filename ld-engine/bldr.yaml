@@ -3,16 +3,25 @@ description: Ludum Dare Game Engine
 folders:
         - host_path: .
           virt_path: /prj
+          no_fix: false
 actions:
         - name: build
           act_type: Meta
           depend: [ "linux_x64", "windows_x64", "macos_x64", "web" ]
+        - name: build-debug
+          act_type: Meta
+          depend: [ "linux_x64_debug" ]
         - name: linux_x64
           act_type: OneShot
           image: ld-engine:linux
           command: make
           args: ["BUILDFORPLATFORM=linux"]
           working_dir: "/prj"
+        - name: linux_x64_debug
+          act_type: OneShot
+          image: ld-engine:linux
+          command: make 
+          args: ["-n", "main", "BUILDFORPLATFORM=linux"]
         - name: windows_x64
           act_type: OneShot
           image: ld-engine:windows
@@ -52,6 +61,5 @@ actions:
         - name: emver
           act_type: OneShot
           image: ld-engine:windows
-          command: ls
-          args: [ "/usr/bin" ]
-          working_dir: "/opt/ems"
+          command: ls 
+          args: [ "/winlib/lib" ]

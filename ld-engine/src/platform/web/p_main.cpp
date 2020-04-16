@@ -1,8 +1,9 @@
 #include <iostream>
 #include <emscripten.h>
+#include "../log.h"
 
 void main_loop() {
-
+    log_info("Hellow world!");
 }
 
 
