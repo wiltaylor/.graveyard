@@ -1,0 +1,3 @@
+#!/bin/bash
+docpath=`realpath $1`
+docker run --rm -v `pwd`:`pwd` rmarkdown:latest Rscript -e "require(rmarkdown); render('$docpath')"
