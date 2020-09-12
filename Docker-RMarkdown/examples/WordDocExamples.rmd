@@ -1,0 +1,52 @@
+---
+output: 
+    word_document:
+        reference_docx: ./Template.docx
+---
+
+# Heading 1
+
+## Heading 2
+
+### Heading 3
+
+#### Heading 4
+
+##### Heading 5
+
+###### Heading 6
+
+Normal text
+
+*Italic Text*
+
+**Bold Text**
+
+- Bullet
+- list
+
+1. number list
+2. more numbers
+
+| Col 1 | Col 2 | Col 3 |
+|-------|-------|-------|
+| Table | of | values |
+
+![](cat.jpg)
+Thanks [l_oan](https://unsplash.com/@l_oan) for the image.
+
+[Link to a web site](https://www.wil.dev)
+
+
+```html
+<html>
+<body>
+<p>fooo</p>
+</body>
+</html>
+```
+
+protonmail-verification=d36f1449df243259b4490818515d46ad0cbe71a2
+
+
+Hi, my username is wiltaylor and my support pin is 5928.

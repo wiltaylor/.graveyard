@@ -7,3 +7,94 @@ output: pdf_document
 
 # This is a pretty basic test document
 ## TODO: Add more word like stuff to to this.
+
+``` {r setup, include = FALSE}
+library(reticulate)
+library(knitr)
+library(DiagrammeR)
+virtualenv_create("my-proj")
+py_install("matplotlib", envname="my-proj")
+py_install("pandas", envname="my-proj")
+use_virtualenv("my-proj")
+```
+
+``` {python, echo = FALSE}
+import matplotlib.pyplot as plt
+time = [0, 1, 2, 3]
+position = [0, 100, 200, 300]
+
+plt.plot(time, position)
+plt.xlabel('Time (hr)')
+plt.ylabel('Position (km)')
+```
+
+
+
+``` {python, include = FALSE}
+import pandas as pd
+
+mydata = [ {
+        "Id": 1,
+        "Message": "fooo"
+    },
+    {
+        "Id": 2,
+        "Message": "bar"
+    }
+    ]
+
+pandadata = pd.DataFrame(data=mydata)
+```
+
+```{r echo = FALSE}
+kable(py$pandadata, caption="Data from python")
+```
+
+```{r, echo = FALSE}
+kable(read.csv("./test.csv", header = TRUE))
+```
+
+```{r results="asis",eval=TRUE,echo=FALSE,message=FALSE, error=FALSE, warning=FALSE, comment = NA,fig.height=10}
+library(DiagrammeR)
+grViz("
+digraph dot {
+
+graph [layout = dot]
+
+node [shape = circle,
+      style = filled,
+      color = grey,
+      label = '']
+
+node [fillcolor = red]
+a
+
+node [fillcolor = green]
+b c d
+
+node [fillcolor = orange]
+
+edge [color = grey]
+a -> {b c d}
+b -> {e f g h i j}
+c -> {k l m n o p}
+d -> {q r s t u v}
+}")
+
+```
+
+
+```{r results="asis",eval=TRUE,echo=FALSE,message=FALSE, error=FALSE, warning=FALSE, comment = NA,fig.height=10}
+library(DiagrammeR)
+
+mermaid("
+graph LR
+  A-->B
+  A-->C
+  C-->E
+  B-->D
+  C-->D
+  D-->F
+  E-->F
+")
+```
