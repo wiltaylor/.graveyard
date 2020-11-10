@@ -16,7 +16,7 @@ def update():
 
     if get_os() == 'nixos':
         current_dir = os.getcwd()
-        os.chdir('~/.dotfiles')
+        os.chdir(os.path.abspath('~/.dotfiles'))
         os.system('sudo ~/.dotfiles/update.sh')
         os.chdir(current_dir)
     else:
@@ -57,7 +57,7 @@ def find(query):
 def apply():
     if get_os() == 'nixos':
         current_dir = os.getcwd()
-        os.chdir('~/.dotfiles')
+        os.chdir(os.path.abspath('~/.dotfiles'))
         os.system('sudo ~/.dotfiles/apply.sh')
         os.chdir(current_dir)
 @click.command()
