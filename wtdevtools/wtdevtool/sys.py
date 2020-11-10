@@ -33,14 +33,23 @@ def uninstall():
     else:
         click.echo('Unknown platform. Unable to install package')
 
+
 @click.command()
-@click.option('--query', '-q', nargs=1, required=True, help='Package query to search for.')
+@click.argument('query')
 def search(query):
     if get_os() == 'nixos':
         os.system('nix search nixpkgs ' + query)
     else:
         click.echo('Unknown platform. Unable to search for package')
-        
+
+@click.command()
+@click.argument('query')
+def find(query):
+    if get_os() == 'nixos':
+        os.system('nix search nixpkgs ' + query)
+    else:
+        click.echo('Unknown platform. Unable to search for package')
+       
 @click.command()
 def info():
     os.system('neofetch')
@@ -55,6 +64,7 @@ cli.add_command(install)
 cli.add_command(uninstall)
 cli.add_command(update)
 cli.add_command(search)
+cli.add_command(find)
 cli.add_command(info)
 
 #if __name__ == '__main__':
