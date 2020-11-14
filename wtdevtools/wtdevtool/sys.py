@@ -10,13 +10,31 @@ def get_os():
             return 'nixos'
     return 'unknown'
 
+@click.command()
+def lsrollback():
+    if get_os() == 'nixos':
+        print('--==[System profiles]==--')
+        os.system('ls /nix/var/nix/profiles/system* -lah')
+        print('')
+        print('--==[User profiles]==--')
+        os.system('ls /nix/var/nix/profiles/per-user/' + os.environ['USER'] + ' -lah')
+        print('')
+
+@click.command()
+def clean():
+    if get_os() == 'nixos':
+        print('Running Garbage Collection')
+        os.system('nix-store --gc')
+        print('Deduplication running...this may take awhile')
+        os.system('nix-store --optimise')
+
 
 @click.command()
 def update():
 
     if get_os() == 'nixos':
         current_dir = os.getcwd()
-        os.chdir(os.path.abspath('~/.dotfiles'))
+        os.chdir(os.environ['HOME'] + '/.dotfiles')
         os.system('sudo ~/.dotfiles/update.sh')
         os.chdir(current_dir)
     else:
@@ -57,7 +75,7 @@ def find(query):
 def apply():
     if get_os() == 'nixos':
         current_dir = os.getcwd()
-        os.chdir(os.path.abspath('~/.dotfiles'))
+        os.chdir(os.environ['HOME'] + '/.dotfiles')
         os.system('sudo ~/.dotfiles/apply.sh')
         os.chdir(current_dir)
 @click.command()
@@ -76,6 +94,9 @@ cli.add_command(update)
 cli.add_command(search)
 cli.add_command(find)
 cli.add_command(info)
+cli.add_command(apply)
+cli.add_command(clean)
+cli.add_command(lsrollback)
 
 #if __name__ == '__main__':
 #    cli()
