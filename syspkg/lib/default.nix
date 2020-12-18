@@ -1,4 +1,4 @@
-{lib, ...}:
+{lib, nixpkgs, system, ...}:
 {
   nixlib = lib;
 
@@ -8,7 +8,5 @@
     lessThan listToAttrs pathExists readFile replaceStrings seq
     stringLength sub substring tail trace;
 
-  stdenv = lib.stdenv;
-
-
+  stdenv = nixpkgs.legacyPackages."${system}".stdenv;
 }
