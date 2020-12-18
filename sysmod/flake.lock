@@ -1,0 +1,80 @@
+{
+  "nodes": {
+    "nixpkgs-20-09": {
+      "locked": {
+        "lastModified": 1608062904,
+        "narHash": "sha256-QVaxOnGwZoBtNTlnAV0aeC30ASeJpo583wjotmhpOtg=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "647cc06986c1ae4a2bb05298e0cf598723e42970",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "nixos-20.09",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs-master": {
+      "locked": {
+        "lastModified": 1608258252,
+        "narHash": "sha256-8nsb+QpDlLu3D0zNMNTks6ndzdpWrhbykgITr53TViE=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "85298db412bc3f768d0eba099f69a8014525c5dc",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "master",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs-unstable": {
+      "locked": {
+        "lastModified": 1607522989,
+        "narHash": "sha256-o/jWhOSAlaK7y2M57OIriRt6whuVVocS/T0mG7fd1TI=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "e9158eca70ae59e73fae23be5d13d3fa0cfc78b4",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "syspkg": "syspkg"
+      }
+    },
+    "syspkg": {
+      "inputs": {
+        "nixpkgs-20-09": "nixpkgs-20-09",
+        "nixpkgs-master": "nixpkgs-master",
+        "nixpkgs-unstable": "nixpkgs-unstable"
+      },
+      "locked": {
+        "lastModified": 1608286360,
+        "narHash": "sha256-aWvi7DX+vNTxEyR08aZL7OOHCBNligGLXOajywnKRDY=",
+        "owner": "wiltaylor",
+        "repo": "syspkg",
+        "rev": "7e9001223cd58d321a957d3cb9bd63125cd455db",
+        "type": "github"
+      },
+      "original": {
+        "owner": "wiltaylor",
+        "ref": "master",
+        "repo": "syspkg",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
