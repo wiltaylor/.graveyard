@@ -21,5 +21,7 @@
       "20-09" = inputs.nixpkgs-20-09."${system}";
     };
 
+    lib = import ./lib/default.nix { inherit (inputs.nixpkgs-unstable) lib; };
+
   };
 }
