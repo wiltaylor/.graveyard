@@ -12,7 +12,7 @@ let
     "formatter-nvim"
     "fzf-lsp-nvim"
     "galaxyline-nvim"
-    "gruvbox"
+    "nord-vim"
     "lspkind-nvim"
     "nvim-compe"
     "nvim-lspconfig"
@@ -24,6 +24,7 @@ let
     "vim-devicons"
     "vim-prisma"
     "vim-vsnip"
+    "vimwiki"
   ];
 in
 {

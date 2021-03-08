@@ -9,12 +9,6 @@ with pkgs;
     };
   };
 
-  #clojure_lsp = {
-  #  lspConfig = {
-  #    cmd = [ "${clojure-lsp}/bin/clojure-lsp" ];
-  #  };
-  #};
-
   dockerls = {
     lspConfig = {
       cmd = [ "${nodePackages.dockerfile-language-server-nodejs}/bin/docker-langserver" "--stdio" ];
@@ -28,27 +22,9 @@ with pkgs;
     };
   };
 
-  hls = {
-    lspConfig = {
-      cmd = [ "${haskellPackages.haskell-language-server}/bin/haskell-language-server" "--lsp" ];
-    };
-  };
-
   kotlin_language_server = {
     lspConfig = {
       cmd = [ "${nur.repos.zachcoyle.kotlin-language-server}/bin/kotlin-language-server" ];
-    };
-  };
-
-  metals = {
-    lspConfig = {
-      cmd = [ "${metals}/bin/metals" ];
-    };
-  };
-
-  ocamlls = {
-    lspConfig = {
-      cmd = [ "${nodePackages.ocaml-language-server}/bin/ocaml-language-server" "--stdio" ];
     };
   };
 

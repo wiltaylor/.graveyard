@@ -29,16 +29,16 @@ in
     { plugin = fzf-vim; config = readFile ./config/fzf-vim-config.vim; }
     { plugin = galaxyline-nvim; config = galaxyline-config; }
     { plugin = gitsigns-nvim; config = gitsignsConfig; }
-    { plugin = gruvbox; config = readFile ./config/theme-config.vim; }
+    { plugin = nord-vim; config = readFile ./config/theme-config.vim; }
     { plugin = lspkind-nvim; config = "lua require('lspkind').init()"; }
     { plugin = nvim-compe; config = wrapLuaConfig (readFile ./config/nvim-compe-config.lua); }
     { plugin = nvim-dap-virtual-text; }
     { plugin = nvim-dap; config = dapConfig; }
     { plugin = nvim-lspconfig; }
     { plugin = nvim-tree-lua; config = readFile ./config/nvim-tree-lua-config.vim; }
-    { plugin = nvim-treesitter-context; }
-    { plugin = nvim-treesitter-textobjects; config = readFile ./config/nvim-treesitter-textobjects-config.vim; }
-    { plugin = nvim-treesitter; config = readFile ./config/nvim-treesitter-config.vim; }
+    #    { plugin = nvim-treesitter-context; }
+    #    { plugin = nvim-treesitter-textobjects; config = readFile ./config/nvim-treesitter-textobjects-config.vim; }
+    #    { plugin = nvim-treesitter; config = readFile ./config/nvim-treesitter-config.vim; }
     { plugin = nvim-web-devicons; }
     { plugin = plenary-nvim; }
     { plugin = scrollbar-nvim; config = readFile ./config/scrollbar-nvim-config.vim; }
@@ -61,6 +61,7 @@ in
     { plugin = vim-startify; config = readFile ./config/vim-startify-config.vim; }
     { plugin = vim-tmux-navigator; }
     { plugin = vimagit; }
+    { plugin = vim-vsnip; }
   ];
 
   configRC = ''

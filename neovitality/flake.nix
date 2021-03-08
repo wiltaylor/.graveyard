@@ -15,7 +15,7 @@
     formatter-nvim = { url = github:mhartington/formatter.nvim; flake = false; };
     fzf-lsp-nvim = { url = github:gfanto/fzf-lsp.nvim; flake = false; };
     galaxyline-nvim = { url = github:glepnir/galaxyline.nvim/main; flake = false; };
-    gruvbox = { url = github:gruvbox-community/gruvbox; flake = false; };
+    nord-vim = { url = github:arcticicestudio/nord-vim; flake = false; };
     lspkind-nvim = { url = github:onsails/lspkind-nvim; flake = false; };
     nvim-compe = { url = github:hrsh7th/nvim-compe; flake = false; };
     nvim-lspconfig = { url = github:neovim/nvim-lspconfig; flake = false; };
@@ -28,7 +28,6 @@
     vim-devicons = { url = github:ryanoasis/vim-devicons; flake = false; };
     vim-prisma = { url = github:pantharshit00/vim-prisma; flake = false; };
     vim-vsnip = { url = github:hrsh7th/vim-vsnip; flake = false; };
-
     rnix-lsp.url = github:nix-community/rnix-lsp;
 
   };

@@ -106,8 +106,6 @@ in
       description = "Defines 'Terminal mode' mappings";
     };
 
-
-
     vim.nmap = mkMappingOption {
       description = "Defines 'Normal mode' mappings";
     };

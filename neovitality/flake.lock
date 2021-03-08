@@ -64,22 +64,6 @@
         "type": "github"
       }
     },
-    "gruvbox": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1614721470,
-        "narHash": "sha256-EDVktivxtjRymvB98Ji0LCXR2+D6MEgMXqZETiYmz6I=",
-        "owner": "gruvbox-community",
-        "repo": "gruvbox",
-        "rev": "197103a55543b1398c194369306cff896bfd3fc1",
-        "type": "github"
-      },
-      "original": {
-        "owner": "gruvbox-community",
-        "repo": "gruvbox",
-        "type": "github"
-      }
-    },
     "lspkind-nvim": {
       "flake": false,
       "locked": {
@@ -181,6 +165,22 @@
       "original": {
         "id": "nixpkgs",
         "type": "indirect"
+      }
+    },
+    "nord-vim": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1602186511,
+        "narHash": "sha256-hDv87sJRXIK3iEO7TxIOlnjYP8y173I1GviA/XojXJA=",
+        "owner": "arcticicestudio",
+        "repo": "nord-vim",
+        "rev": "ea7ff9c343392ec6dfac4e9ec3fe0c45afb92a40",
+        "type": "github"
+      },
+      "original": {
+        "owner": "arcticicestudio",
+        "repo": "nord-vim",
+        "type": "github"
       }
     },
     "nur": {
@@ -288,10 +288,10 @@
         "formatter-nvim": "formatter-nvim",
         "fzf-lsp-nvim": "fzf-lsp-nvim",
         "galaxyline-nvim": "galaxyline-nvim",
-        "gruvbox": "gruvbox",
         "lspkind-nvim": "lspkind-nvim",
         "neovim": "neovim",
         "nixpkgs": "nixpkgs",
+        "nord-vim": "nord-vim",
         "nur": "nur",
         "nvim-compe": "nvim-compe",
         "nvim-lspconfig": "nvim-lspconfig",
