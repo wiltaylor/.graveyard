@@ -377,6 +377,37 @@ func openNoteData(note NoteRecord) NoteData {
 
   text = text[index:]
 
+  h6 := regexp.MustCompile(`###### (.+)\n`)
+  h5 := regexp.MustCompile(`##### (.+)\n`)
+  h4 := regexp.MustCompile(`#### (.+)\n`)
+  h3 := regexp.MustCompile(`### (.+)\n`)
+  h2 := regexp.MustCompile(`## (.+)\n`)
+  h1 := regexp.MustCompile(`# (.+)\n`)
+  link := regexp.MustCompile(`\[(.+)\]\((.+)\)`)
+
+  /*links := link.FindAllStringSubmatch(text, -1)
+
+  for i := range links {
+    fmt.Printf("Title: %s, Url: %s\n", links[i][1], links[i][2])
+  }*/
+
+
+  b1 := regexp.MustCompile(`\n [-|*|+] `)
+  b2 := regexp.MustCompile(`\n   [-|*|+] `)
+  b3 := regexp.MustCompile(`\n     [-|*|+] `)
+
+  text = h6.ReplaceAllString(text, "     [green] $1[-]\n")
+  text = h5.ReplaceAllString(text, "    [green] $1[-]\n")
+  text = h4.ReplaceAllString(text, "   [green] $1[-]\n")
+  text = h3.ReplaceAllString(text, "  [green] $1[-]\n")
+  text = h2.ReplaceAllString(text, " [blue] $1[-]\n")
+  text = h1.ReplaceAllString(text, "[red] $1[-]\n")
+
+  text = b1.ReplaceAllString(text, "\n ﱣ $1")
+  text = b2.ReplaceAllString(text, "\n   ﱤ $1")
+  text = b3.ReplaceAllString(text, "\n      $1")
+  text = link.ReplaceAllString(text, " [blue::u]$1[::-] ")
+
   return NoteData{Header: note, Text: text}
 
 }
