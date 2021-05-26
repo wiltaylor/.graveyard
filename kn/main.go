@@ -496,6 +496,7 @@ func viewUI(doc NoteData) viewExitResult{
 func searchUI(text string) *NoteRecord {
 
 	allNotes := GetNoteMeta()
+  var searchNotes []NoteRecord
 	selectedNoteType := Zettle
   var selectedNote *NoteRecord
   selectedNote = nil
@@ -512,8 +513,8 @@ func searchUI(text string) *NoteRecord {
 	searchResult.Clear()
 
 	{
-		notes := searchInNotes(text, &allNotes, selectedNoteType)
-		for _, n := range notes {
+		searchNotes = searchInNotes(text, &allNotes, selectedNoteType)
+		for _, n := range searchNotes {
 			searchResult.AddItem(n.Title, "", '\n', func() {
 				selectedNote = &n
 				app.Stop()
@@ -536,6 +537,8 @@ func searchUI(text string) *NoteRecord {
 
     if key.Key() == tcell.KeyEnter {
       idx := searchResult.GetCurrentItem()
+
+      selectedNote = &searchNotes[idx]
 
       app.Stop()
       return nil
@@ -562,14 +565,13 @@ func searchUI(text string) *NoteRecord {
 	})
 
 	searchField.SetChangedFunc(func(text string) {
-		notes := searchInNotes(text, &allNotes, selectedNoteType)
+		searchNotes = searchInNotes(text, &allNotes, selectedNoteType)
 
 		searchResult.Clear()
 
-		for _, n := range notes {
+		for _, n := range searchNotes {
 			searchResult.AddItem(n.Title, "", '\n', nil)
 		}
-
 	})
 
 	grid := tview.NewGrid()
