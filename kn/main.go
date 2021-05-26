@@ -324,7 +324,8 @@ func searchInNotes(text string, notes *[]NoteRecord, typ NoteType) []NoteRecord 
 			}
 
 			if match {
-				result = append(result, n)
+        var r NoteRecord = n
+				result = append(result, r)
 			}
 		}
 	}
@@ -400,7 +401,7 @@ func viewUI(doc NoteData) viewExitResult{
   exitCode := ViewExitOk
 
   toolBar := tview.NewTextView()
-  toolBar.SetText("ESC - Quit | E - Edit | Arrows - Move")
+  toolBar.SetText("ESC - Quit | F - Find | E - Edit | Arrows - Move")
   toolBar.SetBackgroundColor(tcell.ColorWhite)
   toolBar.SetTextColor(tcell.ColorBlack)
 
@@ -476,6 +477,12 @@ func viewUI(doc NoteData) viewExitResult{
       return nil
     }
 
+    if key.Rune() == 'f' {
+      exitCode = ViewExitFind
+      app.Stop()
+      return nil
+    }
+
     return key
   })
 
@@ -527,6 +534,13 @@ func searchUI(text string) *NoteRecord {
 			return nil
 		}
 
+    if key.Key() == tcell.KeyEnter {
+      idx := searchResult.GetCurrentItem()
+
+      app.Stop()
+      return nil
+    }
+
 		if key.Key() == tcell.KeyTab {
 			if searchField.HasFocus() {
 				app.SetFocus(searchResult)
@@ -553,10 +567,7 @@ func searchUI(text string) *NoteRecord {
 		searchResult.Clear()
 
 		for _, n := range notes {
-			searchResult.AddItem(n.Title, "", '\n', func() {
-				selectedNote = &n
-				app.Stop()
-			})
+			searchResult.AddItem(n.Title, "", '\n', nil)
 		}
 
 	})
@@ -601,6 +612,13 @@ func main() {
 
       if vresult == ViewExitOk {
         break
+      }
+
+      if vresult == ViewExitFind {
+        result = searchUI("")
+        if result == nil {
+          break
+        }
       }
     }
 

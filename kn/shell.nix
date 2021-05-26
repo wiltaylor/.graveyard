@@ -6,6 +6,8 @@ pkgs.mkShell {
   ];
 
   shellHook = ''
-  echo "KN DevShell"
+    echo "KN DevShell"
+    export ZKDIR=$(pwd)/.zk
+    mkdir $ZKDIR -p
   '';
 }
