@@ -12,143 +12,240 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marcusolsson/tui-go"
+	//"github.com/marcusolsson/tui-go"
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+)
+
+const (
+  LinkIconUrl = ""
+  LinkIconNote = ""
+  LinkIconAttachment = ""
+)
+
+type LinkType int
+
+const (
+  LinkUrl LinkType =  iota
+  LinkAttachment
+  LinkNote
 )
 
 type NoteType int
+
 const (
-  Zettle NoteType = iota
-  Map
-  Literature
-  Fleeting
-  UnknownType
+	Zettle NoteType = iota
+	Map
+	Literature
+	Fleeting
+	UnknownType
+)
+
+type viewExitResult int
+
+const (
+  ViewExitOk viewExitResult = iota
+  ViewExitFind
+  ViewExitReopen
 )
 
 type NoteState int
+
 const (
-  New NoteState = iota
-  EverGreen
-  Done
-  UnknownState
+	New NoteState = iota
+	EverGreen
+	Done
+	UnknownState
 )
 
-type NoteRecord struct {
+type LinkRecord struct {
   Title string
-  Date string
-  Type NoteType
-  State NoteState
-  }
+  Type LinkType
+  Path string
+}
 
-  func GetNoteMeta() []NoteRecord {
-    result := make([]NoteRecord, 0)
+type NoteRecord struct {
+  Filename string
+	Id       string
+  Title    string
+  Date     string
+  Type     NoteType
+	State    NoteState
+  Links    []LinkRecord
+}
 
-    files, err := ioutil.ReadDir(getZKPath())
+type NoteData struct {
+  Header NoteRecord
+  Text string
+}
 
-    if err != nil {
-      panic(err)
-    }
+//TODO: Need to replace this with a yaml parser to make it nice and neat
+func GetNoteMeta() []NoteRecord {
+	result := make([]NoteRecord, 0)
 
-    for _, file := range files {
-      if file.IsDir() {
-        continue
-      }
+	files, err := ioutil.ReadDir(getZKPath())
 
-      matched, err := regexp.MatchString(`\.md$`, file.Name())
-      if err != nil {
-        panic(err)
-      }
+	if err != nil {
+		panic(err)
+	}
 
-      if !matched {
-        continue
-      }
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
 
-      fileHandle, err := os.Open(filepath.Join(getZKPath(), file.Name()))
-      if err != nil {
-        panic(err)
-      }
+		matched, err := regexp.MatchString(`\.md$`, file.Name())
+		if err != nil {
+			panic(err)
+		}
 
-      s := bufio.NewScanner(fileHandle)
-      s.Scan() // Get rid of first line
-      if s.Text() != "---" {
-        panic(fmt.Sprintf("Expected first line of %s to be ---", file.Name()))
-      }
+		if !matched {
+			continue
+		}
 
-      curRec := NoteRecord{Title: "", Date: "", Type: UnknownType, State: UnknownState}
+		filePath := filepath.Join(getZKPath(), file.Name())
 
-      for s.Scan() {
+		fileHandle, err := os.Open(filePath)
+		if err != nil {
+			panic(err)
+		}
 
-        txt := s.Text()
+		s := bufio.NewScanner(fileHandle)
+		s.Scan() // Get rid of first line
+		if s.Text() != "---" {
+			panic(fmt.Sprintf("Expected first line of %s to be ---", file.Name()))
+		}
 
-        if txt == "---" {
+		curRec := NoteRecord{Title: "", Date: "", Type: UnknownType, State: UnknownState, Filename: filePath, Id: strings.ReplaceAll(file.Name(), ".md", ""), Links: make([]LinkRecord, 0)}
+
+		for s.Scan() {
+
+			txt := s.Text()
+
+			if txt == "---" {
+				break
+			}
+
+			if strings.HasPrefix(txt, "Title:") {
+				curRec.Title = strings.Trim(txt[6:], " ")
+				continue
+			}
+
+			if strings.HasPrefix(txt, "Date:") {
+				curRec.Date = strings.Trim(txt[5:], " ")
+				continue
+			}
+
+			if strings.HasPrefix(txt, "Type:") {
+				noteType := strings.Trim(txt[5:], " ")
+
+				if noteType == "zettle" {
+					curRec.Type = Zettle
+					continue
+				}
+
+				if noteType == "literature" {
+					curRec.Type = Literature
+					continue
+				}
+
+				if noteType == "fleeting" {
+					curRec.Type = Fleeting
+					continue
+				}
+
+				if noteType == "map" {
+					curRec.Type = Map
+					continue
+				}
+
+				curRec.Type = UnknownType
+				continue
+			}
+
+			if strings.HasPrefix(txt, "Status:") {
+				status := strings.Trim(txt[7:], " ")
+
+				if status == "new" {
+					curRec.State = New
+					continue
+				}
+
+				if status == "done" {
+					curRec.State = Done
+					continue
+				}
+
+				if status == "green" {
+					curRec.State = EverGreen
+					continue
+				}
+
+				curRec.State = UnknownState
+				continue
+			}
+
+      if strings.HasPrefix(txt, "Links:") {
+        curLink := LinkRecord{ Title: "", Type: LinkUrl, Path: ""}
+        for s.Scan() {
+          txt = strings.Trim(s.Text(), " ")
+          if len(txt) == 0 {
+            break
+          }
+          if txt[0] == '-' {
+            if curLink.Title != "" {
+              curRec.Links = append(curRec.Links, curLink)
+            }
+            txt = txt[2:]
+            curLink = LinkRecord{Title: "", Type: LinkUrl, Path: ""}
+          }
+
+          if strings.HasPrefix(txt, "Title:") {
+            curLink.Title = strings.Trim(txt[6:], " ")
+            continue
+          }
+
+          if strings.HasPrefix(txt, "Path:") {
+            curLink.Path = strings.Trim(txt[5:], " ")
+            continue
+          }
+
+          if strings.HasPrefix(txt, "Type:") {
+            status := strings.Trim(txt[5:], " ")
+
+            if status == "url" {
+              curLink.Type = LinkUrl
+              continue
+            }
+
+            if status == "attachment" {
+              curLink.Type = LinkAttachment
+              continue
+            }
+
+            if status == "note" {
+              curLink.Type = LinkNote
+              continue
+            }
+
+            continue
+          }
+
           break
+
         }
 
-        if strings.HasPrefix(txt, "Title:") {
-          curRec.Title = strings.Trim(txt[6:], " ")
-          continue
-        }
-
-        if strings.HasPrefix(txt, "Date:") {
-          curRec.Date = strings.Trim(txt[5:], " ")
-          continue
-        }
-
-        if strings.HasPrefix(txt, "Type:") {
-          noteType := strings.Trim(txt[5:], " ")
-
-          if noteType == "zettle" {
-            curRec.Type = Zettle
-            continue
-          }
-
-          if noteType == "literature" {
-            curRec.Type = Literature
-            continue
-          }
-
-          if noteType == "fleeting" {
-            curRec.Type = Fleeting
-            continue
-          }
-
-          if noteType == "map" {
-            curRec.Type = Map
-            continue
-          }
-
-          curRec.Type = UnknownType
-          continue
-        }
-
-        if strings.HasPrefix(txt, "Status:") {
-          status := strings.Trim(txt[7:], " ")
-
-          if status == "new" {
-            curRec.State = New
-            continue
-          }
-
-          if status == "done" {
-            curRec.State = Done
-            continue
-          }
-
-          if status == "green" {
-            curRec.State = EverGreen
-            continue
-          }
-
-          curRec.State = UnknownState
-          continue
+        if curLink.Title != "" {
+          curRec.Links = append(curRec.Links, curLink)
         }
       }
+		}
 
-      result = append(result, curRec)
-    }
+		result = append(result, curRec)
+	}
 
-
-    return result
-  }
+	return result
+}
 
 func usage() {
 	fmt.Println("kn command [options]")
@@ -168,12 +265,12 @@ func getZKPath() string {
 		notePath = "./.zk"
 	}
 
-  return notePath
+	return notePath
 }
 
 func newNote(note_type string) {
 
-  notePath := getZKPath()
+	notePath := getZKPath()
 
 	switch note_type {
 	case "l", "literature":
@@ -210,158 +307,273 @@ func newNote(note_type string) {
 	writer.Flush()
 	file.Close()
 
-	fmt.Println(filePath)
+  editFile(filePath)
 
-	cmd := exec.Command("vim", filePath)
+	fmt.Println(atomicId)
+}
+
+func searchInNotes(text string, notes *[]NoteRecord, typ NoteType) []NoteRecord {
+	result := make([]NoteRecord, 0)
+
+	for _, n := range *notes {
+		if n.Type == typ {
+			match, err := regexp.MatchString(text, n.Title)
+
+			if err != nil {
+				panic(err)
+			}
+
+			if match {
+				result = append(result, n)
+			}
+		}
+	}
+
+	return result
+}
+
+func openNoteData(note NoteRecord) NoteData {
+  data, err := ioutil.ReadFile(note.Filename)
+
+  if err != nil {
+    panic(err)
+  }
+
+  text := string(data)
+
+  index := 0
+  remain := 2;
+  currentCount := 0
+
+  for i, c := range text {
+    if c == '-' {
+      currentCount += 1
+    }else{
+      currentCount = 0
+    }
+
+    if currentCount == 3 {
+      currentCount = 0
+      remain -= 1
+    }
+
+    if remain == 0 {
+      index = i + 2 // Also eat new line 
+      break
+    }
+  }
+
+  text = text[index:]
+
+  return NoteData{Header: note, Text: text}
+
+}
+
+func editFile(path string) {
+  editor := os.Getenv("EDITOR")
+
+	cmd := exec.Command(editor, path)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 
-	err = cmd.Run()
+  err := cmd.Run()
 
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println(atomicId)
 }
 
-func searchInNotes(text string, notes *[]NoteRecord, typ NoteType) []string { 
-  result := make([]string, 0)
+func viewUI(doc NoteData) viewExitResult{
+  app := tview.NewApplication()
+  textView := tview.NewTextView().SetDynamicColors(true).SetRegions(true).SetWordWrap(true).SetChangedFunc(func() {
+    app.Draw()
+  })
 
-  for _, n := range *notes {
-    if n.Type == typ {
-      match, err := regexp.MatchString(text, n.Title)
+  textView.SetText(doc.Text)
+  textView.SetScrollable(true)
+  textView.SetTitle(doc.Header.Title)
+  textView.SetBorder(true)
+  textView.SetBorderPadding(0,0,1,1)
+  app.SetFocus(textView)
+  exitCode := ViewExitOk
 
-      if err != nil {
-       panic(err)
-      }
+  toolBar := tview.NewTextView()
+  toolBar.SetText("ESC - Quit | E - Edit | Arrows - Move")
+  toolBar.SetBackgroundColor(tcell.ColorWhite)
+  toolBar.SetTextColor(tcell.ColorBlack)
 
-      if match {
-        result = append(result, n.Title)
+  links := tview.NewList()
+  links.SetTitle("Links")
+  links.SetBorder(true)
+  links.ShowSecondaryText(false)
+  links.SetDoneFunc(func() {
+    app.Stop()
+  })
+
+  for _, i := range doc.Header.Links {
+    linkIcon := LinkIconUrl
+
+    if i.Type == LinkNote {
+      linkIcon = LinkIconNote
+    }
+
+    if i.Type == LinkAttachment {
+      linkIcon = LinkIconAttachment
+    }
+
+    links.AddItem(linkIcon + " " + i.Title , "", '\n', nil)
+  }
+
+  layout := tview.NewGrid()
+  layout.SetRows(1, 5, 0)
+  layout.AddItem(toolBar, 0, 0, 1, 1, 1, 1, false)
+  layout.AddItem(textView, 1, 0, 10, 1, 10, 40, true)
+  layout.AddItem(links, 11, 0, 1, 1, 1, 40, false)
+
+	app.SetInputCapture(func(key *tcell.EventKey) *tcell.EventKey {
+
+		if key.Key() == tcell.KeyEscape {
+			app.Stop()
+			return nil
+		}
+
+    if key.Key() == tcell.KeyEnter {
+      if links.HasFocus() {
+        linkIndex := links.GetCurrentItem()
+        lnk := doc.Header.Links[linkIndex]
+
+        if lnk.Type == LinkUrl {
+          cmd := exec.Command("xdg-open", lnk.Path)
+          cmd.Run()
+        }
+
+        if lnk.Type == LinkAttachment {
+
+        }
+
+        return nil
       }
     }
-  }
 
-  return result
-}
+    if key.Key() == tcell.KeyTab {
+      if textView.HasFocus() {
+        app.SetFocus(links)
+        return nil
+      }
 
-func search(text string) {
+      if links.HasFocus() {
+        app.SetFocus(textView)
+        return nil
+      }
+    }
 
-  allNotes := GetNoteMeta()
-  selectedNoteType := Zettle
+    if key.Rune() == 'e' {
+      editFile(doc.Header.Filename)
+      exitCode = ViewExitReopen
+      app.Stop()
+      return nil
+    }
 
-  searchBox := tui.NewEntry()
-  searchBox.SetFocused(true)
-  searchBox.SetSizePolicy(tui.Expanding, tui.Maximum)
-  searchBox.SetText(text)
+    return key
+  })
 
-
-  searchResult := tui.NewList()
-  searchResult.SetFocused(true)
-
-  for _, note := range searchInNotes(text, &allNotes, selectedNoteType) {
-    searchResult.AddItems(note)
-  }
-
-  searchBlock := tui.NewVBox(
-    tui.NewHBox(
-      tui.NewLabel("Search: "),
-      searchBox,
-    ),
-    tui.NewLabel("Results: "),
-    tui.NewLabel("---------"),
-    searchResult,
-    tui.NewSpacer(),
-  )
-  searchBlock.SetBorder(true)
-  searchBlock.SetSizePolicy(tui.Expanding, tui.Expanding)
-
-
-  noteType := tui.NewList()
-  noteType.AddItems("Zettle", "Map", "Literature", "Fleeting", "Unknown")
-  noteType.SetSelected(0)
-  noteType.SetSizePolicy(tui.Minimum, tui.Minimum)
-
-
-  noteTypeBox := tui.NewVBox(
-    tui.NewLabel("Search For Note Type:"),
-    noteType,
-  )
-
-  noteTypeBox.SetBorder(true)
-  noteTypeBox.SetSizePolicy(tui.Minimum, tui.Minimum)
-
-  box := tui.NewVBox(
-    searchBlock,
-    noteTypeBox,
-  )
-
-  ui, err := tui.New(box)
-  if err != nil {
+  if err := app.SetRoot(layout, true).Run(); err != nil {
     panic(err)
   }
 
-  searchBox.OnChanged(func(entry *tui.Entry) {
-    searchResult.RemoveItems()
-    results := searchInNotes(entry.Text(), &allNotes, selectedNoteType)
+  return exitCode
+}
 
-    for _, r := range results {
-      searchResult.AddItems(r)
-    }
-  })
+func searchUI(text string) *NoteRecord {
 
-  noteType.OnSelectionChanged(func (lst *tui.List) {
-    if lst.SelectedItem() == "Zettle" {
-      selectedNoteType = Zettle
-    }
+	allNotes := GetNoteMeta()
+	selectedNoteType := Zettle
+  var selectedNote *NoteRecord
+  selectedNote = nil
 
-    if lst.SelectedItem() == "Map" {
-      selectedNoteType = Map
-    }
+	app := tview.NewApplication()
 
-    if lst.SelectedItem() == "Literature" {
-      selectedNoteType = Literature
-    }
+	searchResult := tview.NewList()
+	searchResult.ShowSecondaryText(false)
+	searchField := tview.NewInputField().SetLabel("Search")
+	searchField.SetText(text)
 
-    if lst.SelectedItem() == "Fleeting" {
-      selectedNoteType = Fleeting
-    }
+	searchNoteType := tview.NewDropDown()
 
-    if lst.SelectedItem() == "Unknown" {
-      selectedNoteType = UnknownType
-    }
+	searchResult.Clear()
 
-    searchResult.RemoveItems()
-    results := searchInNotes(searchBox.Text(), &allNotes, selectedNoteType)
+	{
+		notes := searchInNotes(text, &allNotes, selectedNoteType)
+		for _, n := range notes {
+			searchResult.AddItem(n.Title, "", '\n', func() {
+				selectedNote = &n
+				app.Stop()
+			})
+		}
+	}
 
-    for _, r := range results {
-      searchResult.AddItems(r)
-    }
-  })
+	searchNoteType.SetOptions([]string{"Zettle", "Litrature", "Fleeting", "Map"}, func(text string, index int) {
 
+	})
 
-  ui.SetKeybinding("Esc", func() { ui.Quit() })
-  ui.SetKeybinding("Tab", func() {
-    if searchBox.IsFocused() {
-      noteType.SetFocused(true)
-      searchBox.SetFocused(false)
-      searchResult.SetFocused(false)
-      return
-    }
+	searchNoteType.SetLabel("Note Type: ").SetCurrentOption(0)
 
-    if noteType.IsFocused() {
-      searchBox.SetFocused(true)
-      searchResult.SetFocused(true)
-      noteType.SetFocused(false)
-      return
-    }
-  })
+	app.SetInputCapture(func(key *tcell.EventKey) *tcell.EventKey {
 
+		if key.Key() == tcell.KeyEscape {
+			app.Stop()
+			return nil
+		}
 
-  if err := ui.Run(); err != nil {
-    panic(err)
-  }
+		if key.Key() == tcell.KeyTab {
+			if searchField.HasFocus() {
+				app.SetFocus(searchResult)
+				return nil
+			}
+
+			if searchResult.HasFocus() {
+				app.SetFocus(searchNoteType)
+				return nil
+			}
+
+			if searchNoteType.HasFocus() {
+				app.SetFocus(searchField)
+				return nil
+			}
+		}
+
+		return key
+	})
+
+	searchField.SetChangedFunc(func(text string) {
+		notes := searchInNotes(text, &allNotes, selectedNoteType)
+
+		searchResult.Clear()
+
+		for _, n := range notes {
+			searchResult.AddItem(n.Title, "", '\n', func() {
+				selectedNote = &n
+				app.Stop()
+			})
+		}
+
+	})
+
+	grid := tview.NewGrid()
+	grid.SetRows(1, 1, 0)
+	grid.SetBorders(true)
+	grid.SetMinSize(0, 0)
+	grid.AddItem(searchField, 0, 0, 1, 1, 1, 40, true)
+	grid.AddItem(searchNoteType, 1, 0, 1, 1, 1, 40, false)
+	grid.AddItem(searchResult, 2, 0, 10, 1, 10, 40, false)
+
+	if err := app.SetRoot(grid, true).Run(); err != nil {
+		panic(err)
+	}
+
+	return selectedNote
 }
 
 func main() {
@@ -374,8 +586,24 @@ func main() {
 	}
 
 	switch cmd {
-  case "search":
-    search("foo")
+	case "search":
+    result :=	searchUI(flag.Arg(1))
+
+    if result == nil {
+      fmt.Println("Nothing selected")
+      return
+    }
+
+    vresult := ViewExitReopen
+
+    for {
+      vresult = viewUI(openNoteData(*result))
+
+      if vresult == ViewExitOk {
+        break
+      }
+    }
+
 	case "new":
 		newNote(flag.Arg(1))
 	default:
