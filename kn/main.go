@@ -47,6 +47,7 @@ const (
   ViewExitOk viewExitResult = iota
   ViewExitFind
   ViewExitReopen
+  ViewExitNew
 )
 
 type NoteState int
@@ -79,6 +80,149 @@ type NoteData struct {
   Text string
 }
 
+func GetNoteRecordFromFile(id string) NoteRecord {
+
+  filePath := filepath.Join(getZKPath(), id + ".md")
+  result := NoteRecord{Title: "", Date: "", Type: UnknownType, State: UnknownState, Filename:filePath, Id: id, Links: make([]LinkRecord, 0)} 
+  file, err := os.Open(filePath)
+
+  if err != nil {
+    panic(err)
+  }
+
+  s := bufio.NewScanner(file)
+
+  //Strip top --- and fail if not there
+  s.Scan()
+  if s.Text() != "---" {
+    panic(fmt.Sprintf("Expected first line of %s to be ---", file.Name()))
+  }
+
+  for s.Scan() {
+    txt := s.Text()
+
+    if txt == "---" {
+      break
+    }
+
+    if strings.HasPrefix(txt, "Title:") {
+      result.Title = strings.Trim(txt[6:], " ")
+      continue
+    }
+
+    if strings.HasPrefix(txt, "Date:") {
+      result.Date = strings.Trim(txt[5:], " ")
+      continue
+    }
+
+    if strings.HasPrefix(txt, "Type:") {
+      noteType := strings.Trim(txt[5:], " ")
+
+      if noteType == "zettle" {
+        result.Type = Zettle
+        continue
+      }
+
+      if noteType == "literature" {
+        result.Type = Literature
+        continue
+      }
+
+      if noteType == "fleeting" {
+        result.Type = Fleeting
+        continue
+      }
+
+      if noteType == "map" {
+        result.Type = Map
+        continue
+      }
+
+      result.Type = UnknownType
+      continue
+    }
+
+    if strings.HasPrefix(txt, "Status:") {
+      status := strings.Trim(txt[7:], " ")
+
+      if status == "new" {
+        result.State = New
+        continue
+      }
+
+      if status == "done" {
+        result.State = Done
+      }
+
+      if status == "green" {
+        result.State = EverGreen
+      }
+
+      result.State = UnknownState
+      continue
+    }
+
+    if strings.HasPrefix(txt, "Links:") {
+      curLink := LinkRecord{ Title: "", Type: LinkUrl, Path: ""}
+      for s.Scan() {
+        txt = strings.Trim(s.Text(), " ")
+
+        if len(txt) == 0 {
+          break
+        }
+
+        if txt[0] == '-' {
+          if curLink.Title != "" {
+            result.Links = append(result.Links, curLink)
+          }
+          txt = txt[2:]
+          curLink = LinkRecord{Title: "", Type: LinkUrl, Path: ""}
+        }
+
+        if strings.HasPrefix(txt, "Title:") {
+          curLink.Title = strings.Trim(txt[6:], " ")
+          continue
+        }
+
+
+        if strings.HasPrefix(txt, "Path:") {
+          curLink.Path = strings.Trim(txt[5:], " ")
+          continue
+        }
+
+        if strings.HasPrefix(txt, "Type:") {
+          status := strings.Trim(txt[5:], " ")
+
+          if status == "url" {
+            curLink.Type = LinkUrl
+            continue
+          }
+
+          if status == "attachment" {
+            curLink.Type = LinkAttachment
+            continue
+          }
+
+          if status == "note" {
+            curLink.Type = LinkNote
+            continue
+          }
+
+          continue
+        }
+
+        break
+      }
+
+      if curLink.Title != "" {
+        result.Links = append(result.Links, curLink)
+      }
+    }
+  }
+
+  return result
+}
+
 //TODO: Need to replace this with a yaml parser to make it nice and neat
 func GetNoteMeta() []NoteRecord {
 	result := make([]NoteRecord, 0)
@@ -103,145 +247,10 @@ func GetNoteMeta() []NoteRecord {
 			continue
 		}
 
-		filePath := filepath.Join(getZKPath(), file.Name())
+    id := strings.ReplaceAll(file.Name(), ".md", "")
+    curRec := GetNoteRecordFromFile(id)
+    result = append(result, curRec)
 
-		fileHandle, err := os.Open(filePath)
-		if err != nil {
-			panic(err)
-		}
-
-		s := bufio.NewScanner(fileHandle)
-		s.Scan() // Get rid of first line
-		if s.Text() != "---" {
-			panic(fmt.Sprintf("Expected first line of %s to be ---", file.Name()))
-		}
-
-		curRec := NoteRecord{Title: "", Date: "", Type: UnknownType, State: UnknownState, Filename: filePath, Id: strings.ReplaceAll(file.Name(), ".md", ""), Links: make([]LinkRecord, 0)}
-
-		for s.Scan() {
-
-			txt := s.Text()
-
-			if txt == "---" {
-				break
-			}
-
-			if strings.HasPrefix(txt, "Title:") {
-				curRec.Title = strings.Trim(txt[6:], " ")
-				continue
-			}
-
-			if strings.HasPrefix(txt, "Date:") {
-				curRec.Date = strings.Trim(txt[5:], " ")
-				continue
-			}
-
-			if strings.HasPrefix(txt, "Type:") {
-				noteType := strings.Trim(txt[5:], " ")
-
-				if noteType == "zettle" {
-					curRec.Type = Zettle
-					continue
-				}
-
-				if noteType == "literature" {
-					curRec.Type = Literature
-					continue
-				}
-
-				if noteType == "fleeting" {
-					curRec.Type = Fleeting
-					continue
-				}
-
-				if noteType == "map" {
-					curRec.Type = Map
-					continue
-				}
-
-				curRec.Type = UnknownType
-				continue
-			}
-
-			if strings.HasPrefix(txt, "Status:") {
-				status := strings.Trim(txt[7:], " ")
-
-				if status == "new" {
-					curRec.State = New
-					continue
-				}
-
-				if status == "done" {
-					curRec.State = Done
-					continue
-				}
-
-				if status == "green" {
-					curRec.State = EverGreen
-					continue
-				}
-
-				curRec.State = UnknownState
-				continue
-			}
-
-      if strings.HasPrefix(txt, "Links:") {
-        curLink := LinkRecord{ Title: "", Type: LinkUrl, Path: ""}
-        for s.Scan() {
-          txt = strings.Trim(s.Text(), " ")
-          if len(txt) == 0 {
-            break
-          }
-          if txt[0] == '-' {
-            if curLink.Title != "" {
-              curRec.Links = append(curRec.Links, curLink)
-            }
-            txt = txt[2:]
-            curLink = LinkRecord{Title: "", Type: LinkUrl, Path: ""}
-          }
-
-          if strings.HasPrefix(txt, "Title:") {
-            curLink.Title = strings.Trim(txt[6:], " ")
-            continue
-          }
-
-          if strings.HasPrefix(txt, "Path:") {
-            curLink.Path = strings.Trim(txt[5:], " ")
-            continue
-          }
-
-          if strings.HasPrefix(txt, "Type:") {
-            status := strings.Trim(txt[5:], " ")
-
-            if status == "url" {
-              curLink.Type = LinkUrl
-              continue
-            }
-
-            if status == "attachment" {
-              curLink.Type = LinkAttachment
-              continue
-            }
-
-            if status == "note" {
-              curLink.Type = LinkNote
-              continue
-            }
-
-            continue
-          }
-
-          break
-
-        }
-
-        if curLink.Title != "" {
-          curRec.Links = append(curRec.Links, curLink)
-        }
-      }
-		}
-
-		result = append(result, curRec)
 	}
 
 	return result
@@ -268,7 +277,7 @@ func getZKPath() string {
 	return notePath
 }
 
-func newNote(note_type string) {
+func newNote(note_type string) NoteRecord {
 
 	notePath := getZKPath()
 
@@ -310,6 +319,8 @@ func newNote(note_type string) {
   editFile(filePath)
 
 	fmt.Println(atomicId)
+
+  return GetNoteRecordFromFile(string(atomicId))
 }
 
 func searchInNotes(text string, notes *[]NoteRecord, typ NoteType) []NoteRecord {
@@ -401,7 +412,7 @@ func viewUI(doc NoteData) viewExitResult{
   exitCode := ViewExitOk
 
   toolBar := tview.NewTextView()
-  toolBar.SetText("ESC - Quit | F - Find | E - Edit | Arrows - Move")
+  toolBar.SetText("ESC - Quit | N - New | F - Find | E - Edit | Arrows - Move")
   toolBar.SetBackgroundColor(tcell.ColorWhite)
   toolBar.SetTextColor(tcell.ColorBlack)
 
@@ -483,6 +494,12 @@ func viewUI(doc NoteData) viewExitResult{
       return nil
     }
 
+    if key.Rune() == 'n' {
+      exitCode = ViewExitNew
+      app.Stop()
+      return nil
+    }
+
     return key
   })
 
@@ -536,6 +553,9 @@ func searchUI(text string) *NoteRecord {
 		}
 
     if key.Key() == tcell.KeyEnter {
+      if searchResult.GetItemCount() == 0 {
+        return nil
+      }
       idx := searchResult.GetCurrentItem()
 
       selectedNote = &searchNotes[idx]
@@ -621,6 +641,10 @@ func main() {
         if result == nil {
           break
         }
+      }
+
+      if vresult == ViewExitNew {
+        *result = newNote("z")
       }
     }
 
