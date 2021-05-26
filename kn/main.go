@@ -63,6 +63,8 @@ type LinkRecord struct {
   Title string
   Type LinkType
   Path string
+  Location int
+  Id string
 }
 
 type NoteRecord struct {
@@ -72,18 +74,18 @@ type NoteRecord struct {
   Date     string
   Type     NoteType
 	State    NoteState
-  Links    []LinkRecord
 }
 
 type NoteData struct {
   Header NoteRecord
   Text string
+  Links []LinkRecord
 }
 
 func GetNoteRecordFromFile(id string) NoteRecord {
 
   filePath := filepath.Join(getZKPath(), id + ".md")
-  result := NoteRecord{Title: "", Date: "", Type: UnknownType, State: UnknownState, Filename:filePath, Id: id, Links: make([]LinkRecord, 0)} 
+  result := NoteRecord{Title: "", Date: "", Type: UnknownType, State: UnknownState, Filename:filePath, Id: id}
   file, err := os.Open(filePath)
 
   if err != nil {
@@ -160,63 +162,6 @@ func GetNoteRecordFromFile(id string) NoteRecord {
 
       result.State = UnknownState
       continue
-    }
-
-    if strings.HasPrefix(txt, "Links:") {
-      curLink := LinkRecord{ Title: "", Type: LinkUrl, Path: ""}
-      for s.Scan() {
-        txt = strings.Trim(s.Text(), " ")
-
-        if len(txt) == 0 {
-          break
-        }
-
-        if txt[0] == '-' {
-          if curLink.Title != "" {
-            result.Links = append(result.Links, curLink)
-          }
-          txt = txt[2:]
-          curLink = LinkRecord{Title: "", Type: LinkUrl, Path: ""}
-        }
-
-        if strings.HasPrefix(txt, "Title:") {
-          curLink.Title = strings.Trim(txt[6:], " ")
-          continue
-        }
-
-
-        if strings.HasPrefix(txt, "Path:") {
-          curLink.Path = strings.Trim(txt[5:], " ")
-          continue
-        }
-
-        if strings.HasPrefix(txt, "Type:") {
-          status := strings.Trim(txt[5:], " ")
-
-          if status == "url" {
-            curLink.Type = LinkUrl
-            continue
-          }
-
-          if status == "attachment" {
-            curLink.Type = LinkAttachment
-            continue
-          }
-
-          if status == "note" {
-            curLink.Type = LinkNote
-            continue
-          }
-
-          continue
-        }
-
-        break
-      }
-
-      if curLink.Title != "" {
-        result.Links = append(result.Links, curLink)
-      }
     }
   }
 
@@ -344,6 +289,24 @@ func searchInNotes(text string, notes *[]NoteRecord, typ NoteType) []NoteRecord 
 	return result
 }
 
+func escapeForRegex(text string) string {
+  text = strings.ReplaceAll(text, "\\", "\\\\")
+  text = strings.ReplaceAll(text, "(", "\\(")
+  text = strings.ReplaceAll(text, ")", "\\)")
+  text = strings.ReplaceAll(text, "[", "\\[")
+  text = strings.ReplaceAll(text, "]", "\\]")
+  text = strings.ReplaceAll(text, "?", "\\?")
+  text = strings.ReplaceAll(text, ".", "\\.")
+  text = strings.ReplaceAll(text, "+", "\\+")
+  text = strings.ReplaceAll(text, "*", "\\*")
+  text = strings.ReplaceAll(text, "{", "\\{")
+  text = strings.ReplaceAll(text, "}", "\\}")
+  text = strings.ReplaceAll(text, "$", "\\$")
+  text = strings.ReplaceAll(text, "^", "\\^")
+  text = strings.ReplaceAll(text, "|", "\\|")
+  return text
+}
+
 func openNoteData(note NoteRecord) NoteData {
   data, err := ioutil.ReadFile(note.Filename)
 
@@ -385,31 +348,57 @@ func openNoteData(note NoteRecord) NoteData {
   h1 := regexp.MustCompile(`# (.+)\n`)
   link := regexp.MustCompile(`\[(.+)\]\((.+)\)`)
 
-  /*links := link.FindAllStringSubmatch(text, -1)
+  linkMatches := link.FindAllStringSubmatch(text, -1)
+  links := make([]LinkRecord, 0)
 
-  for i := range links {
-    fmt.Printf("Title: %s, Url: %s\n", links[i][1], links[i][2])
-  }*/
+  id := 0
+  for i := range linkMatches {
+    typ := LinkUrl
+    ico := LinkIconUrl
 
+    if strings.HasPrefix(linkMatches[i][2], "zk:") {
+      typ = LinkNote
+      ico = LinkIconNote
+    }
+
+    if strings.HasPrefix(linkMatches[i][2], "zka:") {
+      typ = LinkAttachment
+      ico = LinkIconAttachment
+    }
+
+    lnk := LinkRecord{Title: linkMatches[i][1], Path: linkMatches[i][2], Type: typ, Id: fmt.Sprintf("l%d", id), Location: 0}
+    links = append(links, lnk)
+
+    lnkText := fmt.Sprintf("[%s](%s)", lnk.Title, lnk.Path)
+    lnk.Location = strings.Index(text, lnkText)
+    text = strings.Replace(text, lnkText, fmt.Sprintf("[\"%s\"]%s[blue::u]%s[-:-:-][\"\"]", lnk.Id, ico, lnk.Title), 1)
+    id += 1
+  }
 
   b1 := regexp.MustCompile(`\n [-|*|+] `)
   b2 := regexp.MustCompile(`\n   [-|*|+] `)
   b3 := regexp.MustCompile(`\n     [-|*|+] `)
+  l1 := regexp.MustCompile(`\n ([0-9]{1,5})\. `)
+  l2 := regexp.MustCompile(`\n   ([0-9a-z]{1,5})\. `)
+  l3 := regexp.MustCompile(`\n     ([0-9a-z]{1,5})\. `)
 
-  text = h6.ReplaceAllString(text, "     [green] $1[-]\n")
-  text = h5.ReplaceAllString(text, "    [green] $1[-]\n")
-  text = h4.ReplaceAllString(text, "   [green] $1[-]\n")
-  text = h3.ReplaceAllString(text, "  [green] $1[-]\n")
-  text = h2.ReplaceAllString(text, " [blue] $1[-]\n")
-  text = h1.ReplaceAllString(text, "[red] $1[-]\n")
+  text = h6.ReplaceAllString(text, "     [green::b] $1[-:-:-]\n")
+  text = h5.ReplaceAllString(text, "    [green::b] $1[-:-:-]\n")
+  text = h4.ReplaceAllString(text, "   [green::b] $1[-:-:-]\n")
+  text = h3.ReplaceAllString(text, "  [green::b] $1[-:-:-]\n")
+  text = h2.ReplaceAllString(text, " [blue::b] $1[-:-:-]\n")
+  text = h1.ReplaceAllString(text, "[red::b] $1[-:-:-]\n")
 
-  text = b1.ReplaceAllString(text, "\n ﱣ $1")
-  text = b2.ReplaceAllString(text, "\n   ﱤ $1")
-  text = b3.ReplaceAllString(text, "\n      $1")
+  text = b1.ReplaceAllString(text, "\n [green]ﱣ[-] $1")
+  text = b2.ReplaceAllString(text, "\n   [green]ﱤ[-] $1")
+  text = b3.ReplaceAllString(text, "\n     [green][-] $1")
+  text = l1.ReplaceAllString(text, "\n [green]$1.[-]")
+  text = l2.ReplaceAllString(text, "\n   [green]$1.[-]")
+  text = l3.ReplaceAllString(text, "\n     [green]$1.[-]")
+
   text = link.ReplaceAllString(text, " [blue::u]$1[::-] ")
 
-  return NoteData{Header: note, Text: text}
-
+  return NoteData{Header: note, Text: text, Links: links}
 }
 
 func editFile(path string) {
@@ -441,39 +430,17 @@ func viewUI(doc NoteData) viewExitResult{
   textView.SetBorderPadding(0,0,1,1)
   app.SetFocus(textView)
   exitCode := ViewExitOk
+  selectedLink := -1
 
   toolBar := tview.NewTextView()
   toolBar.SetText("ESC - Quit | N - New | F - Find | E - Edit | Arrows - Move")
   toolBar.SetBackgroundColor(tcell.ColorWhite)
   toolBar.SetTextColor(tcell.ColorBlack)
 
-  links := tview.NewList()
-  links.SetTitle("Links")
-  links.SetBorder(true)
-  links.ShowSecondaryText(false)
-  links.SetDoneFunc(func() {
-    app.Stop()
-  })
-
-  for _, i := range doc.Header.Links {
-    linkIcon := LinkIconUrl
-
-    if i.Type == LinkNote {
-      linkIcon = LinkIconNote
-    }
-
-    if i.Type == LinkAttachment {
-      linkIcon = LinkIconAttachment
-    }
-
-    links.AddItem(linkIcon + " " + i.Title , "", '\n', nil)
-  }
-
   layout := tview.NewGrid()
   layout.SetRows(1, 5, 0)
   layout.AddItem(toolBar, 0, 0, 1, 1, 1, 1, false)
   layout.AddItem(textView, 1, 0, 10, 1, 10, 40, true)
-  layout.AddItem(links, 11, 0, 1, 1, 1, 40, false)
 
 	app.SetInputCapture(func(key *tcell.EventKey) *tcell.EventKey {
 
@@ -482,33 +449,29 @@ func viewUI(doc NoteData) viewExitResult{
 			return nil
 		}
 
-    if key.Key() == tcell.KeyEnter {
-      if links.HasFocus() {
-        linkIndex := links.GetCurrentItem()
-        lnk := doc.Header.Links[linkIndex]
+    if key.Key() == tcell.KeyTab  {
 
-        if lnk.Type == LinkUrl {
-          cmd := exec.Command("xdg-open", lnk.Path)
-          cmd.Run()
-        }
+      selectedLink += 1
 
-        if lnk.Type == LinkAttachment {
-
-        }
-
-        return nil
+      if selectedLink >= len(doc.Links) {
+        selectedLink = 0
       }
+
+      textView.Highlight(doc.Links[selectedLink].Id)
+      textView.ScrollToHighlight()
+
+      return nil
+
     }
 
-    if key.Key() == tcell.KeyTab {
+    if key.Key() == tcell.KeyEnter {
       if textView.HasFocus() {
-        app.SetFocus(links)
-        return nil
-      }
-
-      if links.HasFocus() {
-        app.SetFocus(textView)
-        return nil
+        if selectedLink != -1 {
+          if doc.Links[selectedLink].Type == LinkUrl {
+            cmd := exec.Command("xdg-open", doc.Links[selectedLink].Path)
+            cmd.Run()
+          }
+        }
       }
     }
 
