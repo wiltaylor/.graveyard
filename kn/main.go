@@ -48,6 +48,8 @@ const (
   ViewExitFind
   ViewExitReopen
   ViewExitNew
+  ViewExitBack
+  ViewExitOpen
 )
 
 type NoteState int
@@ -417,7 +419,7 @@ func editFile(path string) {
 
 }
 
-func viewUI(doc NoteData) viewExitResult{
+func viewUI(doc NoteData) (viewExitResult, string){
   app := tview.NewApplication()
   textView := tview.NewTextView().SetDynamicColors(true).SetRegions(true).SetWordWrap(true).SetChangedFunc(func() {
     app.Draw()
@@ -431,9 +433,10 @@ func viewUI(doc NoteData) viewExitResult{
   app.SetFocus(textView)
   exitCode := ViewExitOk
   selectedLink := -1
+  returnId := ""
 
   toolBar := tview.NewTextView()
-  toolBar.SetText("ESC - Quit | N - New | F - Find | E - Edit | Arrows - Move")
+  toolBar.SetText("ESC - Quit | N - New | F - Find | E - Edit | HJKL - Move | Enter - Follow Link | Backspace - Previous Note")
   toolBar.SetBackgroundColor(tcell.ColorWhite)
   toolBar.SetTextColor(tcell.ColorBlack)
 
@@ -464,12 +467,34 @@ func viewUI(doc NoteData) viewExitResult{
 
     }
 
+    if key.Key() == tcell.KeyBackspace || key.Key() == tcell.KeyBackspace2 {
+      exitCode = ViewExitBack
+      app.Stop()
+    }
+
     if key.Key() == tcell.KeyEnter {
       if textView.HasFocus() {
         if selectedLink != -1 {
           if doc.Links[selectedLink].Type == LinkUrl {
             cmd := exec.Command("xdg-open", doc.Links[selectedLink].Path)
             cmd.Run()
+            return nil
+          }
+
+          if doc.Links[selectedLink].Type == LinkNote {
+            returnId = strings.ReplaceAll(doc.Links[selectedLink].Path, "zk:", "")
+            exitCode = ViewExitOpen
+            app.Stop()
+            return nil
+          }
+
+          if doc.Links[selectedLink].Type == LinkAttachment {
+            attach := strings.ReplaceAll(doc.Links[selectedLink].Path, "zka:", "")
+            attachPath := filepath.Join(getZKPath(), "attachments", attach)
+
+            cmd := exec.Command("xdg-open", attachPath)
+            cmd.Run()
+            return nil
           }
         }
       }
@@ -494,6 +519,13 @@ func viewUI(doc NoteData) viewExitResult{
       return nil
     }
 
+    if key.Rune() == 'l' {
+
+      searchUI("")
+
+      return nil
+    }
+
     return key
   })
 
@@ -501,7 +533,7 @@ func viewUI(doc NoteData) viewExitResult{
     panic(err)
   }
 
-  return exitCode
+  return exitCode, returnId
 }
 
 func searchUI(text string) *NoteRecord {
@@ -607,6 +639,8 @@ func main() {
 	flag.Parse()
 	cmd := flag.Arg(0)
 
+  noteHistory := make([]string, 0)
+
 	if flag.NArg() < 2 {
 		usage()
 		return
@@ -621,13 +655,20 @@ func main() {
       return
     }
 
+    noteHistory = append(noteHistory, result.Id)
     vresult := ViewExitReopen
+    id := ""
 
     for {
-      vresult = viewUI(openNoteData(*result))
+      vresult, id = viewUI(openNoteData(*result))
 
       if vresult == ViewExitOk {
         break
+      }
+
+      if vresult == ViewExitOpen {
+        *result = GetNoteRecordFromFile(id)
+        noteHistory = append(noteHistory, result.Id)
       }
 
       if vresult == ViewExitFind {
@@ -635,10 +676,20 @@ func main() {
         if result == nil {
           break
         }
+
+        noteHistory = append(noteHistory, result.Id)
       }
 
       if vresult == ViewExitNew {
         *result = newNote("z")
+        noteHistory = append(noteHistory, result.Id)
+      }
+
+      if vresult == ViewExitBack {
+        if len(noteHistory) > 1 {
+          noteHistory = noteHistory[0:len(noteHistory) - 1]
+          *result = GetNoteRecordFromFile(noteHistory[len(noteHistory)-1])
+        }
       }
     }
 

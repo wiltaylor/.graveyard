@@ -8,6 +8,7 @@ pkgs.mkShell {
   shellHook = ''
     echo "KN DevShell"
     export ZKDIR=$(pwd)/.zk
+    export EDITOR=vim
     mkdir $ZKDIR -p
   '';
 }
