@@ -57,7 +57,7 @@ func InitUI() {
 
 	// Main view controls
 	toolbar = tview.NewTextView()
-	toolbar.SetText("ESC-Quit|N-New|F-Find|E-Edit|A-AddLink|HJKL-Move|Enter-FollowLink|Backspace-Back")
+	toolbar.SetText("ESC-Quit|N-New|F-Find|E-Edit|A-AddLink|D-DeleteNote|HJKL-Move|Enter-FollowLink|Backspace-Back")
 	toolbar.SetBackgroundColor(tcell.ColorWhite)
 	toolbar.SetTextColor(tcell.ColorBlack)
 
@@ -303,6 +303,21 @@ func handleInput(event *tcell.EventKey) *tcell.EventKey {
 			return nil
 		}
 
+		if event.Rune() == 'd' {
+			RemoveNote(CurrentNote.Header.Id)
+			CurrentNote.Header.Id = ""
+			CurrentNote.Header.Filename = ""
+			CurrentNote.Header.Title = "Empty"
+			CurrentNote.RawText = ""
+			CurrentNote.Links = make([]NoteLink, 0)
+
+      textbox.SetText("")
+      textbox.ScrollToBeginning()
+      textbox.SetTitle("Empty")
+
+			return nil
+		}
+
 		if event.Rune() == 'n' {
 			note, err := NewNote("New Note", ZettleNote)
 
@@ -380,7 +395,7 @@ func handleInput(event *tcell.EventKey) *tcell.EventKey {
 			if CurrentViewMode == ViewModeSearchLink {
 				note := CurrentSearchResults[CurrentSearchSelection]
 				CurrentNote.RawText += fmt.Sprintf("\n[%s](zk:%s)\n", note.Title, note.Id)
-        SaveNoteData(CurrentNote)
+				SaveNoteData(CurrentNote)
 			} else {
 
 				n, err := GetNoteData(CurrentSearchResults[CurrentSearchSelection])
@@ -482,7 +497,7 @@ func FormatCurrentFile(file *NoteData) {
 	l1 := regexp.MustCompile(`\n ([0-9]{1,5})\. `)
 	l2 := regexp.MustCompile(`\n   ([0-9a-z]{1,5})\. `)
 	l3 := regexp.MustCompile(`\n     ([0-9a-z]{1,5})\. `)
-  codefence := regexp.MustCompile("(?s)\n```\n(.+)\n```\n")
+	codefence := regexp.MustCompile("(?s)\n```\n(.+)\n```\n")
 
 	for _, lnk := range file.Links {
 		ico := LinkIconUrl
@@ -514,7 +529,7 @@ func FormatCurrentFile(file *NoteData) {
 	text = l2.ReplaceAllString(text, "\n   [green]$1.[-]")
 	text = l3.ReplaceAllString(text, "\n     [green]$1.[-]")
 
-  text = codefence.ReplaceAllString(text, "\n[green:gray]$1[-:-:-]\n")
+	text = codefence.ReplaceAllString(text, "\n[green:gray]$1[-:-:-]\n")
 
 	file.FormatedText = text
 }

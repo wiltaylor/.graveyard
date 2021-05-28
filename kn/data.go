@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-  "io"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -156,7 +156,7 @@ func GetHeaderFromFile(id string) (NoteHeader, error) {
 func FindNotes(pattern string, noteTypes []NoteType) []NoteHeader {
 	result := make([]NoteHeader, 0)
 
-  pattern = strings.ToLower(pattern)
+	pattern = strings.ToLower(pattern)
 
 	for _, note := range AllNotes {
 		m := false
@@ -219,7 +219,7 @@ func RefreshNotes() error {
 }
 
 func RefreshNote(id string) error {
-  idx := -1
+	idx := -1
 
 	for i, note := range AllNotes {
 		if note.Id == id {
@@ -248,7 +248,7 @@ func NewNote(title string, noteType NoteType) (NoteData, error) {
 
 	err := SaveNoteData(result)
 
-  AllNotes = append(AllNotes, header)
+	AllNotes = append(AllNotes, header)
 
 	return result, err
 }
@@ -368,27 +368,56 @@ func SaveNoteData(note NoteData) error {
 }
 
 func AttachFile(path string) string {
-  ext := filepath.Ext(path)
+	ext := filepath.Ext(path)
 	curTime := time.Now().UTC()
 	atomicId := fmt.Sprintf("%v", curTime.Unix())
 
-  dstFile, err := os.Create(filepath.Join(NoteDirectory, ".attachments", atomicId + ext))
+	dstFile, err := os.Create(filepath.Join(NoteDirectory, ".attachments", atomicId+ext))
 
-  if err != nil {
-    panic(err)
+	if err != nil {
+		panic(err)
+	}
+
+	defer dstFile.Close()
+
+	srcFile, err := os.Open(path)
+
+	if err != nil {
+		panic(err)
+	}
+
+	defer srcFile.Close()
+
+	io.Copy(dstFile, srcFile)
+
+	return atomicId
+}
+
+func RemoveNote(id string) {
+	os.Remove(filepath.Join(NoteDirectory, id + ".md"))
+
+	idx := -1
+	for i := range AllNotes {
+		if AllNotes[i].Id == id {
+			idx = i
+			break
+		}
+	}
+
+	if idx == -1 {
+		return
+	}
+
+	if idx == 0 {
+		AllNotes = AllNotes[1:]
+		return
+	}
+
+  if idx == len(AllNotes) - 1 {
+    AllNotes = AllNotes[0:len(AllNotes) - 1]
+    return
   }
 
-  defer dstFile.Close()
+  AllNotes = append(AllNotes[:idx], AllNotes[idx + 1:]...)
 
-  srcFile, err := os.Open(path)
-
-  if err != nil {
-    panic(err)
-  }
-
-  defer srcFile.Close()
-
-  io.Copy(dstFile, srcFile)
-
-  return atomicId
 }
