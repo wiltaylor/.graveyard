@@ -2,31 +2,30 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
-  "fmt"
 )
 
 var NoteDirectory string
 
 func main() {
 
-  attach := flag.String("a", "", "Copies file into attachment folder and returns the id")
-  flag.Parse()
+	attach := flag.String("a", "", "Copies file into attachment folder and returns the id")
+	flag.Parse()
 
-  NoteDirectory = os.Getenv("ZKDIR")
+	NoteDirectory = os.Getenv("ZKDIR")
 
-  os.MkdirAll(filepath.Join(NoteDirectory, ".attachments"), 0760)
+	os.MkdirAll(filepath.Join(NoteDirectory, ".attachments"), 0760)
 
+	if *attach != "" {
+		id := AttachFile(*attach)
+		fmt.Println(id)
+		return
+	}
 
-  if *attach != "" {
-    id := AttachFile(*attach)
-    fmt.Println(id)
-    return 
-  }
+	RefreshNotes()
 
-  RefreshNotes()
-
-  InitUI()
-  RunUI()
+	InitUI()
+	RunUI()
 }

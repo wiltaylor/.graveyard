@@ -482,6 +482,7 @@ func FormatCurrentFile(file *NoteData) {
 	l1 := regexp.MustCompile(`\n ([0-9]{1,5})\. `)
 	l2 := regexp.MustCompile(`\n   ([0-9a-z]{1,5})\. `)
 	l3 := regexp.MustCompile(`\n     ([0-9a-z]{1,5})\. `)
+  codefence := regexp.MustCompile("(?s)\n```\n(.+)\n```\n")
 
 	for _, lnk := range file.Links {
 		ico := LinkIconUrl
@@ -512,6 +513,8 @@ func FormatCurrentFile(file *NoteData) {
 	text = l1.ReplaceAllString(text, "\n [green]$1.[-]")
 	text = l2.ReplaceAllString(text, "\n   [green]$1.[-]")
 	text = l3.ReplaceAllString(text, "\n     [green]$1.[-]")
+
+  text = codefence.ReplaceAllString(text, "\n[green:gray]$1[-:-:-]\n")
 
 	file.FormatedText = text
 }
