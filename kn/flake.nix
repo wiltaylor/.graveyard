@@ -11,9 +11,26 @@
       system = "x86_64-linux";
       config = { allowUnfree = "true";};
     };
-  in {
+  in rec {
     devShell.x86_64-linux = import ./shell.nix { inherit pkgs;};
 
+    defaultPackage.x86_64-linux = packages.x86_64-linux.kn;
+    defaultApp = apps.kn;
 
+    apps = {
+      kn = {
+        type = "app";
+        program = "${defaultPackage}/bin/kn";
+      };
+    };
+
+    packages.x86_64-linux.kn = pkgs.buildGoModule rec {
+      name ="kn";
+      version = "0.1.0";
+
+      src = ./.;
+      
+      vendorSha256 = "sha256-IqaIgjLoGC9SbGOHNHWE/r7nWKmHtOsT8U2kuyxAxnU=";
+    };
   };
 }
