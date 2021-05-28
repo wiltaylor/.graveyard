@@ -18,7 +18,7 @@
     defaultApp = apps.kn;
 
     overlay = (self: super: {
-      inherit packages.x86_linux;
+      kn = packages.x86_64-linux.kn;
     });
 
     apps = {
