@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+  "io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -364,4 +365,30 @@ func SaveNoteData(note NoteData) error {
 
 	return nil
 
+}
+
+func AttachFile(path string) string {
+  ext := filepath.Ext(path)
+	curTime := time.Now().UTC()
+	atomicId := fmt.Sprintf("%v", curTime.Unix())
+
+  dstFile, err := os.Create(filepath.Join(NoteDirectory, ".attachments", atomicId + ext))
+
+  if err != nil {
+    panic(err)
+  }
+
+  defer dstFile.Close()
+
+  srcFile, err := os.Open(path)
+
+  if err != nil {
+    panic(err)
+  }
+
+  defer srcFile.Close()
+
+  io.Copy(dstFile, srcFile)
+
+  return atomicId
 }
