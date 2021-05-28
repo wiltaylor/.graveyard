@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,7 +58,7 @@ func InitUI() {
 
 	// Main view controls
 	toolbar = tview.NewTextView()
-	toolbar.SetText("ESC-Quit|N-New|F-Find|E-Edit|A-AddLink|D-DeleteNote|HJKL-Move|Enter-FollowLink|Backspace-Back")
+	toolbar.SetText("ESC-Quit|N-New|F-Find|E-Edit|A-AddLink|D-DeleteNote|HJKL-Move|Enter-FollowLink|Backspace-Back|F10-Sync")
 	toolbar.SetBackgroundColor(tcell.ColorWhite)
 	toolbar.SetTextColor(tcell.ColorBlack)
 
@@ -180,6 +181,17 @@ func SearchUpdate(txt string) {
 func handleInput(event *tcell.EventKey) *tcell.EventKey {
 
 	if CurrentViewMode == ViewModeMain {
+    if event.Key() == tcell.KeyF10 {
+
+      app.Suspend(func() {
+        if(DoDataSync() == false) {
+          fmt.Println("Press enter key to continue...")
+          bufio.NewReader(os.Stdin).ReadBytes('\n')
+        }
+      })
+
+    }
+
 		if event.Key() == tcell.KeyEsc {
 			ShutdownUI()
 			return nil

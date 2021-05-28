@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -420,4 +421,34 @@ func RemoveNote(id string) {
 
   AllNotes = append(AllNotes[:idx], AllNotes[idx + 1:]...)
 
+}
+
+func RunCommand(exe string, args []string) int {
+  cmd := exec.Command(exe, args...)
+  cmd.Stderr = os.Stderr
+  cmd.Stdin = os.Stdin
+  cmd.Stdout = os.Stdout
+  cmd.Run()
+
+  return cmd.ProcessState.ExitCode()
+}
+
+func DoDataSync() bool {
+  pwd, _ := os.Getwd()
+  os.Chdir(NoteDirectory)
+  defer os.Chdir(pwd)
+
+  if RunCommand("git", []string{"add", "."}) != 0 {
+    return false
+  }
+
+  if RunCommand("git", []string{"commit", "-m", "Syncing data"}) != 0 {
+    return false
+  }
+
+  if RunCommand("git", []string{"push"}) != 0 {
+    return false
+  }
+
+  return false
 }
