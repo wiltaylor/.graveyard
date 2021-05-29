@@ -12,6 +12,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+  "golang.design/x/clipboard"
 )
 
 const (
@@ -124,6 +125,9 @@ func InitUI() {
 	app.SetFocus(textbox)
 
 	NoteHistory = make([]string, 0)
+
+	CurrentNote = DashboardReport()
+	RefreshFileView()
 }
 
 func SwitchView(mode ViewMode) {
@@ -181,16 +185,16 @@ func SearchUpdate(txt string) {
 func handleInput(event *tcell.EventKey) *tcell.EventKey {
 
 	if CurrentViewMode == ViewModeMain {
-    if event.Key() == tcell.KeyF10 {
+		if event.Key() == tcell.KeyF10 {
 
-      app.Suspend(func() {
-        if(DoDataSync() == false) {
-          fmt.Println("Press enter key to continue...")
-          bufio.NewReader(os.Stdin).ReadBytes('\n')
-        }
-      })
+			app.Suspend(func() {
+				if DoDataSync() == false {
+					fmt.Println("Press enter key to continue...")
+					bufio.NewReader(os.Stdin).ReadBytes('\n')
+				}
+			})
 
-    }
+		}
 
 		if event.Key() == tcell.KeyEsc {
 			ShutdownUI()
@@ -253,6 +257,11 @@ func handleInput(event *tcell.EventKey) *tcell.EventKey {
 				cmd.Start()
 				return nil
 			}
+
+      if lnk.Type == LinkReport {
+        CurrentNote = OpenReport(lnk.Path)
+        RefreshFileView()
+      }
 
 			if lnk.Type == LinkNote {
 				id := lnk.Path[3:]
@@ -323,9 +332,9 @@ func handleInput(event *tcell.EventKey) *tcell.EventKey {
 			CurrentNote.RawText = ""
 			CurrentNote.Links = make([]NoteLink, 0)
 
-      textbox.SetText("")
-      textbox.ScrollToBeginning()
-      textbox.SetTitle("Empty")
+			textbox.SetText("")
+			textbox.ScrollToBeginning()
+			textbox.SetTitle("Empty")
 
 			return nil
 		}
@@ -351,6 +360,13 @@ func handleInput(event *tcell.EventKey) *tcell.EventKey {
 			SwitchView(ViewModeMain)
 			return nil
 		}
+
+    if searchResult.HasFocus() && event.Rune() == 'c' {
+      note := CurrentSearchResults[CurrentSearchSelection]
+      clipboard.Write(clipboard.FmtText, []byte(note.Id))
+
+      return nil
+    }
 
 		if event.Key() == tcell.KeyLeft {
 			idx := 0
@@ -462,10 +478,14 @@ func RunUI() {
 }
 
 func RefreshFileView() {
-	CurrentNote, err := GetNoteData(CurrentNote.Header)
 
-	if err != nil {
-		panic(err)
+	if CurrentNote.Header.Type != ReportNote {
+		note, err := GetNoteData(CurrentNote.Header)
+
+		if err != nil {
+			panic(err)
+		}
+		CurrentNote = note
 	}
 
 	FormatCurrentFile(&CurrentNote)

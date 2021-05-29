@@ -32,9 +32,11 @@
       name ="kn";
       version = "0.1.0";
 
+      buildInputs = with pkgs; [ xlibsWrapper ];
+
       src = ./.;
       
-      vendorSha256 = "sha256-IqaIgjLoGC9SbGOHNHWE/r7nWKmHtOsT8U2kuyxAxnU=";
+      vendorSha256 = "sha256-akCV+e69OmRimPmAWrv3t9xmq4e0JHD/2G4/OKw1p9U=";
     };
   };
 }

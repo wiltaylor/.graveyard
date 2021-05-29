@@ -30,6 +30,7 @@ const (
 	MapNote
 	LiteratureNote
 	FleetingNote
+	ReportNote
 	UnknownNote
 )
 
@@ -38,6 +39,7 @@ const (
 	LinkAttachment
 	LinkNote
 	LinkEmpty
+	LinkReport
 )
 
 type NoteHeader struct {
@@ -254,6 +256,34 @@ func NewNote(title string, noteType NoteType) (NoteData, error) {
 	return result, err
 }
 
+func ExtractLinks(note *NoteData) {
+	link := regexp.MustCompile(`\[(.+)\]\((.+)\)`)
+	linkMatches := link.FindAllStringSubmatch(note.RawText, -1)
+
+	id := 0
+	for i := range linkMatches {
+		typ := LinkUrl
+
+		if strings.HasPrefix(linkMatches[i][2], "zk:") {
+			typ = LinkNote
+		}
+
+		if strings.HasPrefix(linkMatches[i][2], "zka:") {
+			typ = LinkAttachment
+		}
+
+		if strings.HasPrefix(linkMatches[i][2], "rp:") {
+			typ = LinkReport
+		}
+
+		lnk := NoteLink{Title: linkMatches[i][1], Path: linkMatches[i][2], Type: typ, Id: id}
+
+		note.Links = append(note.Links, lnk)
+		id += 1
+	}
+
+}
+
 func GetNoteData(header NoteHeader) (NoteData, error) {
 	result := NoteData{Header: header, RawText: "", FormatedText: "", Links: make([]NoteLink, 0)}
 
@@ -290,27 +320,8 @@ func GetNoteData(header NoteHeader) (NoteData, error) {
 	text = text[index:]
 
 	result.RawText = text
+  ExtractLinks(&result)
 
-	link := regexp.MustCompile(`\[(.+)\]\((.+)\)`)
-	linkMatches := link.FindAllStringSubmatch(text, -1)
-
-	id := 0
-	for i := range linkMatches {
-		typ := LinkUrl
-
-		if strings.HasPrefix(linkMatches[i][2], "zk:") {
-			typ = LinkNote
-		}
-
-		if strings.HasPrefix(linkMatches[i][2], "zka:") {
-			typ = LinkAttachment
-		}
-
-		lnk := NoteLink{Title: linkMatches[i][1], Path: linkMatches[i][2], Type: typ, Id: id}
-
-		result.Links = append(result.Links, lnk)
-		id += 1
-	}
 
 	return result, nil
 }
@@ -395,7 +406,7 @@ func AttachFile(path string) string {
 }
 
 func RemoveNote(id string) {
-	os.Remove(filepath.Join(NoteDirectory, id + ".md"))
+	os.Remove(filepath.Join(NoteDirectory, id+".md"))
 
 	idx := -1
 	for i := range AllNotes {
@@ -414,41 +425,41 @@ func RemoveNote(id string) {
 		return
 	}
 
-  if idx == len(AllNotes) - 1 {
-    AllNotes = AllNotes[0:len(AllNotes) - 1]
-    return
-  }
+	if idx == len(AllNotes)-1 {
+		AllNotes = AllNotes[0 : len(AllNotes)-1]
+		return
+	}
 
-  AllNotes = append(AllNotes[:idx], AllNotes[idx + 1:]...)
+	AllNotes = append(AllNotes[:idx], AllNotes[idx+1:]...)
 
 }
 
 func RunCommand(exe string, args []string) int {
-  cmd := exec.Command(exe, args...)
-  cmd.Stderr = os.Stderr
-  cmd.Stdin = os.Stdin
-  cmd.Stdout = os.Stdout
-  cmd.Run()
+	cmd := exec.Command(exe, args...)
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Run()
 
-  return cmd.ProcessState.ExitCode()
+	return cmd.ProcessState.ExitCode()
 }
 
 func DoDataSync() bool {
-  pwd, _ := os.Getwd()
-  os.Chdir(NoteDirectory)
-  defer os.Chdir(pwd)
+	pwd, _ := os.Getwd()
+	os.Chdir(NoteDirectory)
+	defer os.Chdir(pwd)
 
-  if RunCommand("git", []string{"add", "."}) != 0 {
-    return false
-  }
+	if RunCommand("git", []string{"add", "."}) != 0 {
+		return false
+	}
 
-  if RunCommand("git", []string{"commit", "-m", "Syncing data"}) != 0 {
-    return false
-  }
+	if RunCommand("git", []string{"commit", "-m", "Syncing data"}) != 0 {
+		return false
+	}
 
-  if RunCommand("git", []string{"push"}) != 0 {
-    return false
-  }
+	if RunCommand("git", []string{"push"}) != 0 {
+		return false
+	}
 
-  return true
+	return true
 }

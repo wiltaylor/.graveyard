@@ -4,6 +4,7 @@ pkgs.mkShell {
   buildInputs = with pkgs; [
     go
     dep2nix
+    xlibsWrapper
   ];
 
   shellHook = ''
