@@ -505,11 +505,15 @@ func EditFile(filename string) {
 	}
 
 	app.Suspend(func() {
-		cmd := exec.Command(editor, filename)
+    cmd := exec.Command(editor, filename)
 		cmd.Stderr = os.Stderr
 		cmd.Stdout = os.Stdout
 		cmd.Stdin = os.Stdin
-		cmd.Run()
+    err := cmd.Run()
+
+    if err != nil {
+      panic(err)
+    }
 	})
 
 }
