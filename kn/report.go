@@ -22,10 +22,13 @@ K:::::::K    K:::::KN::::::N       N:::::::N
 K:::::::K    K:::::KN::::::N        N::::::N
 KKKKKKKKK    KKKKKKKNNNNNNNN         NNNNNNN
 
+# Map of Content
+- TBA
 # Reports
  - [Literature Notes](rp:literature)
  - [Fleeting Notes](rp:fleeting)
  - [Unknown Notes](rp:unknown)
+ - [New Zettles](rp:newzettle)
 `
 
 	header := NoteHeader{Title: "Dashboard", Id: "", Type: ReportNote, Filename: "", Date: "", State: NewState}
@@ -47,6 +50,10 @@ func OpenReport(path string) NoteData {
 
   if path == "rp:fleeting" {
     return FleetingNotesReport()
+  }
+
+  if path == "rp:newzettle" {
+    return NewZettleNotesReport()
   }
 
   if path == "rp:unknown" {
@@ -90,6 +97,31 @@ func UnknownNotes() NoteData {
   ExtractLinks(&result)
 	return result
 
+}
+
+func NewZettleNotesReport() NoteData {
+  notes := FindNotes("", []NoteType{ ZettleNote })
+
+  text := "# New Zettle Notes:\n"
+
+  for _, n := range notes {
+    if n.State == NewState {
+      text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
+    }
+  }
+
+  text += "\n# Unknown State Notes:\n"
+  for _, n := range notes {
+    if n.State != NewState && n.State != GreenState {
+      text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
+    }
+  }
+
+	header := NoteHeader{Title: "Unknown Notes", Id: "", Type: ReportNote, Filename: "", Date: "", State: NewState}
+	result := NoteData{Header: header, RawText: text, FormatedText: "", Links: make([]NoteLink, 0)}
+
+  ExtractLinks(&result)
+	return result
 }
 
 func LiteratureNoteReport() NoteData {
