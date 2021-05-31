@@ -257,7 +257,7 @@ func NewNote(title string, noteType NoteType) (NoteData, error) {
 }
 
 func ExtractLinks(note *NoteData) {
-	link := regexp.MustCompile(`\[(.+)\]\((.+)\)`)
+	link := regexp.MustCompile(`\[(.+?)\]\((.+?)\)`)
 	linkMatches := link.FindAllStringSubmatch(note.RawText, -1)
 
 	id := 0
