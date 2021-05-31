@@ -17,6 +17,7 @@ import (
 
 const (
 	LinkIconUrl        = ""
+  LinkIconEmpty      = ""
 	LinkIconNote       = ""
 	LinkIconAttachment = ""
 )
@@ -545,6 +546,10 @@ func FormatCurrentFile(file *NoteData) {
 		if lnk.Type == LinkAttachment {
 			ico = LinkIconAttachment
 		}
+
+    if strings.Trim(lnk.Path, " ") == "" {
+      ico = LinkIconEmpty
+    }
 
 		lnkText := fmt.Sprintf("[%s](%s)", lnk.Title, lnk.Path)
 		newText := fmt.Sprintf("[\"%v\"]%s[blue::u]%s[-:-:-][\"\"]", lnk.Id, ico, lnk.Title)
