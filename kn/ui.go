@@ -20,6 +20,7 @@ const (
   LinkIconEmpty      = ""
 	LinkIconNote       = ""
 	LinkIconAttachment = ""
+  LinkIconReport     = ""
 )
 
 type ViewMode int
@@ -60,7 +61,7 @@ func InitUI() {
 
 	// Main view controls
 	toolbar = tview.NewTextView()
-	toolbar.SetText("ESC-Quit|N-New|F-Find|E-Edit|A-AddLink|D-DeleteNote|HJKL-Move|Enter-FollowLink|Backspace-Back|F10-Sync")
+	toolbar.SetText("ESC-Quit|N-New|F-Find|E-Edit|A-AddLink|D-DeleteNote|HJKL-Move|Enter-FollowLink|Backspace-Back|F1-Dashboard|F10-Sync")
 	toolbar.SetBackgroundColor(tcell.ColorWhite)
 	toolbar.SetTextColor(tcell.ColorBlack)
 
@@ -197,6 +198,12 @@ func handleInput(event *tcell.EventKey) *tcell.EventKey {
 
 		}
 
+    if event.Key() == tcell.KeyF1 {
+      CurrentNote = OpenReport("rp:dashboard")
+      RefreshFileView()
+      return nil
+    }
+
 		if event.Key() == tcell.KeyEsc {
 			ShutdownUI()
 			return nil
@@ -262,6 +269,7 @@ func handleInput(event *tcell.EventKey) *tcell.EventKey {
       if lnk.Type == LinkReport {
         CurrentNote = OpenReport(lnk.Path)
         RefreshFileView()
+        return nil
       }
 
 			if lnk.Type == LinkNote {
@@ -549,6 +557,10 @@ func FormatCurrentFile(file *NoteData) {
 
     if strings.Trim(lnk.Path, " ") == "" {
       ico = LinkIconEmpty
+    }
+
+    if lnk.Type == LinkReport {
+      ico = LinkIconReport
     }
 
 		lnkText := fmt.Sprintf("[%s](%s)", lnk.Title, lnk.Path)

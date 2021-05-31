@@ -20,6 +20,7 @@ type LinkType int
 
 const (
 	NewState NoteState = iota
+  ReadyState
 	GreenState
 	DoneState
 	UnknownState
@@ -142,6 +143,11 @@ func GetHeaderFromFile(id string) (NoteHeader, error) {
 				result.State = DoneState
 				continue
 			}
+
+      if status == "ready" {
+        result.State = ReadyState
+        continue
+      }
 
 			if status == "green" {
 				result.State = GreenState
