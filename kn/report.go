@@ -1,6 +1,8 @@
 package main
 
-import ( "fmt" )
+import (
+	"fmt"
+)
 
 func DashboardReport() NoteData {
 	logo :=
@@ -34,127 +36,126 @@ KKKKKKKKK    KKKKKKKNNNNNNNN         NNNNNNN
 	header := NoteHeader{Title: "Dashboard", Id: "", Type: ReportNote, Filename: "", Date: "", State: NewState}
 	result := NoteData{Header: header, RawText: logo, FormatedText: "", Links: make([]NoteLink, 0)}
 
-  ExtractLinks(&result)
+	ExtractLinks(&result)
 	return result
 }
 
 func OpenReport(path string) NoteData {
 
-  if path == "rp:dashboard" {
-    return DashboardReport()
-  }
+	if path == "rp:dashboard" {
+		return DashboardReport()
+	}
 
-  if path == "rp:literature" {
-    return LiteratureNoteReport()
-  }
+	if path == "rp:literature" {
+		return LiteratureNoteReport()
+	}
 
-  if path == "rp:fleeting" {
-    return FleetingNotesReport()
-  }
+	if path == "rp:fleeting" {
+		return FleetingNotesReport()
+	}
 
-  if path == "rp:newzettle" {
-    return NewZettleNotesReport()
-  }
+	if path == "rp:newzettle" {
+		return NewZettleNotesReport()
+	}
 
-  if path == "rp:unknown" {
-    return UnknownNotes()
-  }
+	if path == "rp:unknown" {
+		return UnknownNotes()
+	}
 
-  return DashboardReport()
+	return DashboardReport()
 }
 
 func FleetingNotesReport() NoteData {
-  notes := FindNotes("", []NoteType{ FleetingNote })
+	notes := FindNotes("", []NoteType{FleetingNote})
 
-  text := "# Fleeting Notes:\n"
+	text := "# Fleeting Notes:\n"
 
-  for _, n := range notes {
-    if n.State != DoneState {
-      text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
-    }
-  }
+	for _, n := range notes {
+		if n.State != DoneState {
+			text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
+		}
+	}
 
 	header := NoteHeader{Title: "Fleeting Notes", Id: "", Type: ReportNote, Filename: "", Date: "", State: NewState}
 	result := NoteData{Header: header, RawText: text, FormatedText: "", Links: make([]NoteLink, 0)}
 
-  ExtractLinks(&result)
+	ExtractLinks(&result)
 	return result
 }
 
 func UnknownNotes() NoteData {
 
-  notes := FindNotes("", []NoteType{ UnknownNote })
+	notes := FindNotes("", []NoteType{UnknownNote})
 
-  text := "# Unknown Note Types:\n"
+	text := "# Unknown Note Types:\n"
 
-  for _, n := range notes {
-    text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
-  }
+	for _, n := range notes {
+		text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
+	}
 
 	header := NoteHeader{Title: "Unknown Notes", Id: "", Type: ReportNote, Filename: "", Date: "", State: NewState}
 	result := NoteData{Header: header, RawText: text, FormatedText: "", Links: make([]NoteLink, 0)}
 
-  ExtractLinks(&result)
+	ExtractLinks(&result)
 	return result
 
 }
 
 func NewZettleNotesReport() NoteData {
-  notes := FindNotes("", []NoteType{ ZettleNote })
+	notes := FindNotes("", []NoteType{ZettleNote})
 
-  text := "# New Zettle Notes:\n"
+	text := "# New Zettle Notes:\n"
 
-  for _, n := range notes {
-    if n.State == NewState {
-      text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
-    }
-  }
+	for _, n := range notes {
+		if n.State == NewState {
+			text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
+		}
+	}
 
-  text += "\n# Unknown State Notes:\n"
-  for _, n := range notes {
-    if n.State != NewState && n.State != GreenState {
-      text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
-    }
-  }
+	text += "\n# Unknown State Notes:\n"
+	for _, n := range notes {
+		if n.State != NewState && n.State != GreenState {
+			text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
+		}
+	}
 
 	header := NoteHeader{Title: "Unknown Notes", Id: "", Type: ReportNote, Filename: "", Date: "", State: NewState}
 	result := NoteData{Header: header, RawText: text, FormatedText: "", Links: make([]NoteLink, 0)}
 
-  ExtractLinks(&result)
+	ExtractLinks(&result)
 	return result
 }
 
 func LiteratureNoteReport() NoteData {
 
-  litNotes := FindNotes("", []NoteType{ LiteratureNote })
+	litNotes := FindNotes("", []NoteType{LiteratureNote})
 
-  text := "# Ready Notes\n"
+	text := "# Ready Notes\n"
 
-  for _, n := range litNotes {
-    if n.State == ReadyState {
-      text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
-    }
-  }
+	for _, n := range litNotes {
+		if n.State == ReadyState {
+			text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
+		}
+	}
 
-  text += "\n# New Notes\n"
-  for _, n := range litNotes {
-    if n.State == NewState {
-      text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
-    }
-  }
+	text += "\n# New Notes\n"
+	for _, n := range litNotes {
+		if n.State == NewState {
+			text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
+		}
+	}
 
-  text += "\n# Unknown Notes\n"
-  for _, n := range litNotes {
-    if n.State == UnknownState {
-      text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
-    }
-  }
-
+	text += "\n# Unknown Notes\n"
+	for _, n := range litNotes {
+		if n.State == UnknownState {
+			text += fmt.Sprintf(" - [%s](zk:%s)\n", n.Title, n.Id)
+		}
+	}
 
 	header := NoteHeader{Title: "Literature Notes", Id: "", Type: ReportNote, Filename: "", Date: "", State: NewState}
 	result := NoteData{Header: header, RawText: text, FormatedText: "", Links: make([]NoteLink, 0)}
 
-  ExtractLinks(&result)
+	ExtractLinks(&result)
 
-  return result
+	return result
 }

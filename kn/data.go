@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"gopkg.in/yaml.v3"
 	"io"
 	"io/ioutil"
 	"os"
@@ -20,7 +21,7 @@ type LinkType int
 
 const (
 	NewState NoteState = iota
-  ReadyState
+	ReadyState
 	GreenState
 	DoneState
 	UnknownState
@@ -52,6 +53,13 @@ type NoteHeader struct {
 	State    NoteState
 }
 
+type NoteHeaderYaml struct {
+	Title string `yaml:"Title"`
+	Date  string `yaml:"Date"`
+	Type  string `yaml:"Type"`
+	State string `yaml:"State"`
+}
+
 type NoteLink struct {
 	Title string
 	Type  LinkType
@@ -79,6 +87,7 @@ func GetHeaderFromFile(id string) (NoteHeader, error) {
 	}
 
 	s := bufio.NewScanner(file)
+	defer file.Close()
 
 	//Stripping the top ---
 	s.Scan()
@@ -87,6 +96,8 @@ func GetHeaderFromFile(id string) (NoteHeader, error) {
 		return result, errors.New("File header doesn't start with ---")
 	}
 
+	yamlText := ""
+
 	for s.Scan() {
 		txt := s.Text()
 
@@ -94,69 +105,40 @@ func GetHeaderFromFile(id string) (NoteHeader, error) {
 			break
 		}
 
-		if strings.HasPrefix(txt, "Title:") {
-			result.Title = strings.Trim(txt[6:], " ")
-			continue
-		}
+		yamlText += txt + "\n"
+	}
 
-		if strings.HasPrefix(txt, "Date:") {
-			result.Date = strings.Trim(txt[5:], " ")
-			continue
-		}
+	var data NoteHeaderYaml
+	err = yaml.Unmarshal([]byte(yamlText), &data)
+	if err != nil {
+		return result, err
+	}
 
-		if strings.HasPrefix(txt, "Type:") {
-			typ := strings.Trim(txt[5:], " ")
+	result.Title = data.Title
+	result.Date = data.Date
 
-			if typ == "zettle" {
-				result.Type = ZettleNote
-				continue
-			}
+	if data.Type == "zettle" {
+		result.Type = ZettleNote
+	} else if data.Type == "literature" {
+		result.Type = LiteratureNote
+	} else if data.Type == "fleeting" {
+		result.Type = FleetingNote
+	} else if data.Type == "map" {
+		result.Type = MapNote
+	} else {
+		result.Type = UnknownNote
+	}
 
-			if typ == "literature" {
-				result.Type = LiteratureNote
-				continue
-			}
-
-			if typ == "fleeting" {
-				result.Type = FleetingNote
-				continue
-			}
-
-			if typ == "map" {
-				result.Type = MapNote
-				continue
-			}
-
-			result.Type = UnknownNote
-			continue
-		}
-
-		if strings.HasPrefix(txt, "Status:") {
-			status := strings.Trim(txt[7:], " ")
-
-			if status == "new" {
-				result.State = NewState
-				continue
-			}
-
-			if status == "done" {
-				result.State = DoneState
-				continue
-			}
-
-      if status == "ready" {
-        result.State = ReadyState
-        continue
-      }
-
-			if status == "green" {
-				result.State = GreenState
-				continue
-			}
-
-			result.State = UnknownState
-			continue
-		}
+	if data.State == "new" {
+		result.State = NewState
+	} else if data.State == "done" {
+		result.State = DoneState
+	} else if data.State == "ready" {
+		result.State = ReadyState
+	} else if data.State == "green" {
+		result.State = GreenState
+	} else {
+		result.State = UnknownState
 	}
 
 	return result, nil
@@ -326,8 +308,7 @@ func GetNoteData(header NoteHeader) (NoteData, error) {
 	text = text[index:]
 
 	result.RawText = text
-  ExtractLinks(&result)
-
+	ExtractLinks(&result)
 
 	return result, nil
 }

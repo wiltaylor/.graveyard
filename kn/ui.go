@@ -12,15 +12,15 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-  "golang.design/x/clipboard"
+	"golang.design/x/clipboard"
 )
 
 const (
 	LinkIconUrl        = ""
-  LinkIconEmpty      = ""
+	LinkIconEmpty      = ""
 	LinkIconNote       = ""
 	LinkIconAttachment = ""
-  LinkIconReport     = ""
+	LinkIconReport     = ""
 )
 
 type ViewMode int
@@ -198,11 +198,11 @@ func handleInput(event *tcell.EventKey) *tcell.EventKey {
 
 		}
 
-    if event.Key() == tcell.KeyF1 {
-      CurrentNote = OpenReport("rp:dashboard")
-      RefreshFileView()
-      return nil
-    }
+		if event.Key() == tcell.KeyF1 {
+			CurrentNote = OpenReport("rp:dashboard")
+			RefreshFileView()
+			return nil
+		}
 
 		if event.Key() == tcell.KeyEsc {
 			ShutdownUI()
@@ -266,11 +266,11 @@ func handleInput(event *tcell.EventKey) *tcell.EventKey {
 				return nil
 			}
 
-      if lnk.Type == LinkReport {
-        CurrentNote = OpenReport(lnk.Path)
-        RefreshFileView()
-        return nil
-      }
+			if lnk.Type == LinkReport {
+				CurrentNote = OpenReport(lnk.Path)
+				RefreshFileView()
+				return nil
+			}
 
 			if lnk.Type == LinkNote {
 				id := lnk.Path[3:]
@@ -370,12 +370,12 @@ func handleInput(event *tcell.EventKey) *tcell.EventKey {
 			return nil
 		}
 
-    if searchResult.HasFocus() && event.Rune() == 'c' {
-      note := CurrentSearchResults[CurrentSearchSelection]
-      clipboard.Write(clipboard.FmtText, []byte(note.Id))
+		if searchResult.HasFocus() && event.Rune() == 'c' {
+			note := CurrentSearchResults[CurrentSearchSelection]
+			clipboard.Write(clipboard.FmtText, []byte(note.Id))
 
-      return nil
-    }
+			return nil
+		}
 
 		if event.Key() == tcell.KeyLeft {
 			idx := 0
@@ -514,15 +514,15 @@ func EditFile(filename string) {
 	}
 
 	app.Suspend(func() {
-    cmd := exec.Command(editor, filename)
+		cmd := exec.Command(editor, filename)
 		cmd.Stderr = os.Stderr
 		cmd.Stdout = os.Stdout
 		cmd.Stdin = os.Stdin
-    err := cmd.Run()
+		err := cmd.Run()
 
-    if err != nil {
-      panic(err)
-    }
+		if err != nil {
+			panic(err)
+		}
 	})
 
 }
@@ -555,13 +555,13 @@ func FormatCurrentFile(file *NoteData) {
 			ico = LinkIconAttachment
 		}
 
-    if strings.Trim(lnk.Path, " ") == "" {
-      ico = LinkIconEmpty
-    }
+		if strings.Trim(lnk.Path, " ") == "" {
+			ico = LinkIconEmpty
+		}
 
-    if lnk.Type == LinkReport {
-      ico = LinkIconReport
-    }
+		if lnk.Type == LinkReport {
+			ico = LinkIconReport
+		}
 
 		lnkText := fmt.Sprintf("[%s](%s)", lnk.Title, lnk.Path)
 		newText := fmt.Sprintf("[\"%v\"]%s[blue::u]%s[-:-:-][\"\"]", lnk.Id, ico, lnk.Title)
