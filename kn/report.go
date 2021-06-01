@@ -25,7 +25,15 @@ K:::::::K    K:::::KN::::::N        N::::::N
 KKKKKKKKK    KKKKKKKNNNNNNNN         NNNNNNN
 
 # Map of Content
-- TBA
+`
+
+tagged := FindByTag("dashboard", []NoteType{MapNote})
+
+for _, note := range tagged {
+  logo += fmt.Sprintf(" - [%s](zk:%s)\n", note.Title, note.Id)
+}
+
+logo += `
 # Reports
  - [Literature Notes](rp:literature)
  - [Fleeting Notes](rp:fleeting)

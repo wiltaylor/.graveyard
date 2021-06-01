@@ -51,6 +51,7 @@ type NoteHeader struct {
 	Date     string
 	Type     NoteType
 	State    NoteState
+	Tags     []string
 }
 
 type NoteHeaderYaml struct {
@@ -58,6 +59,7 @@ type NoteHeaderYaml struct {
 	Date  string `yaml:"Date"`
 	Type  string `yaml:"Type"`
 	State string `yaml:"State"`
+  Tags []string `yaml:"Tags"`
 }
 
 type NoteLink struct {
@@ -116,6 +118,7 @@ func GetHeaderFromFile(id string) (NoteHeader, error) {
 
 	result.Title = data.Title
 	result.Date = data.Date
+  result.Tags = data.Tags
 
 	if data.Type == "zettle" {
 		result.Type = ZettleNote
@@ -141,7 +144,29 @@ func GetHeaderFromFile(id string) (NoteHeader, error) {
 		result.State = UnknownState
 	}
 
+//  fmt.Printf("%v\n", result)
+
 	return result, nil
+}
+
+func FindByTag(tag string, noteTypes []NoteType) []NoteHeader {
+  result := make([]NoteHeader, 0)
+
+  filtered:= FindNotes("", noteTypes)
+
+  fmt.Println("looking for notes")
+
+  for _, note := range filtered {
+    fmt.Printf("%v\n", note)
+    for _, t := range note.Tags {
+      if t == tag {
+        result = append(result, note)
+        break
+      }
+    }
+  }
+
+  return result
 }
 
 func FindNotes(pattern string, noteTypes []NoteType) []NoteHeader {
