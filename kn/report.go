@@ -27,13 +27,13 @@ KKKKKKKKK    KKKKKKKNNNNNNNN         NNNNNNN
 # Map of Content
 `
 
-tagged := FindByTag("dashboard", []NoteType{MapNote})
+	tagged := FindByTag("dashboard", []NoteType{MapNote})
 
-for _, note := range tagged {
-  logo += fmt.Sprintf(" - [%s](zk:%s)\n", note.Title, note.Id)
-}
+	for _, note := range tagged {
+		logo += fmt.Sprintf(" - [%s](zk:%s)\n", note.Title, note.Id)
+	}
 
-logo += `
+	logo += `
 # Reports
  - [Literature Notes](rp:literature)
  - [Fleeting Notes](rp:fleeting)

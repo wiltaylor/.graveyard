@@ -5,8 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strings"
+	//"regexp"
+	//"strings"
 
 	"fmt"
 
@@ -530,6 +530,31 @@ func EditFile(filename string) {
 func FormatCurrentFile(file *NoteData) {
 	text := file.RawText
 
+  parser := NewMarkdownParser(text)
+  file.FormatedText = ""
+
+  for {
+    node, eof := parser.Next()
+
+    if node == nil {
+      break
+    }
+
+    file.FormatedText += node.GetText()
+
+    if eof {
+      file.FormatedText += "\n"
+    }
+  }
+
+
+
+
+
+
+
+/*
+
 	h6 := regexp.MustCompile(`###### (.+)\n`)
 	h5 := regexp.MustCompile(`##### (.+)\n`)
 	h4 := regexp.MustCompile(`#### (.+)\n`)
@@ -585,4 +610,5 @@ func FormatCurrentFile(file *NoteData) {
 	text = codefence.ReplaceAllString(text, "\n[green:gray]$1[-:-:-]\n")
 
 	file.FormatedText = text
+  */
 }
