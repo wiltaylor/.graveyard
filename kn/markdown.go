@@ -214,13 +214,18 @@ func (h *MarkdownParser) Next() (MkNode, bool) {
         return &txtResult, true
       }
 
-      if h.peek("(") {
+      if h.peek(1) == "(" {
         h.col++
 
         url, nl := h.peekTill(")")
 
+        if url == "" {
+          
+        }
+
         if nl {
-                  }
+          
+        }
 
       }
 

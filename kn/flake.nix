@@ -36,7 +36,7 @@
 
       src = ./.;
       
-      vendorSha256 = "sha256-akCV+e69OmRimPmAWrv3t9xmq4e0JHD/2G4/OKw1p9U=";
+      vendorSha256 = "sha256-Pi5mS8YToBTgHgvlT5UthrCx5fHXGce9GGw9OtZQPdg=";
     };
   };
 }
