@@ -144,8 +144,6 @@ func GetHeaderFromFile(id string) (NoteHeader, error) {
 		result.State = UnknownState
 	}
 
-	//  fmt.Printf("%v\n", result)
-
 	return result, nil
 }
 
@@ -154,10 +152,8 @@ func FindByTag(tag string, noteTypes []NoteType) []NoteHeader {
 
 	filtered := FindNotes("", noteTypes)
 
-	fmt.Println("looking for notes")
 
 	for _, note := range filtered {
-		fmt.Printf("%v\n", note)
 		for _, t := range note.Tags {
 			if t == tag {
 				result = append(result, note)
