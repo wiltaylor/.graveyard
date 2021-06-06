@@ -58,7 +58,7 @@ type NoteHeaderYaml struct {
 	Title string   `yaml:"Title"`
 	Date  string   `yaml:"Date"`
 	Type  string   `yaml:"Type"`
-	State string   `yaml:"State"`
+	State string   `yaml:"Status"`
 	Tags  []string `yaml:"Tags"`
 }
 
