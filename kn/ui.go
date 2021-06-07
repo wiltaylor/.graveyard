@@ -61,7 +61,7 @@ func InitUI() {
 
 	// Main view controls
 	toolbar = tview.NewTextView()
-	toolbar.SetText("ESC-Quit|N-New|F-Find|E-Edit|A-AddLink|D-DeleteNote|HJKL-Move|Enter-FollowLink|Backspace-Back|F1-Dashboard|F10-Sync")
+	toolbar.SetText("ESC-Quit|N-New|F-Find|E-Edit|A-AddLink|D-DeleteNote|C-CopyId|HJKL-Move|Enter-FollowLink|Backspace-Back|F1-Dashboard|F10-Sync")
 	toolbar.SetBackgroundColor(tcell.ColorWhite)
 	toolbar.SetTextColor(tcell.ColorBlack)
 
@@ -313,6 +313,11 @@ func handleInput(event *tcell.EventKey) *tcell.EventKey {
 
 			return nil
 		}
+
+    if event.Rune() == 'c' {
+      clipboard.Write(clipboard.FmtText, []byte(CurrentNote.Header.Id))
+      return nil
+    }
 
 		if event.Rune() == 'f' {
 			SwitchView(ViewModeSearch)
