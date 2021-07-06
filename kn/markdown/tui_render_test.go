@@ -75,6 +75,30 @@ func TestTuiRender(t *testing.T) {
           },
         expected: "[blue::b] Hi[-:-:-]",
       },
+      {
+        tok : token{
+          Type: TOK_BULLET,
+          Level: 1,
+          Text: "Hi",
+        },
+        expected: " [green]ﱣ[-] Hi",
+      },
+      {
+        tok : token{
+          Type: TOK_BULLET,
+          Level: 2,
+          Text: "Hi",
+        },
+        expected: "   [green]ﱤ[-] Hi",
+      },
+      {
+        tok : token{
+          Type: TOK_BULLET,
+          Level: 3,
+          Text: "Hi",
+        },
+        expected: "     [green][-] Hi",
+      },
     }
 
     for _, c := range cases {

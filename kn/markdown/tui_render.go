@@ -22,5 +22,20 @@ func parseToken(tok token) string {
     return tok.Text
   }
 
+  if tok.Type == TOK_BULLET {
+    result := ""
+    switch tok.Level {
+    case 1:
+       result = " [green]ﱣ[-] "
+    case 2:
+       result = "   [green]ﱤ[-] "
+    case 3:
+       result = "     [green][-] "
+    }
+
+    result += tok.Text
+    return result
+  }
+
   return ""
 }

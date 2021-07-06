@@ -9,6 +9,7 @@ const (
   TOK_TEXT
   TOK_EOF
   TOK_NEWLINE
+  TOK_BULLET
 )
 
 type tokenType int
@@ -105,6 +106,27 @@ func(p *parser) nextToken() token {
     txt := p.readToEol()
     p.advance(len(txt))
     return token{ Level: 1, Text: txt}
+  }
+
+  if p.peekChar(3) == " - " || p.peekChar(3) == " + " || p.peekChar(3) == " * " {
+    p.advance(3)
+    txt := p.readToEol()
+    p.advance(len(txt))
+    return token{ Type: TOK_BULLET, Text: txt, Level: 1 }
+  }
+
+  if p.peekChar(5) == "   - " || p.peekChar(5) == "   + " || p.peekChar(5) == "   * " {
+    p.advance(5)
+    txt := p.readToEol()
+    p.advance(len(txt))
+    return token{ Type: TOK_BULLET, Text: txt, Level: 2 }
+  }
+
+  if p.peekChar(7) == "     - " || p.peekChar(7) == "     + " || p.peekChar(7) == "     * " {
+    p.advance(7)
+    txt := p.readToEol()
+    p.advance(len(txt))
+    return token{ Type: TOK_BULLET, Text: txt, Level: 3 }
   }
 
   txt := p.readToEol()

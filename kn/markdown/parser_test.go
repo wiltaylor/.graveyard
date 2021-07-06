@@ -131,15 +131,15 @@ func TestMarkdownParser(t *testing.T){
 
   t.Run("Can get New Line tokens", func(t *testing.T) {
     markdown := "Hello there\nline2\nline3"
-    expected := []tokenType { TOK_TEXT, TOK_NEWLINE, TOK_TEXT, TOK_NEWLINE, TOK_TEXT}
+    expectedType := []tokenType { TOK_TEXT, TOK_NEWLINE, TOK_TEXT, TOK_NEWLINE, TOK_TEXT}
 
     parser := newParser(markdown)
 
-    for i := 0; i < len(expected); i++ {
+    for i := 0; i < len(expectedType); i++ {
       got := parser.nextToken()
 
-      if got.Type != expected[i] {
-        t.Errorf("Expected %+v but got %+v index: %d", expected, got.Type, i)
+      if got.Type != expectedType[i] {
+        t.Errorf("Expected %+v but got %+v index: %d", expectedType, got.Type, i)
       }
     }
 
@@ -149,6 +149,52 @@ func TestMarkdownParser(t *testing.T){
     }
   })
 
+  t.Run("Can parse bullets", func(t *testing.T) {
+    cases := []struct {
+      markdown string
+      types []tokenType
+      text []string
+      level []int 
+    }{
+      {
+        markdown: ` - test-1
+ + test-2
+ * test-3`,
+      types: []tokenType{ TOK_BULLET, TOK_NEWLINE, TOK_BULLET, TOK_NEWLINE, TOK_BULLET, TOK_EOF},
+      text: []string { "test-1", "", "test-2", "", "test-3", "" },
+      level: []int{1,0,1,0,1,0},
+      },
+      {
+        markdown: ` - test-1
+   + test-2
+     * test-3`,
+      types: []tokenType{ TOK_BULLET, TOK_NEWLINE, TOK_BULLET, TOK_NEWLINE, TOK_BULLET, TOK_EOF},
+      text: []string { "test-1", "", "test-2", "", "test-3", "" },
+      level: []int{1,0,2,0,3,0},
+      },
+    }
 
+
+    for _, c := range cases {
+      parser := newParser(c.markdown)
+      for i := 0; i < len(c.types); i++ {
+        got := parser.nextToken()
+
+        if c.types[i] == TOK_BULLET {
+          if got.Text != c.text[i] {
+            t.Errorf("Expected bullet text %+v, got %+v index: %d",c.text[i], got.Text, i)
+          }
+
+          if got.Level != c.level[i] {
+            t.Errorf("Expected bullet level %+v, got %+v index: %d", c.level[i], got.Level, i)
+          }
+        }
+
+        if got.Type != c.types[i] {
+          t.Errorf("expected %+v, got: %+v index: %d", c.types[i], got.Type, i)
+        }
+      }
+    }
+  })
 }
 
