@@ -10,6 +10,7 @@ const (
   TOK_EOF
   TOK_NEWLINE
   TOK_BULLET
+  TOK_ORDEREDITEM
 )
 
 type tokenType int
@@ -18,6 +19,10 @@ type parser struct {
   text string
   position int
   eof bool
+}
+
+type tokenizer interface {
+  NextToken() token
 }
 
 
@@ -56,7 +61,7 @@ func (p *parser) readToEol() string {
   return p.text[p.position:p.position + idx]
 }
 
-func(p *parser) nextToken() token {
+func(p *parser) NextToken() token {
   if p.position >= len(p.text) {
     return token{ Type: TOK_EOF}
   }
@@ -127,6 +132,27 @@ func(p *parser) nextToken() token {
     txt := p.readToEol()
     p.advance(len(txt))
     return token{ Type: TOK_BULLET, Text: txt, Level: 3 }
+  }
+
+  if p.peekChar(4) == " 1. " {
+    p.advance(4)
+    txt := p.readToEol()
+    p.advance(len(txt))
+    return token{ Type: TOK_ORDEREDITEM, Level: 1, Text: txt}
+  }
+
+  if p.peekChar(6) == "   1. " {
+    p.advance(6)
+    txt := p.readToEol()
+    p.advance(len(txt))
+    return token{ Type: TOK_ORDEREDITEM, Level: 2, Text: txt}
+  }
+
+  if p.peekChar(8) == "     1. " {
+    p.advance(8)
+    txt := p.readToEol()
+    p.advance(len(txt))
+    return token{ Type: TOK_ORDEREDITEM, Level: 3, Text: txt}
   }
 
   txt := p.readToEol()

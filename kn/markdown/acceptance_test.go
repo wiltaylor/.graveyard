@@ -54,4 +54,33 @@ func TestMarkdown(t *testing.T) {
       t.Errorf("Expected '%s', got '%s'", expected, got)
     }
   })
+
+  t.Run("markdown ordered lists outputs properly", func(t *testing.T) {
+    markdown := ` 1. Fooo
+ 1. Bar
+ 1. Bar
+   1. Foobar
+   1. Foobar
+ 1. Woo
+   1. Bar
+     1. Bar
+     1. Foo`
+
+    expected := ` [green]01)[-] Fooo
+ [green]02)[-] Bar
+ [green]03)[-] Bar
+ [green]03.01)[-] Foobar
+ [green]03.02)[-] Foobar
+ [green]04)[-] Woo
+ [green]04.01)[-] Bar
+ [green]04.01.01)[-] Bar
+ [green]04.01.02)[-] Foo`
+
+    got := MarkdownToTui(markdown)
+
+    if got != expected {
+      t.Errorf("Expected '%s', got '%s'", expected, got)
+    }
+
+  })
 }

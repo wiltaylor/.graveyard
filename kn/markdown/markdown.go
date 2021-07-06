@@ -3,16 +3,16 @@ package markdown
 func MarkdownToTui(markdown string) string {
   result := ""
 
-  parser := newParser(markdown)
+  tokenizer := newParser(markdown)
+  parser := NewTokenParser(&tokenizer)
+  
 
   for {
-    tok := parser.nextToken()
-
-    if tok.Type == TOK_EOF {
+    if parser.AtEnd() {
       break
     }
 
-    result += parseToken(tok)
+    result += parser.ParseToken()
 
   }
 
