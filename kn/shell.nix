@@ -5,6 +5,7 @@ pkgs.mkShell {
     go
     dep2nix
     xlibsWrapper
+    delve
   ];
 
   shellHook = ''
