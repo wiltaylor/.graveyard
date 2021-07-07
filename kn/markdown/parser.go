@@ -273,7 +273,7 @@ func(p *parser) parseFormatedString() (bool, token) {
 
     if full[full_len:] == "`" {
       txt = txt[1:]
-      p.advance(len(full) + 1)
+      p.advance(len(full))
       return true, token{ Type: TOK_TEXT, Format: TXT_CODE, Text: txt}
     }
   }
@@ -303,7 +303,6 @@ func(p *parser) parseText() (bool, token) {
 }
 
 func(p *parser) NextToken() token {
-
   return func(f []func()(bool, token))(token) {
     for _, fn := range f {
       handled, tok := fn()

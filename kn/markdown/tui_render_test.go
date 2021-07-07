@@ -142,6 +142,21 @@ func TestTuiRender(t *testing.T) {
         },
         expected: " [green]01.01.01)[-] Hi",
       },
+      {
+        tok: token{
+          Type: TOK_TEXT,
+          Format: TXT_CODE,
+          Text: "Hey",
+        },
+        expected: "[green]Hey[-:-:-]",
+      },
+      {
+        tok: token{
+          Type: TOK_CODEBLOCK,
+          Text: "woo code",
+        },
+        expected: "[green:gray]woo code\n[-:-:-]",
+      },
     }
 
     for _, c := range cases {

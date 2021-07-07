@@ -55,10 +55,19 @@ func (p *tokenParser) ParseToken() string {
     return result
   }
 
-
-
   if tok.Type == TOK_TEXT {
-    return tok.Text
+    result := ""
+
+    if tok.Format == TXT_CODE {
+      result += "[green]"
+    }
+
+    result += tok.Text
+
+    if tok.Format != TXT_PLAIN {
+      result += "[-:-:-]"
+    }
+    return result
   }
 
   if tok.Type == TOK_BULLET {
@@ -140,6 +149,15 @@ func (p *tokenParser) ParseToken() string {
       return result
     }
 
+  }
+
+  if tok.Type == TOK_CODEBLOCK {
+    result := "[green:gray]"
+
+    result += tok.Text 
+    result += "\n[-:-:-]"
+
+    return result
   }
 
   return ""
