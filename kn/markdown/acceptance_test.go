@@ -144,7 +144,7 @@ func TestMarkdown(t *testing.T) {
     }
   })
 
-/*  t.Run("Can render code blocks and inline code items", func(t *testing.T) {
+ /* t.Run("Can render code blocks and inline code items", func(t *testing.T) {
     markdown := "Hey `codeage`\n" +
     "```\n" +
     "more code\n" +

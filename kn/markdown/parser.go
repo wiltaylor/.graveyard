@@ -130,6 +130,59 @@ func(p *parser) Links() []link {
   return p.links
 }
 
+func(p *parser) parseHeadings() (bool, token) {
+  if !p.startOfLine {
+    return false, token{}
+  }
+
+  for i := 6; i > 0; i-- {
+    if p.peekChar(i + 1) == strings.Repeat("#", i) + " " {
+      p.advance(i + 1)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return true, token{ Level: i, Text: txt}
+    }
+  }
+
+  return false, token{}
+}
+
+func(p *parser) parseBulletPoints() (bool, token) {
+  if !p.startOfLine {
+    return false, token{}
+  }
+
+  for i := 0; i < 3; i++ {
+    for _, b := range []string{"-", "+", "*"} {
+      if p.peekChar(i * 2 + 3) == strings.Repeat( " ", i * 2) + " " + b + " " {
+        p.advance(i * 2 + 3)
+        txt := p.readToEol()
+        p.advance(len(txt))
+        return true, token{ Level: i + 1, Text: txt, Type: TOK_BULLET}
+      }
+    }
+  }
+
+
+  return false, token{}
+}
+
+func(p *parser) parseOrderedList() (bool, token) {
+  if !p.startOfLine {
+    return false, token{}
+  }
+  
+  for i := 0; i < 3; i++ {
+    if p.peekChar(i * 2 + 4) == strings.Repeat(" ", i * 2) + " 1. " {
+      p.advance(i * 2 + 4)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return true, token{ Level: i + 1, Text: txt, Type: TOK_ORDEREDITEM}
+    }
+  }
+  return false, token{}
+}
+
 func(p *parser) NextToken() token {
   if p.position >= len(p.text) {
     return token{ Type: TOK_EOF}
@@ -141,91 +194,26 @@ func(p *parser) NextToken() token {
     return token{Type: TOK_NEWLINE}
   }
 
+  handled, tok := p.parseHeadings()
+
+  if handled{
+    return tok
+  }
+
+  handled, tok = p.parseBulletPoints()
+
+  if handled{
+    return tok
+  }
+
+  handled, tok = p.parseOrderedList()
+
+  if handled{
+    return tok
+  }
+
   if p.startOfLine {
     p.startOfLine = false
-    if p.peekChar(7) == "###### " {
-      p.advance(7)
-      txt := p.readToEol()
-      p.advance(len(txt))
-      return token{ Level: 6, Text: txt}
-    }
-
-    if p.peekChar(6) == "##### " {
-      p.advance(6)
-      txt := p.readToEol()
-      p.advance(len(txt))
-      return token{ Level: 5, Text: txt}
-    }
-
-    if p.peekChar(5) == "#### " {
-      p.advance(5)
-      txt := p.readToEol()
-      p.advance(len(txt))
-      return token{ Level: 4, Text: txt }
-    }
-
-    if p.peekChar(4) == "### " {
-      p.advance(4)
-      txt := p.readToEol()
-      p.advance(len(txt))
-      return token{ Level: 3, Text: txt}
-    }
-
-    if p.peekChar(3) == "## " {
-      p.advance(3)
-      txt := p.readToEol()
-      p.advance(len(txt))
-      return token{ Level: 2, Text: txt}
-    }
-
-    if p.peekChar(2) == "# " {
-      p.advance(2)
-      txt := p.readToEol()
-      p.advance(len(txt))
-      return token{ Level: 1, Text: txt}
-    }
-
-    if p.peekChar(3) == " - " || p.peekChar(3) == " + " || p.peekChar(3) == " * " {
-      p.advance(3)
-      txt := p.readToEol()
-      p.advance(len(txt))
-      return token{ Type: TOK_BULLET, Text: txt, Level: 1 }
-    }
-
-    if p.peekChar(5) == "   - " || p.peekChar(5) == "   + " || p.peekChar(5) == "   * " {
-      p.advance(5)
-      txt := p.readToEol()
-      p.advance(len(txt))
-      return token{ Type: TOK_BULLET, Text: txt, Level: 2 }
-    }
-
-    if p.peekChar(7) == "     - " || p.peekChar(7) == "     + " || p.peekChar(7) == "     * " {
-      p.advance(7)
-      txt := p.readToEol()
-      p.advance(len(txt))
-      return token{ Type: TOK_BULLET, Text: txt, Level: 3 }
-    }
-
-    if p.peekChar(4) == " 1. " {
-      p.advance(4)
-      txt := p.readToEol()
-      p.advance(len(txt))
-      return token{ Type: TOK_ORDEREDITEM, Level: 1, Text: txt}
-    }
-
-    if p.peekChar(6) == "   1. " {
-      p.advance(6)
-      txt := p.readToEol()
-      p.advance(len(txt))
-      return token{ Type: TOK_ORDEREDITEM, Level: 2, Text: txt}
-    }
-
-    if p.peekChar(8) == "     1. " {
-      p.advance(8)
-      txt := p.readToEol()
-      p.advance(len(txt))
-      return token{ Type: TOK_ORDEREDITEM, Level: 3, Text: txt}
-    }
 
     if p.peekChar(4) == "````" {
       p.advance(4)
