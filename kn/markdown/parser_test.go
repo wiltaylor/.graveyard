@@ -341,5 +341,34 @@ func TestMarkdownParser(t *testing.T){
       }
     }
   })
+
+ t.Run("Can chain multiple links, text formating etc on a line", func(t *testing.T) {
+    cases := []struct{
+      markdown string
+      toks []tokenType
+    }{
+      {
+        markdown: "Hey [Link](foo) bar",
+        toks: []tokenType{TOK_TEXT, TOK_LINK, TOK_TEXT, TOK_EOF},
+      },
+      {
+        markdown: "Hey [Link](foo)# this is a test",
+        toks: []tokenType{TOK_TEXT, TOK_LINK, TOK_TEXT, TOK_EOF},
+      },
+    }
+
+    for _, c := range cases {
+      parser := newParser(c.markdown)
+     
+      for i := 0; i < len(c.toks); i++ {
+
+        got := parser.NextToken()
+
+        if got.Type != c.toks[i] {
+          t.Errorf("Expected token type %+v got %+v index %d", c.toks[i], got.Type, i)
+        }
+      }
+    }
+ })
 }
 

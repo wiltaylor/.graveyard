@@ -39,6 +39,7 @@ type parser struct {
   eof bool
   links []link
   nextLinkId int
+  startOfLine bool
 }
 
 type tokenizer interface {
@@ -57,6 +58,7 @@ func newParser(markdown string) parser {
   return parser{
     text: markdown,
     position: 0,
+    startOfLine: true,
   }
 }
 
@@ -73,13 +75,24 @@ func (p *parser) advance(length int) {
 }
 
 func (p *parser) readToEol() string {
+
   idx := strings.Index(p.text[p.position:], "\n")
 
+  txt := ""
+
   if idx == -1 {
-    return p.text[p.position:]
+    txt = p.text[p.position:]
+  }else{
+    txt = p.text[p.position:p.position + idx]
   }
 
-  return p.text[p.position:p.position + idx]
+  link := strings.Index(txt, "[")
+
+  if link > 0 {
+    txt = txt[:link]
+  }
+
+  return txt
 }
 
 func(p *parser) Links() []link {
@@ -93,91 +106,95 @@ func(p *parser) NextToken() token {
 
   if p.peekChar(1) == "\n" {
     p.advance(1)
+    p.startOfLine = true
     return token{Type: TOK_NEWLINE}
   }
 
-  if p.peekChar(7) == "###### " {
-    p.advance(7)
-    txt := p.readToEol()
-    p.advance(len(txt))
-    return token{ Level: 6, Text: txt}
-  }
+  if p.startOfLine {
+    p.startOfLine = false
+    if p.peekChar(7) == "###### " {
+      p.advance(7)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return token{ Level: 6, Text: txt}
+    }
 
-  if p.peekChar(6) == "##### " {
-    p.advance(6)
-    txt := p.readToEol()
-    p.advance(len(txt))
-    return token{ Level: 5, Text: txt}
-  }
+    if p.peekChar(6) == "##### " {
+      p.advance(6)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return token{ Level: 5, Text: txt}
+    }
 
-  if p.peekChar(5) == "#### " {
-    p.advance(5)
-    txt := p.readToEol()
-    p.advance(len(txt))
-    return token{ Level: 4, Text: txt }
-  }
+    if p.peekChar(5) == "#### " {
+      p.advance(5)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return token{ Level: 4, Text: txt }
+    }
 
-  if p.peekChar(4) == "### " {
-    p.advance(4)
-    txt := p.readToEol()
-    p.advance(len(txt))
-    return token{ Level: 3, Text: txt}
-  }
+    if p.peekChar(4) == "### " {
+      p.advance(4)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return token{ Level: 3, Text: txt}
+    }
 
-  if p.peekChar(3) == "## " {
-    p.advance(3)
-    txt := p.readToEol()
-    p.advance(len(txt))
-    return token{ Level: 2, Text: txt}
-  }
+    if p.peekChar(3) == "## " {
+      p.advance(3)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return token{ Level: 2, Text: txt}
+    }
 
-  if p.peekChar(2) == "# " {
-    p.advance(2)
-    txt := p.readToEol()
-    p.advance(len(txt))
-    return token{ Level: 1, Text: txt}
-  }
+    if p.peekChar(2) == "# " {
+      p.advance(2)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return token{ Level: 1, Text: txt}
+    }
 
-  if p.peekChar(3) == " - " || p.peekChar(3) == " + " || p.peekChar(3) == " * " {
-    p.advance(3)
-    txt := p.readToEol()
-    p.advance(len(txt))
-    return token{ Type: TOK_BULLET, Text: txt, Level: 1 }
-  }
+    if p.peekChar(3) == " - " || p.peekChar(3) == " + " || p.peekChar(3) == " * " {
+      p.advance(3)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return token{ Type: TOK_BULLET, Text: txt, Level: 1 }
+    }
 
-  if p.peekChar(5) == "   - " || p.peekChar(5) == "   + " || p.peekChar(5) == "   * " {
-    p.advance(5)
-    txt := p.readToEol()
-    p.advance(len(txt))
-    return token{ Type: TOK_BULLET, Text: txt, Level: 2 }
-  }
+    if p.peekChar(5) == "   - " || p.peekChar(5) == "   + " || p.peekChar(5) == "   * " {
+      p.advance(5)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return token{ Type: TOK_BULLET, Text: txt, Level: 2 }
+    }
 
-  if p.peekChar(7) == "     - " || p.peekChar(7) == "     + " || p.peekChar(7) == "     * " {
-    p.advance(7)
-    txt := p.readToEol()
-    p.advance(len(txt))
-    return token{ Type: TOK_BULLET, Text: txt, Level: 3 }
-  }
+    if p.peekChar(7) == "     - " || p.peekChar(7) == "     + " || p.peekChar(7) == "     * " {
+      p.advance(7)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return token{ Type: TOK_BULLET, Text: txt, Level: 3 }
+    }
 
-  if p.peekChar(4) == " 1. " {
-    p.advance(4)
-    txt := p.readToEol()
-    p.advance(len(txt))
-    return token{ Type: TOK_ORDEREDITEM, Level: 1, Text: txt}
-  }
+    if p.peekChar(4) == " 1. " {
+      p.advance(4)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return token{ Type: TOK_ORDEREDITEM, Level: 1, Text: txt}
+    }
 
-  if p.peekChar(6) == "   1. " {
-    p.advance(6)
-    txt := p.readToEol()
-    p.advance(len(txt))
-    return token{ Type: TOK_ORDEREDITEM, Level: 2, Text: txt}
-  }
+    if p.peekChar(6) == "   1. " {
+      p.advance(6)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return token{ Type: TOK_ORDEREDITEM, Level: 2, Text: txt}
+    }
 
-  if p.peekChar(8) == "     1. " {
-    p.advance(8)
-    txt := p.readToEol()
-    p.advance(len(txt))
-    return token{ Type: TOK_ORDEREDITEM, Level: 3, Text: txt}
+    if p.peekChar(8) == "     1. " {
+      p.advance(8)
+      txt := p.readToEol()
+      p.advance(len(txt))
+      return token{ Type: TOK_ORDEREDITEM, Level: 3, Text: txt}
+    }
   }
 
   if p.peekChar(1) == "[" {
@@ -223,7 +240,7 @@ func(p *parser) NextToken() token {
 
   txt := p.readToEol()
 
-  p.advance(len(txt)) //Eat line end
+  p.advance(len(txt))
 
   return token { Type: TOK_TEXT, Text: txt}
 }
