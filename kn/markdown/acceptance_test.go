@@ -143,4 +143,39 @@ func TestMarkdown(t *testing.T) {
       }
     }
   })
+
+/*  t.Run("Can render code blocks and inline code items", func(t *testing.T) {
+    markdown := "Hey `codeage`\n" +
+    "```\n" +
+    "more code\n" +
+    "```\n" +
+    "\n" +
+    "````\n" +
+    "```\n" +
+    "````\n" +
+    "\n" +
+    "```go\n" +
+    "code\n" +
+    "```"
+
+    expected := "Hey [green]codeage[-:-:-]\n" +
+    "[green:gray]" +
+    "more code\n" +
+    "[-:-:-]" +
+    "\n" +
+    "[green:gray]" +
+    "```\n" +
+    "[-:-:-]" +
+    "\n" +
+    "[green:gray]" + 
+    "code\n" + 
+    "[-:-:-]"
+
+    got, _ := MarkdownToTui(markdown)
+
+    if got != expected {
+      t.Errorf("Expected '%+v', got '%+v'", expected, got)
+    }
+
+  })*/
 }

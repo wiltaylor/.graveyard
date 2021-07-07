@@ -3,7 +3,6 @@ package markdown
 import (
 	"reflect"
 	"testing"
-
 )
 
 func TestMarkdownParser(t *testing.T){
@@ -346,14 +345,22 @@ func TestMarkdownParser(t *testing.T){
     cases := []struct{
       markdown string
       toks []tokenType
+      format []textFormat
     }{
       {
         markdown: "Hey [Link](foo) bar",
         toks: []tokenType{TOK_TEXT, TOK_LINK, TOK_TEXT, TOK_EOF},
+        format: []textFormat{TXT_PLAIN, TXT_PLAIN, TXT_PLAIN},
       },
       {
         markdown: "Hey [Link](foo)# this is a test",
         toks: []tokenType{TOK_TEXT, TOK_LINK, TOK_TEXT, TOK_EOF},
+        format: []textFormat{TXT_PLAIN, TXT_PLAIN, TXT_PLAIN},
+      },
+      {
+        markdown: "Hey `inline code` there",
+        toks: []tokenType{TOK_TEXT, TOK_TEXT, TOK_TEXT, TOK_EOF},
+        format: []textFormat{TXT_PLAIN, TXT_CODE, TXT_PLAIN},
       },
     }
 
@@ -367,8 +374,72 @@ func TestMarkdownParser(t *testing.T){
         if got.Type != c.toks[i] {
           t.Errorf("Expected token type %+v got %+v index %d", c.toks[i], got.Type, i)
         }
+
+        if c.toks[i] == TOK_TEXT {
+          if got.Format != c.format[i]{
+            t.Errorf("Expected text format %+v got %+v index %d", c.format[i], got.Format, i)
+          }
+
+        }
       }
     }
+ })
+
+ t.Run("Can create code blocks", func(t *testing.T) {
+   cases := []struct{
+    markdown string
+    text string
+    language string
+   }{
+      {
+        markdown: "```\n" +
+          "code\n" +
+          "```",
+        text: "code",
+        language: "",
+      },
+      {
+        markdown: "````\n" +
+          "```\n" +
+          "````",
+        text: "```",
+        language: "",
+      },
+      {
+        markdown: "```go\n" + 
+          "code\n" +
+          "```",
+        text : "code",
+        language : "go",
+      },
+      {
+        markdown: "````go\n" + 
+          "```\n" +
+          "````",
+        text : "```",
+        language : "go",
+      },
+   }
+
+
+  for _, c := range cases {
+    parser := newParser(c.markdown)
+
+    got := parser.NextToken()
+
+    if got.Type != TOK_CODEBLOCK {
+      t.Errorf("Expected type %+v, got %+v", TOK_CODEBLOCK, got.Type)
+    }
+
+    if got.Text != c.text {
+      t.Errorf("Expected text %+v, got %+v", c.text, got.Text)
+    }
+
+    if got.Language != c.language{
+      t.Errorf("Expected language '%+v', got '%+v'", c.language, got.Language)
+    }
+  }
+
  })
 }
 

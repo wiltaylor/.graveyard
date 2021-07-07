@@ -13,6 +13,7 @@ const (
   TOK_BULLET
   TOK_ORDEREDITEM
   TOK_LINK
+  TOK_CODEBLOCK
 )
 
 const (
@@ -23,8 +24,14 @@ const (
   LNK_EMPTY
 )
 
+const (
+  TXT_PLAIN textFormat = iota
+  TXT_CODE
+)
+
 type tokenType int
 type linkType int
+type textFormat int
 
 type link struct {
   Type linkType
@@ -52,6 +59,8 @@ type token struct {
   Type tokenType
   Level int
   Text string
+  Format textFormat
+  Language string
 }
 
 func newParser(markdown string) parser {
@@ -74,6 +83,20 @@ func (p *parser) advance(length int) {
   p.position += length
 }
 
+func (p *parser) readToEolNoChecking() string {
+  idx := strings.Index(p.text[p.position:], "\n")
+
+  txt := ""
+
+  if idx == -1 {
+    txt = p.text[p.position:]
+  }else{
+    txt = p.text[p.position:p.position + idx]
+  }
+
+  return txt
+}
+
 func (p *parser) readToEol() string {
 
   idx := strings.Index(p.text[p.position:], "\n")
@@ -90,6 +113,14 @@ func (p *parser) readToEol() string {
 
   if link > 0 {
     txt = txt[:link]
+  }
+
+  if len(txt) > 1 {
+    code := strings.Index(txt[1:], "`")
+
+    if code > -1 {
+      txt = txt[:code + 1]
+    }
   }
 
   return txt
@@ -195,6 +226,48 @@ func(p *parser) NextToken() token {
       p.advance(len(txt))
       return token{ Type: TOK_ORDEREDITEM, Level: 3, Text: txt}
     }
+
+    if p.peekChar(4) == "````" {
+      p.advance(4)
+      code := ""
+      lang := p.readToEol()
+      p.advance(len(lang) + 1)
+
+      for {
+        line := p.readToEolNoChecking()
+        p.advance(len(line) + 1) // eating line breaks
+
+        if line == "````" || p.eof {
+          break
+        }
+        code += line + "\n"
+      }
+
+      code = strings.TrimSuffix(code, "\n")
+
+      return token{Type: TOK_CODEBLOCK, Language: lang, Text: code}
+    }
+
+    if p.peekChar(3) == "```" {
+      p.advance(3)
+      code := ""
+      lang := p.readToEol()
+      p.advance(len(lang) + 1)
+
+      for {
+        line := p.readToEolNoChecking()
+        p.advance(len(line) + 1) // eating line breaks
+
+        if line == "```" || p.eof {
+          break
+        }
+        code += line + "\n"
+      }
+
+      code = strings.TrimSuffix(code, "\n")
+
+      return token{Type: TOK_CODEBLOCK, Language: lang, Text: code}
+    }
   }
 
   if p.peekChar(1) == "[" {
@@ -233,8 +306,22 @@ func(p *parser) NextToken() token {
       id := p.nextLinkId
       p.nextLinkId++
       p.links = append(p.links, link{Title: title, Target: url, Type: urltype, Index: id})
-      return token{ Type: TOK_LINK, Text: strconv.Itoa(id)}
-      
+      return token{ Type: TOK_LINK, Text: strconv.Itoa(id)} 
+    }
+  }
+
+  if p.peekChar(1) == "`" {
+    txt := p.readToEol()
+    full := p.peekChar(len(txt) + 1)
+    full_len := len(full) - 1
+    if full_len < 0 {
+      full_len = 0
+    }
+
+    if full[full_len:] == "`" {
+      txt = txt[1:]
+      p.advance(len(full) + 1)
+      return token{ Type: TOK_TEXT, Format: TXT_CODE, Text: txt}
     }
   }
 
