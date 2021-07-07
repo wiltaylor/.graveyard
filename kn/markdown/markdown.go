@@ -13,7 +13,6 @@ func MarkdownToTui(markdown string) (string, []link) {
     }
 
     result += parser.ParseToken()
-
   }
 
   return result, tokenizer.Links()
