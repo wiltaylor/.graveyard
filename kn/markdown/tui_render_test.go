@@ -313,6 +313,18 @@ func TestTuiRender(t *testing.T) {
         },
         expected: `["0"][blue::u]EmptyLink[-:-:-][""]`,
       },
+      {
+        tok: token{
+          Type: TOK_LINK,
+          Text: "0",
+        },
+        link: link{
+          Type: LNK_IMAGE,
+          Target: "1234",
+          Title: "ImageLink",
+        },
+        expected: `["0"][blue::u]ImageLink[-:-:-][""]`,
+      },
     }
 
     for _, c := range cases {

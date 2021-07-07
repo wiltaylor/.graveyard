@@ -22,6 +22,7 @@ const (
   LNK_ZKA
   LNK_REPORT
   LNK_EMPTY
+  LNK_IMAGE
 )
 
 const (
@@ -224,7 +225,14 @@ func(p *parser) parseCodeBlock() (bool, token) {
 }
 
 func(p *parser) parseLink() (bool, token) {
-  if p.peekChar(1) == "[" {
+  if p.peekChar(1) == "[" || p.peekChar(2) == "![" {
+    isImage := false
+
+    if p.peekChar(2) == "![" {
+      isImage = true
+      p.advance(1)
+    }
+
     txt := p.readToNextToken()
 
     nextBracket := strings.Index(txt, "]")
@@ -254,6 +262,10 @@ func(p *parser) parseLink() (bool, token) {
       if strings.Trim(url, " ") == "" {
         urltype = LNK_EMPTY
         url = ""
+      }
+
+      if isImage {
+        urltype = LNK_IMAGE
       }
 
       p.advance(closeParen + 1)

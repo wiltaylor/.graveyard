@@ -148,6 +148,8 @@ func (p *tokenParser) ParseToken() string {
         result += ""
       case LNK_EMPTY:
         result += ""
+      case LNK_IMAGE:
+        result += ""
       }
       result += "[blue::u]"
       result += tlink.Title

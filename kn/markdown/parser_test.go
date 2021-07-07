@@ -304,6 +304,14 @@ func TestMarkdownParser(t *testing.T){
         linkText: []string{ "EmptyLink"},
       },
       {
+        markdown: "![Image](test.jpg)",
+        types: []tokenType{TOK_LINK},
+        text: []string {"0"},
+        linkTypes: []linkType { LNK_IMAGE},
+        linkTargets: []string{"test.jpg"},
+        linkText: []string{"Image"},
+      },
+      {
         markdown : "[WebLink](http://www.google.com)[AnotherLink](zk:1234)",
         types : []tokenType{ TOK_LINK, TOK_LINK },
         text : []string { "0", "1"},
@@ -354,6 +362,11 @@ func TestMarkdownParser(t *testing.T){
       },
       {
         markdown: "Hey [Link](foo)# this is a test",
+        toks: []tokenType{TOK_TEXT, TOK_LINK, TOK_TEXT, TOK_EOF},
+        format: []textFormat{TXT_PLAIN, TXT_PLAIN, TXT_PLAIN},
+      },
+      {
+        markdown: "Hey ![ThisIsImage](http://website.com/image) there",
         toks: []tokenType{TOK_TEXT, TOK_LINK, TOK_TEXT, TOK_EOF},
         format: []textFormat{TXT_PLAIN, TXT_PLAIN, TXT_PLAIN},
       },
