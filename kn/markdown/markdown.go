@@ -1,6 +1,6 @@
 package markdown
 
-func MarkdownToTui(markdown string) string {
+func MarkdownToTui(markdown string) (string, []link) {
   result := ""
 
   tokenizer := newParser(markdown)
@@ -16,5 +16,5 @@ func MarkdownToTui(markdown string) string {
 
   }
 
-  return result
+  return result, tokenizer.Links()
 }

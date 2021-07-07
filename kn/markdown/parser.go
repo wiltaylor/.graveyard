@@ -1,6 +1,7 @@
 package markdown
 
 import (
+	"strconv"
 	"strings"
 )
 
@@ -11,18 +12,38 @@ const (
   TOK_NEWLINE
   TOK_BULLET
   TOK_ORDEREDITEM
+  TOK_LINK
+)
+
+const (
+  LNK_URL linkType = iota
+  LNK_ZK
+  LNK_ZKA
+  LNK_REPORT
+  LNK_EMPTY
 )
 
 type tokenType int
+type linkType int
+
+type link struct {
+  Type linkType
+  Target string
+  Index int
+  Title string
+}
 
 type parser struct {
   text string
   position int
   eof bool
+  links []link
+  nextLinkId int
 }
 
 type tokenizer interface {
   NextToken() token
+  Links() []link
 }
 
 
@@ -59,6 +80,10 @@ func (p *parser) readToEol() string {
   }
 
   return p.text[p.position:p.position + idx]
+}
+
+func(p *parser) Links() []link {
+  return p.links
 }
 
 func(p *parser) NextToken() token {
@@ -153,6 +178,47 @@ func(p *parser) NextToken() token {
     txt := p.readToEol()
     p.advance(len(txt))
     return token{ Type: TOK_ORDEREDITEM, Level: 3, Text: txt}
+  }
+
+  if p.peekChar(1) == "[" {
+    txt := p.readToEol()
+
+    nextBracket := strings.Index(txt, "]")
+    openParen := strings.Index(txt, "(")
+    closeParen := strings.Index(txt, ")")
+
+    if nextBracket != -1 && openParen != -1 && closeParen != -1 {
+      title := txt[1:nextBracket]
+      url := txt[openParen + 1:closeParen]
+      urltype := LNK_URL
+
+      if len(url) > 3 && url[:3] == "zk:" {
+        url = url[3:]
+        urltype = LNK_ZK
+      }
+
+      if len(url) > 4 && url[:4] == "zka:" {
+        url = url[4:]
+        urltype = LNK_ZKA
+      }
+
+      if len(url) > 3 && url[:3] == "rp:" {
+        url = url[3:]
+        urltype = LNK_REPORT
+      }
+
+      if strings.Trim(url, " ") == "" {
+        urltype = LNK_EMPTY
+        url = ""
+      }
+
+      p.advance(closeParen + 1)
+      id := p.nextLinkId
+      p.nextLinkId++
+      p.links = append(p.links, link{Title: title, Target: url, Type: urltype, Index: id})
+      return token{ Type: TOK_LINK, Text: strconv.Itoa(id)}
+      
+    }
   }
 
   txt := p.readToEol()

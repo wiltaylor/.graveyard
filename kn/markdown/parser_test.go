@@ -245,5 +245,101 @@ func TestMarkdownParser(t *testing.T){
       }
     }
   })
+
+  t.Run("Can parse links", func(t *testing.T) {
+    
+    cases := []struct{
+      markdown string
+      types []tokenType
+      text []string
+      linkTypes []linkType
+      linkTargets []string
+      linkText []string
+    }{
+      {
+        markdown : "[WebLink](http://www.google.com)",
+        types : []tokenType{ TOK_LINK },
+        text : []string { "0"},
+        linkTypes: []linkType { LNK_URL},
+        linkTargets : []string{ "http://www.google.com"},
+        linkText: []string{ "WebLink"},
+      },
+      {
+        markdown : "[ZKLink](zk:1234)",
+        types : []tokenType{ TOK_LINK },
+        text : []string { "0"},
+        linkTypes: []linkType { LNK_ZK},
+        linkTargets : []string{ "1234"},
+        linkText: []string{ "ZKLink"},
+      },
+      {
+        markdown : "[ZKALink](zka:1234)",
+        types : []tokenType{ TOK_LINK },
+        text : []string { "0"},
+        linkTypes: []linkType { LNK_ZKA},
+        linkTargets : []string{ "1234"},
+        linkText: []string{ "ZKALink"},
+      },
+      {
+        markdown : "[ReportLink](rp:1234)",
+        types : []tokenType{ TOK_LINK },
+        text : []string { "0"},
+        linkTypes: []linkType { LNK_REPORT},
+        linkTargets : []string{ "1234"},
+        linkText: []string{ "ReportLink"},
+      },
+      {
+        markdown : "[EmptyLink]()",
+        types : []tokenType{ TOK_LINK },
+        text : []string { "0"},
+        linkTypes: []linkType { LNK_EMPTY},
+        linkTargets : []string{ ""},
+        linkText: []string{ "EmptyLink"},
+      },
+      {
+        markdown : "[EmptyLink]( )",
+        types : []tokenType{ TOK_LINK },
+        text : []string { "0"},
+        linkTypes: []linkType { LNK_EMPTY},
+        linkTargets : []string{ ""},
+        linkText: []string{ "EmptyLink"},
+      },
+      {
+        markdown : "[WebLink](http://www.google.com)[AnotherLink](zk:1234)",
+        types : []tokenType{ TOK_LINK, TOK_LINK },
+        text : []string { "0", "1"},
+        linkTypes: []linkType { LNK_URL, LNK_ZK},
+        linkTargets : []string{ "http://www.google.com", "1234"},
+        linkText: []string{ "WebLink", "AnotherLink"},
+      },
+    }
+
+    for _, c := range cases {
+      parser := newParser(c.markdown)
+
+      for i := 0; i < len(c.types); i++ {
+        got := parser.NextToken()
+        lnks := parser.Links()
+
+        if c.types[i] == TOK_LINK {
+          if got.Text != c.text[i] {
+            t.Errorf("Expected link name to be in text field of token %+v, got %+v index %d", c.text[i], got.Text, i)
+          }
+
+          if lnks[i].Type != c.linkTypes[i] {
+            t.Errorf("Expected link type %+v, got %+v, index %d", c.linkTypes[i], lnks[i].Type, i) 
+          }
+
+          if lnks[i].Title != c.linkText[i] {
+            t.Errorf("Expected link title %+v, got %+v index %d", c.linkText[i], lnks[i].Title, i)
+          }
+        }
+        
+        if got.Type != c.types[i] {
+          t.Errorf("Expected Type %+v got %+v", c.types[i], got.Type)
+        }
+      }
+    }
+  })
 }
 

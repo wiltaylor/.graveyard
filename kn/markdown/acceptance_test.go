@@ -1,6 +1,9 @@
 package markdown
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestMarkdown(t *testing.T) {
  t.Run("Markdown outputs headings", func(t *testing.T) {
@@ -20,7 +23,7 @@ func TestMarkdown(t *testing.T) {
 [blue::b] Heading #6[-:-:-]`
 
 
-  got := MarkdownToTui(markdown)
+  got, _ := MarkdownToTui(markdown)
 
   if got != expected {
     t.Errorf("Expected '%s', got: '%s'", expected, got)
@@ -48,7 +51,7 @@ func TestMarkdown(t *testing.T) {
      [green][-] another level 3
      [green][-] yet another level 3`
 
-    got := MarkdownToTui(markdown)
+    got, _ := MarkdownToTui(markdown)
 
     if got != expected {
       t.Errorf("Expected '%s', got '%s'", expected, got)
@@ -76,11 +79,68 @@ func TestMarkdown(t *testing.T) {
  [green]04.01.01)[-] Bar
  [green]04.01.02)[-] Foo`
 
-    got := MarkdownToTui(markdown)
+    got, _ := MarkdownToTui(markdown)
 
     if got != expected {
       t.Errorf("Expected '%s', got '%s'", expected, got)
     }
 
+  })
+
+  t.Run("Can render links in markdown", func(t *testing.T) {
+    markdown := `[HTTP Link](http://www.google.com) [ZK Link](zk:123) [ZK Attach](zka:123) [Report](rp:foo) [Empty]() [Empty With Space]( )`
+    expected := `["0"][blue::u]HTTP Link[-:-:-][""] ["1"][blue::u]ZK Link[-:-:-][""] ["2"][blue::u]ZK Attach[-:-:-][""] ["3"][blue::u]Report[-:-:-][""] ["4"][blue::u]Empty[-:-:-][""] ["5"][blue::u]Empty With Space[-:-:-][""]`
+    expectedLinks := []link{
+      {
+        Type: LNK_URL,
+        Target: "http://www.google.com",
+        Index: 0,
+        Title: "HTTP Link",
+      },
+      {
+        Type: LNK_ZK,
+        Target: "123",
+        Index: 1,
+        Title: "ZK Link",
+      },
+      {
+        Type: LNK_ZKA,
+        Target: "123",
+        Index: 2,
+        Title: "ZK Attach",
+      },
+      {
+        Type: LNK_REPORT,
+        Target: "foo",
+        Index: 3,
+        Title: "Report",
+      },
+      {
+        Type: LNK_EMPTY,
+        Target: "",
+        Index: 4,
+        Title: "Empty",
+      },
+
+      {
+        Type: LNK_EMPTY,
+        Target: "",
+        Index: 5,
+        Title: "Empty With Space",
+      },
+    }
+
+    gotMark, gotLinks := MarkdownToTui(markdown)
+
+    if gotMark != expected{
+      t.Errorf("Expected '%s', got '%s'", expected, gotMark)
+    }
+
+    for i, l := range expectedLinks {
+
+      if !reflect.DeepEqual(l, gotLinks[i]) {
+        t.Errorf("Expected %+v, got %+v", l, gotLinks[i])
+      }
+    }
   })
 }

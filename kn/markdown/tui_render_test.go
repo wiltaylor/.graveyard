@@ -4,6 +4,7 @@ import "testing"
 
 type fakeTokenizer struct {
   toks []token
+  links []link
   index int
 }
 
@@ -14,6 +15,10 @@ func(t *fakeTokenizer) NextToken() token {
 
   t.index++
   return t.toks[t.index - 1]
+}
+
+func(t *fakeTokenizer) Links() []link {
+  return t.links
 }
 
 func TestTuiRender(t *testing.T) {
@@ -223,6 +228,87 @@ func TestTuiRender(t *testing.T) {
         }
       }
 
+    }
+
+  })
+
+  t.Run("Can render links", func(t *testing.T) {
+    cases := []struct{
+      tok token
+      link link
+      expected string
+    }{
+      {
+        tok: token{
+          Type: TOK_LINK,
+          Text: "0",
+        },
+        link: link{
+          Type: LNK_URL,
+          Target: "http://www.google.com",
+          Title: "WebLink",
+        },
+        expected: `["0"][blue::u]WebLink[-:-:-][""]`,
+      },
+      {
+        tok: token{
+          Type: TOK_LINK,
+          Text: "0",
+        },
+        link: link{
+          Type: LNK_ZK,
+          Target: "1234",
+          Title: "ZKLink",
+        },
+        expected: `["0"][blue::u]ZKLink[-:-:-][""]`,
+      },
+      {
+        tok: token{
+          Type: TOK_LINK,
+          Text: "0",
+        },
+        link: link{
+          Type: LNK_ZKA,
+          Target: "1234",
+          Title: "ZKALink",
+        },
+        expected: `["0"][blue::u]ZKALink[-:-:-][""]`,
+      },
+      {
+        tok: token{
+          Type: TOK_LINK,
+          Text: "0",
+        },
+        link: link{
+          Type: LNK_REPORT,
+          Target: "1234",
+          Title: "ReportLink",
+        },
+        expected: `["0"][blue::u]ReportLink[-:-:-][""]`,
+      },
+      {
+        tok: token{
+          Type: TOK_LINK,
+          Text: "0",
+        },
+        link: link{
+          Type: LNK_EMPTY,
+          Target: "",
+          Title: "EmptyLink",
+        },
+        expected: `["0"][blue::u]EmptyLink[-:-:-][""]`,
+      },
+    }
+
+    for _, c := range cases {
+      tok := fakeTokenizer { toks: []token{c.tok}, links: []link{c.link} }
+      parser := NewTokenParser(&tok)
+
+      got := parser.ParseToken()
+
+      if got != c.expected {
+        t.Errorf("Expected '%+v' got '%+v'", c.expected, got) 
+      }
     }
 
   })

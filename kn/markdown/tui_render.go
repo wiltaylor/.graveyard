@@ -1,8 +1,9 @@
 package markdown
 
 import (
-  "strings" 
-  "fmt"
+	"fmt"
+	"strconv"
+	"strings"
 )
 
 type tokenParser struct {
@@ -105,6 +106,40 @@ func (p *tokenParser) ParseToken() string {
     result += tok.Text
 
     return result
+  }
+
+  if tok.Type == TOK_LINK {
+    links := p.tok.Links()
+    var tlink *link
+
+    for _, l := range links {
+      if strconv.Itoa(l.Index) == tok.Text {
+        tlink = &l
+        break
+      }
+    }
+
+    if tlink != nil { 
+      result := fmt.Sprintf(`["%d"]`, tlink.Index)
+
+      switch tlink.Type {
+      case LNK_URL:
+        result += ""
+      case LNK_ZK:
+        result += ""
+      case LNK_ZKA:
+        result += ""
+      case LNK_REPORT:
+        result += ""
+      case LNK_EMPTY:
+        result += ""
+      }
+      result += "[blue::u]"
+      result += tlink.Title
+      result += `[-:-:-][""]`
+      return result
+    }
+
   }
 
   return ""
