@@ -441,5 +441,14 @@ func TestMarkdownParser(t *testing.T){
   }
 
  })
+
+ t.Run("Empty string returns EOF to prevent infinte loop", func(t *testing.T) {
+  parser := newParser("")
+  got := parser.NextToken()
+
+  if got.Type != TOK_EOF {
+    t.Errorf("Expected TOK_EOF but got %+v", got)
+  }
+ })
 }
 

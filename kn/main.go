@@ -26,6 +26,13 @@ func main() {
 
 	RefreshNotes()
 
+  fmt.Println("Starting...")
+
 	InitUI()
+
+  fmt.Println("Running...")
 	RunUI()
+
+
+  fmt.Println("Ending...")
 }

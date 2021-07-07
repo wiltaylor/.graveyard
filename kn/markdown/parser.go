@@ -157,7 +157,11 @@ func(p *parser) parseBulletPoints() (bool, token) {
       if p.peekChar(i * 2 + 3) == strings.Repeat( " ", i * 2) + " " + b + " " {
         p.advance(i * 2 + 3)
         txt := p.readToNextToken()
+        if txt[0] == '[' {
+          txt = ""
+        }
         p.advance(len(txt))
+  
         return true, token{ Level: i + 1, Text: txt, Type: TOK_BULLET}
       }
     }

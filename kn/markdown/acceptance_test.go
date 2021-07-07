@@ -178,4 +178,20 @@ func TestMarkdown(t *testing.T) {
     }
 
   })
+
+  t.Run("Links and bullet points used together", func(t *testing.T) {
+    markdown := `# Bunch of links
+ - [Test](http://www.google.com)
+ - [Test2](http://www.google.com)`
+
+    expected := `[blue::b] Bunch of links[-:-:-]
+ [green]ﱣ[-] ["0"][blue::u]Test[-:-:-][""]
+ [green]ﱣ[-] ["1"][blue::u]Test2[-:-:-][""]`
+
+    got, _ := MarkdownToTui(markdown)
+
+    if got != expected {
+      t.Errorf("Expected '%+v', got '%+v'", expected, got)
+    }
+  })
 }

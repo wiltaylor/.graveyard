@@ -5,14 +5,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strings"
 
 	"fmt"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"golang.design/x/clipboard"
+
+  "github.com/wiltaylor/kn/markdown"
 )
 
 const (
@@ -502,7 +502,8 @@ func RefreshFileView() {
 		CurrentNote = note
 	}
 
-	FormatCurrentFile(&CurrentNote)
+  txt, _ := markdown.MarkdownToTui(CurrentNote.RawText)
+  CurrentNote.FormatedText = txt
 
 	textbox.SetText(CurrentNote.FormatedText)
 	textbox.SetTitle(CurrentNote.Header.Title)
@@ -530,66 +531,4 @@ func EditFile(filename string) {
 		}
 	})
 
-}
-
-func FormatCurrentFile(file *NoteData) {
-	text := file.RawText
-
-   file.FormatedText = ""
-
-	h6 := regexp.MustCompile(`###### (.+)\n`)
-	h5 := regexp.MustCompile(`##### (.+)\n`)
-	h4 := regexp.MustCompile(`#### (.+)\n`)
-	h3 := regexp.MustCompile(`### (.+)\n`)
-	h2 := regexp.MustCompile(`## (.+)\n`)
-	h1 := regexp.MustCompile(`# (.+)\n`)
-	b1 := regexp.MustCompile(`\n [-|*|+] `)
-	b2 := regexp.MustCompile(`\n   [-|*|+] `)
-	b3 := regexp.MustCompile(`\n     [-|*|+] `)
-	l1 := regexp.MustCompile(`\n ([0-9]{1,5})\. `)
-	l2 := regexp.MustCompile(`\n   ([0-9a-z]{1,5})\. `)
-	l3 := regexp.MustCompile(`\n     ([0-9a-z]{1,5})\. `)
-	codefence := regexp.MustCompile("(?s)\n```\n(.+)\n```\n")
-
-	for _, lnk := range file.Links {
-		ico := LinkIconUrl
-
-		if lnk.Type == LinkNote {
-			ico = LinkIconNote
-		}
-
-		if lnk.Type == LinkAttachment {
-			ico = LinkIconAttachment
-		}
-
-		if strings.Trim(lnk.Path, " ") == "" {
-			ico = LinkIconEmpty
-		}
-
-		if lnk.Type == LinkReport {
-			ico = LinkIconReport
-		}
-
-		lnkText := fmt.Sprintf("[%s](%s)", lnk.Title, lnk.Path)
-		newText := fmt.Sprintf("[\"%v\"]%s[blue::u]%s[-:-:-][\"\"]", lnk.Id, ico, lnk.Title)
-		text = strings.Replace(text, lnkText, newText, 1)
-	}
-
-	text = h6.ReplaceAllString(text, "     [green::b] $1[-:-:-]\n")
-	text = h5.ReplaceAllString(text, "    [green::b] $1[-:-:-]\n")
-	text = h4.ReplaceAllString(text, "   [green::b] $1[-:-:-]\n")
-	text = h3.ReplaceAllString(text, "  [green::b] $1[-:-:-]\n")
-	text = h2.ReplaceAllString(text, " [blue::b] $1[-:-:-]\n")
-	text = h1.ReplaceAllString(text, "[red::b] $1[-:-:-]\n")
-
-	text = b1.ReplaceAllString(text, "\n [green]ﱣ[-] $1")
-	text = b2.ReplaceAllString(text, "\n   [green]ﱤ[-] $1")
-	text = b3.ReplaceAllString(text, "\n     [green][-] $1")
-	text = l1.ReplaceAllString(text, "\n [green]$1.[-]")
-	text = l2.ReplaceAllString(text, "\n   [green]$1.[-]")
-	text = l3.ReplaceAllString(text, "\n     [green]$1.[-]")
-
-	text = codefence.ReplaceAllString(text, "\n[green:gray]$1[-:-:-]\n")
-
-	file.FormatedText = text
 }

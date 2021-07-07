@@ -67,6 +67,12 @@ func (p *tokenParser) ParseToken() string {
     if tok.Format != TXT_PLAIN {
       result += "[-:-:-]"
     }
+
+    //HACK: Bug where infinite empty text nodes are created.
+    if tok.Text == "" {
+      p.eof = true
+    }
+
     return result
   }
 
