@@ -97,7 +97,7 @@ func (p *parser) readToEolNoChecking() string {
   return txt
 }
 
-func (p *parser) readToEol() string {
+func (p *parser) readToNextToken() string {
 
   idx := strings.Index(p.text[p.position:], "\n")
 
@@ -138,7 +138,7 @@ func(p *parser) parseHeadings() (bool, token) {
   for i := 6; i > 0; i-- {
     if p.peekChar(i + 1) == strings.Repeat("#", i) + " " {
       p.advance(i + 1)
-      txt := p.readToEol()
+      txt := p.readToNextToken()
       p.advance(len(txt))
       return true, token{ Level: i, Text: txt}
     }
@@ -156,7 +156,7 @@ func(p *parser) parseBulletPoints() (bool, token) {
     for _, b := range []string{"-", "+", "*"} {
       if p.peekChar(i * 2 + 3) == strings.Repeat( " ", i * 2) + " " + b + " " {
         p.advance(i * 2 + 3)
-        txt := p.readToEol()
+        txt := p.readToNextToken()
         p.advance(len(txt))
         return true, token{ Level: i + 1, Text: txt, Type: TOK_BULLET}
       }
@@ -175,7 +175,7 @@ func(p *parser) parseOrderedList() (bool, token) {
   for i := 0; i < 3; i++ {
     if p.peekChar(i * 2 + 4) == strings.Repeat(" ", i * 2) + " 1. " {
       p.advance(i * 2 + 4)
-      txt := p.readToEol()
+      txt := p.readToNextToken()
       p.advance(len(txt))
       return true, token{ Level: i + 1, Text: txt, Type: TOK_ORDEREDITEM}
     }
@@ -183,70 +183,30 @@ func(p *parser) parseOrderedList() (bool, token) {
   return false, token{}
 }
 
-func(p *parser) NextToken() token {
-  if p.position >= len(p.text) {
-    return token{ Type: TOK_EOF}
+func(p *parser) parseCodeBlock() (bool, token) {
+  if !p.startOfLine {
+    return false, token{}
   }
-
-  if p.peekChar(1) == "\n" {
-    p.advance(1)
-    p.startOfLine = true
-    return token{Type: TOK_NEWLINE}
-  }
-
-  handled, tok := p.parseHeadings()
-
-  if handled{
-    return tok
-  }
-
-  handled, tok = p.parseBulletPoints()
-
-  if handled{
-    return tok
-  }
-
-  handled, tok = p.parseOrderedList()
-
-  if handled{
-    return tok
-  }
-
-  if p.startOfLine {
-    p.startOfLine = false
-
-    if p.peekChar(4) == "````" {
-      p.advance(4)
-      code := ""
-      lang := p.readToEol()
-      p.advance(len(lang) + 1)
-
-      for {
-        line := p.readToEolNoChecking()
-        p.advance(len(line) + 1) // eating line breaks
-
-        if line == "````" || p.eof {
-          break
-        }
-        code += line + "\n"
-      }
-
-      code = strings.TrimSuffix(code, "\n")
-
-      return token{Type: TOK_CODEBLOCK, Language: lang, Text: code}
-    }
 
     if p.peekChar(3) == "```" {
       p.advance(3)
+
+      fenceLeng := 3
+
+      if p.peekChar(1) == "`" {
+        fenceLeng = 4
+        p.advance(1)
+      }
+
       code := ""
-      lang := p.readToEol()
+      lang := p.readToNextToken()
       p.advance(len(lang) + 1)
 
       for {
         line := p.readToEolNoChecking()
         p.advance(len(line) + 1) // eating line breaks
 
-        if line == "```" || p.eof {
+        if line == strings.Repeat("`", fenceLeng) || p.eof {
           break
         }
         code += line + "\n"
@@ -254,12 +214,14 @@ func(p *parser) NextToken() token {
 
       code = strings.TrimSuffix(code, "\n")
 
-      return token{Type: TOK_CODEBLOCK, Language: lang, Text: code}
+      return true, token{Type: TOK_CODEBLOCK, Language: lang, Text: code}
     }
-  }
+  return false, token{}
+}
 
+func(p *parser) parseLink() (bool, token) {
   if p.peekChar(1) == "[" {
-    txt := p.readToEol()
+    txt := p.readToNextToken()
 
     nextBracket := strings.Index(txt, "]")
     openParen := strings.Index(txt, "(")
@@ -294,12 +256,15 @@ func(p *parser) NextToken() token {
       id := p.nextLinkId
       p.nextLinkId++
       p.links = append(p.links, link{Title: title, Target: url, Type: urltype, Index: id})
-      return token{ Type: TOK_LINK, Text: strconv.Itoa(id)} 
+      return true, token{ Type: TOK_LINK, Text: strconv.Itoa(id)} 
     }
   }
+  return false, token{}
+}
 
+func(p *parser) parseFormatedString() (bool, token) {
   if p.peekChar(1) == "`" {
-    txt := p.readToEol()
+    txt := p.readToNextToken()
     full := p.peekChar(len(txt) + 1)
     full_len := len(full) - 1
     if full_len < 0 {
@@ -309,13 +274,58 @@ func(p *parser) NextToken() token {
     if full[full_len:] == "`" {
       txt = txt[1:]
       p.advance(len(full) + 1)
-      return token{ Type: TOK_TEXT, Format: TXT_CODE, Text: txt}
+      return true, token{ Type: TOK_TEXT, Format: TXT_CODE, Text: txt}
     }
   }
+  return false, token{}
+}
 
-  txt := p.readToEol()
+func (p *parser) parseNewLine() (bool, token) {
+  if p.peekChar(1) == "\n" {
+    p.advance(1)
+    p.startOfLine = true
+    return true, token{Type: TOK_NEWLINE}
+  }
+  return false, token{}
+}
 
+func(p *parser) parseEOF() (bool, token) {
+  if p.position >= len(p.text) {
+    return true, token{ Type: TOK_EOF}
+  }
+  return false, token{}
+}
+
+func(p *parser) parseText() (bool, token) {
+  txt := p.readToNextToken()
   p.advance(len(txt))
+  return true, token { Type: TOK_TEXT, Text: txt}
+}
 
-  return token { Type: TOK_TEXT, Text: txt}
+func(p *parser) NextToken() token {
+
+  return func(f []func()(bool, token))(token) {
+    for _, fn := range f {
+      handled, tok := fn()
+
+      if handled {
+        if tok.Type != TOK_NEWLINE {
+          p.startOfLine = false
+        }
+        return tok
+      }
+    }
+
+    return token{}
+  }([]func()(bool, token){
+    p.parseEOF, //Keep this item at the top to guard end of files.
+    p.parseNewLine,
+    p.parseHeadings,
+    p.parseBulletPoints,
+    p.parseOrderedList,
+    p.parseCodeBlock,
+    p.parseLink,
+    p.parseFormatedString,
+    p.parseText, //Keep this item at the bottom to catch all remaining text
+  })
 }
