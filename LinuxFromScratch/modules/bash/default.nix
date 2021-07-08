@@ -251,7 +251,7 @@ in {
     echo ""
     echo "md5sums and wget-list have been copied to home"
 
-    cp ${md5sums} ~
-    cp ${wget-list} ~
+    cp ${md5sums} ~/md5sums
+    cp ${wget-list} ~/wget-list
   '';
 }

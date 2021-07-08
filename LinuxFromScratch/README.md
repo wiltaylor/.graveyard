@@ -10,4 +10,12 @@ I have only tested this on Libvirt/Qemu and it appears to work ok.
 The system will boot to an i3wm environment with the LFS manual 
 and a terminal.
 
+## Requirements
+ - Nix (with flakes support)
 
+## Build instructions
+To build simply run the following from the git repositoriy directory:
+
+```shell
+nix build
+```
