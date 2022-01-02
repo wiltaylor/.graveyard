@@ -33,6 +33,9 @@ let
           exit 5
         fi
 
+        #This will update the flake cache but fail to create the lock file.
+        nix flake update "$1" > /dev/null
+
         nix build "$1#$2" --profile "$PROFILE_ROOT/$2"
 
         mkdir -p "$PROFILE_ROOT/.updates"
