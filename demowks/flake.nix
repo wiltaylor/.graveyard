@@ -12,7 +12,7 @@
     };
   in {
 
-    packages.${system}.wks = wks.functions."${system}".mkWks {
+    packages.x86_64-linux.demo = wks.functions.x86_64-linux.mkWks {
       name = "demoWks";
       packages = [ pkgs.hello pkgs.toilet ];
       inherit system;
