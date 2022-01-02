@@ -8,7 +8,7 @@
 
   outputs = { self, nixpkgs, wks}: let
     lib = import ./lib;
-    allPkgs = lib.mkPkgs { inherit nixpkgs; };
+    allPkgs = lib.mkPkgs { inherit nixpkgs; cfg = { allowUnfree = true;};};
 
   in {
     packages = lib.withDefaultSystems (sys: let 
