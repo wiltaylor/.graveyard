@@ -12,7 +12,7 @@
     };
   in {
 
-    packages.${system}.wks = wks.functions.mkWks {
+    packages.${system}.wks = wks.functions."${system}".mkWks {
       name = "demoWks";
       packages = [ pkgs.hello ];
       inherit system;
