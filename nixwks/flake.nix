@@ -76,13 +76,10 @@
         '';
       };
 
-      wksPkg = pkgs.symlinkJoin {
+      in pkgs.symlinkJoin {
         name = "wks-${name}";
         paths = [ nixwksScript] ++ packages;
-        postBuild = shellScript;
+        #postBuild = shellScript;
       };
-    in {
-      packages."${system}".${name}= wksPkg;
-    };
   };
 }
