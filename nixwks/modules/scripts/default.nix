@@ -68,7 +68,7 @@ let
         exec "$PROFILE_ROOT/$1/bin/nixwks" gui
       }
 
-      run() {
+      runCmd() {
         exec "$PROFILE_ROOT/$1/bin/nixwks" run "$@"
       }
 
@@ -113,9 +113,7 @@ let
         gui "$@"
       ;;
       "run")
-        echo "x"
-        run "$@"
-        echo "x"
+        runCmd "$@"
       ;;
       "update")
         update "$@"
