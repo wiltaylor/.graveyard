@@ -17,7 +17,7 @@
 
     in {
       orgSys = mkWks {
-        name = "OrgSys";
+        name = "orgSys";
         system = sys;
         startHook = ''
           ln -sf "$REALHOME/vaults" "$HOME/vaults"
