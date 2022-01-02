@@ -76,7 +76,7 @@
         '';
       };
 
-      wksPkg = pkgs.symLinkJoin {
+      wksPkg = pkgs.symlinkJoin {
         name = "wks-${name}";
         paths = [ nixwksScript] ++ packages;
         postBuild = shellScript;
