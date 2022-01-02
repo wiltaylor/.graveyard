@@ -18,16 +18,24 @@
         PROFILE_PATH="$HOME/.local/share/nixwks/${name}"
         ISOHOME_PATH="$HOME/.local/share/nixwks/home/${name}"
 
-        case "$1" in
-        "shell")
-          export PATH="$PROFILE_PATH/bin:$PATH"
+        setupHome() {
           ${if homeIsolation then ''
-            mkdir -p "$ISOHOME_PATH"
+            mkdir -p "$ISOHOME_PATH/.config"
             ln -sf "$HOME" "$ISOHOME_PATH/actual_home"
+            ln -sf "$HOME/.config/systemd "$ISOHOME_PATH/.config/systemd"
+            ln -sf "$HOME/.config/environmentd "$ISOHOME_PATH/.config/environmentd"
+            ln -sf "$HOME/.Xauthority" "$ISOHOME_PATH/.Xauthority"
+
 
             [ -n "${"$"}{REALHOME-}" ] || export REALHOME="$HOME"
             export HOME="$ISOHOME_PATH"
           '' else ""}
+        }
+
+        case "$1" in
+        "shell")
+          export PATH="$PROFILE_PATH/bin:$PATH"
+          setupHome
 
           ${startHook}
 
@@ -35,14 +43,7 @@
         ;;
         "gui")
           export PATH="$PROFILE_PATH/bin:$PATH"
-          ${if homeIsolation then ''
-            mkdir -p "$ISOHOME_PATH"
-            ln -sf "$HOME" "$ISOHOME_PATH/actual_home"
-
-            [ -n "${"$"}{REALHOME-}" ] || export REALHOME="$HOME"
-            export HOME="$ISOHOME_PATH"
-
-          '' else ""}
+          setupHome
 
           ${startHook}
 
@@ -50,15 +51,9 @@
         ;;
         "run")
           export PATH="$PROFILE_PATH/bin:$PATH"
-          ${if homeIsolation then ''
-            mkdir -p "$ISOHOME_PATH"
-            ln -sf "$HOME" "$ISOHOME_PATH/actual_home"
+          setupHome
 
-            [ -n "${"$"}{REALHOME-}" ] || export REALHOME="$HOME"
-            export HOME="$ISOHOME_PATH"
-          '' else ""}
-
-            shift 1
+          shift 1
 
           ${startHook}
 
