@@ -14,14 +14,15 @@
     packages = lib.withDefaultSystems (sys: let 
       pkgs = allPkgs."${sys}";
       mkWks = wks.functions."${sys}".mkWks;
-      homeIsolation = true;
-      startHook = ''
-        ln -sf $REALHOME/vaults $HOME/vaults
-      '';
+
     in {
       orgSys = mkWks {
         name = "OrgSys";
         system = sys;
+        startHook = ''
+          ln -sf $REALHOME/vaults $HOME/vaults
+        '';
+        homeIsolation = true;
         packages = with pkgs; [ obsidian foxitreader xmind zotero rofi];
         guiScript = ''
           OPT=$(echo -e "Obsidian\nZotero\nXMind\nFoxitReader" | rofi -dmenu)
