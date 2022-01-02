@@ -13,10 +13,13 @@
       nixwksScript = pkgs.writeShellApplication {
       name = "nixwks";
       runtimeInputs = packages;
-      
 
       text = ''
         PROFILE_PATH="$HOME/.local/share/nixwks/${name}"
+
+        isVarSet() {
+          [[ ${!1-x} == x ]] && return 1 || return 0
+        }
 
         case "$1" in
         "shell")
@@ -24,9 +27,7 @@
           ${if homeIsolation then ''
             mkdir -p "$PROFILE_PATH/home"
             ln -sf "$HOME" "$PROFILE_PATH/home/actual_home"
-            if [ -z "$REALHOME" ]; then
-              export REALHOME="$HOME"
-            fi
+            isVarSet REALHOME || export REALHOME="$HOME"
             export HOME="$PROFILE_PATH/home"
           '' else ""}
 
@@ -39,10 +40,7 @@
           ${if homeIsolation then ''
             mkdir -p "$PROFILE_PATH/home"
             ln -sf "$HOME" "$PROFILE_PATH/home/actual_home"
-
-            if [ -z "$REALHOME" ]; then
-              export REALHOME="$HOME"
-            fi
+            isVarSet REALHOME || export REALHOME="$HOME"
             export HOME="$PROFILE_PATH/home"
           '' else ""}
 
@@ -55,10 +53,7 @@
           ${if homeIsolation then ''
             mkdir -p "$PROFILE_PATH/home"
             ln -sf "$HOME" "$PROFILE_PATH/home/actual_home"
-
-            if [ -z "$REALHOME" ]; then
-              export REALHOME="$HOME"
-            fi
+            isVarSet REALHOME || export REALHOME="$HOME"
             export HOME="$PROFILE_PATH/home"
           '' else ""}
 
