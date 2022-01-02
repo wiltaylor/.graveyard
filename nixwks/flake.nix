@@ -32,7 +32,7 @@
         
 
         text = ''
-          ${runtimeShell}
+          #!/bin/sh
 
           PROFILE_PATH="$HOME/.local/share/nixwks/${name}"
 
