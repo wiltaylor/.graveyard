@@ -22,7 +22,7 @@
         "shell")
           export PATH="$PROFILE_PATH/bin:$PATH"
           ${if homeIsolation then ''
-            mkdir -p "$ISOHOME_PATH
+            mkdir -p "$ISOHOME_PATH"
             ln -sf "$HOME" "$ISOHOME_PATH/actual_home"
 
             [ -n "${"$"}{REALHOME-}" ] || export REALHOME="$HOME"
