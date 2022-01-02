@@ -8,7 +8,6 @@
   outputs = { self, nixpkgs }: 
   let
     lib = import ./lib;
-    system = "x86_64-linux";
 
     allPkgs = lib.mkPkgs { inherit nixpkgs; };
     allmods = lib.evalMods {inherit allPkgs; modules = [./modules];};

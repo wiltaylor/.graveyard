@@ -34,6 +34,10 @@ let
         fi
 
         nix build "$1#$2" --profile "$PROFILE_ROOT/$2"
+
+        mkdir -p "$PROFILE_ROOT/.updates"
+        echo "nix build \"$1#$2\" --profile \"$PROFILE_ROOT/$2\"" > "$PROFILE_ROOT/.updates/$2.sh"
+        chmod +x "$PROFILE_ROOT/.updates/$2.sh"
       }
 
       uninstall() {
@@ -42,8 +46,9 @@ let
           exit 5
         fi
 
-        nix profile wipe-history "$PROFILE_ROOT/$1"
+        nix profile wipe-history --profile "$PROFILE_ROOT/$1"
         rm -fr "${"$"}{PROFILE_ROOT:?}/$1"
+        rm "$PROFILE_ROOT/.updates/$1.sh"
       }
 
       list() {
@@ -81,8 +86,7 @@ let
           exit 5
         fi
 
-        nix profile upgrade --profile "$PROFILE_ROOT/$1"
-
+        "$PROFILE_ROOT/.updates/$1.sh"
       }
 
       version() {
