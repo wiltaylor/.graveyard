@@ -43,7 +43,7 @@ let
         fi
 
         nix profile wipe-history "$PROFILE_ROOT/$2"
-        rm -fr "$PROFILE_ROOT/$2"
+        rm -fr "${"$"}{PROFILE_ROOT:?}/$2"
       }
 
       list() {
