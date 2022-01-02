@@ -55,6 +55,8 @@ let
       }
 
       list() {
+        # HACK: Clean this up later.
+        # shellcheck disable=SC2010
         ls --width=1 --color=no "$PROFILE_ROOT" | grep -v home | grep -v "\-link"
       }
 
