@@ -50,7 +50,9 @@ let
           exit 5
         fi
 
-        rm -fr $PROFILE_ROOT:?}/$1*
+        # Hack: need to revisit this
+        # shellcheck disable=SC2086
+        rm -fr $PROFILE_ROOT/$1*
         rm "$PROFILE_ROOT/.updates/$1.sh"
       }
 
