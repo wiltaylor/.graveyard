@@ -22,8 +22,8 @@
           ${if homeIsolation then ''
             mkdir -p "$ISOHOME_PATH/.config"
             ln -sf "$HOME" "$ISOHOME_PATH/actual_home"
-            ln -sf "$HOME/.config/systemd "$ISOHOME_PATH/.config/systemd"
-            ln -sf "$HOME/.config/environmentd "$ISOHOME_PATH/.config/environmentd"
+            ln -sf "$HOME/.config/systemd" "$ISOHOME_PATH/.config/systemd"
+            ln -sf "$HOME/.config/environmentd" "$ISOHOME_PATH/.config/environmentd"
             ln -sf "$HOME/.Xauthority" "$ISOHOME_PATH/.Xauthority"
 
 
