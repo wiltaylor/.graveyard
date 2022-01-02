@@ -22,8 +22,12 @@
     };
   in {
     packages."${system}" = {
-      wksCli = mods.config.wksCli;    
+      wksCli = mods.config.wks.wksCli;    
     };
+
+    overlay = (self: super: {
+      wksCli = self.packages."${system}".wksCli;
+    });
 
     functions.mkWks = {name, packages ? [], guiScript ? "echo no gui", homeIsolation ? false, shellScript ? "", system, shell ? "zsh"}: let
       nixwksScript = pkgs.writeShellApplication {
@@ -32,8 +36,6 @@
         
 
         text = ''
-          #!/bin/sh
-
           PROFILE_PATH="$HOME/.local/share/nixwks/${name}"
 
           case "$1" in
@@ -79,7 +81,7 @@
       in pkgs.symlinkJoin {
         name = "wks-${name}";
         paths = [ nixwksScript] ++ packages;
-        #postBuild = shellScript;
+        postBuild = shellScript;
       };
   };
 }
