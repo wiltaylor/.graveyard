@@ -17,17 +17,14 @@
       text = ''
         PROFILE_PATH="$HOME/.local/share/nixwks/${name}"
 
-        isVarSet() {
-          [[ ${!1-x} == x ]] && return 1 || return 0
-        }
-
         case "$1" in
         "shell")
           export PATH="$PROFILE_PATH/bin:$PATH"
           ${if homeIsolation then ''
             mkdir -p "$PROFILE_PATH/home"
             ln -sf "$HOME" "$PROFILE_PATH/home/actual_home"
-            isVarSet REALHOME || export REALHOME="$HOME"
+
+            [ -n "${"$"}{REALHOME-}" ] || export REALHOME="$HOME"
             export HOME="$PROFILE_PATH/home"
           '' else ""}
 
@@ -40,8 +37,10 @@
           ${if homeIsolation then ''
             mkdir -p "$PROFILE_PATH/home"
             ln -sf "$HOME" "$PROFILE_PATH/home/actual_home"
-            isVarSet REALHOME || export REALHOME="$HOME"
+
+            [ -n "${"$"}{REALHOME-}" ] || export REALHOME="$HOME"
             export HOME="$PROFILE_PATH/home"
+
           '' else ""}
 
           ${startHook}
@@ -53,7 +52,8 @@
           ${if homeIsolation then ''
             mkdir -p "$PROFILE_PATH/home"
             ln -sf "$HOME" "$PROFILE_PATH/home/actual_home"
-            isVarSet REALHOME || export REALHOME="$HOME"
+
+            [ -n "${"$"}{REALHOME-}" ] || export REALHOME="$HOME"
             export HOME="$PROFILE_PATH/home"
           '' else ""}
 
