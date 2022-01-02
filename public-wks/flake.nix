@@ -17,6 +17,7 @@
     in {
       orgSys = mkWks {
         name = "OrgSys";
+        system = sys;
         packages = with pkgs; [ obsidian foxitreader xmind zotero ];
       };
     });
