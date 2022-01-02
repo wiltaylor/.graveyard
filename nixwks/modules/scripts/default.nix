@@ -50,13 +50,12 @@ let
           exit 5
         fi
 
-        nix profile wipe-history --profile "$PROFILE_ROOT/$1"
-        rm -fr "${"$"}{PROFILE_ROOT:?}/$1"
+        rm -fr $PROFILE_ROOT:?}/$1*
         rm "$PROFILE_ROOT/.updates/$1.sh"
       }
 
       list() {
-        ls --width=1 --color=no "$PROFILE_ROOT"
+        ls --width=1 --color=no "$PROFILE_ROOT" | grep -v home | grep -v "\-link"
       }
 
       shell() {
