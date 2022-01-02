@@ -5,7 +5,7 @@ with builtins;
 let
   cfg = config.wks;
   wksCli = writeShellApplication {
-    name = "wkscli";
+    name = "wks";
 
     text = ''
       PROFILE_ROOT="$HOME/.local/share/nixwks/"
