@@ -14,7 +14,7 @@
 
     packages.${system}.wks = wks.functions."${system}".mkWks {
       name = "demoWks";
-      packages = [ pkgs.hello ];
+      packages = [ pkgs.hello pkgs.toilet ];
       inherit system;
       shellScript = "touch $out/hello.txt";
     };
