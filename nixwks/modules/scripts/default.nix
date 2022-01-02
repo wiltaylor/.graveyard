@@ -81,7 +81,8 @@ let
           exit 5
         fi
 
-        echo "TBD"
+        nix profile upgrade --profile "$PROFILE_ROOT/$1"
+
       }
 
       version() {
