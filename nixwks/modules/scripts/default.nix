@@ -35,7 +35,7 @@ let
 
         #This will update the flake cache but fail to create the lock file.
         # shellcheck disable=SC2091
-        $(nix flake update "$1") || true
+        $(nix flake update "$1" 2> /dev/null) || true
 
         nix build "$1#$2" --profile "$PROFILE_ROOT/$2"
 
@@ -89,6 +89,10 @@ let
           echo "Expected 2 parameters WorkspaceName!"
           exit 5
         fi
+
+        #This will update the flake cache but fail to create the lock file.
+        # shellcheck disable=SC2091
+        $(nix flake update "$1" 2> /dev/null) || true
 
         "$PROFILE_ROOT/.updates/$1.sh"
       }

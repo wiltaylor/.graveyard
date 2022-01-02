@@ -5,7 +5,8 @@
     packages ? [], 
     guiScript ? "echo no gui", 
     homeIsolation ? false, 
-    shellScript ? "", 
+    shellScript ? "",
+    startHook ? "",
     system, 
     shell ? "zsh"}:
     let
@@ -23,8 +24,13 @@
           ${if homeIsolation then ''
             mkdir -p "$PROFILE_PATH/home"
             ln -sf "$HOME" "$PROFILE_PATH/home/actual_home"
+            if [ -z "$REALHOME" ]; then
+              export REALHOME="$HOME"
+            fi
             export HOME="$PROFILE_PATH/home"
           '' else ""}
+
+          ${startHook}
 
           exec ${shell}
         ;;
@@ -33,8 +39,14 @@
           ${if homeIsolation then ''
             mkdir -p "$PROFILE_PATH/home"
             ln -sf "$HOME" "$PROFILE_PATH/home/actual_home"
+
+            if [ -z "$REALHOME" ]; then
+              export REALHOME="$HOME"
+            fi
             export HOME="$PROFILE_PATH/home"
           '' else ""}
+
+          ${startHook}
 
           ${guiScript}
         ;;
@@ -43,10 +55,16 @@
           ${if homeIsolation then ''
             mkdir -p "$PROFILE_PATH/home"
             ln -sf "$HOME" "$PROFILE_PATH/home/actual_home"
+
+            if [ -z "$REALHOME" ]; then
+              export REALHOME="$HOME"
+            fi
             export HOME="$PROFILE_PATH/home"
           '' else ""}
 
-          shift 1
+            shift 1
+
+          ${startHook}
 
           ${shell} -c "$@"
         ;;         
