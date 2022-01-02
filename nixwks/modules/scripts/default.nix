@@ -52,6 +52,7 @@ let
 
         # Hack: need to revisit this
         # shellcheck disable=SC2086
+        # shellcheck disable=SC2115
         rm -fr $PROFILE_ROOT/$1*
         rm "$PROFILE_ROOT/.updates/$1.sh"
       }
