@@ -16,16 +16,17 @@
 
       text = ''
         PROFILE_PATH="$HOME/.local/share/nixwks/${name}"
+        ISOHOME_PATH="$HOME/.local/share/nixwks/home/${name}"
 
         case "$1" in
         "shell")
           export PATH="$PROFILE_PATH/bin:$PATH"
           ${if homeIsolation then ''
-            mkdir -p "$PROFILE_PATH/home"
-            ln -sf "$HOME" "$PROFILE_PATH/home/actual_home"
+            mkdir -p "$ISOHOME_PATH
+            ln -sf "$HOME" "$ISOHOME_PATH/actual_home"
 
             [ -n "${"$"}{REALHOME-}" ] || export REALHOME="$HOME"
-            export HOME="$PROFILE_PATH/home"
+            export HOME="$ISOHOME_PATH"
           '' else ""}
 
           ${startHook}
@@ -35,11 +36,11 @@
         "gui")
           export PATH="$PROFILE_PATH/bin:$PATH"
           ${if homeIsolation then ''
-            mkdir -p "$PROFILE_PATH/home"
-            ln -sf "$HOME" "$PROFILE_PATH/home/actual_home"
+            mkdir -p "$ISOHOME_PATH"
+            ln -sf "$HOME" "$ISOHOME_PATH/actual_home"
 
             [ -n "${"$"}{REALHOME-}" ] || export REALHOME="$HOME"
-            export HOME="$PROFILE_PATH/home"
+            export HOME="$ISOHOME_PATH"
 
           '' else ""}
 
@@ -50,11 +51,11 @@
         "run")
           export PATH="$PROFILE_PATH/bin:$PATH"
           ${if homeIsolation then ''
-            mkdir -p "$PROFILE_PATH/home"
-            ln -sf "$HOME" "$PROFILE_PATH/home/actual_home"
+            mkdir -p "$ISOHOME_PATH"
+            ln -sf "$HOME" "$ISOHOME_PATH/actual_home"
 
             [ -n "${"$"}{REALHOME-}" ] || export REALHOME="$HOME"
-            export HOME="$PROFILE_PATH/home"
+            export HOME="$ISOHOME_PATH"
           '' else ""}
 
             shift 1
