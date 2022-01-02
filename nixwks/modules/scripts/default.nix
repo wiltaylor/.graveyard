@@ -33,7 +33,7 @@ let
           exit 5
         fi
 
-        nix build "$1.$2" --profile "$PROFILE_ROOT/$2"
+        nix build "$1#$2" --profile "$PROFILE_ROOT/$2"
       }
 
       uninstall() {
