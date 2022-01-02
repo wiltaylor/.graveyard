@@ -69,9 +69,10 @@ let
       }
 
       runCmd() {
-        echo "$@"
-        exec "$PROFILE_ROOT/$1/bin/nixwks" run "$@"
-        exit 200
+        WKS=$1
+        shift 1
+
+        exec "$PROFILE_ROOT/$WKS/bin/nixwks" run "$@"
       }
 
       update() {
