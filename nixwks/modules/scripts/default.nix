@@ -34,7 +34,7 @@ let
         fi
 
         #This will update the flake cache but fail to create the lock file.
-        nix flake update "$1" > /dev/null
+        $(nix flake update "$1") || true
 
         nix build "$1#$2" --profile "$PROFILE_ROOT/$2"
 
