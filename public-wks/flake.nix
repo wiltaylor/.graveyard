@@ -18,7 +18,26 @@
       orgSys = mkWks {
         name = "OrgSys";
         system = sys;
-        packages = with pkgs; [ obsidian foxitreader xmind zotero ];
+        packages = with pkgs; [ obsidian foxitreader xmind zotero rofi];
+        guiScript = ''
+          OPT=$(echo -e "Obsidian\nZotero\nXMind\nFoxitReader" | rofi -dmenu)
+          case $OPT in
+          "Obsidian")
+            exec obsidian
+          ;;
+          "Zotero")
+            exec zotero
+          ;;
+          "FoxitReader")
+            exec FoxitReader
+          ;;
+          "XMind")
+            exec XMind
+          ;;
+          *)
+          ;;
+          esac
+        '';
       };
     });
   };
