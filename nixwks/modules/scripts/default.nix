@@ -42,8 +42,8 @@ let
           exit 5
         fi
 
-        nix profile wipe-history "$PROFILE_ROOT/$2"
-        rm -fr "${"$"}{PROFILE_ROOT:?}/$2"
+        nix profile wipe-history "$PROFILE_ROOT/$1"
+        rm -fr "${"$"}{PROFILE_ROOT:?}/$1"
       }
 
       list() {
@@ -113,7 +113,9 @@ let
         gui "$@"
       ;;
       "run")
+        echo "x"
         run "$@"
+        echo "x"
       ;;
       "update")
         update "$@"
