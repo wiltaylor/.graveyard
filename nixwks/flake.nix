@@ -20,13 +20,15 @@
 
       specialArgs = { inherit pkgs runtimeShell; };
     };
+
+    cliPkg = mods.config.wks.wksCli;
   in {
     packages."${system}" = {
-      wksCli = mods.config.wks.wksCli;    
+      wksCli = cliPkg;
     };
 
     overlay = (self: super: {
-      wksCli = self.packages."${system}".wksCli;
+      wksCli = cliPkg;
     });
 
     functions.mkWks = {name, packages ? [], guiScript ? "echo no gui", homeIsolation ? false, shellScript ? "", system, shell ? "zsh"}: let
