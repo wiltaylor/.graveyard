@@ -20,7 +20,7 @@
         name = "OrgSys";
         system = sys;
         startHook = ''
-          ln -sf $REALHOME/vaults $HOME/vaults
+          ln -sf "$REALHOME/vaults" "$HOME/vaults"
         '';
         homeIsolation = true;
         packages = with pkgs; [ obsidian foxitreader xmind zotero rofi];
