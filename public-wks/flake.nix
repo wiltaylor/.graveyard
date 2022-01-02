@@ -14,6 +14,10 @@
     packages = lib.withDefaultSystems (sys: let 
       pkgs = allPkgs."${sys}";
       mkWks = wks.functions."${sys}".mkWks;
+      homeIsolation = true;
+      startHook = ''
+        ln -sf $REALHOME/vaults $HOME/vaults
+      '';
     in {
       orgSys = mkWks {
         name = "OrgSys";
