@@ -16,6 +16,38 @@
       mkWks = wks.functions."${sys}".mkWks;
 
     in {
+      games = mkWks {
+        name = "games";
+        system = sys;
+        homeIsolation = true;
+        pacakges = with pkgs; [ steam steam-run lutris xonotic minecraft quakespasm superTuxKart ];
+        guiScript = ''
+          OPT=$(echo -e "Steam\nLutris\nXonotic\Minecraft\nQuake\nSuper Tux Kart" | rofi -dmenu)
+          case $OPT in
+          "Stream")
+            exec steam
+          ;;
+          "Lutris")
+            exec lutris
+          ;;
+          "Xonotic")
+            exec xonotic
+          ;;
+          "Minecraft")
+            exec minecraft-launcher
+          ;;
+          "Quake")
+            exec quake
+          ;;
+          "Super Tux Kart")
+            exec supertuxkart
+          ;;
+          *)
+          ;;
+          esac
+        '';
+      };
+
       office = mkWks {
         name = "office";
         system = sys;
