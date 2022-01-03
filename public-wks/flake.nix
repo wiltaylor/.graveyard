@@ -33,12 +33,19 @@
           xonotic 
           minecraft 
           quakespasm 
-          superTuxKart ];
+          superTuxKart 
+        ];
+
+        startHook = ''
+          ln -sf "$REALHOME/.pki" "$HOME/.pki"
+          ln -sf "$REALHOME/.config/cef_user_data" "$HOME/.config/cef_user_data"
+          ln -sf "$REALHOME/.config/pulse" "$HOME/.config/pulse"
+        '';
 
         guiScript = ''
           OPT=$(echo -e "Steam\nLutris\nXonotic\Minecraft\nQuake\nSuper Tux Kart" | rofi -dmenu)
           case $OPT in
-          "Stream")
+          "Steam")
             exec steam
           ;;
           "Lutris")
