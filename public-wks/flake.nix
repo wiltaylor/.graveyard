@@ -27,7 +27,7 @@
 
           # full wine
           wineWowPackages.stagingFull
-          (winetricks.override { wine = wineWowPackages.stagingFull; })
+          winetricks
 
           # Linux games
           xonotic 
