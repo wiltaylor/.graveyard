@@ -18,6 +18,7 @@
     in {
       browsers = mkWks {
         name = "browsers";
+        system = sys;
         homeIsolation = true;
         packages = with pkgs; [
           firefox
