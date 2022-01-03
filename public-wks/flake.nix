@@ -30,9 +30,20 @@
           delve
 
           # C and CPP
-          make
+          gnumake
           gcc_latest
           clang_13
+          cmake
+          emscripten
+
+          # SDL Libs
+          SDL2
+          SDL2_gfx
+          SDL2_mixer
+          SDL2_net
+          SDL2_ttf
+          SDL2_pango
+          SDL2_image
 
           # dotnet
           dotnet-runtime
