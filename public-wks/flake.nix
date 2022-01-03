@@ -34,7 +34,7 @@
         '';
 
         guiScript = ''
-          OPT=$(echo -e "Steam\nLutris\nXonotic\Minecraft\nQuake\nSuper Tux Kart" | rofi -dmenu)
+          OPT=$(echo -e "Firefox\nGoogle Chrome\nChromium\nVlivaldi\nBrave\nNyxt" | rofi -dmenu)
           case $OPT in
           "Firefox")
             exec firefox
