@@ -32,6 +32,32 @@
           tenacity
         ];
 
+        guiScript = ''
+          OPT=$(echo -e "Blender\nGimp\nOBS\nKdenlive\nArdour\nTenacity (Audacity Fork)" | rofi -dmenu)
+          case $OPT in
+          "Blender")
+            exec blender
+          ;;
+          "Gimp")
+            exec gimp
+          ;;
+          "OBS")
+            exec obs
+          ;;
+          "Kdenlive")
+            exec kdenlive
+          ;;
+          "Ardour")
+            exec ardour6
+          ;;
+          "Tenacity (Audacity Fork)")
+            exec tenacity
+          ;;
+          *)
+          ;;
+          esac
+        '';
+
       };
 
       browsers = mkWks {
