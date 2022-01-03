@@ -27,7 +27,7 @@
           "WPS Office")
             exec wps
           ;;
-          "only Office")
+          "Only Office")
             exec onlyoffice-desktopeditors
           ;;
           "FoxitReader")
