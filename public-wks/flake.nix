@@ -20,7 +20,7 @@
         name = "games";
         system = sys;
         homeIsolation = true;
-        pacakges = with pkgs; [ 
+        packages = with pkgs; [ 
           steam 
           steam-run 
           lutris
