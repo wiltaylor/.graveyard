@@ -14,7 +14,7 @@
   in {
     overlay = lib.mkOverlays { 
       inherit allPkgs; 
-      overlayFunc = s: p: { wksCli = allmods."${s}".config.wks.wksCli; };
+      overlayFunc = s: p: (top: last: { wksCli = allmods."${s}".config.wks.wksCli;});
     };
 
     packages = lib.withDefaultSystems (sys: {
