@@ -16,6 +16,51 @@
       mkWks = wks.functions."${sys}".mkWks;
 
     in {
+      browsers = mkWks {
+        name = "browsers";
+        homeIsolation = true;
+        packages = with pkgs; [
+          firefox
+          google-chrome
+          vivaldi
+          brave
+          chromium
+          nyxt
+        ];
+
+        startHook = ''
+          ln -sf "$REALHOME/Downloads" "$HOME/Downloads"
+        '';
+
+        guiScript = ''
+          OPT=$(echo -e "Steam\nLutris\nXonotic\Minecraft\nQuake\nSuper Tux Kart" | rofi -dmenu)
+          case $OPT in
+          "Firefox")
+            exec firefox
+          ;;
+          "Google Chrome")
+            exec google-chrome-stable
+          ;;
+          "Chromium")
+            
+          ;;
+          "Vivaldi")
+            
+          ;;
+          "Brave")
+            
+          ;;
+          "Nyxt")
+            exec nyxt
+          ;;
+          *)
+          ;;
+          esac
+        '';
+
+      };
+
+
       games = mkWks {
         name = "games";
         system = sys;
