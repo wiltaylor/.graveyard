@@ -16,6 +16,48 @@
       mkWks = wks.functions."${sys}".mkWks;
 
     in {
+      dev = mkWks {
+        name = "dev";
+        system = sys;
+        homeIsolation = true;
+        packages = with pkgs; [
+
+          #Rust stuff
+          rustup
+
+          # Go stuff
+          go
+          delve
+
+          # C and CPP
+          make
+          gcc_latest
+          clang_13
+
+          # dotnet
+          dotnet-runtime
+          dotnet-netcore
+          dotnet-aspnetcore
+          jetbrains.rider
+
+          # Python
+          python3Full
+          jetbrains.pycharm-professional
+
+          # Ruby
+          ruby
+
+          # javascript
+          nodejs
+
+        ];
+
+        startHook = ''
+          ln -sf "$REALHOME/repo" "$HOME/repo"
+        '';
+      };
+
+
       video = mkWks {
         name = "video";
         system = sys;
