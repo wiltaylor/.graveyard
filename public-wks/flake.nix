@@ -16,6 +16,29 @@
       mkWks = wks.functions."${sys}".mkWks;
 
     in {
+      office = mkWks {
+        name = "office";
+        system = sys;
+        homeIsolation = true;
+        packages = with pkgs; [ wpsoffice foxitreader onlyoffice-bin ];
+        guiScript = ''
+          OPT=$(echo -e "WPS Office\nOnly Office\nFoxitReader" | rofi -dmenu)
+          case $OPT in
+          "WPS Office")
+            exec wps
+          ;;
+          "only Office")
+            exec onlyoffice-desktopeditors
+          ;;
+          "FoxitReader")
+            exec FoxitReader
+          ;;
+          *)
+          ;;
+          esac
+        '';
+      };
+
       orgSys = mkWks {
         name = "orgSys";
         system = sys;
