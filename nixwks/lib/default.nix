@@ -65,11 +65,16 @@ rec {
     specialArgs = { inherit pkgs;} // args;
   });
 
-  mkPkgs = {nixpkgs, systems ? defaultSystems, cfg ? {}, overlays ? []}: withSystems systems (sys: import nixpkgs { system = sys; config = cfg; inherit overlays; });
-  
+  mkPkgs = {nixpkgs, systems ? defaultSystems, cfg ? {}, overlays ? []}: withSystems systems (sys: 
+  import nixpkgs { 
+    system = sys; 
+    config = cfg; 
+    overlays = map (m: m."${sys}") overlays; 
+  });
+
   mkOverlays = { allPkgs, systems ? defaultSystems, overlayFunc} : withSystems systems (sys: 
     let pkgs = allPkgs."${sys}"; 
-    in overlayFun sys pkgs);
+    in overlayFunc sys pkgs);
 
   withDefaultSystems = withSystems defaultSystems;
   withSystems = systems: f: foldl' (cur: nxt:
