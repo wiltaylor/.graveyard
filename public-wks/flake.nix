@@ -16,6 +16,24 @@
       mkWks = wks.functions."${sys}".mkWks;
 
     in {
+      video = mkWks {
+        name = "video";
+        system = sys;
+        homeIsolation = true;
+        packages = with pkgs; [
+          blender
+          mpv
+          gimp
+          youtube-dl
+          ytfzf
+          obs-studio
+          kdenlive
+          ardour
+          tenacity
+        ];
+
+      };
+
       browsers = mkWks {
         name = "browsers";
         system = sys;
@@ -43,13 +61,13 @@
             exec google-chrome-stable
           ;;
           "Chromium")
-            
+            exec chromium 
           ;;
           "Vivaldi")
-            
+            exec vivalid
           ;;
           "Brave")
-            
+            exec brave
           ;;
           "Nyxt")
             exec nyxt
@@ -58,9 +76,7 @@
           ;;
           esac
         '';
-
       };
-
 
       games = mkWks {
         name = "games";
