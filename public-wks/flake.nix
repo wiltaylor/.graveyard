@@ -20,7 +20,21 @@
         name = "games";
         system = sys;
         homeIsolation = true;
-        pacakges = with pkgs; [ steam steam-run lutris xonotic minecraft quakespasm superTuxKart ];
+        pacakges = with pkgs; [ 
+          steam 
+          steam-run 
+          lutris
+
+          # full wine
+          wineWowPackages.stagingFull
+          (winetricks.override { wine = wineWowPackages.stagingFull; })
+
+          # Linux games
+          xonotic 
+          minecraft 
+          quakespasm 
+          superTuxKart ];
+
         guiScript = ''
           OPT=$(echo -e "Steam\nLutris\nXonotic\Minecraft\nQuake\nSuper Tux Kart" | rofi -dmenu)
           case $OPT in
