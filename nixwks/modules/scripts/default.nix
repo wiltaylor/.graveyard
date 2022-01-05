@@ -105,7 +105,7 @@ let
       updateAll() {
         for w in $(wks ls)
         do
-          wks update $w
+          wks update "$w"
         done
 
       }
