@@ -214,7 +214,7 @@
         name = "office";
         system = sys;
         homeIsolation = true;
-        packages = with pkgs; [ wpsoffice foxitreader onlyoffice-bin ];
+        packages = with pkgs; [ wpsoffice foxitreader onlyoffice-bin libreoffice ];
         guiScript = ''
           OPT=$(echo -e "WPS Office\nOnly Office\nFoxitReader" | rofi -dmenu)
           case $OPT in
