@@ -69,6 +69,10 @@ let
           exit 5
         fi
 
+        if [ -f "$HOME/.zshrc" ]; then
+          touch "$HOME/.zshrc"
+        fi
+
         exec "$PROFILE_ROOT/$1/bin/nixwks" shell
       }
 
