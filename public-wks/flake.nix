@@ -240,7 +240,19 @@
           ln -sf "$REALHOME/vaults" "$HOME/vaults"
         '';
         homeIsolation = true;
-        packages = with pkgs; [ obsidian foxitreader xmind zotero rofi];
+        packages = with pkgs; [ 
+          obsidian 
+          foxitreader 
+          xmind 
+          zotero 
+          rofi
+
+          (writeScriptBin "www-browser" ''
+            obsidian $@
+          '')
+
+
+        ];
         guiScript = ''
           OPT=$(echo -e "Obsidian\nZotero\nXMind\nFoxitReader" | rofi -dmenu)
           case $OPT in
