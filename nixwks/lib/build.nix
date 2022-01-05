@@ -26,10 +26,10 @@
             ln -sf "$HOME/.config/environmentd" "$ISOHOME_PATH/.config/environmentd"
             ln -sf "$HOME/.Xauthority" "$ISOHOME_PATH/.Xauthority"
 
-            touch "$HOME/.zshrc"
-
             [ -n "${"$"}{REALHOME-}" ] || export REALHOME="$HOME"
             export HOME="$ISOHOME_PATH"
+
+            touch "$HOME/.zshrc"
           '' else ""}
         }
 
