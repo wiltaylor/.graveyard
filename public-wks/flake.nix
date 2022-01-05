@@ -247,6 +247,7 @@
           zotero 
           rofi
 
+          # Hack that makes obsidian links work in the workspace.
           (writeScriptBin "www-browser" ''
             obsidian $@
           '')
