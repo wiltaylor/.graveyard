@@ -23,6 +23,7 @@ let
         echo "gui {workspace name} - Opens the gui shell assigned to  the target workspace"
         echo "run {workspace name} {command} - Runs the target command in the workspace."
         echo "update {workspace name} - Updates the target workspace"
+        echo "update-all - Updates all workspaces"
         echo "version - Prints the version of this script"
         echo "help - Prints this message"
       }
@@ -69,10 +70,6 @@ let
           exit 5
         fi
 
-        if [ -f "$HOME/.zshrc" ]; then
-          touch "$HOME/.zshrc"
-        fi
-
         exec "$PROFILE_ROOT/$1/bin/nixwks" shell
       }
 
@@ -103,6 +100,14 @@ let
         $(nix flake update "$1" 2> /dev/null) || true
 
         "$PROFILE_ROOT/.updates/$1.sh"
+      }
+
+      updateAll() {
+        for w in $(wks ls)
+        do
+          wks update $w
+        done
+
       }
 
       version() {
@@ -141,6 +146,9 @@ let
       ;;
       "update")
         update "$@"
+      ;;
+      "update-all")
+        updateAll
       ;;
       "version")
         version "$@"
