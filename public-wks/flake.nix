@@ -273,6 +273,112 @@
           esac
         '';
       };
+
+      torrent = mkWks {
+        name = "torrent";
+        system = sys;
+        homeIsolation = true;
+        packages = with pkgs; [
+          (writeShellApplication {
+            name = "torrent";
+            text = ''
+              # shellcheck disable=SC1091
+              source "$HOME/torrent.env"
+
+              Usage() {
+                echo "Torrent Util usage:"
+                echo "torrent {command}"
+                echo ""
+                echo "Commands:"
+                echo "up - Start the torrent and vpn connection"
+                echo "down - Stop all torrent containers"
+                echo "ls - List active torrents"
+                echo "add {url} - Add a torrent to download"
+                echo "start {id} - Start torrent"
+                echo "stop {id} - Stop torrent"
+                echo "rm {id} - Remove torrent"
+              }
+
+              up() {
+                DOWNLOADPATH="$HOME/downloads"
+                docker run \
+                --rm \
+                --detach \
+                --name=protonvpn \
+                --device=/dev/net/tun \
+                --cap-add=NET_ADMIN \
+                --env PROTONVPN_USERNAME="$PROTONVPN_USERNAME" \
+                --env PROTONVPN_PASSWORD="$PROTONVPN_PASSWORD" \
+                --env PROTONVPN_TIER=3 \
+                --env PROTONVPN_SERVER=P2P \
+                ghcr.io/tprasadtp/protonvpn:latest
+
+                docker run \
+                    -d \
+                    --name transmission \
+                    -v "$DOWNLOADPATH:/data" \
+                    -e USERNAME="$TRANSMISSION_USER" \
+                    -e PASSWORD="$TRANSMISSION_PASSWORD" \
+                    --net=container:protonvpn \
+                    wiltaylor/transmission
+              }
+
+              down() {
+                docker rm -f transmission protonvpn
+              }
+
+              lstorrent() {
+                docker exec transmission transmission-remote -n "$TRANSMISSION_USER:$TRANSMISSION_PASSWORD" -l
+              }
+
+              addtorrent() {
+
+                docker exec transmission transmission-remote -n "$TRANSMISSION_USER:$TRANSMISSION_PASSWORD" -a "$1"
+              }
+
+              starttorrent() {
+
+                docker exec transmission transmission-remote -n "$TRANSMISSION_USER:$TRANSMISSION_PASSWORD" -t "$1" -s
+
+              }
+
+              stoptorrent() {
+
+                docker exec transmission transmission-remote -n "$TRANSMISSION_USER:$TRANSMISSION_PASSWORD" -t "$1" -S
+              }
+
+              rmtorrent() {
+
+                docker exec transmission transmission-remote -n "$TRANSMISSION_USER:$TRANSMISSION_PASSWORD" -t "$1" -r
+              }
+
+              case "$1" in
+              "up")
+                up
+              ;;
+              "down")
+                down
+              ;;
+              "ls")
+                lstorrent
+              ;;
+              "add")
+                addtorrent "$2"
+              ;;
+              "start")
+                starttorrent "$2"
+              ;;
+              "stop")
+                stoptorrent "$2"
+              ;;
+              "rm")
+                rmtorrent "$2"
+              ;;
+              esac
+          '';
+          })
+        ];
+      };
     });
   };
 }
