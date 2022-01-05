@@ -52,7 +52,6 @@
 
           # Python
           python3Full
-          jetbrains.pycharm-professional
 
           # Ruby
           ruby
