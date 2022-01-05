@@ -105,6 +105,7 @@ let
       updateAll() {
         for w in $(wks ls)
         do
+          echp " * Updating $w"
           wks update "$w"
         done
 
