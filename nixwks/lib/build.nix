@@ -50,6 +50,14 @@
 
           ${guiScript}
         ;;
+        "run-exec")
+          export PATH="$PROFILE_PATH/bin:$PATH"
+          setupHome
+
+          ${startHook}
+
+          exec $1
+        ;;
         "run")
           export PATH="$PROFILE_PATH/bin:$PATH"
           setupHome
