@@ -22,7 +22,6 @@ let
         echo "shell {workspace name} - Opens a shell in the target workspace"
         echo "gui {workspace name} - Opens the gui shell assigned to  the target workspace"
         echo "run {workspace name} {command} - Runs the target command in the workspace."
-        echo "run-exec {workspace name} {command} - Will run target application in workspace. (no support for parameters)"
         echo "update {workspace name} - Updates the target workspace"
         echo "update-all - Updates all workspaces"
         echo "version - Prints the version of this script"
@@ -90,12 +89,6 @@ let
         exec "$PROFILE_ROOT/$WKS/bin/nixwks" run "$@"
       }
 
-      runExecCmd() {
-        WKS=$1
-        shift 1
-
-        exec "$PROFILE_ROOT/$WKS/bin/nixwks" run-exec "$1"
-      }
       update() {
         if [[ $# -ne 1 ]]; then
           echo "Expected 2 parameters WorkspaceName!"
@@ -150,9 +143,6 @@ let
       ;;
       "run")
         runCmd "$@"
-      ;;
-      "run-exec"0
-        runExecCmd "$1"
       ;;
       "update")
         update "$@"
