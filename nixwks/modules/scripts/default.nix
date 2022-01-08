@@ -11,7 +11,7 @@ let
       PROFILE_ROOT="$HOME/.local/share/nixwks/"
       VERSION="0.1.0"
 
-      echo "Command: $@"
+      echo "Command: $*"
 
       Usage() {
         echo "NIX Workspace Usage:"
