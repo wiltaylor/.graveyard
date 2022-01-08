@@ -94,7 +94,7 @@ let
         WKS=$1
         shift 1
 
-        exec "$PROFILE_ROOT/$WKS/bin/nixwks" runexec "$1"
+        exec "$PROFILE_ROOT/$WKS/bin/nixwks" run-exec "$1"
       }
       update() {
         if [[ $# -ne 1 ]]; then
@@ -151,7 +151,7 @@ let
       "run")
         runCmd "$@"
       ;;
-      "runexec"0
+      "run-exec"0
         runExecCmd "$1"
       ;;
       "update")
