@@ -58,7 +58,7 @@
 
           ${startHook}
 
-          ${shell} -c "$@"
+          exec ${shell} -c "$@"
         ;;         
         *)
           echo "Unexpected command!"
