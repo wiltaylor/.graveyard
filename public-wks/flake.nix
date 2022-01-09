@@ -126,6 +126,7 @@
         ];
 
         startHook = ''
+          export MOZ_USE_XINPUT2=1 
           ln -sf "$REALHOME/Downloads" "$HOME/Downloads"
         '';
 
