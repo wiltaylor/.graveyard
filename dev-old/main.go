@@ -68,6 +68,8 @@ func main() {
   case "ls":
     listAction()
     break;
+  case "gen":
+    generator(args)
 	default:
     doAction(command, args)
 		break
@@ -155,6 +157,8 @@ func prjHandler(args []string) {
     case "info":
       prjInfo()
       break
+    case "gen":
+      generator(args)
     case "pwd":
       pwd, _ := os.Getwd()
       root, err := findPrjRoot(pwd)
@@ -232,6 +236,41 @@ func parseProjectNameToPath(name string) (string, error) {
   }
 }
 
+func generator(args []string) {
+  if len(args) < 1 {
+    log.Fatal("Expected a generator template name")
+    return
+  }
+
+  pwd, _ := os.Getwd()
+  prjRoot, err := findPrjRoot(pwd)
+
+  if err != nil {
+    log.Fatal("You need to be in a git repo before calling gen")
+    return
+  }
+  generator := args[0]
+  generatorArgs := make([]string, 0)
+  generatorDir := filepath.Join(os.Getenv("WTDEV"), "generators")
+
+  if generatorDir == "" {
+    log.Fatal("WTDEV environment variable is not set!")
+    return
+  }
+
+  if len(args) > 2 {
+    generatorArgs = args[1:]
+  }
+
+  command := fmt.Sprintf("%s/%s %s", generatorDir, generator, strings.Join(generatorArgs, " "))
+  
+  err = execute(command, prjRoot)
+
+  if err != nil {
+    log.Fatal(err)
+  }
+}
+
 func prjNew(args []string) {
   if len(args) < 2 {
     log.Fatal("Expected a project name and template name to be supplied")
@@ -259,10 +298,10 @@ func prjNew(args []string) {
 
   template := args[1]
   templateArgs := make([]string, 0)
-  templateDir := os.Getenv("WTDEVTEMPLATES")
+  templateDir := filepath.Join(os.Getenv("WTDEV"), "templates")
 
   if templateDir == "" {
-    log.Fatal("WTDEVTEMPLATES environment variable is not set!")
+    log.Fatal("WTDEV environment variable is not set!")
     return
   }
 
