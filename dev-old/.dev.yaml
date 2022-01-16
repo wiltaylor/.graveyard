@@ -1,0 +1,7 @@
+actions:
+  - name: build
+    description: "Builds the project"
+    command: "echo %1"
+  - name: run
+    description: "Executes the project"
+    command: "echo %*"
