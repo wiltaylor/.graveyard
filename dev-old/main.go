@@ -58,26 +58,77 @@ func main() {
 	  args = os.Args[2:]
 	}
 
-  actions, err := ReadActions(".dev.yaml")
-
-  if(err != nil) {
-    log.Fatal(err)
-    return
-  }
-
 	switch command {
 	case "prj":
     prjHandler(args)
 		break
   case "init":
+    initDev(args)
     break
   case "ls":
-    listAction(actions.Actions)
+    listAction()
     break;
 	default:
-    doAction(command, args, actions.Actions)
+    doAction(command, args)
 		break
 	}
+}
+
+func getActions() (devFile, error) {
+  pwd, _ := os.Getwd()
+  prjRoot, err := findPrjRoot(pwd)
+
+  if err != nil {
+    return devFile{}, err
+  }
+
+  if exists(filepath.Join(prjRoot, ".dev.yaml")) {
+    return ReadActions(filepath.Join(prjRoot, ".dev.yaml"))
+  }
+
+  if exists(filepath.Join(prjRoot, ".git", "dev.yaml")) {
+
+    return ReadActions(filepath.Join(prjRoot, ".git", "dev.yaml"))
+  }
+
+  return devFile{}, errors.New("Can't find dev.yaml file")
+
+}
+
+func initDev(args []string) {
+
+  pwd, _ := os.Getwd()
+  prjRoot, err := findPrjRoot(pwd)
+
+  if err != nil {
+    log.Fatal("You need to be in a git repo before calling init")
+    return
+  }
+
+
+  if exists(filepath.Join(prjRoot, ".dev.yaml")) || exists(filepath.Join(prjRoot, ".git", "dev.yaml")) {
+    log.Fatal("This project has already been inited")
+    return
+  }
+
+  path := filepath.Join(prjRoot, ".dev.yaml")
+
+  fmt.Printf("Path: %s", path)
+
+  if len(args) == 1 && args[0] == "--hide" {
+    path = filepath.Join(prjRoot, ".git", "dev.yaml")
+  }
+
+
+  f, err := os.Create(path)
+  if err != nil {
+    log.Fatal(err)
+    return
+  }
+
+  fmt.Fprintln(f, "actions:")
+
+  f.Close()
 }
 
 func prjHandler(args []string) {
@@ -338,7 +389,17 @@ func exists(path string) bool {
   return !errors.Is(err, os.ErrNotExist)
 }
 
-func listAction(actions []Action) {
+func listAction() {
+
+  dev, err := getActions()
+
+  if err != nil {
+    log.Fatal(err)
+    return
+  }
+
+  actions := dev.Actions
+
   fmt.Println("Actions:")
 
   for _, item := range actions {
@@ -348,8 +409,15 @@ func listAction(actions []Action) {
   fmt.Println("")
 }
 
-func doAction(name string, args []string, actions []Action) {
+func doAction(name string, args []string) {
+  dev, err := getActions()
 
+  if err != nil {
+    log.Fatal(err)
+    return
+  }
+
+  actions := dev.Actions
   for _, item := range actions {
     if item.Name == name {
       command := item.Command
