@@ -324,27 +324,6 @@ func prjNew(args []string) {
   }
 }
 
-func execute(command string, dir string) (error) {
-  shell := os.Getenv("SHELL")
-
-  cmd := exec.Command(shell, "-c", command)
-  if dir != "" {
-    cmd.Dir = dir
-  }
-  cmd.Stderr = os.Stderr
-  cmd.Stdout = os.Stdout
-  cmd.Stdin = os.Stdin
-
-  err := cmd.Run()
-
-  if err != nil {
-    log.Fatal(err)
-    return err
-  }
-
-  return nil
-}
-
 func prjOpen(args []string) {
   if len(args) < 1 {
     log.Fatal("Expected a project name")
@@ -421,11 +400,6 @@ func findPrjRoot(path string) (string, error) {
 
    dir := filepath.Dir(path)
    return findPrjRoot(dir)
-}
-
-func exists(path string) bool {
-  _, err := os.Stat(path)
-  return !errors.Is(err, os.ErrNotExist)
 }
 
 func listAction() {
