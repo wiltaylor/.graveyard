@@ -28,14 +28,16 @@
     };
 
     packages.x86_64-linux.dev = pkgs.buildGoModule rec {
-      name ="dev";
+      pname ="dev";
       version = "0.1.0";
 
       buildInputs = with pkgs; [ ];
 
+      proxyVendor = true;
+
       src = ./.;
-      
-      vendorSha256 = "sha256-6rlwNQv91yeCz9RHgKJQP65xhFxx4EznFUmOUgnPqvk=";
+
+      vendorSha256 = "sha256-wbKJQInRfFYqxCZC+M4mqo5R5LXxuatD0Yzad1O6iGs=";
     };
   };
 }
