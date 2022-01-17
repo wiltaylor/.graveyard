@@ -27,7 +27,7 @@
       };
     };
 
-    packages.x86_64-linux.kn = pkgs.buildGoModule rec {
+    packages.x86_64-linux.dev = pkgs.buildGoModule rec {
       name ="dev";
       version = "0.1.0";
 
@@ -35,7 +35,7 @@
 
       src = ./.;
       
-      vendorSha256 = "sha256-Pi5mS8YToBTgHgvlT5UthrCx5fHXGce9GGw9OtZQPdg=";
+      vendorSha256 = "sha256-6rlwNQv91yeCz9RHgKJQP65xhFxx4EznFUmOUgnPqvk=";
     };
   };
 }

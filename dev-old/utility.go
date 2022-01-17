@@ -32,3 +32,18 @@ func execute(command string, dir string) (error) {
 
   return nil
 }
+
+func getCommandAndArgs(args []string) (string, []string, error) {
+  if len(args) == 0 {
+    return "", make([]string, 0), errors.New("No arguments passed in")
+  }
+
+  command := args[0]
+  commandArgs := make([]string, 0)
+
+  if len(args) > 1 {
+    commandArgs = args[1:]
+  }
+
+  return command, commandArgs, nil
+}
