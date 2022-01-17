@@ -14,11 +14,18 @@
 
     lib = import ./lib;
 
-  in rec {
+  in {
 
     devShell = lib.withDefaultSystems (sys: let 
       pkgs = allPkgs."${sys}";
     in import ./shell.nix { inherit pkgs;});
+
+    overlay = lib.mkOverlays {
+      inherit allPkgs;
+      overlayFunc = sys: pkgs: (top: last: {
+        dev = self.packages."${sys}".dev;
+      });
+    };
 
     defaultPackage = lib.withDefaultSystems (sys: self.packages."${sys}".dev);
 
