@@ -7,37 +7,37 @@
 
   outputs = { self, nixpkgs }: let
 
-    pkgs = import nixpkgs {
-      system = "x86_64-linux";
-      config = { allowUnfree = "true";};
+    allPkgs = lib.mkPkgs { 
+      inherit nixpkgs; 
+      cfg = { allowUnfree = true; };
     };
+
+    lib = import ./lib;
 
   in rec {
 
-    devShell.x86_64-linux = import ./shell.nix { inherit pkgs;};
+    devShell = lib.withDefaultSystems (sys: let 
+      pkgs = allPkgs."${sys}";
+    in import ./shell.nix { inherit pkgs;});
 
-    defaultPackage.x86_64-linux = packages.x86_64-linux.dev;
-    defaultApp = apps.dev;
+    defaultPackage = lib.withDefaultSystems (sys: self.packages."${sys}".dev);
 
+    packages = lib.withDefaultSystems (sys: let
+      pkgs = allPkgs."${sys}";
+    in {
+      dev = pkgs.buildGoModule rec {
+        pname ="dev";
+        version = "0.1.0";
 
-    apps = {
-      dev = {
-        type = "app";
-        program = "${defaultPackage}/bin/dev";
+        buildInputs = with pkgs; [ ];
+
+        proxyVendor = true;
+
+        src = ./.;
+
+        vendorSha256 = "sha256-wbKJQInRfFYqxCZC+M4mqo5R5LXxuatD0Yzad1O6iGs=";
       };
-    };
 
-    packages.x86_64-linux.dev = pkgs.buildGoModule rec {
-      pname ="dev";
-      version = "0.1.0";
-
-      buildInputs = with pkgs; [ ];
-
-      proxyVendor = true;
-
-      src = ./.;
-
-      vendorSha256 = "sha256-wbKJQInRfFYqxCZC+M4mqo5R5LXxuatD0Yzad1O6iGs=";
-    };
+    });
   };
 }
