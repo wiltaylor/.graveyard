@@ -89,7 +89,15 @@ func generator(args []string) {
 }
 
 func doAction(name string, args []string) {
-	dev, err := getActions()
+	pwd, _ := os.Getwd()
+	prjRoot, err := findPrjRoot(pwd)
+
+  if err != nil {
+    log.Fatal("Can't do an action when not in a project")
+    return
+  }
+
+  dev, err := getActions()
 
 	if err != nil {
 		log.Fatal(err)
@@ -106,7 +114,7 @@ func doAction(name string, args []string) {
 			}
 
 			command = strings.Replace(command, "%*", strings.Join(args, " "), -1)
-			err := execute(command, "")
+			err := execute(command, prjRoot)
 
 			if err != nil {
 				log.Fatal(err)
