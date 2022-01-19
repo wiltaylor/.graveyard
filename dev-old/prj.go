@@ -114,6 +114,7 @@ func prjNew(args []string) {
 		return
 	}
 
+  projectName = args[0]
 	projectPath, err := parseProjectNameToPath(args[0])
 
 	if err != nil {
@@ -151,7 +152,7 @@ func prjNew(args []string) {
 		templateArgs = args[1:]
 	}
 
-	command := fmt.Sprintf("%s/%s %s", templateDir, template, strings.Join(templateArgs, " "))
+	command := fmt.Sprintf("%s/%s %s %s", templateDir, template, projectName, strings.Join(templateArgs, " "))
 	err = execute(command, projectPath)
 
 	if err != nil {
