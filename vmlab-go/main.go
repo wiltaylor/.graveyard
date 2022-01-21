@@ -52,6 +52,39 @@ func initCommand() error {
   return err
 }
 
+func infoCommand() error{
+  	pwd, err := os.Getwd()
+
+  if err != nil {
+    return err
+  }
+
+  vmlabPath := filepath.Join(pwd, "vmlab.yaml")
+
+  if !exists(vmlabPath) {
+    return errors.New("This directory doesn't have a vmlab.yaml file in it!")
+  }
+
+  lab, err := loadLabFile(vmlabPath)
+
+  fmt.Printf("Lab Info:\n")
+  fmt.Printf("Title: %s\n", lab.Title)
+  fmt.Printf("Description: %s\n", lab.Description)
+  fmt.Printf("Author: %s\n", lab.Author)
+  fmt.Printf("Virtual Machines:\n")
+
+  for _, vm := range lab.VirtualMachines {
+    fmt.Printf("  Name: %s\n", vm.Name)
+    fmt.Printf("  Status: Unprovisoned\n")
+    fmt.Printf("  Template: %s\n", vm.Template)
+    fmt.Printf("  CPUs: %d\n", vm.Cpus)
+    fmt.Printf("  Memory: %d MiB\n", vm.Memory)
+    fmt.Printf("\n")
+  }
+
+  return nil
+}
+
 func main() {
   if len(os.Args) == 1 {
     usage()
@@ -69,6 +102,13 @@ func main() {
     case "version":
       version(args)
       break
+    case "info":
+      err := infoCommand()
+
+      if err != nil {
+        fmt.Printf("Error: %s\n", err)
+      }
+      break
     case "init":
       err := initCommand()
 
@@ -80,10 +120,7 @@ func main() {
       usage()
       break
   }
-
 }
-
-
 
 func version(args []string){
   fmt.Printf("VMLAB Version: %s\n", VERSION)
@@ -95,5 +132,6 @@ func usage(){
   fmt.Println()
   fmt.Println("Commands:")
   fmt.Println("init - Creates a new vmlab.yaml file in the current directory")
+  fmt.Println("info - Prints info of the lab.")
   fmt.Println("version - Prints vmlab version information")
 }
