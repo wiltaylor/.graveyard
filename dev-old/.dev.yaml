@@ -1,7 +1,13 @@
 actions:
+  - name: up
+    description: "Starts the development environment for this project"
+    command: "nix develop -c tmuxide"
   - name: build
-    description: "Builds the project"
-    command: "echo %1"
+    description: "Build the project"
+    command: "go build"
   - name: run
-    description: "Executes the project"
-    command: "echo %*"
+    description: "Run the project"
+    command: "go run . %*"
+  - name: test
+    description: "Run project test suite"
+    command: "go test"

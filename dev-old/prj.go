@@ -114,7 +114,7 @@ func prjNew(args []string) {
 		return
 	}
 
-  projectName = args[0]
+  projectName := args[0]
 	projectPath, err := parseProjectNameToPath(args[0])
 
 	if err != nil {
@@ -134,7 +134,7 @@ func prjNew(args []string) {
 		return
 	}
 
-	template, templateArgs, err := getCommandAndArgs(args)
+  template, templateArgs, err := getCommandAndArgs(args[1:])
 
 	if err != nil {
 		log.Fatal("Expected a project name and template name to be supplied")
@@ -146,10 +146,6 @@ func prjNew(args []string) {
 	if templateDir == "" {
 		log.Fatal("WTDEV environment variable is not set!")
 		return
-	}
-
-	if len(args) > 2 {
-		templateArgs = args[1:]
 	}
 
 	command := fmt.Sprintf("%s/%s %s %s", templateDir, template, projectName, strings.Join(templateArgs, " "))
@@ -196,7 +192,9 @@ func prjOpen(args []string) {
 		return
 	}
 
-	fmt.Println(projectPath)
+  shell := os.Getenv("SHELL")
+
+  execute(shell, projectPath)
 }
 
 func prjInfo() {

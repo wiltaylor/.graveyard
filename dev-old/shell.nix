@@ -1,13 +1,24 @@
 { pkgs ? <nixpkgs> }:
-pkgs.mkShell {
+let
+  tmuxIde = pkgs.writeScriptBin "tmuxide" ''
+    tmux new-session -d -s vmlab vim
+    tmux rename-window 'neovim'
+    tmux select-window -t 'vmlab:0'
+    tmux split-window -v -p 30 zsh
+    tmux attach-session -t vmlab
+  '';
+in pkgs.mkShell {
   name = "golangdevshell";
   buildInputs = with pkgs; [
     go
     dep2nix
     delve
+    tmuxIde
   ];
 
   shellHook = ''
     echo "DEV DevShell"
+    export SHELL=zsh
+    export EDITOR=vim
   '';
 }
