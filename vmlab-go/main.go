@@ -188,6 +188,37 @@ func stopCommand() error {
   return nil
 }
 
+func destroyCommand() error {
+  vmlabPath, err := getVMLabFilePath()
+
+  if err != nil {
+    return errors.New("This directory doesn't have a vmlab.yaml file in it!")
+  }
+
+  vmlabFile, err := loadLabFile(vmlabPath)
+
+  if err != nil {
+    return err
+  }
+
+  for _, vm := range vmlabFile.VirtualMachines {
+
+    err = vmStop(vm)
+
+    if err != nil {
+      return err
+    }
+
+    err = vmDestroy(vm)
+
+    if err != nil {
+      return err
+    }
+  }
+
+  return nil
+}
+
 func printIfErr(err error) {
   if err != nil {
     fmt.Printf("Error: %s\n", err)
@@ -220,6 +251,9 @@ func main() {
     case "stop":
       printIfErr(stopCommand())
       break
+    case "destroy":
+      printIfErr(destroyCommand())
+      break
     case "init":
       printIfErr(initCommand())
       break
@@ -239,6 +273,8 @@ func usage(){
   fmt.Println()
   fmt.Println("Commands:")
   fmt.Println("Up - Provisions VMs if they are not already and powers them on")
+  fmt.Println("Stop - Stops running VMs")
+  fmt.Println("Destroy - Removes all lab vm data from disk")
   fmt.Println("init - Creates a new vmlab.yaml file in the current directory")
   fmt.Println("info - Prints info of the lab.")
   fmt.Println("version - Prints vmlab version information")

@@ -112,3 +112,22 @@ func vmStop(vm VirtualMachine) error {
 
   return nil
 }
+
+func vmDestroy(vm VirtualMachine) error {
+  root, err := getLocalVMLabDir()
+
+  if err != nil {
+    return err
+  }
+
+  vmDir := filepath.Join(root, vm.Name)
+
+  //If vm doesn't exist the vm isn't provisioned so we don't need to destroy this one.
+  if !exists(vmDir) {
+    return nil
+  }
+
+  err = os.RemoveAll(vmDir)
+
+  return err
+}
