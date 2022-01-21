@@ -9,6 +9,60 @@ import (
 
 const VERSION = "0.1.0"
 
+func getVMLabRoot() (string, error) {
+  labRoot := os.Getenv("VMLABROOT")
+
+  if labRoot == "" {
+    labRoot = filepath.Join(os.Getenv("HOME"), ".local", "share", "vmlab")
+  }
+
+  if !exists(labRoot) {
+    err := os.Mkdir(labRoot, 0755)
+
+    if err != nil {
+      return "", err
+    }
+  }
+
+  return labRoot, nil
+}
+
+func getLocalVMLabDir() (string, error) { 
+	pwd, err := os.Getwd()
+
+  if err != nil {
+    return "", err
+  }
+
+  rootPath := filepath.Join(pwd, ".vmlab")
+
+  if !exists(rootPath) {
+    err = os.Mkdir(rootPath, 0755)
+
+    if err != nil {
+      return "", err
+    }
+  }
+
+  return rootPath, nil
+}
+
+func getVMLabFilePath() (string, error) {
+  pwd, err := os.Getwd()
+
+  if err != nil {
+    return "", err
+  }
+
+  vmlabPath := filepath.Join(pwd, "vmlab.yaml")
+
+  if !exists(vmlabPath) {
+    return "", errors.New("VMLab file doesn't exist!")
+  }
+
+  return vmlabPath, nil
+}
+
 func getCommandAndArgs(args []string) (string, []string, error) {
   if len(args) == 0 {
     return "", make([]string, 0), errors.New("Expected there to be at least 1 argument")
@@ -53,15 +107,9 @@ func initCommand() error {
 }
 
 func infoCommand() error{
-  	pwd, err := os.Getwd()
+  vmlabPath, err := getVMLabFilePath()
 
   if err != nil {
-    return err
-  }
-
-  vmlabPath := filepath.Join(pwd, "vmlab.yaml")
-
-  if !exists(vmlabPath) {
     return errors.New("This directory doesn't have a vmlab.yaml file in it!")
   }
 
@@ -85,6 +133,67 @@ func infoCommand() error{
   return nil
 }
 
+func upCommand() error {
+  vmlabPath, err := getVMLabFilePath()
+
+  if err != nil {
+    return errors.New("This directory doesn't have a vmlab.yaml file in it!")
+  }
+
+  vmlabFile, err := loadLabFile(vmlabPath)
+
+  if err != nil {
+    return err
+  }
+
+  for _, vm := range vmlabFile.VirtualMachines {
+    err = provisionVM(vm)
+
+    if err != nil {
+      return err
+    }
+
+    err = vmStart(vm)
+
+    if err != nil {
+      return err
+    }
+  }
+
+  return nil
+}
+
+func stopCommand() error {
+  vmlabPath, err := getVMLabFilePath()
+
+  if err != nil {
+    return errors.New("This directory doesn't have a vmlab.yaml file in it!")
+  }
+
+  vmlabFile, err := loadLabFile(vmlabPath)
+
+  if err != nil {
+    return err
+  }
+
+  for _, vm := range vmlabFile.VirtualMachines {
+
+    err = vmStop(vm)
+
+    if err != nil {
+      return err
+    }
+  }
+
+  return nil
+}
+
+func printIfErr(err error) {
+  if err != nil {
+    fmt.Printf("Error: %s\n", err)
+  }
+}
+
 func main() {
   if len(os.Args) == 1 {
     usage()
@@ -103,18 +212,16 @@ func main() {
       version(args)
       break
     case "info":
-      err := infoCommand()
-
-      if err != nil {
-        fmt.Printf("Error: %s\n", err)
-      }
+      printIfErr(infoCommand())
+      break
+    case "up":
+      printIfErr(upCommand())
+      break
+    case "stop":
+      printIfErr(stopCommand())
       break
     case "init":
-      err := initCommand()
-
-      if err != nil {
-        fmt.Printf("Error: %s\n", err)
-      }
+      printIfErr(initCommand())
       break
     default:
       usage()
@@ -131,6 +238,7 @@ func usage(){
   fmt.Println("vmlab {command} [options]")
   fmt.Println()
   fmt.Println("Commands:")
+  fmt.Println("Up - Provisions VMs if they are not already and powers them on")
   fmt.Println("init - Creates a new vmlab.yaml file in the current directory")
   fmt.Println("info - Prints info of the lab.")
   fmt.Println("version - Prints vmlab version information")
