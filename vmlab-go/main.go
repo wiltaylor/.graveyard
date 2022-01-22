@@ -178,7 +178,8 @@ func stopCommand() error {
 
   for _, vm := range vmlabFile.VirtualMachines {
 
-    err = vmStop(vm)
+    //err = vmStop(vm)
+    err = vmShutdown(vm)
 
     if err != nil {
       return err

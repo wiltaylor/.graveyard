@@ -7,6 +7,8 @@ import (
   "errors"
   "github.com/shirou/gopsutil/v3/process"
   "strings"
+  "net"
+  "time"
 )
 
 func getTemplateHd(name string) (string, error) {
@@ -75,13 +77,89 @@ func vmStart(vm VirtualMachine) error {
     return errors.New("VM HD is missing.")
   }
 
-  command := fmt.Sprintf("qemu-system-x86_64 -name %s -cpu host -enable-kvm -m %d -smp %d -drive file=%s -vga std &", vm.Name, vm.Memory, vm.Cpus, vmHD)
+  socketPath := filepath.Join(root, vm.Name, "control.sock")
+
+  command := fmt.Sprintf("qemu-system-x86_64 -name %s -cpu host -enable-kvm -m %d -smp %d -drive file=%s -vga std -qmp unix:%s,server &", vm.Name, vm.Memory, vm.Cpus, vmHD, socketPath)
 
   fmt.Printf("%s\n", command)
 
   execute(command, "")
 
+  time.Sleep(1 * time.Second)
+
+  sock, err := net.Dial("unix", socketPath)
+
+  if err != nil {
+    return err
+  }
+
+  sock.Close()
+
   return nil
+}
+
+func vmQmpCommand(vm VirtualMachine, command string) (string, error) {
+
+  root, err := getLocalVMLabDir()
+
+  if err != nil {
+    return "", err
+  }
+
+  socketPath := filepath.Join(root, vm.Name, "control.sock")
+
+  //If vm socket doesn't exist then its not running.
+  if !exists(socketPath) {
+    return "", nil
+  }
+
+  sock, err := net.Dial("unix", socketPath)
+
+  if err != nil {
+    return "", err
+  }
+
+  defer sock.Close()
+
+  txt, err := readSocket(sock)
+
+  if err != nil {
+    return "", err 
+  }
+
+  if strings.Index(txt, "QMP") == -1 {
+    return "", errors.New("Did not return expected version string")
+  }
+
+  err =  writeSocket(sock, "{ \"execute\": \"qmp_capabilities\" }")
+
+  if err != nil {
+    return "", err
+  }
+
+  txt, err = readSocket(sock)
+
+  if err != nil {
+    return "", err 
+  }
+
+  if strings.Index(txt, "return") == -1 {
+    return "", errors.New("Operation Failed")
+  }
+
+  err =  writeSocket(sock, fmt.Sprintf("{ \"execute\": \"%s\" }", command))
+
+  if err != nil {
+    return "", err
+  }
+
+  txt, err = readSocket(sock)
+
+  if err != nil {
+    return "", err 
+  }
+ 
+  return txt, nil
 }
 
 func vmStop(vm VirtualMachine) error {
@@ -111,6 +189,14 @@ func vmStop(vm VirtualMachine) error {
   }
 
   return nil
+}
+
+func vmShutdown(vm VirtualMachine) error {
+
+  _, err := vmQmpCommand(vm, "system_powerdown")
+
+  return err
+
 }
 
 func vmDestroy(vm VirtualMachine) error {
