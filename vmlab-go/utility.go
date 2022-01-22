@@ -6,6 +6,7 @@ import (
 	"os/exec"
   "net"
   "io"
+  "regexp"
 )
 
 
@@ -50,4 +51,19 @@ func readSocket(sock net.Conn)(string, error) {
 func writeSocket(sock net.Conn, text string) error {
   _, err := io.WriteString(sock, text)
   return err
+}
+
+func regexFirstGroup(pattern string, text string) string {
+  re := regexp.MustCompile(pattern)
+
+  for _, match := range re.FindAllStringSubmatch(text, -1) {
+    for i, group := range match {
+      if i == 0 {
+        continue
+      }
+      return group
+    } 
+  }
+
+  return ""
 }

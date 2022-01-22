@@ -123,7 +123,7 @@ func infoCommand() error{
 
   for _, vm := range lab.VirtualMachines {
     fmt.Printf("  Name: %s\n", vm.Name)
-    fmt.Printf("  Status: Unprovisoned\n")
+    fmt.Printf("  Status: %s\n", vmGetStatus(vm))
     fmt.Printf("  Template: %s\n", vm.Template)
     fmt.Printf("  CPUs: %d\n", vm.Cpus)
     fmt.Printf("  Memory: %d MiB\n", vm.Memory)
@@ -220,6 +220,65 @@ func destroyCommand() error {
   return nil
 }
 
+func restartCommand() error {
+  vmlabPath, err := getVMLabFilePath()
+
+  if err != nil {
+    return errors.New("This directory doesn't have a vmlab.yaml file in it!")
+  }
+
+  vmlabFile, err := loadLabFile(vmlabPath)
+
+  if err != nil {
+    return err
+  }
+
+  for _, vm := range vmlabFile.VirtualMachines {
+
+    //err = vmStop(vm)
+    err = vmRestart(vm)
+
+    if err != nil {
+      return err
+    }
+  }
+
+  return nil
+}
+
+func execCommand(args []string) error {
+
+  fmt.Printf("%v\n", args)
+
+  if len(args) != 2 {
+    return errors.New("Expected vmlab vmname command")
+  }
+
+  vmlabPath, err := getVMLabFilePath()
+
+  if err != nil {
+    return errors.New("This directory doesn't have a vmlab.yaml file in it!")
+  }
+
+  vmlabFile, err := loadLabFile(vmlabPath)
+
+  if err != nil {
+    return err
+  }
+
+  for _, vm := range vmlabFile.VirtualMachines {
+
+    if vm.Name == args[0] {
+      err = vmExecute(vm, args[1])
+      return err
+    }
+  }
+
+  return errors.New("Can't find vm with that name in this lab!")
+
+
+}
+
 func printIfErr(err error) {
   if err != nil {
     fmt.Printf("Error: %s\n", err)
@@ -252,12 +311,17 @@ func main() {
     case "stop":
       printIfErr(stopCommand())
       break
+    case "reset":
+      printIfErr(restartCommand())
+      break
     case "destroy":
       printIfErr(destroyCommand())
       break
     case "init":
       printIfErr(initCommand())
       break
+    case "exec":
+      printIfErr(execCommand(args))
     default:
       usage()
       break
@@ -278,5 +342,6 @@ func usage(){
   fmt.Println("Destroy - Removes all lab vm data from disk")
   fmt.Println("init - Creates a new vmlab.yaml file in the current directory")
   fmt.Println("info - Prints info of the lab.")
+  fmt.Println("exec - Executes a command in a vm")
   fmt.Println("version - Prints vmlab version information")
 }

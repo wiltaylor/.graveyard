@@ -9,6 +9,8 @@ import (
   "strings"
   "net"
   "time"
+  "regexp"
+	"encoding/base64"
 )
 
 func getTemplateHd(name string) (string, error) {
@@ -78,8 +80,9 @@ func vmStart(vm VirtualMachine) error {
   }
 
   socketPath := filepath.Join(root, vm.Name, "control.sock")
+  guestSocketPath := filepath.Join(root, vm.Name, "guest.sock")
 
-  command := fmt.Sprintf("qemu-system-x86_64 -name %s -cpu host -enable-kvm -m %d -smp %d -drive file=%s -vga std -qmp unix:%s,server &", vm.Name, vm.Memory, vm.Cpus, vmHD, socketPath)
+  command := fmt.Sprintf("qemu-system-x86_64 -name %s -cpu host -enable-kvm -m %d -smp %d -drive file=%s -vga std -qmp unix:%s,server -chardev socket,path=%s,server,nowait,id=qga0 -device virtio-serial -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 &", vm.Name, vm.Memory, vm.Cpus, vmHD, socketPath, guestSocketPath)
 
   fmt.Printf("%s\n", command)
 
@@ -96,6 +99,39 @@ func vmStart(vm VirtualMachine) error {
   sock.Close()
 
   return nil
+}
+
+func vmGACommand(vm VirtualMachine, json string) (string, error) {
+  root, err := getLocalVMLabDir()
+
+  if err != nil {
+    return "", err
+  }
+
+  socketPath := filepath.Join(root, vm.Name, "guest.sock")
+
+  //If vm socket doesn't exist then its not running.
+  if !exists(socketPath) {
+    return "", errors.New("Can't find guest.sock file for this vm!")
+  }
+
+  sock, err := net.Dial("unix", socketPath)
+
+  if err != nil {
+    return "", err
+  }
+
+  defer sock.Close()
+
+  err =  writeSocket(sock, json)
+
+  txt, err := readSocket(sock)
+
+  if err != nil {
+    return "", err 
+  }
+
+  return txt, nil
 }
 
 func vmQmpCommand(vm VirtualMachine, command string) (string, error) {
@@ -196,7 +232,12 @@ func vmShutdown(vm VirtualMachine) error {
   _, err := vmQmpCommand(vm, "system_powerdown")
 
   return err
+}
 
+func vmRestart(vm VirtualMachine) error {
+  _, err := vmQmpCommand(vm, "system_reset")
+
+  return err
 }
 
 func vmDestroy(vm VirtualMachine) error {
@@ -216,4 +257,85 @@ func vmDestroy(vm VirtualMachine) error {
   err = os.RemoveAll(vmDir)
 
   return err
+}
+
+func vmGetStatus(vm VirtualMachine) string {
+
+  root, err := getLocalVMLabDir()
+
+  if err != nil {
+    return "Error"
+  }
+
+
+  vmHD := filepath.Join(root, vm.Name, "main.qcow")
+  socketPath := filepath.Join(root, vm.Name, "control.sock")
+
+  if !exists(vmHD) {
+    return "Unprovisioned"
+  }
+
+  if !exists(socketPath) {
+    return "Off"
+  }
+
+  txt, err := vmQmpCommand(vm, "query-status")
+  
+  if err != nil {
+    return "Error"
+  }
+
+  re := regexp.MustCompile(`"status":."(.*)"[,}]`)
+
+  for _, match := range re.FindAllStringSubmatch(txt, -1) {
+    for i, group := range match {
+      if i == 0 {
+        continue
+      }
+      return group
+    } 
+  }
+
+  return "Unknown"
+}
+
+func vmExecute(vm VirtualMachine, command string) error {
+  result, err := vmGACommand(vm, fmt.Sprintf(`{ "execute": "guest-exec", "arguments": { "path": "/bin/sh", "arg": [ "-c", "%s" ], "capture-output": true }}`, command))
+
+  if err != nil {
+    return err
+  }
+
+  pid := regexFirstGroup(`"pid": ([0-9]{1,8})`, result)
+
+  if pid == "" {
+    fmt.Printf("%s\n", result)
+    return errors.New("Was unable to run command!")
+  }
+
+  for {
+
+    result, err = vmGACommand(vm, fmt.Sprintf(`{ "execute": "guest-exec-status", "arguments": { "pid": %s }}`, pid))
+
+    if err != nil {
+      return err
+    }
+
+    exited := regexFirstGroup(`"exited":.(true)`, result)
+    txt := regexFirstGroup(`"out-data": "([0-9a-zA-Z=]+)"[,}]`, result)
+
+    decodedTxt, err := base64.StdEncoding.DecodeString(txt)
+
+    if err != nil {
+      return err
+    }
+
+    fmt.Printf("%s", decodedTxt)
+
+    if exited == "true" {
+      break
+    }
+  }
+
+  return nil
 }
