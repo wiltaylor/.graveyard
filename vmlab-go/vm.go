@@ -11,7 +11,6 @@ import (
   "time"
   "regexp"
 	"encoding/base64"
-  "math/rand"
 )
 
 func getTemplateHd(template TemplateFile) (string, error) {
@@ -88,9 +87,28 @@ func vmStart(vm VirtualMachine, template TemplateFile) error {
   shareCommand := ""
   networkCommand := ""
 
+  CPUCommand := "-cpu host -enable-kvm "
+
+  if template.GuestOS == "windows" {
+    CPUCommand = "-cpu host,kvm=on,+hypervisor,+invtsc,l3-cache=on,migratable=no,hv_frequencies,kvm_pv_unhalt,hv_reenlightenment,hv_relaxed,hv_spinlocks=8191,hv_stimer,hv_synic,hv_time,hv_vapic,hv_vendor_id=1234567890ab,hv_vpindex -enable-kvm "
+  }
+
   for _, share := range vm.SharedFolders {
-    shareCommand += fmt.Sprintf("-fsdev local,security_model=mapped,id=fsdev-%s,multidevs=remap,path=%s -device virtio-9p-pci,id=%s,fsdev=fsdev-%s,mount_tag=%s ",
-      share.Name, share.Host, share.Name, share.Name, share.Name)    
+
+    if template.GuestOS == "linux" {
+      shareCommand += fmt.Sprintf("-fsdev local,security_model=mapped,id=fsdev-%s,multidevs=remap,path=%s -device virtio-9p-pci,id=%s,fsdev=fsdev-%s,mount_tag=%s ",
+        share.Name, share.Host, share.Name, share.Name, share.Name)    
+    }
+
+    if template.GuestOS == "windows" {
+      abs, err := filepath.Abs(share.Host)
+
+      if err != nil {
+        return err
+      }
+
+      shareCommand = fmt.Sprintf("-netdev id=test,type=user,smb=%s -device e1000,netdev=test ",abs)
+    }
   }
 
   for _, net := range vm.Networks {
@@ -110,22 +128,20 @@ func vmStart(vm VirtualMachine, template TemplateFile) error {
 
   OSCommand := ""
 
-  if template.GuestOS == "windows" {
-    OSCommand = "-usb -device usb-tablet" 
+ if template.GuestOS == "windows" {
+    OSCommand = "-usb -device usb-tablet -machine q35,kernel_irqchip=on " 
   }
 
-  clientNo := rand.Intn(10000)
+  command := fmt.Sprintf("qemu-system-x86_64 -name %s %s -m %d -smp %d -drive node-name=drive0,file=%s -display gtk,gl=on -vga virtio -qmp unix:%s,server=on,wait=off -chardev socket,path=%s,server=on,wait=off,id=qga0 -device virtio-serial -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 %s %s %s",
+    vm.Name, CPUCommand, vm.Memory, vm.Cpus, vmHD, socketPath, guestSocketPath, shareCommand, networkCommand, OSCommand)
 
-
-  command := fmt.Sprintf("qemu-system-x86_64 -name %s -cpu host -enable-kvm -m %d -smp %d -drive node-name=drive0,file=%s -display sdl -vga virtio -qmp unix:%s,server=on,wait=off -chardev socket,path=%s,server=on,wait=off,id=qga0 -device virtio-serial -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.%d %s %s %s &",
-    vm.Name, vm.Memory, vm.Cpus, vmHD, socketPath, guestSocketPath, clientNo, shareCommand, networkCommand, OSCommand)
-
+  command = strings.Trim(command, " ") + " &"
   fmt.Printf("%s\n", command)
 
   execute(command, "")
 
   //sleeping for 5 to work around a bug with windows where if you don't wait longer it hangs
-  time.Sleep(5 * time.Second)
+  time.Sleep(1 * time.Second)
 
   if shareCommand != "" {
     for {
@@ -137,18 +153,24 @@ func vmStart(vm VirtualMachine, template TemplateFile) error {
 
       if status == "running" {
         for _, share := range vm.SharedFolders {
-          err = vmExecute(vm, fmt.Sprintf("mkdir -p %s", share.Guest))
-          if err != nil {
-            return err
+          if template.GuestOS == "linux" {
+            err = vmExecute(vm, template, fmt.Sprintf("mkdir -p %s", share.Guest))
+            if err != nil {
+              return err
+            }
+
+            err = vmExecute(vm, template, fmt.Sprintf("mount -t 9p -o trans=virtio %s %s -oversion=9p2000.L,posixacl,msize=5000000,cache=mmap", share.Name, share.Guest))
+            if err != nil {
+              return err
+            }
           }
 
-          err = vmExecute(vm, fmt.Sprintf("mount -t 9p -o trans=virtio %s %s -oversion=9p2000.L,posixacl,msize=5000000,cache=mmap", share.Name, share.Guest))
-          if err != nil {
-            return err
+          if template.GuestOS == "windows" {
+
           }
         }
 
-        break
+        return nil
       }
     }
   }
@@ -354,8 +376,16 @@ func vmGetStatus(vm VirtualMachine) string {
   return "Unknown"
 }
 
-func vmExecute(vm VirtualMachine, command string) error {
-  result, err := vmGACommand(vm, fmt.Sprintf(`{ "execute": "guest-exec", "arguments": { "path": "/bin/sh", "arg": [ "-c", "%s" ], "capture-output": true }}`, command))
+func vmExecute(vm VirtualMachine, template TemplateFile, command string) error {
+  outCommandPattern := `{ "execute": "guest-exec", "arguments": { "path": "/bin/sh", "arg": [ "-c", "%s" ], "capture-output": true }}`
+
+
+  if template.GuestOS == "windows" {
+    outCommandPattern = `{ "execute": "guest-exec", "arguments": { "path": "c:\\windows\\system32\\cmd.exe", "arg": [ "/c", "%s" ], "capture-output": true }}`
+  }
+
+
+  result, err := vmGACommand(vm, fmt.Sprintf(outCommandPattern, command))
 
   if err != nil {
     return err

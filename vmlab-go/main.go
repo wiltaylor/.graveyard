@@ -172,6 +172,10 @@ func upCommand() error {
   for _, vm := range vmlabFile.VirtualMachines {
     template, err := getTemplate(vm.Template)
 
+    if err != nil {
+      return err
+    }
+
     err = provisionVM(vm, template)
 
     if err != nil {
@@ -294,7 +298,13 @@ func execCommand(args []string) error {
   for _, vm := range vmlabFile.VirtualMachines {
 
     if vm.Name == args[0] {
-      err = vmExecute(vm, strings.Join(args[1:], " "))
+
+      template, err := getTemplate(vm.Template)
+      if err != nil {
+        return err
+      }
+
+      err = vmExecute(vm, template, strings.Join(args[1:], " "))
       return err
     }
   }

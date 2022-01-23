@@ -9,6 +9,8 @@ import (
   "regexp"
 )
 
+var outBuff []byte = make([]byte, 1024 * 1024 * 100)
+
 
 func exists(path string) bool {
 	_, err := os.Stat(path)
@@ -37,15 +39,15 @@ func execute(command string, dir string) error {
 
 func readSocket(sock net.Conn)(string, error) {
 
-  buffer := make([]byte, 1024 * 1024)
+  //buffer := make([]byte, 1024 * 1024)
 
-  n, err := sock.Read(buffer[:])
+  n, err := sock.Read(outBuff[:])
 
   if err != nil {
     return "", err
   }
 
-  return string(buffer[0:n]), nil
+  return string(outBuff[0:n]), nil
 }
 
 func writeSocket(sock net.Conn, text string) error {
