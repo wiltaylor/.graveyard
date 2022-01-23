@@ -27,12 +27,19 @@ type VirtualMachine struct {
   Memory int `yaml:"memory"`
   SharedFolders []SharedFolder `yaml:"sharedfolders"`
   Networks []Network `yaml:"networks"`
+  Ports []PortForward `yaml:"ports"`
 }
 
 type SharedFolder struct {
   Name string `yaml:"name"`
   Host string `yaml:"host"`
   Guest string `yaml:"guest"`
+}
+
+type PortForward struct {
+  Protocol string `yaml:"protocol"`
+  Guest int `yaml:"guest"`
+  Host int `yaml:"host"`
 }
 
 type Network struct {

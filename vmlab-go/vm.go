@@ -86,11 +86,19 @@ func vmStart(vm VirtualMachine, template TemplateFile) error {
 
   shareCommand := ""
   networkCommand := ""
+  portCommand := ""
 
   CPUCommand := "-cpu host -enable-kvm "
 
   if template.GuestOS == "windows" {
     CPUCommand = "-cpu host,kvm=on,+hypervisor,+invtsc,l3-cache=on,migratable=no,hv_frequencies,kvm_pv_unhalt,hv_reenlightenment,hv_relaxed,hv_spinlocks=8191,hv_stimer,hv_synic,hv_time,hv_vapic,hv_vendor_id=1234567890ab,hv_vpindex -enable-kvm "
+  }
+
+  for _, port := range vm.Ports {
+    if portCommand != "" {
+      portCommand += ","
+    }
+    portCommand += fmt.Sprintf("hostfwd=%s::%d-:%d", port.Protocol, port.Host, port.Guest)
   }
 
   for _, share := range vm.SharedFolders {
@@ -99,22 +107,17 @@ func vmStart(vm VirtualMachine, template TemplateFile) error {
       shareCommand += fmt.Sprintf("-fsdev local,security_model=mapped,id=fsdev-%s,multidevs=remap,path=%s -device virtio-9p-pci,id=%s,fsdev=fsdev-%s,mount_tag=%s ",
         share.Name, share.Host, share.Name, share.Name, share.Name)    
     }
-
-    if template.GuestOS == "windows" {
-      abs, err := filepath.Abs(share.Host)
-
-      if err != nil {
-        return err
-      }
-
-      shareCommand = fmt.Sprintf("-netdev id=test,type=user,smb=%s -device e1000,netdev=test ",abs)
-    }
   }
 
   for _, net := range vm.Networks {
     
     if net.Type == "public" {
-      networkCommand += "-nic user "
+
+      if portCommand == "" {
+        networkCommand += "-nic user "
+      }else{
+        networkCommand += "-nic user," + portCommand + " "
+      }
     }
 
     if net.Type == "private" {
@@ -125,6 +128,9 @@ func vmStart(vm VirtualMachine, template TemplateFile) error {
   if networkCommand == "" {
     networkCommand = "-nic none"
   }
+
+
+
 
   OSCommand := ""
 
