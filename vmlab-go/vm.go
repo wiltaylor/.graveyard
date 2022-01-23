@@ -11,6 +11,7 @@ import (
   "time"
   "regexp"
 	"encoding/base64"
+  "math/rand"
 )
 
 func getTemplateHd(template TemplateFile) (string, error) {
@@ -113,15 +114,18 @@ func vmStart(vm VirtualMachine, template TemplateFile) error {
     OSCommand = "-usb -device usb-tablet" 
   }
 
+  clientNo := rand.Intn(10000)
 
-  command := fmt.Sprintf("qemu-system-x86_64 -name %s -cpu host -enable-kvm -m %d -smp %d -drive node-name=drive0,file=%s -vga virtio -qmp unix:%s,server=on,wait=off -chardev socket,path=%s,server=on,wait=off,id=qga0 -device virtio-serial -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 %s %s %s &",
-    vm.Name, vm.Memory, vm.Cpus, vmHD, socketPath, guestSocketPath, shareCommand, networkCommand, OSCommand)
+
+  command := fmt.Sprintf("qemu-system-x86_64 -name %s -cpu host -enable-kvm -m %d -smp %d -drive node-name=drive0,file=%s -display sdl -vga virtio -qmp unix:%s,server=on,wait=off -chardev socket,path=%s,server=on,wait=off,id=qga0 -device virtio-serial -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.%d %s %s %s &",
+    vm.Name, vm.Memory, vm.Cpus, vmHD, socketPath, guestSocketPath, clientNo, shareCommand, networkCommand, OSCommand)
 
   fmt.Printf("%s\n", command)
 
   execute(command, "")
 
-  time.Sleep(1 * time.Second)
+  //sleeping for 5 to work around a bug with windows where if you don't wait longer it hangs
+  time.Sleep(5 * time.Second)
 
   if shareCommand != "" {
     for {
