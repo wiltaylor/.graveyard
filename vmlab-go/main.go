@@ -64,6 +64,28 @@ func getVMLabFilePath() (string, error) {
   return vmlabPath, nil
 }
 
+func getTemplate(name string) (TemplateFile, error) {
+  root, err := getVMLabRoot()
+
+  if err != nil {
+    return TemplateFile{}, err
+  }
+
+  templatePath := filepath.Join(root, "qemu", name, "manifest.yaml")
+
+  if !exists(templatePath) {
+    return TemplateFile{}, errors.New("No template with that name exists!")
+  }
+
+  result, err := loadTemplateFile(templatePath)
+
+  if err != nil {
+    return TemplateFile{}, err
+  }
+
+  return result, nil
+}
+
 func getCommandAndArgs(args []string) (string, []string, error) {
   if len(args) == 0 {
     return "", make([]string, 0), errors.New("Expected there to be at least 1 argument")
@@ -148,13 +170,15 @@ func upCommand() error {
   }
 
   for _, vm := range vmlabFile.VirtualMachines {
-    err = provisionVM(vm)
+    template, err := getTemplate(vm.Template)
+
+    err = provisionVM(vm, template)
 
     if err != nil {
       return err
     }
 
-    err = vmStart(vm)
+    err = vmStart(vm, template)
 
     if err != nil {
       return err

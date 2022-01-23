@@ -13,7 +13,7 @@ import (
 	"encoding/base64"
 )
 
-func getTemplateHd(name string) (string, error) {
+func getTemplateHd(template TemplateFile) (string, error) {
 
   root, err := getVMLabRoot()
 
@@ -21,17 +21,19 @@ func getTemplateHd(name string) (string, error) {
     return "", err
   }
 
-  template := filepath.Join(root, "qemu", name, "main.qcow")
+  fmt.Printf("%v\n", template)
 
-  if !exists(template) {
+  templatePath := filepath.Join(root, "qemu", template.Name, "main.qcow")
+
+  if !exists(templatePath) {
     return "", errors.New("Template doesn't exists!")
   }
 
-  return template, nil
+  return templatePath, nil
 
 }
 
-func provisionVM(vm VirtualMachine) error {
+func provisionVM(vm VirtualMachine, template TemplateFile) error {
 
   root, err := getLocalVMLabDir()
 
@@ -52,7 +54,7 @@ func provisionVM(vm VirtualMachine) error {
   hdPath := filepath.Join(vmPath, "main.qcow")
 
   if !exists(hdPath) {
-    baseHd, err := getTemplateHd(vm.Template)
+    baseHd, err := getTemplateHd(template)
 
     if err != nil {
       return err
@@ -65,7 +67,7 @@ func provisionVM(vm VirtualMachine) error {
   return nil
 }
 
-func vmStart(vm VirtualMachine) error {
+func vmStart(vm VirtualMachine, template TemplateFile) error {
 
   root, err := getLocalVMLabDir()
 
@@ -83,28 +85,43 @@ func vmStart(vm VirtualMachine) error {
   guestSocketPath := filepath.Join(root, vm.Name, "guest.sock")
 
   shareCommand := ""
+  networkCommand := ""
 
   for _, share := range vm.SharedFolders {
     shareCommand += fmt.Sprintf("-fsdev local,security_model=mapped,id=fsdev-%s,multidevs=remap,path=%s -device virtio-9p-pci,id=%s,fsdev=fsdev-%s,mount_tag=%s ",
       share.Name, share.Host, share.Name, share.Name, share.Name)    
   }
 
-  command := fmt.Sprintf("qemu-system-x86_64 -name %s -cpu host -enable-kvm -m %d -smp %d -drive node-name=drive0,file=%s -vga std -qmp unix:%s,server -chardev socket,path=%s,server,nowait,id=qga0 -device virtio-serial -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 %s &",
-    vm.Name, vm.Memory, vm.Cpus, vmHD, socketPath, guestSocketPath, shareCommand)
+  for _, net := range vm.Networks {
+    
+    if net.Type == "public" {
+      networkCommand += "-nic user "
+    }
+
+    if net.Type == "private" {
+      networkCommand += fmt.Sprintf("-device e1000,netdev=nd-%s -netdev socket,id=nd-%s,mcast=230.0.0.1:%d ", net.Name, net.Name, net.Port)
+    }
+  }
+
+  if networkCommand == "" {
+    networkCommand = "-nic none"
+  }
+
+  OSCommand := ""
+
+  if template.GuestOS == "windows" {
+    OSCommand = "-usb -device usb-tablet" 
+  }
+
+
+  command := fmt.Sprintf("qemu-system-x86_64 -name %s -cpu host -enable-kvm -m %d -smp %d -drive node-name=drive0,file=%s -vga virtio -qmp unix:%s,server=on,wait=off -chardev socket,path=%s,server=on,wait=off,id=qga0 -device virtio-serial -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 %s %s %s &",
+    vm.Name, vm.Memory, vm.Cpus, vmHD, socketPath, guestSocketPath, shareCommand, networkCommand, OSCommand)
 
   fmt.Printf("%s\n", command)
 
   execute(command, "")
 
   time.Sleep(1 * time.Second)
-
-  sock, err := net.Dial("unix", socketPath)
-
-  if err != nil {
-    return err
-  }
-
-  sock.Close()
 
   if shareCommand != "" {
     for {
@@ -113,8 +130,6 @@ func vmStart(vm VirtualMachine) error {
       if status == "Unprovisioned" {
         return errors.New("VM is not provisioned while waiting for it to be ready to provision shared drives")
       }
-
-      fmt.Println(status)
 
       if status == "running" {
         for _, share := range vm.SharedFolders {
