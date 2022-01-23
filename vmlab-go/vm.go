@@ -82,7 +82,15 @@ func vmStart(vm VirtualMachine) error {
   socketPath := filepath.Join(root, vm.Name, "control.sock")
   guestSocketPath := filepath.Join(root, vm.Name, "guest.sock")
 
-  command := fmt.Sprintf("qemu-system-x86_64 -name %s -cpu host -enable-kvm -m %d -smp %d -drive file=%s -vga std -qmp unix:%s,server -chardev socket,path=%s,server,nowait,id=qga0 -device virtio-serial -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 &", vm.Name, vm.Memory, vm.Cpus, vmHD, socketPath, guestSocketPath)
+  shareCommand := ""
+
+  for _, share := range vm.SharedFolders {
+    shareCommand += fmt.Sprintf("-fsdev local,security_model=mapped,id=fsdev-%s,multidevs=remap,path=%s -device virtio-9p-pci,id=%s,fsdev=fsdev-%s,mount_tag=%s ",
+      share.Name, share.Host, share.Name, share.Name, share.Name)    
+  }
+
+  command := fmt.Sprintf("qemu-system-x86_64 -name %s -cpu host -enable-kvm -m %d -smp %d -drive node-name=drive0,file=%s -vga std -qmp unix:%s,server -chardev socket,path=%s,server,nowait,id=qga0 -device virtio-serial -device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 %s &",
+    vm.Name, vm.Memory, vm.Cpus, vmHD, socketPath, guestSocketPath, shareCommand)
 
   fmt.Printf("%s\n", command)
 
@@ -97,6 +105,34 @@ func vmStart(vm VirtualMachine) error {
   }
 
   sock.Close()
+
+  if shareCommand != "" {
+    for {
+      status := vmGetStatus(vm)
+
+      if status == "Unprovisioned" {
+        return errors.New("VM is not provisioned while waiting for it to be ready to provision shared drives")
+      }
+
+      fmt.Println(status)
+
+      if status == "running" {
+        for _, share := range vm.SharedFolders {
+          err = vmExecute(vm, fmt.Sprintf("mkdir -p %s", share.Guest))
+          if err != nil {
+            return err
+          }
+
+          err = vmExecute(vm, fmt.Sprintf("mount -t 9p -o trans=virtio %s %s -oversion=9p2000.L,posixacl,msize=5000000,cache=mmap", share.Name, share.Guest))
+          if err != nil {
+            return err
+          }
+        }
+
+        break
+      }
+    }
+  }
 
   return nil
 }
@@ -338,4 +374,88 @@ func vmExecute(vm VirtualMachine, command string) error {
   }
 
   return nil
+}
+
+func vmCreateSnapshot(vm VirtualMachine, name string) error {
+  root, err := getLocalVMLabDir()
+
+  if err != nil {
+    return err
+  }
+
+  vmHD := filepath.Join(root, vm.Name, "main.qcow")
+
+  //If vm doesn't exist the vm isn't provisioned so we don't need to stop this one.
+  if !exists(vmHD) {
+    return nil
+  }
+
+  command := fmt.Sprintf("qemu-img snapshot -q -c \"%s\" %s", name, vmHD)
+
+  err = execute(command, "")
+
+  return err
+}
+
+func vmListSnapshot(vm VirtualMachine) error {
+  root, err := getLocalVMLabDir()
+
+  if err != nil {
+    return err
+  }
+
+  vmHD := filepath.Join(root, vm.Name, "main.qcow")
+
+  //If vm doesn't exist the vm isn't provisioned so we don't need to stop this one.
+  if !exists(vmHD) {
+    return nil
+  }
+
+  command := fmt.Sprintf("qemu-img info %s", vmHD)
+
+  err = execute(command, "")
+
+  return err
+}
+
+func vmRemoveSnapshot(vm VirtualMachine, name string) error {
+  root, err := getLocalVMLabDir()
+
+  if err != nil {
+    return err
+  }
+
+  vmHD := filepath.Join(root, vm.Name, "main.qcow")
+
+  //If vm doesn't exist the vm isn't provisioned so we don't need to stop this one.
+  if !exists(vmHD) {
+    return nil
+  }
+
+  command := fmt.Sprintf("qemu-img snapshot -q -d \"%s\" %s", name, vmHD)
+
+  err = execute(command, "")
+
+  return err
+}
+
+func vmRevertToSnapshot(vm VirtualMachine, name string) error {
+  root, err := getLocalVMLabDir()
+
+  if err != nil {
+    return err
+  }
+
+  vmHD := filepath.Join(root, vm.Name, "main.qcow")
+
+  //If vm doesn't exist the vm isn't provisioned so we don't need to stop this one.
+  if !exists(vmHD) {
+    return nil
+  }
+
+  command := fmt.Sprintf("qemu-img snapshot -q -a \"%s\" %s", name, vmHD)
+
+  err = execute(command, "")
+
+  return err
 }

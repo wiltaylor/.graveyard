@@ -6,17 +6,25 @@ import (
 )
 
 type vmlabFile struct {
-  Title string `yaml:'title'`
-  Description string `yaml:'description'`
-  Author string `yaml:'author'`
-  VirtualMachines []VirtualMachine `yaml:'virtualmachines'`
+  Title string `yaml:"title"`
+  Description string `yaml:"description"`
+  Author string `yaml:"author"`
+  VirtualMachines []VirtualMachine `yaml:"virtualmachines"`
 }
 
 type VirtualMachine struct {
-  Name string `yaml:'name'`
-  Template string `yaml:'template'`
-  Cpus int `yaml:'cpus'`
-  Memory int `yaml:'memory'`
+  Name string `yaml:"name"`
+  Template string `yaml:"template"`
+  Cpus int `yaml:"cpus"`
+  Memory int `yaml:"memory"`
+  SharedFolders []SharedFolder `yaml:"sharedfolders"`
+}
+
+type SharedFolder struct {
+  Name string `yaml:"name"`
+  Host string `yaml:"host"`
+  Guest string `yaml:"guest"`
+  Driver string `yaml:"driver"`
 }
 
 func loadLabFile(path string) (vmlabFile, error) {

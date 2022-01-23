@@ -5,6 +5,7 @@ import (
   "errors"
   "os"
 	"path/filepath"
+  "strings"
 )
 
 const VERSION = "0.1.0"
@@ -71,7 +72,7 @@ func getCommandAndArgs(args []string) (string, []string, error) {
   command := args[0]
   commandargs := make([]string, 0)
 
-  if len(args) > 2 {
+  if len(args) > 1 {
     commandargs = args[1:]
   }
 
@@ -250,7 +251,7 @@ func execCommand(args []string) error {
 
   fmt.Printf("%v\n", args)
 
-  if len(args) != 2 {
+  if len(args) < 2 {
     return errors.New("Expected vmlab vmname command")
   }
 
@@ -269,20 +270,91 @@ func execCommand(args []string) error {
   for _, vm := range vmlabFile.VirtualMachines {
 
     if vm.Name == args[0] {
-      err = vmExecute(vm, args[1])
+      err = vmExecute(vm, strings.Join(args[1:], " "))
       return err
     }
   }
 
   return errors.New("Can't find vm with that name in this lab!")
-
-
 }
 
 func printIfErr(err error) {
   if err != nil {
     fmt.Printf("Error: %s\n", err)
   }
+}
+
+func snapshotCommand(args []string) error {
+
+  if len(args) < 1 {
+    return errors.New("Expected snapshot sub command!")
+  }
+
+  vmlabPath, err := getVMLabFilePath()
+
+  if err != nil {
+    return errors.New("This directory doesn't have a vmlab.yaml file in it!")
+  }
+
+  vmlabFile, err := loadLabFile(vmlabPath)
+
+  if err != nil {
+    return err
+  }
+
+  command := args[0]
+  name := ""
+
+  if len(args) > 1 {
+    name = args[1]
+  }
+
+  switch(command) {
+    case "new":
+      for _, vm := range vmlabFile.VirtualMachines {
+        err = vmCreateSnapshot(vm, name)
+
+        if err != nil {
+          return err
+        }
+      }
+      break;
+    case "list":
+      for _, vm := range vmlabFile.VirtualMachines {
+        err = vmListSnapshot(vm)
+
+        if err != nil {
+          return err
+        }
+      }
+      break
+    case "restore":
+      for _, vm := range vmlabFile.VirtualMachines {
+        err = vmRevertToSnapshot(vm, name)
+
+        if err != nil {
+          return err
+        }
+      }
+      break
+    case "rm":
+      for _, vm := range vmlabFile.VirtualMachines {
+        err = vmRemoveSnapshot(vm, name)
+
+        if err != nil {
+          return err
+        }
+      }
+
+      break
+    default:
+      return errors.New("Unknown snapshot command!")
+
+  }
+
+
+
+  return nil
 }
 
 func main() {
@@ -322,6 +394,8 @@ func main() {
       break
     case "exec":
       printIfErr(execCommand(args))
+    case "snapshot":
+      printIfErr(snapshotCommand(args))
     default:
       usage()
       break
@@ -343,5 +417,6 @@ func usage(){
   fmt.Println("init - Creates a new vmlab.yaml file in the current directory")
   fmt.Println("info - Prints info of the lab.")
   fmt.Println("exec - Executes a command in a vm")
+  fmt.Println("snapshot - Allows for managment of snapshots")
   fmt.Println("version - Prints vmlab version information")
 }
