@@ -11,3 +11,10 @@ actions:
   - name: test
     description: "Run project test suite"
     command: "go test"
+  - name: qmpSock 
+    command: "nc -U ./.vmlab/myVM/control.sock"
+    description: "Connect to monitor socket on ubuntu vm."
+  - name: guestSock
+    command: "nc -U ./.vmlab/myVM/guest.sock"
+    description: "Connect to guest agent socket on ubuntu vm."
+
