@@ -22,9 +22,6 @@
     lib = import ./lib;
     allPkgs = lib.mkPkgs { inherit nixpkgs; };
   in {
-    overlay = lib.mkOverlays { 
-      inherit allPkgs; 
-      overlayFunc = sys: pkgs: (top: last: import ./pkgs pkgs);
-    };
+    overlay = top: last: import ./pkgs top;
   };
 }
