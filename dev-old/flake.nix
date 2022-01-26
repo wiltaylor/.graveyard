@@ -20,11 +20,8 @@
       pkgs = allPkgs."${sys}";
     in import ./shell.nix { inherit pkgs;});
 
-    overlay = lib.mkOverlays {
-      inherit allPkgs;
-      overlayFunc = sys: pkgs: (top: last: {
-        dev = self.packages."${sys}".dev;
-      });
+    overlay = top: last: {
+        dev = self.packages."${top.system}".dev;
     };
 
     defaultPackage = lib.withDefaultSystems (sys: self.packages."${sys}".dev);
