@@ -12,9 +12,8 @@
     allPkgs = lib.mkPkgs { inherit nixpkgs; };
     allmods = lib.evalMods {inherit allPkgs; modules = [./modules];};
   in {
-    overlay = lib.mkOverlays { 
-      inherit allPkgs; 
-      overlayFunc = s: p: (top: last: { wksCli = allmods."${s}".config.wks.wksCli;});
+    overlay = top: last: { 
+      wksCli = allmods."${top.system}".config.wks.wksCli;
     };
 
     packages = lib.withDefaultSystems (sys: {
