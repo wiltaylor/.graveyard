@@ -1,16 +1,15 @@
 package main
 
 import (
-  "errors"
+	"errors"
+	"io"
+	"net"
 	"os"
 	"os/exec"
-  "net"
-  "io"
-  "regexp"
+	"regexp"
 )
 
-var outBuff []byte = make([]byte, 1024 * 1024 * 100)
-
+var outBuff []byte = make([]byte, 1024*1024*100)
 
 func exists(path string) bool {
 	_, err := os.Stat(path)
@@ -37,35 +36,35 @@ func execute(command string, dir string) error {
 	return nil
 }
 
-func readSocket(sock net.Conn)(string, error) {
+func readSocket(sock net.Conn) (string, error) {
 
-  //buffer := make([]byte, 1024 * 1024)
+	//buffer := make([]byte, 1024 * 1024)
 
-  n, err := sock.Read(outBuff[:])
+	n, err := sock.Read(outBuff[:])
 
-  if err != nil {
-    return "", err
-  }
+	if err != nil {
+		return "", err
+	}
 
-  return string(outBuff[0:n]), nil
+	return string(outBuff[0:n]), nil
 }
 
 func writeSocket(sock net.Conn, text string) error {
-  _, err := io.WriteString(sock, text)
-  return err
+	_, err := io.WriteString(sock, text)
+	return err
 }
 
 func regexFirstGroup(pattern string, text string) string {
-  re := regexp.MustCompile(pattern)
+	re := regexp.MustCompile(pattern)
 
-  for _, match := range re.FindAllStringSubmatch(text, -1) {
-    for i, group := range match {
-      if i == 0 {
-        continue
-      }
-      return group
-    } 
-  }
+	for _, match := range re.FindAllStringSubmatch(text, -1) {
+		for i, group := range match {
+			if i == 0 {
+				continue
+			}
+			return group
+		}
+	}
 
-  return ""
+	return ""
 }

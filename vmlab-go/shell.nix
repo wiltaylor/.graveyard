@@ -15,6 +15,7 @@ in pkgs.mkShell {
     dep2nix
     delve
     tmuxIde
+    gopls
   ];
 
 
