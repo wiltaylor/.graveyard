@@ -145,8 +145,23 @@ func infoCommand() error {
 	fmt.Printf("Virtual Machines:\n")
 
 	for _, vm := range lab.VirtualMachines {
+
+		template, err := getTemplate(vm.Template)
+
+		if err != nil {
+			fmt.Printf("Failed to find template %s\n", vm.Template)
+			continue
+		}
+		
+		qvm, err := CreateQemuVM(&vm, &template)
+
+		if err != nil {
+			fmt.Printf("Error with %s - %s\n", vm.Name, err.Error())
+			continue
+		}
+		
 		fmt.Printf("  Name: %s\n", vm.Name)
-		fmt.Printf("  Status: %s\n", vmGetStatus(vm))
+		fmt.Printf("  Status: %s\n", qvm.StatusString())
 		fmt.Printf("  Template: %s\n", vm.Template)
 		fmt.Printf("  CPUs: %d\n", vm.Cpus)
 		fmt.Printf("  Memory: %d MiB\n", vm.Memory)
