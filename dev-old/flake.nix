@@ -38,8 +38,7 @@
         proxyVendor = true;
 
         src = ./.;
-
-        vendorSha256 = "sha256-wbKJQInRfFYqxCZC+M4mqo5R5LXxuatD0Yzad1O6iGs=";
+        vendorSha256 = "sha256-np1bmbzKBipC6nb/e2/KUc1bW66FrrgA6Zpb8FV1mJ0=";
       };
 
     });
