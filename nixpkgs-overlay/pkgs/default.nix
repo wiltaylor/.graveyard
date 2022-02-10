@@ -19,4 +19,5 @@ with pkgs;
   g810-led = callPackage ./g810-led {};
   i3blocks-contrib = callPackage ./i3blocks-contrib {};
   emacs-sqlite = pkgs.emacs.override { withSQLite3 = true; };
+  jetbrains-toolbox = callpackage ./jetbrains-toolbox {};
 }
