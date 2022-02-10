@@ -3,9 +3,8 @@
 { pkgs, stdenv, fetchurl, ... }:
 let
   name = "jetbrains-toolbox";
-  version = "1.16.6319";
-    #version = "1.18.7455";
-  sha256 = "4e6f333839af8330a09d9d6fdcd6a635c9ca1f0ae239d8f268249dbd095ca880";
+  version = "1.22.10970";
+  sha256 = "sha256-Oyz8NA2RFmmdnoMXPqedMl33+UDW9EbTQHaDNgipkTk=";
 
   jetbrains-toolbox-src = stdenv.mkDerivation {
     name = "${name}-src";
