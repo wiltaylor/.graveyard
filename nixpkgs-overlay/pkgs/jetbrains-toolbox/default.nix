@@ -30,14 +30,6 @@ let
       libcef
     ] ++ extraPkgs;
 
-    meta = with stdenv.lib; {
-      description = "A toolbox to manage JetBrains products";
-      longDescription = ''
-      The JetBrains Toolbox lets you install and manage JetBrains Products in muiltiple versions.
-      '';
-      homepage = "https://www.jetbrains.com/toolbox/";
-      platforms = platforms.all;
-    };
   };
   makeWithExtraPackages = f: origArgs:
     let origRes = f origArgs;
