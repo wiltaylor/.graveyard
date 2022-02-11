@@ -5,9 +5,9 @@ namespace InterviewDemoApp.Core;
 
 public class NumberManager
 {
-    public event EventHandler<ImmutableDictionary<int, int>>? OnTick;
+    public event EventHandler<ImmutableDictionary<ulong, ulong>>? OnTick;
 
-    private readonly ConcurrentDictionary<int, int> _numberStorage = new();
+    private readonly ConcurrentDictionary<ulong, ulong> _numberStorage = new();
     private bool _isHalted = false;
     
     public NumberManager(int interval, ITimer timer)
@@ -28,11 +28,44 @@ public class NumberManager
 
     }
 
-    public void AddNumber(int number)
+    private static bool IsFib(ulong number)
+    {
+        if (number is 0 or 1)
+        {
+            return true;
+        }
+        
+        ulong first = 0;
+        ulong second = 1;
+
+        for (var i = 1; i <= 1000; i++)
+        {
+            ulong result = first + second;
+
+            if (result == number)
+            {
+                return true;
+            }
+
+            if (result > number)
+            {
+                return false;
+            }
+
+            first = second;
+            second = result;
+        }
+
+        return false;
+    }
+
+    public bool AddNumber(ulong number)
     {
         _numberStorage.AddOrUpdate(number, 
             n => 1, 
             (k, v) => v + 1);
+
+        return IsFib(number);
     }
 
     public void Halt()

@@ -41,7 +41,7 @@ public class NumberManagerTest
         var timer = new FakeTimer();
         var sut = new NumberManager(1, timer);
 
-        ImmutableDictionary<int, int>? counts = null;
+        ImmutableDictionary<ulong, ulong>? counts = null;
 
         sut.OnTick += (_, current) =>
         {
@@ -56,9 +56,9 @@ public class NumberManagerTest
         timer.FakeTick();
         
         //Assert
-        Assert.Equal(1, counts![10]);
-        Assert.Equal(1, counts![15]);
-        Assert.Equal(1, counts![2]);
+        Assert.Equal(1u, counts![10]);
+        Assert.Equal(1u, counts![15]);
+        Assert.Equal(1u, counts![2]);
     }
 
     [Fact]
@@ -68,7 +68,7 @@ public class NumberManagerTest
         var timer = new FakeTimer();
         var sut = new NumberManager(1, timer);
 
-        ImmutableDictionary<int, int>? counts = null;
+        ImmutableDictionary<ulong, ulong>? counts = null;
 
         sut.OnTick += (_, current) =>
         {
@@ -83,8 +83,8 @@ public class NumberManagerTest
         timer.FakeTick();
         
         //Assert
-        Assert.Equal(2, counts![15]);
-        Assert.Equal(1, counts![2]); 
+        Assert.Equal(2u, counts![15]);
+        Assert.Equal(1u, counts![2]); 
     }
 
     [Fact]
@@ -131,5 +131,24 @@ public class NumberManagerTest
 
         //Assert
         Assert.Equal(2, onTickCount);
+    }
+
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(2, true)]
+    [InlineData(3, true)]
+    [InlineData(4, false)]
+    [InlineData(5, true)]
+    [InlineData(9897335391534825784, false)] //Check 1001 value doesn't match as per requirement
+    public void When_AddingNumberWhichIsInFibSequence_Should_ReturnTrue(ulong number, bool isFibNumber)
+    {
+       //Arrange 
+        var sut = new NumberManager(5, _defaultTimer);
+        
+        //Act
+        var result = sut.AddNumber(number);
+        
+        //Assert
+        Assert.Equal(isFibNumber, result);
     }
 }

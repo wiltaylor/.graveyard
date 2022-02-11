@@ -1,5 +1,10 @@
 ﻿<wpf:ResourceDictionary xml:space="preserve" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:s="clr-namespace:System;assembly=mscorlib" xmlns:ss="urn:shemas-jetbrains-com:settings-storage-xaml" xmlns:wpf="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
-	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=fe18d53f_002Dcc16_002D4185_002Dbae9_002D9cce15a7a8d4/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" IsActive="True" Name="When_InitalizingWithPositiveTimeInterval_Should_NotThrow" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;&#xD;
+	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=bed51f6b_002D6d8e_002D4ea2_002D90f7_002Db6ca333bb1a7/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" IsActive="True" Name="When_AddingNumberWhichIsInFibSequence_Should_ReturnTrue" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;&#xD;
+  &lt;TestAncestor&gt;&#xD;
+    &lt;TestId&gt;xUnit::64CB58E5-2488-4977-B21F-D17B768AC28A::net6.0::InterviewDemoApp.Test.NumberManagerTest.When_AddingNumberWhichIsInFibSequence_Should_ReturnTrue&lt;/TestId&gt;&#xD;
+  &lt;/TestAncestor&gt;&#xD;
+&lt;/SessionState&gt;</s:String>
+	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=fe18d53f_002Dcc16_002D4185_002Dbae9_002D9cce15a7a8d4/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" Name="When_InitalizingWithPositiveTimeInterval_Should_NotThrow" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;&#xD;
   &lt;TestAncestor&gt;&#xD;
     &lt;TestId&gt;xUnit::64CB58E5-2488-4977-B21F-D17B768AC28A::net6.0::InterviewDemoApp.Test.NumberManagerTest&lt;/TestId&gt;&#xD;
   &lt;/TestAncestor&gt;&#xD;
