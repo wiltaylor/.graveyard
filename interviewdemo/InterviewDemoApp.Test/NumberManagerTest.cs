@@ -151,4 +151,23 @@ public class NumberManagerTest
         //Assert
         Assert.Equal(isFibNumber, result);
     }
+
+    [Fact]
+    public void When_CallingGetNumbers_Should_ReturnNumbersNowAndNotOnTick()
+    {
+        
+       //Arrange 
+        var sut = new NumberManager(5, _defaultTimer);
+
+        //Act
+        sut.AddNumber(10);
+        sut.AddNumber(10);
+        sut.AddNumber(10);
+
+        var result = sut.GetCounts();
+        
+        
+        //Assert
+        Assert.Equal(3u, result[10]);
+    }
 }

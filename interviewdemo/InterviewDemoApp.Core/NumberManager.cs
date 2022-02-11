@@ -77,4 +77,9 @@ public class NumberManager
     {
         _isHalted = false;
     }
+
+    public ImmutableDictionary<ulong, ulong> GetCounts()
+    {
+        return _numberStorage.ToImmutableDictionary();
+    }
 }
