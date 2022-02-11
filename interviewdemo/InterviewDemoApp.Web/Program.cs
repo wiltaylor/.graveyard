@@ -1,8 +1,12 @@
+using InterviewDemoApp.Core;
+using Timer = InterviewDemoApp.Core.Timer;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 
 builder.Services.AddControllersWithViews();
+builder.Services.AddScoped<ITimer, Timer>();
 
 var app = builder.Build();
 
@@ -13,6 +17,7 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
+app.UseWebSockets();
 app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
