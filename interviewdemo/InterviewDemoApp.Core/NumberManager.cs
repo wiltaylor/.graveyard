@@ -8,6 +8,8 @@ public class NumberManager
     public event EventHandler<ImmutableDictionary<int, int>>? OnTick;
 
     private readonly ConcurrentDictionary<int, int> _numberStorage = new();
+    private bool _isHalted = false;
+    
     public NumberManager(int interval, ITimer timer)
     {
         if (interval < 1)
@@ -18,7 +20,10 @@ public class NumberManager
 
         timer.OnTick += (sender, args) =>
         {
-            OnTick?.Invoke(this, _numberStorage.ToImmutableDictionary());
+            if (!_isHalted)
+            {
+                OnTick?.Invoke(this, _numberStorage.ToImmutableDictionary());
+            }
         };
 
     }
@@ -28,5 +33,15 @@ public class NumberManager
         _numberStorage.AddOrUpdate(number, 
             n => 1, 
             (k, v) => v + 1);
+    }
+
+    public void Halt()
+    {
+        _isHalted = true;
+    }
+
+    public void Resume()
+    {
+        _isHalted = false;
     }
 }

@@ -86,4 +86,50 @@ public class NumberManagerTest
         Assert.Equal(2, counts![15]);
         Assert.Equal(1, counts![2]); 
     }
+
+    [Fact]
+    public void When_CallingHalt_Should_StopTriggeringOnTick()
+    {
+        //Arrange
+        var timer = new FakeTimer();
+        var sut = new NumberManager(1, timer);
+        var onTickCount = 0;
+
+        sut.OnTick += (_,_) =>
+        {
+            onTickCount++;
+        };
+
+        //Act
+        timer.FakeTick();
+        sut.Halt();
+        timer.FakeTick();
+
+        //Assert
+        Assert.Equal(1, onTickCount);
+    }
+
+    [Fact]
+    public void When_CallingResume_Should_StartTriggeringOnTickAgain()
+    {
+        //Arrange
+        var timer = new FakeTimer();
+        var sut = new NumberManager(1, timer);
+        var onTickCount = 0;
+
+        sut.OnTick += (_,_) =>
+        {
+            onTickCount++;
+        };
+
+        //Act
+        timer.FakeTick();
+        sut.Halt();
+        timer.FakeTick();
+        sut.Resume();
+        timer.FakeTick();
+
+        //Assert
+        Assert.Equal(2, onTickCount);
+    }
 }
