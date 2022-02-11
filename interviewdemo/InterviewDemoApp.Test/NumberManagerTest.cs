@@ -60,4 +60,30 @@ public class NumberManagerTest
         Assert.Equal(1, counts![15]);
         Assert.Equal(1, counts![2]);
     }
+
+    [Fact]
+    public void When_Adding_MultipleNumbers_Should_IncrementCounts()
+    {
+        //Arrange
+        var timer = new FakeTimer();
+        var sut = new NumberManager(1, timer);
+
+        ImmutableDictionary<int, int>? counts = null;
+
+        sut.OnTick += (_, current) =>
+        {
+            counts = current;
+        };
+        
+        //Act
+        sut.AddNumber(15);
+        sut.AddNumber(15);
+        sut.AddNumber(2);
+        
+        timer.FakeTick();
+        
+        //Assert
+        Assert.Equal(2, counts![15]);
+        Assert.Equal(1, counts![2]); 
+    }
 }

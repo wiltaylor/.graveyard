@@ -27,6 +27,6 @@ public class NumberManager
     {
         _numberStorage.AddOrUpdate(number, 
             n => 1, 
-            (e, n) => e + 1);
+            (k, v) => v + 1);
     }
 }
