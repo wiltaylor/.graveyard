@@ -8,7 +8,11 @@ public class NumberManagerTest
 {
     private class FakeTimer : ITimer
     {
-        
+        public void SetInterval(int interval)
+        {
+            //Do nothing
+        }
+
         public event EventHandler? OnTick;
         public void FakeTick()
         {
