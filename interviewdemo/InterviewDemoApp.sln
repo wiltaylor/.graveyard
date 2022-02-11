@@ -4,7 +4,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InterviewDemoApp.Web", "Int
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InterviewDemoApp.Core", "InterviewDemoApp.Core\InterviewDemoApp.Core.csproj", "{FA421116-1946-4EED-B361-71EE4E76B014}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InterviewDemoapp.Test", "InterviewDemoapp.Test\InterviewDemoapp.Test.csproj", "{64CB58E5-2488-4977-B21F-D17B768AC28A}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InterviewDemoApp.Test", "InterviewDemoApp.Test\InterviewDemoApp.Test.csproj", "{64CB58E5-2488-4977-B21F-D17B768AC28A}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
