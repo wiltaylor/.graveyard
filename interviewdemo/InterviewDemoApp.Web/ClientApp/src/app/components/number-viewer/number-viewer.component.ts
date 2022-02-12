@@ -25,6 +25,18 @@ export class NumberViewerComponent implements OnInit {
     this.numberManagerService.addNumber(this.numberToAdd).subscribe();
   }
 
+  halt(){
+    this.numberManagerService.halt().subscribe();
+  }
+
+  resume(){
+    this.numberManagerService.resume().subscribe();
+  }
+
+  quit(){
+    this.numberManagerService.quit().subscribe();
+  }
+
   setInterval(){
     this.hideIntervalControls = true;
     this.numberManagerService.connect(this.interval).subscribe();

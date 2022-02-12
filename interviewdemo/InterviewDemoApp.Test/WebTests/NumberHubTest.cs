@@ -9,15 +9,22 @@ namespace InterviewDemoApp.Test.WebTests;
 public class TestableNumberHub : NumberHub
 {
     public Mock<INumberClientHub> ClientMock { get; }
-    public Mock<IHubCallerClients<INumberClientHub>> ClientListMock { get; }
+    private Mock<IHubCallerClients<INumberClientHub>> ClientListMock { get; }
     public Mock<INumberManager> NumberManagerMock { get; }
 
     public static TestableNumberHub Default()
     {
-        return new TestableNumberHub(new Mock<INumberManager>());
+        //Setup context so it has a state bucket that can be called.
+        var mock = new Mock<HubCallerContext>();
+        var data = new Dictionary<object, object?>();
+        mock.Setup(m => m.Items).Returns(data);
+        
+        var result = new TestableNumberHub(new Mock<INumberManager>());
+        result.Context = mock.Object;
+        return result;
     }
 
-    public TestableNumberHub(Mock<INumberManager> numberManagerMock): base(numberManagerMock.Object)
+    private TestableNumberHub(Mock<INumberManager> numberManagerMock): base(numberManagerMock.Object)
     {
         ClientMock = new Mock<INumberClientHub>();
         ClientListMock = new Mock<IHubCallerClients<INumberClientHub>>();

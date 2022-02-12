@@ -135,4 +135,91 @@ describe('NumberViewerComponent', () => {
     expect(addNumberCalled).toBeTrue();
   });
 
+  it('should be possible to click halt and it call the web socket to halt.', function () {
+    component.interval = 1;
+    component.hideIntervalControls = true;
+
+    let numberService = fixture.debugElement.injector.get(NumberManagerService);
+
+    fixture.detectChanges();
+
+    spyOn(numberService, "connect").and.callFake((interval: number) => {
+      return new Observable<void>( o=>{
+        o.next();
+        o.complete();
+      });
+    });
+
+    let haltCalled = false;
+    spyOn(numberService, "halt").and.callFake(() => {
+      return new Observable<void>(o =>{
+        haltCalled = true;
+        o.next();
+        o.complete();
+      });
+    });
+
+    component.halt();
+
+    expect(haltCalled).toBeTrue();
+  });
+
+  it('should be possible to click resume and it call the web socket to resume.', function () {
+    component.interval = 1;
+    component.hideIntervalControls = true;
+
+    let numberService = fixture.debugElement.injector.get(NumberManagerService);
+
+    fixture.detectChanges();
+
+    spyOn(numberService, "connect").and.callFake((interval: number) => {
+      return new Observable<void>( o=>{
+        o.next();
+        o.complete();
+      });
+    });
+
+    let resumeCalled = false;
+    spyOn(numberService, "resume").and.callFake(() => {
+      return new Observable<void>(o =>{
+        resumeCalled = true;
+        o.next();
+        o.complete();
+      });
+    });
+
+    component.resume();
+
+    expect(resumeCalled).toBeTrue();
+  });
+
+
+  it('should be possible to click quit and it return the frequencies then drop connection.', function () {
+    component.interval = 1;
+    component.hideIntervalControls = true;
+
+    let numberService = fixture.debugElement.injector.get(NumberManagerService);
+
+    fixture.detectChanges();
+
+    spyOn(numberService, "connect").and.callFake((interval: number) => {
+      return new Observable<void>( o=>{
+        o.next();
+        o.complete();
+      });
+    });
+
+    let quitCalled = false;
+    spyOn(numberService, "quit").and.callFake(() => {
+      return new Observable<void>(o =>{
+        quitCalled = true;
+        o.next();
+        o.complete();
+      });
+    });
+
+    component.quit();
+
+    expect(quitCalled).toBeTrue();
+  });
 });
