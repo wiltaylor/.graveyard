@@ -3,6 +3,8 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { NumberViewerComponent } from './number-viewer.component';
 import {By} from "@angular/platform-browser";
 import {DebugElement} from "@angular/core";
+import {NumberManagerService} from "../../services/number-manager.service";
+import {Observable} from "rxjs";
 
 describe('NumberViewerComponent', () => {
   let component: NumberViewerComponent;
@@ -20,6 +22,7 @@ describe('NumberViewerComponent', () => {
     fixture = TestBed.createComponent(NumberViewerComponent);
     component = fixture.componentInstance;
     de = fixture.debugElement;
+
     fixture.detectChanges();
   });
 
@@ -72,6 +75,34 @@ describe('NumberViewerComponent', () => {
     expect(de.query(By.css("#haltButton"))).toBeFalsy();
     expect(de.query(By.css("#resumeButton"))).toBeFalsy();
     expect(de.query(By.css("#quitButton"))).toBeFalsy();
+  });
+
+  it('should write messages to window when received from the server', () => {
+    component.interval = 1;
+    component.hideIntervalControls = true;
+    let numberService = fixture.debugElement.injector.get(NumberManagerService);
+
+    fixture.detectChanges();
+
+    spyOn(numberService, "connect").and.callFake((interval: number) => {
+      return new Observable<void>( o=>{
+        o.next();
+        o.complete();
+      });
+    });
+
+    spyOn(numberService, "onMessage").and.callFake(() => {
+      return new Observable<string>(o => {
+        o.next("Example Message From Server");
+        o.complete();
+      });
+    });
+
+    component.setInterval();
+    fixture.detectChanges();
+
+    expect(component.serverText).toContain('Example Message From Server');
+
   });
 
 });
