@@ -50,19 +50,24 @@ describe('NumberViewerComponent', () => {
     expect(de.query(By.css("#startButton"))).toBeFalsy();
   });
 
-  it('should show message text area and halt, resume, quit buttons once interval is set.', () => {
+  it('should show number entry, server message text area and halt, resume, quit buttons once interval is set.', () => {
     component.interval = 5;
     component.hideIntervalControls = true;
 
     fixture.detectChanges();
 
+    expect(de.query(By.css("#numberEntry"))).toBeTruthy();
+    expect(de.query(By.css("#numberButton"))).toBeTruthy();
     expect(de.query(By.css("#serverMessages"))).toBeTruthy();
     expect(de.query(By.css("#haltButton"))).toBeTruthy();
     expect(de.query(By.css("#resumeButton"))).toBeTruthy();
     expect(de.query(By.css("#quitButton"))).toBeTruthy();
   });
 
-  it('should hide message text area and main buttons before interval is set.', () => {
+  it('should hide number entry, server message text area and main buttons before interval is set.', () => {
+
+    expect(de.query(By.css("#numbeEntry"))).toBeFalsy();
+    expect(de.query(By.css("#numberButton"))).toBeFalsy();
     expect(de.query(By.css("#serverMessages"))).toBeFalsy();
     expect(de.query(By.css("#haltButton"))).toBeFalsy();
     expect(de.query(By.css("#resumeButton"))).toBeFalsy();
