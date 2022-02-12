@@ -45,7 +45,7 @@ public class NumberManagerTest
         var timer = new FakeTimer();
         var sut = new NumberManager(1, timer);
 
-        ImmutableDictionary<ulong, ulong>? counts = null;
+        List<KeyValuePair<ulong, ulong>>? counts = null;
 
         sut.OnTick += (_, current) =>
         {
@@ -60,9 +60,9 @@ public class NumberManagerTest
         timer.FakeTick();
         
         //Assert
-        Assert.Equal(1u, counts![10]);
-        Assert.Equal(1u, counts![15]);
-        Assert.Equal(1u, counts![2]);
+        Assert.Contains(counts, p => p.Key == 10 & p.Value == 1u);
+        Assert.Contains(counts, p => p.Key == 15 & p.Value == 1u);
+        Assert.Contains(counts, p => p.Key == 2 & p.Value == 1u);
     }
 
     [Fact]
@@ -72,7 +72,7 @@ public class NumberManagerTest
         var timer = new FakeTimer();
         var sut = new NumberManager(1, timer);
 
-        ImmutableDictionary<ulong, ulong>? counts = null;
+        List<KeyValuePair<ulong, ulong>>? counts = null;
 
         sut.OnTick += (_, current) =>
         {
@@ -87,8 +87,8 @@ public class NumberManagerTest
         timer.FakeTick();
         
         //Assert
-        Assert.Equal(2u, counts![15]);
-        Assert.Equal(1u, counts![2]); 
+        Assert.Contains(counts!, p => p.Key == 15 & p.Value == 2u);
+        Assert.Contains(counts!, p => p.Key == 2 & p.Value == 1u);
     }
 
     [Fact]
@@ -170,8 +170,62 @@ public class NumberManagerTest
 
         var result = sut.GetCounts();
         
+        //Assert
+        Assert.Contains(result, r => r.Key == 10 && r.Value == 3u);
+    }
+
+    [Fact]
+    public void When_GettingFrequenciesOfNumbers_Should_BeInDecendingOrder()
+    {
+        //Arrange 
+        var sut = new NumberManager(5, _defaultTimer);
+        
+        //Act
+        sut.AddNumber(1);
+        sut.AddNumber(2);
+        sut.AddNumber(3);
+
+        sut.AddNumber(3);
+        sut.AddNumber(2);
+
+        sut.AddNumber(2);
+
+        var results = sut.GetCounts();
         
         //Assert
-        Assert.Equal(3u, result[10]);
+        Assert.Equal(2u, results[0].Key);
+        Assert.Equal(3u, results[1].Key);
+        Assert.Equal(1u, results[2].Key);
+    }
+    
+    
+    [Fact]
+    public void When_GettingFrequenciesOfNumbersFromTimer_Should_BeInDecendingOrder()
+    {
+        //Arrange 
+        var timer = new FakeTimer();
+        var sut = new NumberManager(5, timer);
+        List<KeyValuePair<ulong, ulong>> result;
+
+        sut.OnTick += (_, args) => result = args;
+        
+        //Act
+        sut.AddNumber(1);
+        sut.AddNumber(2);
+        sut.AddNumber(3);
+
+        sut.AddNumber(3);
+        sut.AddNumber(2);
+
+        sut.AddNumber(2);
+        
+        timer.FakeTick();
+
+        var results = sut.GetCounts();
+        
+        //Assert
+        Assert.Equal(2u, results[0].Key);
+        Assert.Equal(3u, results[1].Key);
+        Assert.Equal(1u, results[2].Key);
     }
 }

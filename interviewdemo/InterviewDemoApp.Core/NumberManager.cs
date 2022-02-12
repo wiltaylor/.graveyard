@@ -11,10 +11,11 @@ public class NumberManager
     /// <summary>
     /// This event is fired everytime the interval has passed and returns the current counts.
     /// </summary>
-    public event EventHandler<ImmutableDictionary<ulong, ulong>>? OnTick;
+    public event EventHandler<List<KeyValuePair<ulong, ulong>>>? OnTick;
 
     /// <summary>
     /// Holds the counts of how many times each number has been passed in.
+    /// Concurrent to handle access from timer and main thread safely.
     /// </summary>
     private readonly ConcurrentDictionary<ulong, ulong> _numberStorage = new();
     
@@ -43,7 +44,7 @@ public class NumberManager
         {
             if (!_isHalted)
             {
-                OnTick?.Invoke(this, _numberStorage.ToImmutableDictionary());
+                OnTick?.Invoke(this, GetCounts());
             }
         };
 
@@ -120,8 +121,9 @@ public class NumberManager
     /// This is designed for when the application quits to get the values immediately.
     /// </summary>
     /// <returns>An immutable copy of the count hashes.</returns>
-    public ImmutableDictionary<ulong, ulong> GetCounts()
+    public List<KeyValuePair<ulong, ulong>> GetCounts()
     {
-        return _numberStorage.ToImmutableDictionary();
+        return _numberStorage.ToImmutableDictionary().OrderByDescending(p => p.Value)
+            .ToList();
     }
 }
