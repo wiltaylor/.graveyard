@@ -1,11 +1,24 @@
-﻿using System.Dynamic;
-using InterviewDemoApp.Web.Hubs;
+﻿using InterviewDemoApp.Web.Hubs;
 using Microsoft.AspNetCore.SignalR;
 using Moq;
 using Xunit;
-using Xunit.Sdk;
 
-namespace InterviewDemoapp.Test.WebTests;
+namespace InterviewDemoApp.Test.WebTests;
+
+public class TestableNumberHub : NumberHub
+{
+    public Mock<INumberClientHub> ClientMock { get; }
+    public Mock<IHubCallerClients<INumberClientHub>> ClientListMock { get; }
+
+    public TestableNumberHub()
+    {
+        ClientMock = new Mock<INumberClientHub>();
+        ClientListMock = new Mock<IHubCallerClients<INumberClientHub>>();
+
+        Clients = ClientListMock.Object;
+        ClientListMock.Setup(m => m.Caller).Returns(ClientMock.Object);
+    }
+}
 
 public class NumberHubTest
 {
@@ -13,36 +26,25 @@ public class NumberHubTest
     public void When_CallingSetupIntervals_Should_ReturnHowLongIntervalIsFor()
     {
         //Arrange
-        var clients = new Mock<IHubCallerClients<INumberClientHub>>();
-        var hubClient = new Mock<INumberClientHub>();
-        var sut = new NumberHub();
-        sut.Clients = clients.Object;
-
-        clients.Setup(m => m.Caller).Returns(hubClient.Object);
+        var sut = new TestableNumberHub();
 
         //Act
         sut.SetupIntervals(5);
         
         //Assert
-        hubClient.Verify(h => h.SendMessage("Setup intervals for 5 seconds.")); 
+        sut.ClientMock.Verify(h => h.SendMessage("Setup intervals for 5 seconds.")); 
     }
 
     [Fact]
     public void When_CallingAddNumberBeforeSetIntervals_Should_ReturnWarningMessage()
     {
-        
         //Arrange
-        var clients = new Mock<IHubCallerClients<INumberClientHub>>();
-        var hubClient = new Mock<INumberClientHub>();
-        var sut = new NumberHub();
-        sut.Clients = clients.Object;
+        var sut = new TestableNumberHub();
 
-        clients.Setup(m => m.Caller).Returns(hubClient.Object);
-        
         //Act
         sut.AddNumber(5);
         
         //Assert
-        hubClient.Verify(h => h.SendMessage("Error - You need to call SetupIntervals first!")); 
+        sut.ClientMock.Verify(h => h.SendMessage("Error - You need to call SetupIntervals first!")); 
     }
 }
