@@ -6,12 +6,12 @@ public class NumberHub: Hub<INumberClientHub>
 {
     public async Task SetupIntervals(int interval)
     {
-        await Clients.Caller.SendMessage("Setup intervals");
+        await Clients.Caller.SendMessage($"Setup intervals for {interval} seconds.");
     }
 
-    public Task AddNumber(ulong number)
+    public async Task AddNumber(ulong number)
     {
-        return Task.CompletedTask;
+        await Clients.Caller.SendMessage("Error - You need to call SetupIntervals first!");
     }
 
     public Task Halt()

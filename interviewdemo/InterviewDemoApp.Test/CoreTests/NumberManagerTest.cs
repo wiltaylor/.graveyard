@@ -1,8 +1,7 @@
-﻿using System.Collections.Immutable;
-using InterviewDemoApp.Core;
+﻿using InterviewDemoApp.Core;
 using Xunit;
 
-namespace InterviewDemoApp.Test;
+namespace InterviewDemoapp.Test.CoreTests;
 
 public class NumberManagerTest
 {
