@@ -40,7 +40,7 @@ describe('NumberViewerComponent', () => {
     expect(btn.disabled).toBeTrue();
   });
 
-  it('If Set Interval button is clicked interval button and input should disappear', () =>{
+  it('should hide interval input and button after interval button is clicked', () =>{
     const btn = de.query(By.css("#startButton"));
     btn.triggerEventHandler('click', null);
 
@@ -48,6 +48,25 @@ describe('NumberViewerComponent', () => {
 
     expect(de.query(By.css("#interval"))).toBeFalsy();
     expect(de.query(By.css("#startButton"))).toBeFalsy();
+  });
+
+  it('should show message text area and halt, resume, quit buttons once interval is set.', () => {
+    component.interval = 5;
+    component.hideIntervalControls = true;
+
+    fixture.detectChanges();
+
+    expect(de.query(By.css("#serverMessages"))).toBeTruthy();
+    expect(de.query(By.css("#haltButton"))).toBeTruthy();
+    expect(de.query(By.css("#resumeButton"))).toBeTruthy();
+    expect(de.query(By.css("#quitButton"))).toBeTruthy();
+  });
+
+  it('should hide message text area and main buttons before interval is set.', () => {
+    expect(de.query(By.css("#serverMessages"))).toBeFalsy();
+    expect(de.query(By.css("#haltButton"))).toBeFalsy();
+    expect(de.query(By.css("#resumeButton"))).toBeFalsy();
+    expect(de.query(By.css("#quitButton"))).toBeFalsy();
   });
 
 });

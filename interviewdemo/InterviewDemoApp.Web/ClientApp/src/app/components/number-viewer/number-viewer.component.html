@@ -4,3 +4,12 @@
   <input class="form-control" id="interval" type="number" [min]="1" [value]="interval">
   <button class="btn btn-primary" id="startButton" (click)="setInterval()"  [disabled]="!interval || interval < 1">Set Interval</button>
 </div>
+
+<div class="container" *ngIf="hideIntervalControls">
+  <textarea id="serverMessages" class="form-control me-3" readonly rows="10" >
+  </textarea>
+  <br>
+  <button class="btn btn-primary me-3">Halt</button>
+  <button class="btn btn-success me-3">Resume</button>
+  <button class="btn btn-danger me-3">Quit</button>
+</div>
