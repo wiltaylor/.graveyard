@@ -1,7 +1,7 @@
 ﻿using InterviewDemoApp.Core;
 using Xunit;
 
-namespace InterviewDemoapp.Test.CoreTests;
+namespace InterviewDemoApp.Test.CoreTests;
 
 public class NumberManagerTest
 {
@@ -11,13 +11,11 @@ public class NumberManagerTest
         {
             //Do nothing
         }
-
         public event EventHandler? OnTick;
         public void FakeTick()
         {
            OnTick?.Invoke(this, EventArgs.Empty); 
         }
-
     }
 
     private readonly FakeTimer _defaultTimer = new FakeTimer();
@@ -55,9 +53,9 @@ public class NumberManagerTest
         timer.FakeTick();
         
         //Assert
-        Assert.Contains(counts, p => p.Key == 10 & p.Value == 1u);
-        Assert.Contains(counts, p => p.Key == 15 & p.Value == 1u);
-        Assert.Contains(counts, p => p.Key == 2 & p.Value == 1u);
+        Assert.Contains(counts!, p => p.Key == 10 & p.Value == 1u);
+        Assert.Contains(counts!, p => p.Key == 15 & p.Value == 1u);
+        Assert.Contains(counts!, p => p.Key == 2 & p.Value == 1u);
     }
 
     [Fact]
@@ -177,7 +175,7 @@ public class NumberManagerTest
     }
 
     [Fact]
-    public void When_GettingFrequenciesOfNumbers_Should_BeInDecendingOrder()
+    public void When_GettingFrequenciesOfNumbers_Should_BeInDescendingOrder()
     {
         //Arrange 
         var sut = new NumberManager( _defaultTimer);
@@ -203,14 +201,14 @@ public class NumberManagerTest
     
     
     [Fact]
-    public void When_GettingFrequenciesOfNumbersFromTimer_Should_BeInDecendingOrder()
+    public void When_GettingFrequenciesOfNumbersFromTimer_Should_BeInDescendingOrder()
     {
         //Arrange 
         var timer = new FakeTimer();
         var sut = new NumberManager( timer);
         sut.SetInterval(1);
         
-        List<KeyValuePair<ulong, ulong>> result;
+        List<KeyValuePair<ulong, ulong>>? result = null;
 
         sut.OnTick += (_, args) => result = args;
         
@@ -226,11 +224,9 @@ public class NumberManagerTest
         
         timer.FakeTick();
 
-        var results = sut.GetCounts();
-        
         //Assert
-        Assert.Equal(2u, results[0].Key);
-        Assert.Equal(3u, results[1].Key);
-        Assert.Equal(1u, results[2].Key);
+        Assert.Equal(2u, result![0].Key);
+        Assert.Equal(3u, result![1].Key);
+        Assert.Equal(1u, result![2].Key);
     }
 }
