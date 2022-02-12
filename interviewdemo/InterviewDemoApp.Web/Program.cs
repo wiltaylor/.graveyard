@@ -36,7 +36,6 @@ app.UseWebSockets();
 
 app.UseEndpoints(endpoints =>
 {
-    endpoints.MapControllers();
     endpoints.MapHub<NumberHub>("/num");
 });
 
