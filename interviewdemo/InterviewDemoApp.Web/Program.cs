@@ -33,7 +33,6 @@ app.UseStaticFiles();
 app.UseRouting();
 app.UseWebSockets();
 
-
 app.UseEndpoints(endpoints =>
 {
     endpoints.MapControllers();

@@ -1,0 +1,6 @@
+<p>Please enter the interval of time you would like the number frequencies returned to you.</p>
+
+<div class="input-group" *ngIf="!hideIntervalControls">
+  <input class="form-control" id="interval" type="number" [min]="1" [value]="interval">
+  <button class="btn btn-primary" id="startButton" (click)="setInterval()"  [disabled]="!interval || interval < 1">Set Interval</button>
+</div>

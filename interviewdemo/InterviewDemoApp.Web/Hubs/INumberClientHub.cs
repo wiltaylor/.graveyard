@@ -2,5 +2,5 @@
 
 public interface INumberClientHub
 {
-   void SendMessage(string message);
+   Task SendMessage(string message);
 }

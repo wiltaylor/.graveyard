@@ -23,10 +23,25 @@
         <Content Remove="$(SpaRoot)**" />
         <None Remove="$(SpaRoot)**" />
         <None Include="$(SpaRoot)**" Exclude="$(SpaRoot)node_modules\**" />
+        <None Remove="ClientApp\.angular\cache\**" />
+        <Content Remove="ClientApp\.angular\cache\**" />
     </ItemGroup>
 
     <ItemGroup>
       <ProjectReference Include="..\InterviewDemoApp.Core\InterviewDemoApp.Core.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Folder Include="ClientApp\.angular" />
+      <Folder Include="ClientApp\src\app\components" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Compile Remove="ClientApp\.angular\cache\**" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <EmbeddedResource Remove="ClientApp\.angular\cache\**" />
     </ItemGroup>
 
     <Target Name="DebugEnsureNodeEnv" BeforeTargets="Build" Condition=" '$(Configuration)' == 'Debug' And !Exists('$(SpaRoot)node_modules') ">

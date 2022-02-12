@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import * as signalR from "@microsoft/signalr";
-import {environment} from "../environments/environment";
+import {environment} from "../../environments/environment";
 import {HubConnection} from "@microsoft/signalr";
 import {from, Observable} from "rxjs";
 import {tap} from "rxjs/operators";
