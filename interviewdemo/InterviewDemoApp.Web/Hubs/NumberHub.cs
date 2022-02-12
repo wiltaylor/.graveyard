@@ -10,12 +10,25 @@ public class NumberHub: Hub<INumberClientHub>
     {
         _numberManager = numberManager;
     }
-    private bool _setupWasCalled = false;
+
+    private bool SetupWasCalled
+    {
+        get
+        {
+            if(Context?.Items != null && Context.Items.ContainsKey("setupWasCalled"))
+            {
+                return (bool) (Context.Items["setupWasCalled"] ?? false);
+            }
+
+            return false;
+        }
+    }
     public async Task SetupIntervals(int interval)
     {
+        _numberManager.SetInterval(interval);
         await Clients.Caller.SendMessage($"Setup intervals for {interval} seconds.");
-        _setupWasCalled = true;
-
+        Context.Items["setupWasCalled"] = true;
+        
         _numberManager.OnTick += async (_, list) =>
         {
             await Clients.Caller.SendMessage(KeyPairListToString(list));
@@ -29,7 +42,7 @@ public class NumberHub: Hub<INumberClientHub>
 
     public async Task AddNumber(ulong number)
     {
-        if (!_setupWasCalled)
+        if (!SetupWasCalled)
         {
             await Clients.Caller.SendMessage("Error - You need to call SetupIntervals first!");
         }
@@ -39,7 +52,7 @@ public class NumberHub: Hub<INumberClientHub>
 
     public async Task Halt()
     {
-        if (!_setupWasCalled)
+        if (!SetupWasCalled)
         {
             await Clients.Caller.SendMessage("Error - You need to call SetupIntervals first!");
             return;
@@ -50,7 +63,7 @@ public class NumberHub: Hub<INumberClientHub>
 
     public async Task Resume()
     {
-        if (!_setupWasCalled)
+        if (!SetupWasCalled)
         {
             await Clients.Caller.SendMessage("Error - You need to call SetupIntervals first!");
             return;
@@ -61,7 +74,7 @@ public class NumberHub: Hub<INumberClientHub>
 
     public async Task Quit()
     {
-        if (!_setupWasCalled)
+        if (!SetupWasCalled)
         {
             await Clients.Caller.SendMessage("Error - You need to call SetupIntervals first!");
             return;

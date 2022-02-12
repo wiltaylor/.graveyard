@@ -15,7 +15,7 @@ public class Timer: ITimer
     {
         _timer?.Dispose();
 
-        _timer = new System.Timers.Timer(interval);
+        _timer = new System.Timers.Timer(interval * 1000);
         _timer.Enabled = true;
         _timer.Elapsed += (sender, args) => OnTick?.Invoke(sender, args);
     }

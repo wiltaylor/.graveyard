@@ -7,8 +7,8 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 
 builder.Services.AddControllersWithViews();
-builder.Services.AddScoped<ITimer, Timer>();
-builder.Services.AddScoped<INumberManager, NumberManager>();
+builder.Services.AddSingleton<ITimer, Timer>();
+builder.Services.AddSingleton<INumberManager, NumberManager>();
 builder.Services.AddSignalR();
 
 var app = builder.Build();

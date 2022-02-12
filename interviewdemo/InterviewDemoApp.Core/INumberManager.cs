@@ -30,4 +30,11 @@ public interface INumberManager
     /// </summary>
     /// <returns>An immutable copy of the count hashes.</returns>
     List<KeyValuePair<ulong, ulong>> GetCounts();
+
+    /// <summary>
+    /// Sets the interval that the timer inside number manager runs on.
+    /// </summary>
+    /// <param name="interval">Number of seconds to wait before returning current counts.</param>
+    /// <exception cref="ArgumentOutOfRangeException"></exception>
+    public void SetInterval(int interval);
 }

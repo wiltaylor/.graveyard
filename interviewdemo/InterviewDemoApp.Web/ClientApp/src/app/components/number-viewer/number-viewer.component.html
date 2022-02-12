@@ -9,8 +9,8 @@
 <div class="container" *ngIf="hideIntervalControls">
 
   <div class="input-group" style="width: 20em">
-    <input class="form-control" id="numberEntry" type="number">
-    <button class="btn btn-primary" id="numberButton">Add</button>
+    <input class="form-control" id="numberEntry" type="number" [value]="numberToAdd">
+    <button class="btn btn-primary" id="numberButton" (click)="addNumber()">Add</button>
   </div>
 
   <br>

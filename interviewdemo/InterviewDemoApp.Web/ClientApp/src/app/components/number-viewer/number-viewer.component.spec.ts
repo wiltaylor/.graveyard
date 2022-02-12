@@ -105,4 +105,34 @@ describe('NumberViewerComponent', () => {
 
   });
 
+  it("should call service when calling add number", () => {
+    component.interval = 1;
+    component.hideIntervalControls = true;
+    component.numberToAdd = 1;
+
+    let numberService = fixture.debugElement.injector.get(NumberManagerService);
+
+    fixture.detectChanges();
+
+    spyOn(numberService, "connect").and.callFake((interval: number) => {
+      return new Observable<void>( o=>{
+        o.next();
+        o.complete();
+      });
+    });
+
+    let addNumberCalled = false;
+    spyOn(numberService, "addNumber").and.callFake((num:number) => {
+      return new Observable<void>(o =>{
+        o.next();
+        o.complete();
+        addNumberCalled = true;
+      });
+    });
+
+    component.addNumber();
+
+    expect(addNumberCalled).toBeTrue();
+  });
+
 });
