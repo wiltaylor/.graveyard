@@ -1,6 +1,7 @@
 import {Component, OnInit} from '@angular/core';
 import * as signalR from '@microsoft/signalr';
 import {environment} from '../../environments/environment';
+import {NumberManagerService} from "../number-manager.service";
 
 @Component({
   selector: 'app-home',
@@ -8,24 +9,10 @@ import {environment} from '../../environments/environment';
 })
 export class HomeComponent implements OnInit {
 
-  constructor() {
+  constructor(private service: NumberManagerService) {
   }
 
   async ngOnInit() {
-    let connection = new signalR.HubConnectionBuilder()
-      .configureLogging(signalR.LogLevel.Information)
-      .withUrl( environment.apiServer + "num")
-      .build();
-
-    connection.start().then(() => {
-      console.log("connected");
-    }).catch(err => {
-      console.log(err);
-    });
-
-    connection.on("SendMessage", () => {
-      console.log("Message");
-    });
 
   }
 
