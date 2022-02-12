@@ -221,5 +221,6 @@ describe('NumberViewerComponent', () => {
     component.quit();
 
     expect(quitCalled).toBeTrue();
+    expect(component.disableControls).toBeTrue();
   });
 });

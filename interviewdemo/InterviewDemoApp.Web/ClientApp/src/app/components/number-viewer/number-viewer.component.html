@@ -9,8 +9,8 @@
 <div class="container" *ngIf="hideIntervalControls">
 
   <div class="input-group" style="width: 20em">
-    <input class="form-control" id="numberEntry" type="number" [value]="numberToAdd">
-    <button class="btn btn-primary" id="numberButton" (click)="addNumber()">Add</button>
+    <input class="form-control" id="numberEntry" type="number" [value]="numberToAdd" [disabled]="disableControls">
+    <button class="btn btn-primary" id="numberButton" (click)="addNumber()" [disabled]="disableControls">Add</button>
   </div>
 
   <br>
@@ -18,7 +18,7 @@
   <textarea id="serverMessages" class="form-control me-3" readonly rows="10" [value]="serverText" >
   </textarea>
   <br>
-  <button id="haltButton" (click)="halt()" class="btn btn-primary me-3">Halt</button>
-  <button id="resumeButton" (click)="resume()" class="btn btn-success me-3">Resume</button>
-  <button id="quitButton" (click)="quit()" class="btn btn-danger me-3">Quit</button>
+  <button id="haltButton" (click)="halt()" class="btn btn-primary me-3" [disabled]="disableControls">Halt</button>
+  <button id="resumeButton" (click)="resume()" class="btn btn-success me-3" [disabled]="disableControls">Resume</button>
+  <button id="quitButton" (click)="quit()" class="btn btn-danger me-3" [disabled]="disableControls">Quit</button>
 </div>

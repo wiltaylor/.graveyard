@@ -12,6 +12,7 @@ export class NumberViewerComponent implements OnInit {
   hideIntervalControls = false;
   serverText = "";
   numberToAdd = 1;
+  disableControls = false;
 
   constructor(private numberManagerService: NumberManagerService) { }
 
@@ -21,22 +22,33 @@ export class NumberViewerComponent implements OnInit {
     });
   }
 
+  // addNumber - Click handler for add number button.
+  //             this will add the current entered number to the number manager service.
   addNumber(){
     this.numberManagerService.addNumber(this.numberToAdd).subscribe();
   }
 
+  // halt - Click handler for halt button.
+  //        this will instruct the number manager service to halt sending updates.
   halt(){
     this.numberManagerService.halt().subscribe();
   }
 
+  // resume - Click handler for resume button.
+  //          this will instruct the number manager service to resume sending updates again.
   resume(){
     this.numberManagerService.resume().subscribe();
   }
 
+  // quit - Click handler for the quit button.
+  //        this will instruct the number manager service to quit and drop the connection.
   quit(){
     this.numberManagerService.quit().subscribe();
+    this.disableControls = true;
   }
 
+  // setInterval - click handler for the set interval button.
+  //               this will set the interval for updates and allow the user to enter numbers.
   setInterval(){
     this.hideIntervalControls = true;
     this.numberManagerService.connect(this.interval).subscribe();
