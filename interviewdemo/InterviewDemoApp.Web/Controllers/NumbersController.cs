@@ -19,7 +19,7 @@ namespace InterviewDemoApp.Web.Controllers
         
         private async Task NumberHandler(int interval, HttpContext context, WebSocket webSocket)
         {
-            var numberManager = new NumberManager(interval, _timer);
+            var numberManager = new NumberManager(_timer);
 
             async Task SendMessage(string text)
             {

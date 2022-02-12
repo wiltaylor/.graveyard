@@ -23,17 +23,12 @@ public class NumberManagerTest
     private readonly FakeTimer _defaultTimer = new FakeTimer();
 
     [Fact]
-    public void When_CreatingWithPositiveTimeInterval_Should_NotThrow()
-    {
-        var sut = new NumberManager(5, _defaultTimer);
-    }
-
-    [Fact]
     public void When_CreatingWithNegativeInterval_Should_Throw()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() =>
         {
-            var sut = new NumberManager(-5, _defaultTimer);
+            var sut = new NumberManager( _defaultTimer);
+            sut.SetInterval(-5);
         });
     }
 
@@ -42,7 +37,8 @@ public class NumberManagerTest
     {
         //Arrange
         var timer = new FakeTimer();
-        var sut = new NumberManager(1, timer);
+        var sut = new NumberManager( timer);
+        sut.SetInterval(1);
 
         List<KeyValuePair<ulong, ulong>>? counts = null;
 
@@ -69,7 +65,8 @@ public class NumberManagerTest
     {
         //Arrange
         var timer = new FakeTimer();
-        var sut = new NumberManager(1, timer);
+        var sut = new NumberManager( timer);
+        sut.SetInterval(1);
 
         List<KeyValuePair<ulong, ulong>>? counts = null;
 
@@ -95,7 +92,9 @@ public class NumberManagerTest
     {
         //Arrange
         var timer = new FakeTimer();
-        var sut = new NumberManager(1, timer);
+        var sut = new NumberManager( timer);
+        sut.SetInterval(1);
+        
         var onTickCount = 0;
 
         sut.OnTick += (_,_) =>
@@ -117,7 +116,9 @@ public class NumberManagerTest
     {
         //Arrange
         var timer = new FakeTimer();
-        var sut = new NumberManager(1, timer);
+        var sut = new NumberManager( timer);
+        sut.SetInterval(1);
+        
         var onTickCount = 0;
 
         sut.OnTick += (_,_) =>
@@ -146,7 +147,8 @@ public class NumberManagerTest
     public void When_AddingNumberWhichIsInFibSequence_Should_ReturnTrue(ulong number, bool isFibNumber)
     {
        //Arrange 
-        var sut = new NumberManager(5, _defaultTimer);
+        var sut = new NumberManager( _defaultTimer);
+        sut.SetInterval(1);
         
         //Act
         var result = sut.AddNumber(number);
@@ -160,8 +162,9 @@ public class NumberManagerTest
     {
         
        //Arrange 
-        var sut = new NumberManager(5, _defaultTimer);
-
+        var sut = new NumberManager( _defaultTimer);
+        sut.SetInterval(1);
+        
         //Act
         sut.AddNumber(10);
         sut.AddNumber(10);
@@ -177,7 +180,8 @@ public class NumberManagerTest
     public void When_GettingFrequenciesOfNumbers_Should_BeInDecendingOrder()
     {
         //Arrange 
-        var sut = new NumberManager(5, _defaultTimer);
+        var sut = new NumberManager( _defaultTimer);
+        sut.SetInterval(1);
         
         //Act
         sut.AddNumber(1);
@@ -203,7 +207,9 @@ public class NumberManagerTest
     {
         //Arrange 
         var timer = new FakeTimer();
-        var sut = new NumberManager(5, timer);
+        var sut = new NumberManager( timer);
+        sut.SetInterval(1);
+        
         List<KeyValuePair<ulong, ulong>> result;
 
         sut.OnTick += (_, args) => result = args;

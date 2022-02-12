@@ -6,7 +6,7 @@ namespace InterviewDemoApp.Core;
 /// <summary>
 /// Handles most of the business logic of this demo application.
 /// </summary>
-public class NumberManager
+public class NumberManager : INumberManager
 {
     /// <summary>
     /// This event is fired everytime the interval has passed and returns the current counts.
@@ -23,31 +23,41 @@ public class NumberManager
     /// Set to true to pause and prevent OnTick event from firing.
     /// </summary>
     private bool _isHalted;
+
+    private ITimer _timer;
     
     /// <summary>
     /// Constructor
     /// </summary>
-    /// <param name="interval">Number of seconds to wait before returning current counts.</param>
     /// <param name="timer">Timer object that will fire everytime the interval is reached.</param>
     /// <exception cref="ArgumentOutOfRangeException"></exception>
-    public NumberManager(int interval, ITimer timer)
+    public NumberManager(ITimer timer)
+    {
+        _timer = timer;
+    }
+
+    /// <summary>
+    /// Sets the interval that the timer inside number manager runs on.
+    /// </summary>
+    /// <param name="interval">Number of seconds to wait before returning current counts.</param>
+    /// <exception cref="ArgumentOutOfRangeException"></exception>
+    public void SetInterval(int interval)
     {
         if (interval < 1)
         {
-            throw new ArgumentOutOfRangeException(nameof(interval), 
+            throw new ArgumentOutOfRangeException(nameof(interval),
                 "Expected a time interval larger than 0 seconds");
         }
-        
-        timer.SetInterval(interval);
 
-        timer.OnTick += (sender, args) =>
+        _timer.SetInterval(interval);
+
+        _timer.OnTick += (sender, args) =>
         {
             if (!_isHalted)
             {
                 OnTick?.Invoke(this, GetCounts());
             }
         };
-
     }
 
     /// <summary>

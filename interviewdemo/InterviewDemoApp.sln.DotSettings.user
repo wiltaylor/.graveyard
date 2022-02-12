@@ -8,5 +8,6 @@
 	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=fe18d53f_002Dcc16_002D4185_002Dbae9_002D9cce15a7a8d4/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" IsActive="True" Name="When_InitalizingWithPositiveTimeInterval_Should_NotThrow" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;&#xD;
   &lt;TestAncestor&gt;&#xD;
     &lt;TestId&gt;xUnit::64CB58E5-2488-4977-B21F-D17B768AC28A::net6.0::InterviewDemoApp.Test.WebTests.NumberHubTest&lt;/TestId&gt;&#xD;
+    &lt;TestId&gt;xUnit::64CB58E5-2488-4977-B21F-D17B768AC28A::net6.0::InterviewDemoapp.Test.CoreTests.NumberManagerTest&lt;/TestId&gt;&#xD;
   &lt;/TestAncestor&gt;&#xD;
 &lt;/SessionState&gt;</s:String></wpf:ResourceDictionary>
