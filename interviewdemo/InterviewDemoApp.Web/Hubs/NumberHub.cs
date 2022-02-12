@@ -14,18 +14,18 @@ public class NumberHub: Hub<INumberClientHub>
         await Clients.Caller.SendMessage("Error - You need to call SetupIntervals first!");
     }
 
-    public Task Halt()
+    public async Task Halt()
     {
-        return Task.CompletedTask;
+        await Clients.Caller.SendMessage("Error - You need to call SetupIntervals first!");
     }
 
-    public Task Resume()
+    public async Task Resume()
     {
-        return Task.CompletedTask;
+        await Clients.Caller.SendMessage("Error - You need to call SetupIntervals first!");
     }
 
-    public Task Quit()
+    public async Task Quit()
     {
-        return Task.CompletedTask;
+        await Clients.Caller.SendMessage("Error - You need to call SetupIntervals first!");
     }
 }

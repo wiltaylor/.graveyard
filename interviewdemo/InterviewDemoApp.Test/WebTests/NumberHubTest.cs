@@ -47,4 +47,44 @@ public class NumberHubTest
         //Assert
         sut.ClientMock.Verify(h => h.SendMessage("Error - You need to call SetupIntervals first!")); 
     }
+
+    [Fact]
+    public void When_CallingHaltBeforeSetIntervals_Should_ReturnWarningMessage()
+    {
+        //Arrange
+        var sut = new TestableNumberHub();
+
+        //Act
+        sut.Halt();
+        
+        //Assert
+        sut.ClientMock.Verify(h => h.SendMessage("Error - You need to call SetupIntervals first!"));  
+    }
+    
+    [Fact]
+    public void When_CallingResumeBeforeSetIntervals_Should_ReturnWarningMessage()
+    {
+        //Arrange
+        var sut = new TestableNumberHub();
+
+        //Act
+        sut.Resume();
+        
+        //Assert
+        sut.ClientMock.Verify(h => h.SendMessage("Error - You need to call SetupIntervals first!"));  
+    }
+    
+    [Fact]
+    public void When_CallingQuitBeforeSetIntervals_Should_ReturnWarningMessage()
+    {
+        //Arrange
+        var sut = new TestableNumberHub();
+
+        //Act
+        sut.Quit();
+        
+        //Assert
+        sut.ClientMock.Verify(h => h.SendMessage("Error - You need to call SetupIntervals first!"));  
+    }
+        
 }
