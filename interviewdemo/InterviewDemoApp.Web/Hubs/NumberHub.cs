@@ -70,7 +70,10 @@ public class NumberHub: Hub<INumberClientHub>
             await Clients.Caller.SendMessage("Error - You need to call SetupIntervals first!");
         }
 
-        _numberManager.AddNumber(number);
+        if (_numberManager.AddNumber(number))
+        {
+            await Clients.Caller.SendMessage("Fib");
+        }
     }
 
     /// <summary>

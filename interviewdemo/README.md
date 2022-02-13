@@ -5,15 +5,29 @@ show the use of the following technologies:
 - .NET Core 6 ASP.NET
 - XUnit
 - MOQ
-- SignalR for WebSocket Connection
+- SignalR
 - Angular and Typescript
 - Jasmin Unit Test framework
+- Docker
 
 ## Build Instructions
 ### IDE (Visual Studio 2022/Rider 2021)
 Simply open the project and run it.
 
-## License
+### Docker
+You can build and run the project in docker by doing the following:
+
+- cd into the main directory of the project
+- Run the following:
+```shell
+docker build . -t wiltaylor/demo
+```
+- Now to run the project run:
+```shell
+docker run -p 8080:80 wiltaylor/demo
+```
+
+## License (MIT)
 
 Copyright (c) 2022 Wil Taylor
 

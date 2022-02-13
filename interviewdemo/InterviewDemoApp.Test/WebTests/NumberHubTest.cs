@@ -202,4 +202,19 @@ public class NumberHubTest
         //Assert
         sut.NumberManagerMock.Verify(n => n.AddNumber(3));
     }
+
+    [Fact]
+    public void When_AddingANumberWhichIsInTheFibSequence_Should_WriteFibMessage()
+    {
+        //Arrange
+        var sut = TestableNumberHub.Default();
+        sut.NumberManagerMock.Setup(m => m.AddNumber(1)).Returns(true);
+        
+        //Act
+        sut.SetupIntervals(5);
+        sut.AddNumber(1);
+        
+        //Assert
+        sut.ClientMock.Verify(m => m.SendMessage("Fib"));
+    }
 }
