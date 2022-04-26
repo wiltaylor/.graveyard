@@ -45,10 +45,10 @@ stdenv.mkDerivation {
    mkdir $out -p
    mkdir $out/etc/g810-led/samples -p
    mkdir $out/etc/udev/rules.d -p
-   mkdir $out/usr/lib/systemd/system -p
+   mkdir $out/lib/systemd/system -p
    cp -R bin $out
    cp udev/g810-led.rules $out/etc/udev/rules.d/g810-led.rules
-   cp systemd/* $out/usr/lib/systemd/system
+   cp systemd/* $out/lib/systemd/system
    ln -s $out/bin/g810-led $out/bin/g213-led
    ln -s $out/bin/g810-led $out/bin/g410-led
    ln -s $out/bin/g810-led $out/bin/g413-led
