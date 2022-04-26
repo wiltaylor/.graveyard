@@ -27,15 +27,28 @@ stdenv.mkDerivation {
 
   buildInputs = [ pkgs.hidapi ];
 
-  dontBuild = true;
+  patchPhase = ''
+    sed -i "s#/usr/bin/#$out/bin/#g" udev/g810-led.rules
+    sed -i "s#/usr/bin/#$out/bin/#g" systemd/g810-led.service
+    sed -i "s#/usr/bin/#$out/bin/#g" systemd/g810-led-reboot.service
+
+    sed -i "s#/etc/g810-led/profile#$out/etc/g810-led/samples/group_keys#g" systemd/g810-led.service
+    sed -i "s#/etc/g810-led/reboot#$out/etc/g810-led/samples/all_off#g" systemd/g810-led-reboot.service
+
+  '';
+
+  buildPhase = ''
+    make bin
+  '';
 
   installPhase = ''
-   make bin
    mkdir $out -p
    mkdir $out/etc/g810-led/samples -p
    mkdir $out/etc/udev/rules.d -p
    mkdir $out/usr/lib/systemd/system -p
    cp -R bin $out
+   cp udev/g810-led.rules $out/etc/udev/rules.d/g810-led.rules
+   cp systemd/* $out/usr/lib/systemd/system
    ln -s $out/bin/g810-led $out/bin/g213-led
    ln -s $out/bin/g810-led $out/bin/g410-led
    ln -s $out/bin/g810-led $out/bin/g413-led
