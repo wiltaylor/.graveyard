@@ -66,6 +66,29 @@
         '';
       };
 
+      youtube = mkWks {
+        name = "youtube";
+        system = sys;
+        homeIsolation = true;
+        packages = with pkgs; [
+          mpv
+          youtube-dl
+          pipe-viewer
+          gtk-pipe-viewer
+        ];
+
+        guiScript = ''
+          OPT=$(echo -e "Pipe Viewer" | rofi -dmenu)
+          case $OPT in
+          "Pipe Viewer")
+            exec gtk-pipe-viewer
+          ;;
+           *)
+          ;;
+          esac
+        '';
+      };
+
 
       video = mkWks {
         name = "video";
@@ -122,7 +145,6 @@
           brave
           chromium
           nyxt
-          torbrowser
         ];
 
         startHook = ''
@@ -175,6 +197,7 @@
           minecraft 
           quakespasm 
           superTuxKart 
+          openmw
         ];
 
         startHook = ''
@@ -184,7 +207,7 @@
         '';
 
         guiScript = ''
-          OPT=$(echo -e "Steam\nLutris\nXonotic\Minecraft\nQuake\nSuper Tux Kart" | rofi -dmenu)
+          OPT=$(echo -e "Steam\nLutris\nXonotic\nMinecraft\nQuake\nSuper Tux Kart\nMorrowind" | rofi -dmenu)
           case $OPT in
           "Steam")
             exec steam
@@ -203,6 +226,9 @@
           ;;
           "Super Tux Kart")
             exec supertuxkart
+          ;;
+          "Morrowind")
+            exec openmw-launcher
           ;;
           *)
           ;;
@@ -298,6 +324,18 @@
                 echo "start {id} - Start torrent"
                 echo "stop {id} - Stop torrent"
                 echo "rm {id} - Remove torrent"
+                echo "browser - Runs tor browsers"
+              }
+
+              browser() {
+                docker run -t -i --rm --name tor-browser \
+                -v /tmp/.X11-unix:/tmp/.X11-unix \
+                -v /dev/shm:/dev/shm \
+                -e DISPLAY="unix$DISPLAY" \
+                 --net=container:protonvpn \
+                inglebard/tor-browser --log /dev/stdout --class=tor-docker
+
+
               }
 
               up() {
@@ -374,6 +412,9 @@
               ;;
               "rm")
                 rmtorrent "$2"
+              ;;
+              "browser")
+                browser
               ;;
               esac
           '';
