@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - name: Install prereqs
-        run: apt-get install -y plantuml graphviz
+        run: sudo apt-get install -y plantuml graphviz
 
       - uses: actions-rs/install@v0.1
         with:
