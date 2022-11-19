@@ -13,6 +13,8 @@ jobs:
       group: ${{ github.workflow }}-${{ github.ref }}
     steps:
       - uses: actions/checkout@v2
+      - name: Update apt
+        run: sudo apt-get update -y
       - name: Install prereqs
         run: sudo apt-get install -y plantuml graphviz
 
