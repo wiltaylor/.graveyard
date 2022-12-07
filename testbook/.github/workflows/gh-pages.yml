@@ -24,19 +24,19 @@ jobs:
           version: latest
       - uses: actions-rs/install@v0.1
         with:
-          create: mdbook-ktex
+          crate: mdbook-ktex
           version: latest
       - uses: actions-rs/install@v0.1
         with:
-          create: graphviz
+          crate: graphviz
           version: latest
       - uses: actions-rs/install@v0.1
         with:
-          create: mdbook-mermaid
+          crate: mdbook-mermaid
           version: latest
       - uses: actions-rs/install@v0.1
         with:
-          create: mdbook-plantuml
+          crate: mdbook-plantuml
           version: latest
 
       - uses: cachix/install-nix-action@v18
