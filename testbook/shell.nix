@@ -5,7 +5,6 @@ pkgs.mkShell {
     mdbook
     mdbook-admonish
     mdbook-graphviz
-    mdbook-katex
     mdbook-mermaid
     mdbook-pdf
     mdbook-plantuml

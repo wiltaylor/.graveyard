@@ -24,10 +24,6 @@ jobs:
           version: latest
       - uses: actions-rs/install@v0.1
         with:
-          crate: mdbook-katex
-          version: latest
-      - uses: actions-rs/install@v0.1
-        with:
           crate: mdbook-graphviz
           version: latest
       - uses: actions-rs/install@v0.1
