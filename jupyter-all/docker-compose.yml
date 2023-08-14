@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+    jupyter:
+      build:
+        context: .
+        dockerfile: Dockerfile
+      ports:
+        - "8888:8888"
+      environment:
+        NB_UID: ${UID}
+        NB_GID: ${GID}
+      volumes:
+        # Move this to mount a location to store your notebooks.
+        - .:/home/jovyan/workspace 
