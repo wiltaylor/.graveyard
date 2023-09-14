@@ -4,7 +4,7 @@ use prefab::config::load_config;
 use tui::{run, setup_terminal};
 
 use core::panic;
-use std::option;
+
 use std::result::Result::Ok as Ok2;
 use std::{env, path::PathBuf};
 

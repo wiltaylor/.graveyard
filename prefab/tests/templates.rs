@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use prefab::template::{self, TemplateOption};
+use prefab::template::{self};
 use assert_fs::{TempDir, prelude::PathChild};
 use assert_fs::prelude::*;
 
