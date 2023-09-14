@@ -441,7 +441,7 @@ fn run_edit_option(terminal: &mut Terminal<CrosstermBackend<Stdout>>, option: &T
         }
 
         if let Some(value) = new_value {
-            option = option.SetValue(value);
+            option = option.set_value(value);
         }
     }
 

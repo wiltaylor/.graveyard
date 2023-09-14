@@ -3,7 +3,6 @@ use anyhow::{anyhow, Ok, Result};
 use tui::{run, setup_terminal};
 
 use core::panic;
-use std::os;
 use std::result::Result::Ok as Ok2;
 use std::{env, path::PathBuf};
 
@@ -137,7 +136,7 @@ fn main() {
 
                     let o = options.get(&parts[0]).unwrap().clone();
                     options.remove(&parts[0]);
-                    let o = o.SetValue(parts[1].clone());
+                    let o = o.set_value(parts[1].clone());
                     options.insert(parts[0].clone(), o);
                 }
             }

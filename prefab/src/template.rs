@@ -1,4 +1,3 @@
-use core::panic;
 use std::{
     collections::HashMap,
     fs,
@@ -63,7 +62,7 @@ pub struct Template {
 }
 
 impl TemplateOption {
-    pub fn SetValue(self, text: String)-> TemplateOption {
+    pub fn set_value(self, text: String)-> TemplateOption {
         match self {
             TemplateOption::FreeText { prompt, value:_ } => {
                 if text != "".to_string() {
@@ -72,7 +71,7 @@ impl TemplateOption {
                     TemplateOption::FreeText { prompt, value: None }
                 }
             },
-            TemplateOption::Boolean { prompt, value } => {
+            TemplateOption::Boolean { prompt, value:_ } => {
                 let text = text.trim().to_lowercase();
                 if text == "true" {
                     return TemplateOption::Boolean { prompt, value: Some(true) }
@@ -96,7 +95,7 @@ impl TemplateOption {
                         TemplateOption::Integer { prompt, value: Some(num)}
                     },
                     Err2(_) => {
-                        TemplateOption::Integer { prompt, value: value }
+                        TemplateOption::Integer { prompt, value }
                     },
                 }                
             },
