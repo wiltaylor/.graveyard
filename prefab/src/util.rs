@@ -44,7 +44,7 @@ pub fn exec(command: &str, environment: HashMap<String, String>, working_directo
     };
 
     let output = from_utf8(&output.stdout)?;
-    return Ok(output.to_string());
+    Ok(output.to_string())
 }
 
 #[cfg(test)]

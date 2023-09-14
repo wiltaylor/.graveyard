@@ -5,6 +5,7 @@ use tui::{run, setup_terminal};
 
 use core::panic;
 
+use std::path::Path;
 use std::result::Result::Ok as Ok2;
 use std::{env, path::PathBuf};
 
@@ -13,21 +14,19 @@ use prefab::template::Template;
 
 use crate::tui::restore_terminal;
 
-fn list_templates(root: &PathBuf) -> Result<Vec<Template>> {
+fn list_templates(root: &Path) -> Result<Vec<Template>> {
     let mut result = vec![];
 
     if let Ok2(files) = root.read_dir() {
-        for item in files {
-            if let Ok2(item) = item {
-                let mut path = PathBuf::new();
-                path.push(item.path());
-                path.push("prefab.toml");
+        for item in files.flatten() {
+            let mut path = PathBuf::new();
+            path.push(item.path());
+            path.push("prefab.toml");
 
-                if path.exists() {
-                    path.pop();
-                    if let Ok2(tmp) = Template::load(path) {
-                        result.push(tmp);
-                    }
+            if path.exists() {
+                path.pop();
+                if let Ok2(tmp) = Template::load(path) {
+                    result.push(tmp);
                 }
             }
         }
@@ -45,7 +44,7 @@ fn get_template_directory() -> Result<PathBuf> {
             ));
         }
 
-        return Ok(PathBuf::from(path));
+        return Ok(path);
     }
 
     if cfg!(target_os = "windows") {
@@ -134,7 +133,7 @@ fn main() {
 
             if let Some(vars) = matches.get_many::<String>("var") {
                 for v in vars {
-                    let parts: Vec<String> = v.split("=").map(|v| v.to_string()).collect();
+                    let parts: Vec<String> = v.split('=').map(|v| v.to_string()).collect();
 
                     let o = options.get(&parts[0]).unwrap().clone();
                     options.remove(&parts[0]);

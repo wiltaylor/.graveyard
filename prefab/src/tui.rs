@@ -23,8 +23,8 @@ pub fn restore_terminal(
     Ok(terminal.show_cursor()?)
 }
 
-fn get_option_list(options: &Vec<TemplateOption>) -> Vec<ListItem> {
-    let mut items: Vec<ListItem> = options.clone().into_iter().map(|opt| {
+fn get_option_list(options: &[TemplateOption]) -> Vec<ListItem> {
+    let mut items: Vec<ListItem> = options.clone().iter().map(|opt| {
         ListItem::new(match opt {
             TemplateOption::FreeText { prompt, value } => {
                 if let Some(value) = value {
@@ -47,7 +47,7 @@ fn get_option_list(options: &Vec<TemplateOption>) -> Vec<ListItem> {
                     Line::from(vec![
                         Span::raw(prompt).green(),
                         Span::raw(" => ").yellow(),
-                        if value { Span::raw("True").green() } else {Span::raw("False").red()}
+                        if *value { Span::raw("True").green() } else {Span::raw("False").red()}
                     ])
                 }else{
                     Line::from(vec![
@@ -91,8 +91,8 @@ fn get_option_list(options: &Vec<TemplateOption>) -> Vec<ListItem> {
                 if let Some(value) = value {
                     let mut valid = false;
 
-                    if let Ok(regex) = re::new(&pattern) {
-                        valid = regex.is_match(&value) 
+                    if let Ok(regex) = re::new(pattern) {
+                        valid = regex.is_match(value) 
                     }
                       
                     Line::from(vec![
@@ -256,7 +256,7 @@ fn run_edit_option(terminal: &mut Terminal<CrosstermBackend<Stdout>>, option: &T
             },
             TemplateOption::Float { prompt, value } => {
                 let mut val = if let Some(v) = value { format!("{}", v) } else { "".to_string() }; 
-                if dec && !val.contains(".") {
+                if dec && !val.contains('.') {
                     val += "."
                 }
                 let mut input = Input::new(val.clone());
@@ -289,7 +289,7 @@ fn run_edit_option(terminal: &mut Terminal<CrosstermBackend<Stdout>>, option: &T
                                 dec = true;
                             }
 
-                            if key.code == KeyCode::Backspace && val.ends_with(".") {
+                            if key.code == KeyCode::Backspace && val.ends_with('.') {
                                 dec = false;
                             }
                             
@@ -306,7 +306,7 @@ fn run_edit_option(terminal: &mut Terminal<CrosstermBackend<Stdout>>, option: &T
                 new_value = Some(val.clone());
 
                 let mut valid = false;
-                if let Ok(regex) = re::new(&pattern) {
+                if let Ok(regex) = re::new(pattern) {
                     valid = regex.is_match(&val) 
                 }
                
@@ -451,11 +451,11 @@ fn run_setting_list(terminal: &mut Terminal<CrosstermBackend<Stdout>>, options: 
     let mut state = ListState::default();
     state.select(Some(0));
 
-    let keys :Vec<String> = options.keys().map(|x| x.clone()).collect();
-    let mut values = keys.iter().map(|x| options[x].clone()).collect();
+    let keys :Vec<String> = options.keys().cloned().collect();
+    let mut values: Vec<TemplateOption> = keys.iter().map(|x| options[x].clone()).collect();
     
-    Ok(loop {
-        let items = get_option_list(&mut values);
+    loop {
+        let items = get_option_list(&values);
         terminal.draw(|frame| {
             let list = List::new(items.clone())
                 .block(Block::default().title("Options").borders(Borders::ALL))
@@ -520,14 +520,15 @@ fn run_setting_list(terminal: &mut Terminal<CrosstermBackend<Stdout>>, options: 
 
                         
 
-                        let result = run_edit_option(terminal, &mut values[index])?;
+                        let result = run_edit_option(terminal, &values[index])?;
                         let _ = mem::replace(&mut values[index], result);
                     }
                 }
             }
 
         }
-    })
+    }
+    Ok(())
    
 }
 

@@ -65,7 +65,7 @@ impl TemplateOption {
     pub fn set_value(self, text: String)-> TemplateOption {
         match self {
             TemplateOption::FreeText { prompt, value:_ } => {
-                if text != "".to_string() {
+                if text.is_empty() {
                     TemplateOption::FreeText { prompt, value: Some(text) }
                 }else{
                     TemplateOption::FreeText { prompt, value: None }
@@ -77,7 +77,7 @@ impl TemplateOption {
                     return TemplateOption::Boolean { prompt, value: Some(true) }
                 }
 
-                if text == "" {
+                if text.is_empty() {
                     return TemplateOption::Boolean { prompt, value: None };
                 }
 
@@ -86,7 +86,7 @@ impl TemplateOption {
             TemplateOption::Integer { prompt, value } => {
                 let result: Result<i64, _> = text.parse();
 
-                if text == "" {
+                if text.is_empty() {
                     return TemplateOption::Integer { prompt, value: None };
                 }
 
@@ -101,13 +101,13 @@ impl TemplateOption {
             },
             TemplateOption::Float { prompt, value } => {
                 let mut text = text;
-                if text.ends_with(".") {
+                if text.ends_with('.') {
                     text += "0";
                 }
 
                 let result: Result<f64, _> = text.parse();
 
-                if text == "" {
+                if text.is_empty() {
                     return TemplateOption::Float { prompt, value: None };
                 }
 
@@ -116,19 +116,19 @@ impl TemplateOption {
                         TemplateOption::Float { prompt, value: Some(num)}
                     },
                     Err2(_) => {
-                        TemplateOption::Float { prompt, value: value }
+                        TemplateOption::Float { prompt, value }
                     },
                 }  
             },
             TemplateOption::Regex { prompt, pattern, value:_ } => {
-                if text != "".to_string() {
+                if text.is_empty() {
                     TemplateOption::Regex { prompt, pattern, value: Some(text) }
                 }else{
                     TemplateOption::Regex { prompt, pattern, value: None }
                 }
             },
             TemplateOption::Choice { prompt, options, value:_ } => {
-                if text != "".to_string() {
+                if text.is_empty() {
                     TemplateOption::Choice { prompt, options, value: Some(text) }
                 }else{
                     TemplateOption::Choice { prompt, options, value: None }
@@ -143,21 +143,17 @@ impl Manifest {
 
         for (k, v) in &self.options {
             match v {
-                TemplateOption::Regex { prompt:_, pattern, value } => {
+                TemplateOption::Regex { prompt:_, pattern, value: Some(value) } => {
 
-                    if let Some(value) = value {
                     let regex = re::new(pattern)?;
 
-                        if !regex.is_match(value) {
-                            return Err(anyhow!("Regular expression for {} didn't match!", k));
-                        }
+                    if !regex.is_match(value) {
+                        return Err(anyhow!("Regular expression for {} didn't match!", k));
                     }
                 },
-                TemplateOption::Choice { prompt:_, options, value } => {
-                    if let Some(value) = value {
-                        if !options.contains(value) {
-                            return Err(anyhow!("Option not in the choice list for {} was set.", k));
-                        }
+                TemplateOption::Choice { prompt:_, options, value: Some(value) } => {
+                    if !options.contains(value) {
+                        return Err(anyhow!("Option not in the choice list for {} was set.", k));
                     }
                 },
                 _ => ()
@@ -180,17 +176,16 @@ fn system(args: &HashMap<String, tera::Value>) -> Result<tera::Value, tera::Erro
         }
     }
     
-    return Err2(tera::Error::msg("You need to pass in the command argument!"));
-
+    Err2(tera::Error::msg("You need to pass in the command argument!"))
 }
 
 impl Template {
     fn render_file_path(&mut self, path: impl AsRef<Path>) -> Result<String> {
         let ctx = self.get_context();
         if let Some(path) = path.as_ref().clone().to_str(){
-            return Ok(self.tera.render_str(&path, &ctx)?);
+            Ok(self.tera.render_str(path, &ctx)?)
         }else{
-            return Err(anyhow!("Failed to process path!"));
+            Err(anyhow!("Failed to process path!"))
         }
     }
 
@@ -226,7 +221,7 @@ impl Template {
         tera.register_function("system", system);
 
         Ok(Template {
-            tera: tera,
+            tera,
             manifest: toml,
             source_path: path.as_ref().to_path_buf(),
         })
@@ -290,7 +285,7 @@ impl Template {
         if let Some(hook) = &self.manifest.before_hook {
             let mut env = HashMap::<String, String>::new();
             env.insert("PREFAB_TEMPLATE".to_string(), self.source_path.to_string_lossy().to_string());
-            exec(&hook, env, &path)?;
+            exec(hook, env, &path)?;
         }
 
         for tmpl in names {
@@ -325,7 +320,7 @@ impl Template {
         if let Some(hook) = &self.manifest.after_hook {
             let mut env = HashMap::<String, String>::new();
             env.insert("PREFAB_TEMPLATE".to_string(), self.source_path.to_string_lossy().to_string());
-            exec(&hook, env, &path)?;
+            exec(hook, env, &path)?;
         }
 
         Ok(())
