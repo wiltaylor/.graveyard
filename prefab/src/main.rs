@@ -1,8 +1,10 @@
 mod tui;
 use anyhow::{anyhow, Ok, Result};
+use prefab::config::load_config;
 use tui::{run, setup_terminal};
 
 use core::panic;
+use std::option;
 use std::result::Result::Ok as Ok2;
 use std::{env, path::PathBuf};
 
@@ -124,11 +126,11 @@ fn main() {
             let mut tmp = tmp;
             //Get config
 
-            if let Some(cfg) = matches.get_one::<String>("config") {
-                tmp.load_config(cfg).expect("Error loading config file!");
-            }
-
             let mut options = tmp.get_options();
+            
+            if let Some(cfg) = matches.get_one::<String>("config") {
+                options = load_config( cfg, options).unwrap();
+            }
 
             if let Some(vars) = matches.get_many::<String>("var") {
                 for v in vars {
