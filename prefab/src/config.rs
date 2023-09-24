@@ -14,24 +14,16 @@ pub fn load_config(path: impl AsRef<Path>, mut options: HashMap<String, Template
                 let entry = 
                     options
                     .get_mut(&name)
-                    .ok_or(anyhow!("No entry for {} in manfifest!", name))?;
+                    .ok_or(anyhow!("No entry for {} in manifest!", name))?;
 
                 match entry {
-                    TemplateOption::FreeText { prompt: _, value, mandatory } => {
+                    TemplateOption::FreeText { value, .. } => {
                         *value = Some(val);
                     }
-                    TemplateOption::Regex {
-                        prompt: _,
-                        pattern: _,
-                        value, mandatory,
-                    } => {
+                    TemplateOption::Regex { value, .. } => {
                         *value = Some(val);
                     }
-                    TemplateOption::Choice {
-                        prompt: _,
-                        options: _,
-                        value, mandatory,
-                    } => {
+                    TemplateOption::Choice { value, .. } => {
                         *value = Some(val);
                     }
                     _ => {
@@ -45,9 +37,9 @@ pub fn load_config(path: impl AsRef<Path>, mut options: HashMap<String, Template
             Value::Integer(val) => {
                 let entry = options
                     .get_mut(&name)
-                    .ok_or(anyhow!("No entry for {} in manfifest!", name))?;
+                    .ok_or(anyhow!("No entry for {} in manifest!", name))?;
 
-                if let TemplateOption::Integer { prompt: _, value, mandatory } = entry {
+                if let TemplateOption::Integer { value, .. } = entry {
                     *value = Some(val);
                 } else {
                     return Err(anyhow!(
@@ -59,9 +51,9 @@ pub fn load_config(path: impl AsRef<Path>, mut options: HashMap<String, Template
             Value::Float(val) => {
                 let entry = options
                     .get_mut(&name)
-                    .ok_or(anyhow!("No entry for {} in manfifest!", name))?;
+                    .ok_or(anyhow!("No entry for {} in manifest!", name))?;
 
-                if let TemplateOption::Float { prompt: _, value, mandatory } = entry {
+                if let TemplateOption::Float { value, .. } = entry {
                     *value = Some(val);
                 } else {
                     return Err(anyhow!(
@@ -73,9 +65,9 @@ pub fn load_config(path: impl AsRef<Path>, mut options: HashMap<String, Template
             Value::Boolean(val) => {
                 let entry = options
                     .get_mut(&name)
-                    .ok_or(anyhow!("No entry for {} in manfifest!", name))?;
+                    .ok_or(anyhow!("No entry for {} in manifest!", name))?;
 
-                if let TemplateOption::Boolean { prompt: _, value, mandatory } = entry {
+                if let TemplateOption::Boolean { value, .. } = entry {
                     *value = Some(val);
                 } else {
                     return Err(anyhow!(
