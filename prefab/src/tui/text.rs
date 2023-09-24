@@ -24,32 +24,20 @@ pub struct TextUI {
 
 impl TextUI {
     pub fn new(option: TemplateOption) -> TextUI {
-        let input = if let TemplateOption::FreeText { prompt:_, value, mandatory } = &option {
-            if let Some(val) = value { Input::new(val.clone()) } else { Input::default() }
-        }else if let TemplateOption::Regex{ prompt:_, pattern:_, value, mandatory } = &option {
-            if let Some(val) = value {Input::new(val.clone())} else { Input::default() }
-        }
-        else {
+        let input = if let Some(o) = option.get_value() {
+            Input::new(o)
+        }else{
             Input::default()
         };
 
         TextUI { option, input, status: EditorStatus::Continue, match_pattern: true }
     }
-
-    fn get_option_parts(&self) -> (String, Option<String>, Option<String>){
-        match &self.option {
-            TemplateOption::FreeText { prompt, value, mandatory } =>
-                (prompt.clone(), None, value.clone()),
-            TemplateOption::Regex { prompt, pattern, value, mandatory } =>
-                (prompt.clone(), Some(pattern.clone()), value.clone()),
-            _ => panic!("Expected free text or regex!")
-        }
-    }
 }
 
 impl OptionUi for TextUI {
     fn render_list_item(&self) -> anyhow::Result<ListItem> {
-        let (prompt, _, value) = self.get_option_parts();
+        let prompt = self.option.get_prompt();
+        let value = self.option.get_value();
 
         let val= if let Some(v) = value {
             Span::raw(v).white()
@@ -68,7 +56,7 @@ impl OptionUi for TextUI {
         &mut self,
         terminal: &mut ratatui::Terminal<ratatui::prelude::CrosstermBackend<std::io::Stdout>>,
     ) -> anyhow::Result<()> {
-        let (prompt, pattern, value) = self.get_option_parts();
+        let prompt = self.option.get_prompt();
         let val = self.input.value().to_string();
 
         let input_text = if self.match_pattern {
@@ -96,7 +84,7 @@ impl OptionUi for TextUI {
     }
 
     fn update_input(&mut self) -> anyhow::Result<()> {
-        let (_, pattern,  _) = self.get_option_parts();
+        let pattern = self.option.get_pattern();
 
         if event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {

@@ -164,6 +164,24 @@ impl TemplateOption {
             },
         }       
     }
+
+    pub fn get_pattern(&self) -> Option<String> {
+        match self {
+            TemplateOption::Regex { pattern, .. } => Some(pattern.clone()),
+            _ => None
+        }
+    }
+
+    pub fn get_prompt(&self) -> String {
+        match self {
+            TemplateOption::FreeText { prompt, .. } => prompt.clone(),
+            TemplateOption::Boolean { prompt,.. } =>  prompt.clone(),
+            TemplateOption::Integer { prompt,.. } =>  prompt.clone(),
+            TemplateOption::Float { prompt,.. } =>  prompt.clone(),
+            TemplateOption::Regex { prompt,.. } =>  prompt.clone(),
+            TemplateOption::Choice { prompt,.. } =>  prompt.clone(),
+        }
+    }
 }
 
 impl Manifest { 
