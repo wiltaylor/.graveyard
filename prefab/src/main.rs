@@ -6,7 +6,6 @@ use tui::{run, setup_terminal};
 use core::panic;
 
 use std::path::Path;
-use std::result::Result::Ok as Ok2;
 use std::{env, path::PathBuf};
 
 use clap::{arg, command, ArgAction};
@@ -17,7 +16,7 @@ use crate::tui::restore_terminal;
 fn list_templates(root: &Path) -> Result<Vec<Template>> {
     let mut result = vec![];
 
-    if let Ok2(files) = root.read_dir() {
+    if let Result::Ok(files) = root.read_dir() {
         for item in files.flatten() {
             let mut path = PathBuf::new();
             path.push(item.path());
@@ -25,7 +24,7 @@ fn list_templates(root: &Path) -> Result<Vec<Template>> {
 
             if path.exists() {
                 path.pop();
-                if let Ok2(tmp) = Template::load(path) {
+                if let Result::Ok(tmp) = Template::load(path) {
                     result.push(tmp);
                 }
             }
@@ -36,11 +35,11 @@ fn list_templates(root: &Path) -> Result<Vec<Template>> {
 }
 
 fn get_template_directory() -> Result<PathBuf> {
-    if let Ok2(path) = env::var("PREFAB_TEMPLATE_DIR") {
+    if let Result::Ok(path) = env::var("PREFAB_TEMPLATE_DIR") {
         let path = PathBuf::from(path);
         if !path.exists() {
             return Err(anyhow!(
-                "Path sepcified by $PREFAB_TEMPLATE_DIR doesn't exist!"
+                "Path specified by $PREFAB_TEMPLATE_DIR doesn't exist!"
             ));
         }
 
@@ -93,7 +92,7 @@ fn main() {
         .arg(arg!(-d --dir <FOLDER> "Set the folder to create the result of the template in. Defaults to current directory."))
         .get_matches();
 
-    let template_directory = if let Ok2(dir) = get_template_directory() {
+    let template_directory = if let Result::Ok(dir) = get_template_directory() {
         dir
     } else {
         panic!("Unable to find template root director!")
@@ -101,9 +100,9 @@ fn main() {
 
     if matches.get_flag("list") {
         println!("-- Template List --");
-        let tmps = list_templates(&template_directory).unwrap();
+        let temps = list_templates(&template_directory).unwrap();
 
-        for i in tmps {
+        for i in temps {
             println!(
                 "[{}]- {}\n{}\n",
                 i.source_path.file_name().unwrap().to_str().unwrap(),
@@ -121,7 +120,7 @@ fn main() {
         buf.push(template_directory);
         buf.push(name);
 
-        if let Ok2(tmp) = Template::load(buf) {
+        if let Result::Ok(tmp) = Template::load(buf) {
             let mut tmp = tmp;
             //Get config
 
