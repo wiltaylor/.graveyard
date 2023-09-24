@@ -6,7 +6,7 @@ use prefab::template::TemplateOption;
 use ratatui::{
     style::{Stylize, Style, Color},
     text::{Line, Span},
-    widgets::{ListItem, Paragraph, Block, Borders},
+    widgets::{Paragraph, Block, Borders},
 };
 use regex::Regex;
 use tui_input::backend::crossterm::EventHandler;
@@ -35,23 +35,6 @@ impl TextUI {
 }
 
 impl OptionUi for TextUI {
-    fn render_list_item(&self) -> anyhow::Result<ListItem> {
-        let prompt = self.option.get_prompt();
-        let value = self.option.get_value();
-
-        let val= if let Some(v) = value {
-            Span::raw(v).white()
-        }else {
-            Span::raw("Empty").gray()
-        };
-
-        Ok(ListItem::new(Line::from(vec![
-            Span::raw(prompt).green(),
-            Span::raw(" => ").yellow(),
-            val
-        ])))
-    }
-
     fn render_edit(
         &mut self,
         terminal: &mut ratatui::Terminal<ratatui::prelude::CrosstermBackend<std::io::Stdout>>,

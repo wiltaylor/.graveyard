@@ -34,21 +34,6 @@ impl ChoiceUI {
 }
 
 impl OptionUi for ChoiceUI {
-    fn render_list_item(&self) -> anyhow::Result<ListItem> {
-        let prompt = self.option.get_prompt();
-        let value = self.option.get_value();
-
-        Ok(ListItem::new(Line::from(vec![
-            Span::raw(prompt).green(),
-            Span::raw(" => ").yellow(),
-            if let Some(v) = value {
-                Span::raw(v).white()
-            }else{
-                Span::raw("Empty").gray()
-            }
-        ])))
-    }
-
     fn render_edit(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<()> {
         let prompt = self.option.get_prompt();
         let value = self.option.get_value();

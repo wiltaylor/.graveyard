@@ -32,24 +32,6 @@ impl NumberUI {
 }
 
 impl OptionUi for NumberUI {
-    fn render_list_item(&self) -> anyhow::Result<ListItem> {
-        let prompt = self.option.get_prompt();
-        let value = self.option.get_value();
-
-        Ok(ListItem::new(
-            Line::from(vec![
-                Span::raw(prompt).green(),
-                Span::raw(" => ").yellow(),
-
-                if let Some(val) = value {
-                    Span::raw(val).white()
-                }else{
-                    Span::raw("Empty").gray()
-
-                }
-            ])))
-    }
-
     fn render_edit(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<()> {
 
         let val = self.input.value().to_string();
