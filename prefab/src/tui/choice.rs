@@ -16,10 +16,11 @@ pub struct ChoiceUI {
     status: EditorStatus,
     state: ListState,
     item_count: usize,
+    name: String,
 }
 
 impl ChoiceUI {
-    pub fn new(option: TemplateOption) -> ChoiceUI {
+    pub fn new(option: TemplateOption, name: String) -> ChoiceUI {
 
         let count = option.get_choice_options().unwrap_or(vec![]).len();
 
@@ -29,6 +30,7 @@ impl ChoiceUI {
             status: EditorStatus::Continue,
             state: ListState::default(),
             item_count: count,
+            name
         }
     }
 }
@@ -135,9 +137,18 @@ impl OptionUi for ChoiceUI {
     fn start_edit(&mut self) {
         self.status = EditorStatus::Continue;
         self.index = 0;
+        self.state.select(Some(0));
     }
 
     fn get_option(&self) -> TemplateOption {
         self.option.clone()
+    }
+
+    fn is_valid(&self) -> bool {
+        true
+    }
+
+    fn get_name(&self) -> String {
+        self.name.clone()
     }
 }

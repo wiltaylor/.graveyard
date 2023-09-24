@@ -17,16 +17,18 @@ pub struct NumberUI {
     input: Input,
     status: EditorStatus,
     is_float: bool,
+    name: String,
 }
 
 impl NumberUI {
-    pub fn new(option: TemplateOption) -> NumberUI {
+    pub fn new(option: TemplateOption, name: String) -> NumberUI {
         let val = option.get_value().unwrap_or("".to_string());
         NumberUI {
             option,
             input: Input::from(val),
             status: EditorStatus::Continue,
             is_float: false,
+            name
         }
     }
 }
@@ -98,4 +100,12 @@ impl OptionUi for NumberUI {
     }
 
     fn get_option(&self) -> TemplateOption { self.option.clone() }
+
+    fn is_valid(&self) -> bool {
+        true
+    }
+
+    fn get_name(&self) -> String {
+        self.name.clone()
+    }
 }

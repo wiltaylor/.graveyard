@@ -23,11 +23,12 @@ pub struct BooleanUI {
     status: EditorStatus,
     state: ListState,
     index: usize,
+    name: String,
 }
 
 impl BooleanUI {
-    pub fn new(option: TemplateOption) -> BooleanUI {
-        BooleanUI { option, status: EditorStatus::Continue, state: ListState::default(), index: 0 }
+    pub fn new(option: TemplateOption, name: String) -> BooleanUI {
+        BooleanUI { option, status: EditorStatus::Continue, state: ListState::default(), index: 0, name }
     }
 }
 
@@ -36,11 +37,14 @@ impl OptionUi for BooleanUI {
         let prompt = self.option.get_prompt();
         let value = self.option.get_value();
 
-        let items: Vec<ListItem> = vec![
+        let mut items: Vec<ListItem> = vec![
             ListItem::new(Line::from("True")),
             ListItem::new(Line::from("False")),
-            ListItem::new(Line::from("Empty")),
         ];
+
+        if !self.option.is_mandatory() {
+            items.push(ListItem::new(Line::from("Empty")));
+        }
 
         let val = if let Some(v) = value {
             Span::from(v).white()
@@ -129,5 +133,13 @@ impl OptionUi for BooleanUI {
     }
     fn get_option(&self) -> TemplateOption {
         self.option.clone()
+    }
+
+    fn is_valid(&self) -> bool {
+        true
+    }
+
+    fn get_name(&self) -> String {
+        self.name.clone()
     }
 }

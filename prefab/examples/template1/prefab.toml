@@ -3,7 +3,7 @@ description="my example template"
 
 [options]
 myVar = { FreeText = { prompt = "What value do you want your var to be?" }}
-myBool = { Boolean = { prompt = "True or false?" }}
+myBool = { Boolean = { prompt = "True or false?", mandatory = true }}
 MyInt = { Integer = { prompt = "What number?"}}
 MyFloat = { Float = { prompt = "What floating number?"}}
 MyRegex = { Regex = { prompt = "Testing prompt", pattern = "test"}}

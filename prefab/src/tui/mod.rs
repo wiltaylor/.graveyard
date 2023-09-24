@@ -42,13 +42,20 @@ fn option_menu(terminal: &mut Terminal<CrosstermBackend<Stdout>>, options: &mut 
     let mut elements = get_elements(options).unwrap();
 
     loop {
+        let not_ready = elements.iter().any(|e| !e.is_valid() || (e.get_option().is_empty() && e.get_option().is_mandatory()));
+
         terminal.draw(|frame| {
 
             let mut items: Vec<ListItem> = elements.iter()
                 .map(|e| e.render_list_item().unwrap())
                 .collect();
 
-            items.push(ListItem::new(Line::from(vec![Span::raw("--Done--").green()])));
+
+            if not_ready {
+                items.push(ListItem::new(Line::from(vec![Span::raw("--Done--").red()])));
+            }else{
+                items.push(ListItem::new(Line::from(vec![Span::raw("--Done--").green()])));
+            }
 
             let list = List::new(items)
                 .block(Block::default().title("Options").borders(Borders::ALL))
@@ -99,6 +106,10 @@ fn option_menu(terminal: &mut Terminal<CrosstermBackend<Stdout>>, options: &mut 
                     if let Some(index) = state.selected() {
                         let mut index = index;
 
+                        if index == elements.len() && not_ready {
+                            continue;
+                        }
+
                         //Handle done option
                         if index == elements.len() {
                             apply_elements_to_options(options, &elements);
@@ -145,12 +156,12 @@ fn get_elements(options: &HashMap<String, TemplateOption>) -> Result<Vec<Box<dyn
         let opt = options.get(k).unwrap();
 
         result.push(match opt{
-            TemplateOption::FreeText { .. } => Box::new(TextUI::new(opt.clone())),
-            TemplateOption::Boolean { .. } => Box::new(BooleanUI::new(opt.clone())),
-            TemplateOption::Integer { .. } => Box::new(NumberUI::new(opt.clone())),
-            TemplateOption::Float { .. } => Box::new(NumberUI::new(opt.clone())),
-            TemplateOption::Regex { .. } => Box::new(TextUI::new(opt.clone())),
-            TemplateOption::Choice { .. } => Box::new(ChoiceUI::new(opt.clone())),
+            TemplateOption::FreeText { .. } => Box::new(TextUI::new(opt.clone(), k.clone())),
+            TemplateOption::Boolean { .. } => Box::new(BooleanUI::new(opt.clone(), k.clone())),
+            TemplateOption::Integer { .. } => Box::new(NumberUI::new(opt.clone(), k.clone())),
+            TemplateOption::Float { .. } => Box::new(NumberUI::new(opt.clone(), k.clone())),
+            TemplateOption::Regex { .. } => Box::new(TextUI::new(opt.clone(), k.clone())),
+            TemplateOption::Choice { .. } => Box::new(ChoiceUI::new(opt.clone(), k.clone())),
         });
     }
 

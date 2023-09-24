@@ -19,18 +19,18 @@ pub struct TextUI {
     option: TemplateOption,
     input: Input,
     status: EditorStatus,
-    match_pattern: bool
+    name: String,
 }
 
 impl TextUI {
-    pub fn new(option: TemplateOption) -> TextUI {
+    pub fn new(option: TemplateOption, name: String) -> TextUI {
         let input = if let Some(o) = option.get_value() {
             Input::new(o)
         }else{
             Input::default()
         };
 
-        TextUI { option, input, status: EditorStatus::Continue, match_pattern: true }
+        TextUI { option, input, status: EditorStatus::Continue, name }
     }
 }
 
@@ -42,7 +42,7 @@ impl OptionUi for TextUI {
         let prompt = self.option.get_prompt();
         let val = self.input.value().to_string();
 
-        let input_text = if self.match_pattern {
+        let input_text = if self.is_valid() {
             Line::from(vec![Span::raw(val.clone())])
         }else{
             Line::from(vec![Span::raw(val.clone()).red()])
@@ -67,14 +67,12 @@ impl OptionUi for TextUI {
     }
 
     fn update_input(&mut self) -> anyhow::Result<()> {
-        let pattern = self.option.get_pattern();
-
         if event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
                 if KeyCode::Esc == key.code {
                     self.status = EditorStatus::Cancel;
                     return Ok(())
-                }else if KeyCode::Enter == key.code && self.match_pattern {
+                }else if KeyCode::Enter == key.code && self.is_valid() {
                     let v = self.input.value().clone().to_string();
                     let o = self.option.clone().set_value(v);
                     self.option = o.clone();
@@ -82,13 +80,6 @@ impl OptionUi for TextUI {
                     return Ok(());
                 }else{
                     self.input.handle_event(&Event::Key(key));
-                    let v = self.input.value().clone().to_string();
-
-                    if let Some(p) = pattern {
-                        if let Result::Ok(r) = Regex::new(p.clone().as_str()) {
-                            self.match_pattern = r.is_match(v.as_str());
-                        }
-                    }
                 }
             }
         }
@@ -112,5 +103,26 @@ impl OptionUi for TextUI {
 
     fn get_option(&self) -> TemplateOption {
         self.option.clone()
+    }
+
+    fn is_valid(&self) -> bool {
+
+        let value = self.input.value();
+
+        if value.is_empty() {
+            return true;
+        }
+
+        if let Some(p) = self.option.get_pattern() {
+            if let Result::Ok(r) = Regex::new(p.clone().as_str()) {
+                return r.is_match(value);
+            }
+        }
+
+        true
+    }
+
+    fn get_name(&self) -> String {
+        self.name.clone()
     }
 }

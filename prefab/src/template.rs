@@ -189,6 +189,28 @@ impl TemplateOption {
             TemplateOption::Choice { prompt,.. } =>  prompt.clone(),
         }
     }
+
+    pub fn is_mandatory(&self) -> bool {
+        match self {
+            TemplateOption::FreeText { mandatory, .. } => *mandatory,
+            TemplateOption::Boolean { mandatory,.. } => *mandatory,
+            TemplateOption::Integer { mandatory,.. } => *mandatory,
+            TemplateOption::Float { mandatory,.. } => *mandatory,
+            TemplateOption::Regex { mandatory,.. } => *mandatory,
+            TemplateOption::Choice { mandatory,.. } => *mandatory,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self{
+            TemplateOption::FreeText { value, .. } => value.is_none(),
+            TemplateOption::Boolean { value,.. } => value.is_none(),
+            TemplateOption::Integer { value,.. } => value.is_none(),
+            TemplateOption::Float { value,.. } => value.is_none(),
+            TemplateOption::Regex { value,.. } => value.is_none(),
+            TemplateOption::Choice { value,.. } => value.is_none(),
+        }
+    }
 }
 
 impl Manifest { 
