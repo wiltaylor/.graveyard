@@ -1,6 +1,5 @@
 use std::io::Stdout;
 use std::time::Duration;
-use anyhow::anyhow;
 use crossterm::event;
 use crossterm::event::{Event, KeyCode};
 use ratatui::backend::CrosstermBackend;
@@ -22,85 +21,39 @@ pub struct NumberUI {
 
 impl NumberUI {
     pub fn new(option: TemplateOption) -> NumberUI {
-        match &option {
-            TemplateOption::Integer { prompt, value, mandatory } => {
-                let val = if value.is_some() {
-                    format!("{}", value.unwrap())
-                } else {
-                    "".to_string()
-                };
-
-                NumberUI {
-                    option: TemplateOption::Integer { prompt: prompt.clone(), value: *value, mandatory: false },
-                    input: Input::from(val),
-                    status: EditorStatus::Continue,
-                    is_float: false,
-                }
-            }
-            TemplateOption::Float { prompt, value, mandatory } => {
-                let val = if value.is_some() {
-                    format!("{}", value.unwrap())
-                } else {
-                    "".to_string()
-                };
-
-                NumberUI {
-                    option: TemplateOption::Float { prompt: prompt.clone(), value: *value, mandatory: false },
-                    input: Input::from(val),
-                    status: EditorStatus::Continue,
-                    is_float: true,
-                }
-            }
-            _ => panic!("Expected a number option type!")
+        let val = option.get_value().unwrap_or("".to_string());
+        NumberUI {
+            option,
+            input: Input::from(val),
+            status: EditorStatus::Continue,
+            is_float: false,
         }
     }
 }
 
 impl OptionUi for NumberUI {
     fn render_list_item(&self) -> anyhow::Result<ListItem> {
-        match &self.option {
-            TemplateOption::Integer { prompt, value, mandatory } =>
-                Ok(ListItem::new(if let Some(value) = value {
-                Line::from(vec![
-                    Span::raw(prompt).green(),
-                    Span::raw(" => ").yellow(),
-                    Span::raw(format!("{}", value)).white(),
-                ])
-            } else {
-                Line::from(vec![
-                    Span::raw(prompt).green(),
-                    Span::raw(" => ").yellow(),
-                    Span::raw("Empty").gray(),
-                ])
-            })),
-            TemplateOption::Float { prompt, value, mandatory } =>
-                Ok(ListItem::new(if let Some(value) = value {
-                Line::from(vec![
-                    Span::raw(prompt).green(),
-                    Span::raw(" => ").yellow(),
-                    Span::raw(format!("{}", value)).white(),
-                ])
-            } else {
-                Line::from(vec![
-                    Span::raw(prompt).green(),
-                    Span::raw(" => ").yellow(),
-                    Span::raw("Empty").gray(),
-                ])
-            })),
-            _ => Err(anyhow!("Option is not a number field!"))
-        }
+        let prompt = self.option.get_prompt();
+        let value = self.option.get_value();
+
+        Ok(ListItem::new(
+            Line::from(vec![
+                Span::raw(prompt).green(),
+                Span::raw(" => ").yellow(),
+
+                if let Some(val) = value {
+                    Span::raw(val).white()
+                }else{
+                    Span::raw("Empty").gray()
+
+                }
+            ])))
     }
 
-    fn render_edit(
-        &mut self,
-        terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<()> {
+    fn render_edit(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<()> {
 
         let val = self.input.value().to_string();
-        let prompt = match &self.option {
-            TemplateOption::Integer { prompt, value:_, mandatory } => prompt,
-            TemplateOption::Float { prompt, value:_, mandatory } => prompt,
-            _ => return Err(anyhow!("Option is not a integer or float!"))
-        };
+        let prompt = self.option.get_prompt();
 
         let text = vec![
             Line::from(vec![Span::raw(prompt).green(), Span::raw(":").yellow()]),
@@ -137,7 +90,7 @@ impl OptionUi for NumberUI {
                     self.input.handle_event(&Event::Key(key));
                     let v = self.input.value().clone().to_string();
 
-                    if v.is_empty() || v == "-".to_string() ||(self.is_float && v.parse::<f64>().is_ok()) || v.parse::<i64>().is_ok(){
+                    if v.is_empty() || v == *"-" ||(self.is_float && v.parse::<f64>().is_ok()) || v.parse::<i64>().is_ok(){
                         //Keep value
                     }else {
                         self.input = Input::new(orig);
