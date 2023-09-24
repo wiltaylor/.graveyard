@@ -62,10 +62,27 @@ pub struct Template {
 }
 
 impl TemplateOption {
+    pub fn get_value(&self) -> Option<String> {
+        match self {
+            TemplateOption::FreeText { prompt, value } =>
+                value.clone(),
+            TemplateOption::Boolean { prompt, value } =>
+                if let Some(o) = value { Some(format!("{}", o))} else { None },
+            TemplateOption::Integer { prompt, value } =>
+                if let Some(o) = value { Some(format!("{}", o))} else { None },
+            TemplateOption::Float { prompt, value } =>
+                if let Some(o) = value { Some(format!("{}", o))} else { None },
+            TemplateOption::Regex { prompt, pattern, value } =>
+                value.clone(),
+            TemplateOption::Choice { prompt, options, value } =>
+                value.clone(),
+        }
+    }
+
     pub fn set_value(self, text: String)-> TemplateOption {
         match self {
             TemplateOption::FreeText { prompt, value:_ } => {
-                if text.is_empty() {
+                if !text.is_empty() {
                     TemplateOption::FreeText { prompt, value: Some(text) }
                 }else{
                     TemplateOption::FreeText { prompt, value: None }
@@ -121,14 +138,14 @@ impl TemplateOption {
                 }  
             },
             TemplateOption::Regex { prompt, pattern, value:_ } => {
-                if text.is_empty() {
+                if !text.is_empty() {
                     TemplateOption::Regex { prompt, pattern, value: Some(text) }
                 }else{
                     TemplateOption::Regex { prompt, pattern, value: None }
                 }
             },
             TemplateOption::Choice { prompt, options, value:_ } => {
-                if text.is_empty() {
+                if !text.is_empty() {
                     TemplateOption::Choice { prompt, options, value: Some(text) }
                 }else{
                     TemplateOption::Choice { prompt, options, value: None }
@@ -208,7 +225,7 @@ impl Template {
         }
 
         let file = fs::read_to_string(&manifestpath)?;
-        let toml = toml::from_str::<Manifest>(&file)?;
+        let toml = toml::from_str::<Manifest>(&file).unwrap();
 
         if template_folder_path.exists() {
             //Add file glob so we find all items in template

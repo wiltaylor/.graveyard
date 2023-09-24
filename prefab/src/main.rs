@@ -96,7 +96,7 @@ fn main() {
     let template_directory = if let Ok2(dir) = get_template_directory() {
         dir
     } else {
-        panic!("Unable to find templat root director!")
+        panic!("Unable to find template root director!")
     };
 
     if matches.get_flag("list") {
