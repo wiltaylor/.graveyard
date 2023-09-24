@@ -23,7 +23,7 @@ pub struct NumberUI {
 impl NumberUI {
     pub fn new(option: TemplateOption) -> NumberUI {
         match &option {
-            TemplateOption::Integer { prompt, value } => {
+            TemplateOption::Integer { prompt, value, mandatory } => {
                 let val = if value.is_some() {
                     format!("{}", value.unwrap())
                 } else {
@@ -31,13 +31,13 @@ impl NumberUI {
                 };
 
                 NumberUI {
-                    option: TemplateOption::Integer { prompt: prompt.clone(), value: *value },
+                    option: TemplateOption::Integer { prompt: prompt.clone(), value: *value, mandatory: false },
                     input: Input::from(val),
                     status: EditorStatus::Continue,
                     is_float: false,
                 }
             }
-            TemplateOption::Float { prompt, value } => {
+            TemplateOption::Float { prompt, value, mandatory } => {
                 let val = if value.is_some() {
                     format!("{}", value.unwrap())
                 } else {
@@ -45,7 +45,7 @@ impl NumberUI {
                 };
 
                 NumberUI {
-                    option: TemplateOption::Float { prompt: prompt.clone(), value: *value},
+                    option: TemplateOption::Float { prompt: prompt.clone(), value: *value, mandatory: false },
                     input: Input::from(val),
                     status: EditorStatus::Continue,
                     is_float: true,
@@ -59,7 +59,7 @@ impl NumberUI {
 impl OptionUi for NumberUI {
     fn render_list_item(&self) -> anyhow::Result<ListItem> {
         match &self.option {
-            TemplateOption::Integer { prompt, value } =>
+            TemplateOption::Integer { prompt, value, mandatory } =>
                 Ok(ListItem::new(if let Some(value) = value {
                 Line::from(vec![
                     Span::raw(prompt).green(),
@@ -73,7 +73,7 @@ impl OptionUi for NumberUI {
                     Span::raw("Empty").gray(),
                 ])
             })),
-            TemplateOption::Float { prompt, value } =>
+            TemplateOption::Float { prompt, value, mandatory } =>
                 Ok(ListItem::new(if let Some(value) = value {
                 Line::from(vec![
                     Span::raw(prompt).green(),
@@ -97,8 +97,8 @@ impl OptionUi for NumberUI {
 
         let val = self.input.value().to_string();
         let prompt = match &self.option {
-            TemplateOption::Integer { prompt, value:_ } => prompt,
-            TemplateOption::Float { prompt, value:_ } => prompt,
+            TemplateOption::Integer { prompt, value:_, mandatory } => prompt,
+            TemplateOption::Float { prompt, value:_, mandatory } => prompt,
             _ => return Err(anyhow!("Option is not a integer or float!"))
         };
 

@@ -22,7 +22,7 @@ pub struct ChoiceUI {
 impl ChoiceUI {
     pub fn new(option: TemplateOption) -> ChoiceUI {
 
-        let count = if let TemplateOption::Choice { prompt, options, value } = &option {
+        let count = if let TemplateOption::Choice { prompt, options, value, mandatory } = &option {
             options.len()
         }else{
             0
@@ -40,7 +40,7 @@ impl ChoiceUI {
 
 impl OptionUi for ChoiceUI {
     fn render_list_item(&self) -> anyhow::Result<ListItem> {
-        if let TemplateOption::Choice { prompt, options, value } = &self.option {
+        if let TemplateOption::Choice { prompt, options, value, mandatory } = &self.option {
             let result = ListItem::new(if let Some(value) = value {
                 Line::from(vec![
                     Span::raw(prompt).green(),
@@ -63,7 +63,7 @@ impl OptionUi for ChoiceUI {
     }
 
     fn render_edit(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<()> {
-        if let TemplateOption::Choice { prompt, options, value } = &self.option {
+        if let TemplateOption::Choice { prompt, options, value, mandatory } = &self.option {
             let val = value.clone().unwrap_or("".to_string());
             let mut items: Vec<ListItem> = options.iter().map(|op| {
                 ListItem::new(Line::from(vec![Span::raw(op)]))
@@ -143,7 +143,7 @@ impl OptionUi for ChoiceUI {
                 if KeyCode::Enter == key.code {
                     if self.index == self.item_count {
                         self.option = self.option.clone().set_value("".to_string());
-                    } else if let TemplateOption::Choice { prompt:_, options, value:_ } = &self.option {
+                    } else if let TemplateOption::Choice { prompt:_, options, value:_, mandatory } = &self.option {
                         self.option = self.option.clone().set_value(options[self.index].clone());
                     }
 

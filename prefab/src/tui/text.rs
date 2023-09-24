@@ -24,9 +24,9 @@ pub struct TextUI {
 
 impl TextUI {
     pub fn new(option: TemplateOption) -> TextUI {
-        let input = if let TemplateOption::FreeText { prompt:_, value } = &option {
+        let input = if let TemplateOption::FreeText { prompt:_, value, mandatory } = &option {
             if let Some(val) = value { Input::new(val.clone()) } else { Input::default() }
-        }else if let TemplateOption::Regex{ prompt:_, pattern:_, value} = &option {
+        }else if let TemplateOption::Regex{ prompt:_, pattern:_, value, mandatory } = &option {
             if let Some(val) = value {Input::new(val.clone())} else { Input::default() }
         }
         else {
@@ -38,9 +38,9 @@ impl TextUI {
 
     fn get_option_parts(&self) -> (String, Option<String>, Option<String>){
         match &self.option {
-            TemplateOption::FreeText { prompt, value } =>
+            TemplateOption::FreeText { prompt, value, mandatory } =>
                 (prompt.clone(), None, value.clone()),
-            TemplateOption::Regex { prompt, pattern, value } =>
+            TemplateOption::Regex { prompt, pattern, value, mandatory } =>
                 (prompt.clone(), Some(pattern.clone()), value.clone()),
             _ => panic!("Expected free text or regex!")
         }

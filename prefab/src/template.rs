@@ -17,28 +17,40 @@ pub enum TemplateOption {
     FreeText {
         prompt: String,
         value: Option<String>,
+        #[serde(default)]
+        mandatory: bool,
     },
     Boolean {
         prompt: String,
         value: Option<bool>,
+        #[serde(default)]
+        mandatory: bool,
     },
     Integer {
         prompt: String,
         value: Option<i64>,
+        #[serde(default)]
+        mandatory: bool,
     },
     Float {
         prompt: String,
         value: Option<f64>,
+        #[serde(default)]
+        mandatory: bool,
     },
     Regex {
         prompt: String,
         pattern: String,
         value: Option<String>,
+        #[serde(default)]
+        mandatory: bool,
     },
     Choice {
         prompt: String,
         options: Vec<String>,
         value: Option<String>,
+        #[serde(default)]
+        mandatory: bool,
     },
 }
 
@@ -64,59 +76,59 @@ pub struct Template {
 impl TemplateOption {
     pub fn get_value(&self) -> Option<String> {
         match self {
-            TemplateOption::FreeText { prompt, value } =>
+            TemplateOption::FreeText { prompt, value, mandatory } =>
                 value.clone(),
-            TemplateOption::Boolean { prompt, value } =>
+            TemplateOption::Boolean { prompt, value, mandatory } =>
                 if let Some(o) = value { Some(format!("{}", o))} else { None },
-            TemplateOption::Integer { prompt, value } =>
+            TemplateOption::Integer { prompt, value, mandatory, } =>
                 if let Some(o) = value { Some(format!("{}", o))} else { None },
-            TemplateOption::Float { prompt, value } =>
+            TemplateOption::Float { prompt, value, mandatory, } =>
                 if let Some(o) = value { Some(format!("{}", o))} else { None },
-            TemplateOption::Regex { prompt, pattern, value } =>
+            TemplateOption::Regex { prompt, pattern, value, mandatory, } =>
                 value.clone(),
-            TemplateOption::Choice { prompt, options, value } =>
+            TemplateOption::Choice { prompt, options, value, mandatory } =>
                 value.clone(),
         }
     }
 
     pub fn set_value(self, text: String)-> TemplateOption {
         match self {
-            TemplateOption::FreeText { prompt, value:_ } => {
+            TemplateOption::FreeText { prompt, value:_, mandatory } => {
                 if !text.is_empty() {
-                    TemplateOption::FreeText { prompt, value: Some(text) }
+                    TemplateOption::FreeText { prompt, value: Some(text), mandatory: false }
                 }else{
-                    TemplateOption::FreeText { prompt, value: None }
+                    TemplateOption::FreeText { prompt, value: None, mandatory }
                 }
             },
-            TemplateOption::Boolean { prompt, value:_ } => {
+            TemplateOption::Boolean { prompt, value:_, mandatory } => {
                 let text = text.trim().to_lowercase();
                 if text == "true" {
-                    return TemplateOption::Boolean { prompt, value: Some(true) }
+                    return TemplateOption::Boolean { prompt, value: Some(true), mandatory }
                 }
 
                 if text.is_empty() {
-                    return TemplateOption::Boolean { prompt, value: None };
+                    return TemplateOption::Boolean { prompt, value: None, mandatory };
                 }
 
-                TemplateOption::Boolean { prompt, value: Some(false) }
+                TemplateOption::Boolean { prompt, value: Some(false), mandatory }
             },
-            TemplateOption::Integer { prompt, value } => {
+            TemplateOption::Integer { prompt, value, mandatory } => {
                 let result: Result<i64, _> = text.parse();
 
                 if text.is_empty() {
-                    return TemplateOption::Integer { prompt, value: None };
+                    return TemplateOption::Integer { prompt, value: None, mandatory };
                 }
 
                  match result {
                     Ok2(num) => {
-                        TemplateOption::Integer { prompt, value: Some(num)}
+                        TemplateOption::Integer { prompt, value: Some(num), mandatory }
                     },
                     Err2(_) => {
-                        TemplateOption::Integer { prompt, value }
+                        TemplateOption::Integer { prompt, value, mandatory }
                     },
                 }                
             },
-            TemplateOption::Float { prompt, value } => {
+            TemplateOption::Float { prompt, value, mandatory } => {
                 let mut text = text;
                 if text.ends_with('.') {
                     text += "0";
@@ -125,30 +137,30 @@ impl TemplateOption {
                 let result: Result<f64, _> = text.parse();
 
                 if text.is_empty() {
-                    return TemplateOption::Float { prompt, value: None };
+                    return TemplateOption::Float { prompt, value: None, mandatory };
                 }
 
                  match result {
                     Ok2(num) => {
-                        TemplateOption::Float { prompt, value: Some(num)}
+                        TemplateOption::Float { prompt, value: Some(num), mandatory }
                     },
                     Err2(_) => {
-                        TemplateOption::Float { prompt, value }
+                        TemplateOption::Float { prompt, value, mandatory }
                     },
                 }  
             },
-            TemplateOption::Regex { prompt, pattern, value:_ } => {
+            TemplateOption::Regex { prompt, pattern, value:_, mandatory } => {
                 if !text.is_empty() {
-                    TemplateOption::Regex { prompt, pattern, value: Some(text) }
+                    TemplateOption::Regex { prompt, pattern, value: Some(text), mandatory }
                 }else{
-                    TemplateOption::Regex { prompt, pattern, value: None }
+                    TemplateOption::Regex { prompt, pattern, value: None, mandatory }
                 }
             },
-            TemplateOption::Choice { prompt, options, value:_ } => {
+            TemplateOption::Choice { prompt, options, value:_, mandatory } => {
                 if !text.is_empty() {
-                    TemplateOption::Choice { prompt, options, value: Some(text) }
+                    TemplateOption::Choice { prompt, options, value: Some(text), mandatory }
                 }else{
-                    TemplateOption::Choice { prompt, options, value: None }
+                    TemplateOption::Choice { prompt, options, value: None, mandatory }
                 }
             },
         }       
@@ -160,7 +172,7 @@ impl Manifest {
 
         for (k, v) in &self.options {
             match v {
-                TemplateOption::Regex { prompt:_, pattern, value: Some(value) } => {
+                TemplateOption::Regex { prompt:_, pattern, value: Some(value), mandatory } => {
 
                     let regex = re::new(pattern)?;
 
@@ -168,7 +180,7 @@ impl Manifest {
                         return Err(anyhow!("Regular expression for {} didn't match!", k));
                     }
                 },
-                TemplateOption::Choice { prompt:_, options, value: Some(value) } => {
+                TemplateOption::Choice { prompt:_, options, value: Some(value), mandatory } => {
                     if !options.contains(value) {
                         return Err(anyhow!("Option not in the choice list for {} was set.", k));
                     }
@@ -249,22 +261,22 @@ impl Template {
 
         for (name, opt) in &self.manifest.options {
             match opt {
-                TemplateOption::FreeText { prompt: _, value } => {
+                TemplateOption::FreeText { prompt: _, value, mandatory } => {
                     if let Some(val) = value {
                         ctx.insert(name, val);
                     }
                 }
-                TemplateOption::Boolean { prompt: _, value } => {
+                TemplateOption::Boolean { prompt: _, value, mandatory } => {
                     if let Some(val) = value {
                         ctx.insert(name, val);
                     }
                 }
-                TemplateOption::Integer { prompt: _, value } => {
+                TemplateOption::Integer { prompt: _, value, mandatory } => {
                     if let Some(val) = value {
                         ctx.insert(name, val);
                     }
                 }
-                TemplateOption::Float { prompt: _, value } => {
+                TemplateOption::Float { prompt: _, value, mandatory } => {
                     if let Some(val) = value {
                         ctx.insert(name, val);
                     }
@@ -272,7 +284,7 @@ impl Template {
                 TemplateOption::Regex {
                     prompt: _,
                     pattern: _,
-                    value,
+                    value, mandatory,
                 } => {
                     if let Some(val) = value {
                         ctx.insert(name, val);
@@ -281,7 +293,7 @@ impl Template {
                 TemplateOption::Choice {
                     prompt: _,
                     options: _,
-                    value,
+                    value, mandatory,
                 } => {
                     if let Some(val) = value {
                         ctx.insert(name, val)

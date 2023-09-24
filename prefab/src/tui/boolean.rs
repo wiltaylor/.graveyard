@@ -29,7 +29,7 @@ pub struct BooleanUI {
 
 impl BooleanUI {
     pub fn new(option: TemplateOption) -> BooleanUI {
-        let input = if let TemplateOption::Boolean { prompt: _, value } = &option {
+        let input = if let TemplateOption::Boolean { prompt: _, value, mandatory } = &option {
             value.clone()
         } else {
             None
@@ -41,7 +41,7 @@ impl BooleanUI {
 
 impl OptionUi for BooleanUI {
     fn render_list_item(&self) -> anyhow::Result<ListItem> {
-        if let TemplateOption::Boolean { prompt, value } = &self.option {
+        if let TemplateOption::Boolean { prompt, value, mandatory } = &self.option {
             let result = ListItem::new(if let Some(value) = value {
                 Line::from(vec![
                     Span::raw(prompt).green(),
@@ -63,7 +63,7 @@ impl OptionUi for BooleanUI {
     }
 
     fn render_edit(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<()> {
-        if let TemplateOption::Boolean { prompt, value } = &self.option {
+        if let TemplateOption::Boolean { prompt, value, mandatory } = &self.option {
             let items: Vec<ListItem> = vec![
                 ListItem::new(Line::from("True")),
                 ListItem::new(Line::from("False")),

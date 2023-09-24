@@ -17,20 +17,20 @@ pub fn load_config(path: impl AsRef<Path>, mut options: HashMap<String, Template
                     .ok_or(anyhow!("No entry for {} in manfifest!", name))?;
 
                 match entry {
-                    TemplateOption::FreeText { prompt: _, value } => {
+                    TemplateOption::FreeText { prompt: _, value, mandatory } => {
                         *value = Some(val);
                     }
                     TemplateOption::Regex {
                         prompt: _,
                         pattern: _,
-                        value,
+                        value, mandatory,
                     } => {
                         *value = Some(val);
                     }
                     TemplateOption::Choice {
                         prompt: _,
                         options: _,
-                        value,
+                        value, mandatory,
                     } => {
                         *value = Some(val);
                     }
@@ -47,7 +47,7 @@ pub fn load_config(path: impl AsRef<Path>, mut options: HashMap<String, Template
                     .get_mut(&name)
                     .ok_or(anyhow!("No entry for {} in manfifest!", name))?;
 
-                if let TemplateOption::Integer { prompt: _, value } = entry {
+                if let TemplateOption::Integer { prompt: _, value, mandatory } = entry {
                     *value = Some(val);
                 } else {
                     return Err(anyhow!(
@@ -61,7 +61,7 @@ pub fn load_config(path: impl AsRef<Path>, mut options: HashMap<String, Template
                     .get_mut(&name)
                     .ok_or(anyhow!("No entry for {} in manfifest!", name))?;
 
-                if let TemplateOption::Float { prompt: _, value } = entry {
+                if let TemplateOption::Float { prompt: _, value, mandatory } = entry {
                     *value = Some(val);
                 } else {
                     return Err(anyhow!(
@@ -75,7 +75,7 @@ pub fn load_config(path: impl AsRef<Path>, mut options: HashMap<String, Template
                     .get_mut(&name)
                     .ok_or(anyhow!("No entry for {} in manfifest!", name))?;
 
-                if let TemplateOption::Boolean { prompt: _, value } = entry {
+                if let TemplateOption::Boolean { prompt: _, value, mandatory } = entry {
                     *value = Some(val);
                 } else {
                     return Err(anyhow!(
