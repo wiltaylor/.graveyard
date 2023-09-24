@@ -1,6 +1,5 @@
 use std::io::Stdout;
 use std::time::Duration;
-use anyhow::anyhow;
 use crossterm::event;
 use crossterm::event::{Event, KeyCode};
 use ratatui::backend::CrosstermBackend;
@@ -22,11 +21,7 @@ pub struct ChoiceUI {
 impl ChoiceUI {
     pub fn new(option: TemplateOption) -> ChoiceUI {
 
-        let count = if let TemplateOption::Choice { prompt, options, value, mandatory } = &option {
-            options.len()
-        }else{
-            0
-        };
+        let count = option.get_choice_options().unwrap_or(vec![]).len();
 
         ChoiceUI {
             option,
@@ -40,74 +35,66 @@ impl ChoiceUI {
 
 impl OptionUi for ChoiceUI {
     fn render_list_item(&self) -> anyhow::Result<ListItem> {
-        if let TemplateOption::Choice { prompt, options, value, mandatory } = &self.option {
-            let result = ListItem::new(if let Some(value) = value {
-                Line::from(vec![
-                    Span::raw(prompt).green(),
-                    Span::raw(" => ").yellow(),
-                    Span::raw(value).white(),
+        let prompt = self.option.get_prompt();
+        let value = self.option.get_value();
 
-                ])
-            }else {
-                Line::from(vec![
-                    Span::raw(prompt).green(),
-                    Span::raw(" => ").yellow(),
-                    Span::raw("Empty").dark_gray(),
-                ])
-            });
-
-            anyhow::Ok(result)
-        }else{
-            Err(anyhow!("Option is not a choice field!"))
-        }
+        Ok(ListItem::new(Line::from(vec![
+            Span::raw(prompt).green(),
+            Span::raw(" => ").yellow(),
+            if let Some(v) = value {
+                Span::raw(v).white()
+            }else{
+                Span::raw("Empty").gray()
+            }
+        ])))
     }
 
     fn render_edit(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<()> {
-        if let TemplateOption::Choice { prompt, options, value, mandatory } = &self.option {
-            let val = value.clone().unwrap_or("".to_string());
-            let mut items: Vec<ListItem> = options.iter().map(|op| {
-                ListItem::new(Line::from(vec![Span::raw(op)]))
-            }).collect();
+        let prompt = self.option.get_prompt();
+        let value = self.option.get_value();
+        let options = self.option.get_choice_options().expect("You need to have specified options for a choice type!");
 
-            let mut state = ListState::default();
-            state.select(Some(self.index));
+        let mut state = ListState::default();
+        state.select(Some(self.index));
 
-            items.push(ListItem::new(Line::from(vec![Span::raw("--Empty--")])));
+        let mut items : Vec<ListItem> = options.iter().map(|op| {
+           ListItem::new(Line::from(vec![Span::raw(op.clone())]))
+        }).collect();
 
-            terminal.draw(|frame| {
-                let list = List::new(items.clone())
-                    .block(Block::default().title("Options").borders(Borders::ALL))
-                    .style(Style::default().fg(Color::White))
-                    .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
-                    .highlight_symbol(">>");
+        items.push(ListItem::new(Line::from(vec![Span::raw("--Empty--")])));
 
-                let text = vec![
-                    Line::from(vec![Span::raw(prompt).green(), Span::raw(":").yellow()]),
-                    Line::from(vec![Span::raw(val.clone())])
-                ];
+        let val = value.clone().unwrap_or("".to_string());
 
-                let paragraph = Paragraph::new(text)
-                    .block(Block::default().title("[Edit]-(Enter: Confirm, Esc - Cancel) ").borders(Borders::ALL))
-                    .style(Style::default().fg(Color::White));
+        terminal.draw(|frame| {
+            let list = List::new(items.clone())
+                .block(Block::default().title("Options").borders(Borders::ALL))
+                .style(Style::default().fg(Color::White))
+                .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
+                .highlight_symbol(">>");
 
-                let rects = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints(
-                        [
-                            Constraint::Length(3),
-                            Constraint::Percentage(100)
-                        ]
-                            .as_ref(),
-                    )
-                    .split(frame.size());
+            let text = vec![
+                Line::from(vec![Span::raw(prompt).green(), Span::raw(":").yellow()]),
+                Line::from(vec![Span::raw(val.clone())])
+            ];
 
-                //let greeting = Paragraph::new("Hello World!");
-                frame.render_widget(paragraph, rects[0]);
-                frame.render_stateful_widget(list, rects[1], &mut state)
-            })?;
+            let paragraph = Paragraph::new(text)
+                .block(Block::default().title("[Edit]-(Enter: Confirm, Esc - Cancel) ").borders(Borders::ALL))
+                .style(Style::default().fg(Color::White));
 
+            let rects = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(
+                    [
+                        Constraint::Length(3),
+                        Constraint::Percentage(100)
+                    ]
+                        .as_ref(),
+                )
+                .split(frame.size());
 
-        }
+            frame.render_widget(paragraph, rects[0]);
+            frame.render_stateful_widget(list, rects[1], &mut state)
+        })?;
 
         Ok(())
     }
@@ -143,7 +130,7 @@ impl OptionUi for ChoiceUI {
                 if KeyCode::Enter == key.code {
                     if self.index == self.item_count {
                         self.option = self.option.clone().set_value("".to_string());
-                    } else if let TemplateOption::Choice { prompt:_, options, value:_, mandatory } = &self.option {
+                    } else if let TemplateOption::Choice { options, .. } = &self.option {
                         self.option = self.option.clone().set_value(options[self.index].clone());
                     }
 
@@ -162,7 +149,7 @@ impl OptionUi for ChoiceUI {
 
     fn start_edit(&mut self) {
         self.status = EditorStatus::Continue;
-        self.state.select(Some(self.index));
+        self.index = 0;
     }
 
     fn get_option(&self) -> TemplateOption {

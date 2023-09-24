@@ -172,6 +172,13 @@ impl TemplateOption {
         }
     }
 
+    pub fn get_choice_options(&self) -> Option<Vec<String>> {
+        match self {
+            TemplateOption::Choice { options, .. } => Some(options.clone()),
+            _ => None,
+        }
+    }
+
     pub fn get_prompt(&self) -> String {
         match self {
             TemplateOption::FreeText { prompt, .. } => prompt.clone(),
