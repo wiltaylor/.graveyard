@@ -4,7 +4,6 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use prefab::template::TemplateOption;
 use crate::tui::option_ui::{EditorStatus, OptionUi};
-use anyhow::anyhow;
 use crossterm::event;
 use crossterm::event::{Event, KeyCode};
 
@@ -21,7 +20,6 @@ use ratatui::widgets::{List, ListState};
 
 pub struct BooleanUI {
     option: TemplateOption,
-    input: Option<bool>,
     status: EditorStatus,
     state: ListState,
     index: usize,
@@ -29,80 +27,71 @@ pub struct BooleanUI {
 
 impl BooleanUI {
     pub fn new(option: TemplateOption) -> BooleanUI {
-        let input = if let TemplateOption::Boolean { prompt: _, value, mandatory } = &option {
-            value.clone()
-        } else {
-            None
-        };
-
-        BooleanUI { option, input, status: EditorStatus::Continue, state: ListState::default(), index: 0 }
+        BooleanUI { option, status: EditorStatus::Continue, state: ListState::default(), index: 0 }
     }
 }
 
 impl OptionUi for BooleanUI {
     fn render_list_item(&self) -> anyhow::Result<ListItem> {
-        if let TemplateOption::Boolean { prompt, value, mandatory } = &self.option {
-            let result = ListItem::new(if let Some(value) = value {
-                Line::from(vec![
-                    Span::raw(prompt).green(),
-                    Span::raw(" => ").yellow(),
-                    Span::raw(if *value { "True" } else { "False" }).white(),
-                ])
-            } else {
-                Line::from(vec![
-                    Span::raw(prompt).green(),
-                    Span::raw(" => ").yellow(),
-                    Span::raw("Empty").dark_gray(),
-                ])
-            });
+        let prompt = self.option.get_prompt();
+        let value = self.option.get_value();
 
-            anyhow::Ok(result)
-        } else {
-            Err(anyhow!("Option is not a boolean field!"))
-        }
+        Ok(ListItem::new(
+        Line::from(vec![
+            Span::raw(prompt).green(),
+            Span::raw(" => ").yellow(),
+
+            if let Some(val) = value {
+                Span::raw(val).white()
+            }else{
+                Span::raw("Empty").gray()
+
+            }
+        ])))
     }
 
     fn render_edit(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<()> {
-        if let TemplateOption::Boolean { prompt, value, mandatory } = &self.option {
-            let items: Vec<ListItem> = vec![
-                ListItem::new(Line::from("True")),
-                ListItem::new(Line::from("False")),
-                ListItem::new(Line::from("Empty")),
+        let prompt = self.option.get_prompt();
+        let value = self.option.get_value();
+
+        let items: Vec<ListItem> = vec![
+            ListItem::new(Line::from("True")),
+            ListItem::new(Line::from("False")),
+            ListItem::new(Line::from("Empty")),
+        ];
+
+        let val = if let Some(v) = value {
+            Span::from(v).white()
+        } else {
+            Span::from("Empty".to_string()).gray()
+        };
+
+        terminal.draw(|frame| {
+            let list = List::new(items)
+                .block(Block::default().title("Edit").borders(Borders::ALL))
+                .style(Style::default().fg(Color::White))
+                .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
+                .highlight_symbol(">>");
+
+            let text: Vec<Line> = vec![
+                Line::from(vec![Span::raw(prompt).green(), Span::raw(": ").yellow(), val])
             ];
 
-            let val = if let Some(v) = value {
-                Span::from(format!("{}", v)).white()
-            } else {
-                Span::from("Empty".to_string()).gray()
-            };
+            let paragraph = Paragraph::new(text)
+                .block(Block::default().title("Edit").borders(Borders::ALL))
+                .style(Style::default().fg(Color::White));
 
-            terminal.draw(|frame| {
-                let list = List::new(items)
-                    .block(Block::default().title("Edit").borders(Borders::ALL))
-                    .style(Style::default().fg(Color::White))
-                    .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
-                    .highlight_symbol(">>");
+            let rects = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Percentage(100)
+                ].as_ref())
+                .split(frame.size());
 
-                let text: Vec<Line> = vec![
-                    Line::from(vec![Span::raw(prompt).green(), Span::raw(": ").yellow(), val])
-                ];
-
-                let paragraph = Paragraph::new(text)
-                    .block(Block::default().title("Edit").borders(Borders::ALL))
-                    .style(Style::default().fg(Color::White));
-
-                let rects = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(3),
-                        Constraint::Percentage(100)
-                    ].as_ref())
-                    .split(frame.size());
-
-                frame.render_widget(paragraph, rects[0]);
-                frame.render_stateful_widget(list, rects[1], &mut self.state)
-            })?;
-        }
+            frame.render_widget(paragraph, rects[0]);
+            frame.render_stateful_widget(list, rects[1], &mut self.state)
+        })?;
 
         Ok(())
     }
@@ -154,7 +143,7 @@ impl OptionUi for BooleanUI {
     fn get_status(&self) -> anyhow::Result<EditorStatus> { Ok(self.status.clone()) }
     fn start_edit(&mut self) {
         self.status = EditorStatus::Continue;
-        self.state.select(Some(self.index));
+        self.index = 0;
     }
     fn get_option(&self) -> TemplateOption {
         self.option.clone()
