@@ -9,7 +9,6 @@ use serde::Deserialize;
 use tera::{Context, Tera, from_value, to_value};
 
 use crate::util::{copy_all, exec};
-use std::result::{Result::Ok as Ok2, Result::Err as Err2};
 use regex::Regex as re;
 
 #[derive(Deserialize, Debug, Clone)]
@@ -76,17 +75,17 @@ pub struct Template {
 impl TemplateOption {
     pub fn get_value(&self) -> Option<String> {
         match self {
-            TemplateOption::FreeText { prompt, value, mandatory } =>
+            TemplateOption::FreeText { value, .. } =>
                 value.clone(),
-            TemplateOption::Boolean { prompt, value, mandatory } =>
-                if let Some(o) = value { Some(format!("{}", o))} else { None },
-            TemplateOption::Integer { prompt, value, mandatory, } =>
-                if let Some(o) = value { Some(format!("{}", o))} else { None },
-            TemplateOption::Float { prompt, value, mandatory, } =>
-                if let Some(o) = value { Some(format!("{}", o))} else { None },
-            TemplateOption::Regex { prompt, pattern, value, mandatory, } =>
+            TemplateOption::Boolean { value, .. } =>
+                value.as_ref().map(|o| format!("{}", o)),
+            TemplateOption::Integer { value, .. } =>
+                value.as_ref().map(|o| format!("{}", o)),
+            TemplateOption::Float { value, .. } =>
+                value.as_ref().map(|o| format!("{}", o)),
+            TemplateOption::Regex { value, .. } =>
                 value.clone(),
-            TemplateOption::Choice { prompt, options, value, mandatory } =>
+            TemplateOption::Choice { value, .. } =>
                 value.clone(),
         }
     }
@@ -120,10 +119,10 @@ impl TemplateOption {
                 }
 
                  match result {
-                    Ok2(num) => {
+                    Result::Ok(num) => {
                         TemplateOption::Integer { prompt, value: Some(num), mandatory }
                     },
-                    Err2(_) => {
+                    Err(_) => {
                         TemplateOption::Integer { prompt, value, mandatory }
                     },
                 }                
@@ -141,10 +140,10 @@ impl TemplateOption {
                 }
 
                  match result {
-                    Ok2(num) => {
+                    Result::Ok(num) => {
                         TemplateOption::Float { prompt, value: Some(num), mandatory }
                     },
-                    Err2(_) => {
+                    Err(_) => {
                         TemplateOption::Float { prompt, value, mandatory }
                     },
                 }  
@@ -172,7 +171,7 @@ impl Manifest {
 
         for (k, v) in &self.options {
             match v {
-                TemplateOption::Regex { prompt:_, pattern, value: Some(value), mandatory } => {
+                TemplateOption::Regex { pattern, value: Some(value), .. } => {
 
                     let regex = re::new(pattern)?;
 
@@ -180,7 +179,7 @@ impl Manifest {
                         return Err(anyhow!("Regular expression for {} didn't match!", k));
                     }
                 },
-                TemplateOption::Choice { prompt:_, options, value: Some(value), mandatory } => {
+                TemplateOption::Choice { options, value: Some(value), .. } => {
                     if !options.contains(value) {
                         return Err(anyhow!("Option not in the choice list for {} was set.", k));
                     }
@@ -196,16 +195,16 @@ impl Manifest {
 fn system(args: &HashMap<String, tera::Value>) -> Result<tera::Value, tera::Error> {
 
     if let Some(command) = args.get("command"){
-        if let Ok2(command) = from_value::<String>(command.clone()){
-            if let Ok2(result) = exec(command.as_str(), HashMap::<String, String>::new(), current_dir()?){
-                return Ok2(to_value::<String>(result)?);
-            }else{
-                return Err(tera::Error::msg("Failed to run command!"));
+        if let Result::Ok(command) = from_value::<String>(command.clone()){
+            return if let Result::Ok(result) = exec(command.as_str(), HashMap::<String, String>::new(), current_dir()?) {
+                Result::Ok(to_value::<String>(result)?)
+            } else {
+                Err(tera::Error::msg("Failed to run command!"))
             }   
         }
     }
     
-    Err2(tera::Error::msg("You need to pass in the command argument!"))
+    Err(tera::Error::msg("You need to pass in the command argument!"))
 }
 
 impl Template {
@@ -219,32 +218,32 @@ impl Template {
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Template> {
-        let mut manifestpath = PathBuf::new();
+        let mut manifest_path = PathBuf::new();
         let mut tera = Tera::default();
 
-        manifestpath.push(&path);
-        manifestpath.push("prefab.toml");
+        manifest_path.push(&path);
+        manifest_path.push("prefab.toml");
 
         let mut template_folder_path = PathBuf::new();
         template_folder_path.push(&path);
         template_folder_path.push("template");
 
-        if !manifestpath.exists() {
+        if !manifest_path.exists() {
             return Err(anyhow!(
                 "Could not find a template manifest at template path {:?}",
-                &manifestpath
+                &manifest_path
             ));
         }
 
-        let file = fs::read_to_string(&manifestpath)?;
+        let file = fs::read_to_string(&manifest_path)?;
         let toml = toml::from_str::<Manifest>(&file).unwrap();
 
         if template_folder_path.exists() {
             //Add file glob so we find all items in template
             template_folder_path.push("**");
 
-            let teradir = template_folder_path.as_mut_os_str().to_str().unwrap();
-            tera = Tera::new(teradir)?;
+            let tera_dir = template_folder_path.as_mut_os_str().to_str().unwrap();
+            tera = Tera::new(tera_dir)?;
         }
 
         tera.register_function("system", system);
@@ -261,40 +260,32 @@ impl Template {
 
         for (name, opt) in &self.manifest.options {
             match opt {
-                TemplateOption::FreeText { prompt: _, value, mandatory } => {
+                TemplateOption::FreeText { value, .. } => {
                     if let Some(val) = value {
                         ctx.insert(name, val);
                     }
                 }
-                TemplateOption::Boolean { prompt: _, value, mandatory } => {
+                TemplateOption::Boolean { value, .. } => {
                     if let Some(val) = value {
                         ctx.insert(name, val);
                     }
                 }
-                TemplateOption::Integer { prompt: _, value, mandatory } => {
+                TemplateOption::Integer {  value, .. } => {
                     if let Some(val) = value {
                         ctx.insert(name, val);
                     }
                 }
-                TemplateOption::Float { prompt: _, value, mandatory } => {
+                TemplateOption::Float { value, .. } => {
                     if let Some(val) = value {
                         ctx.insert(name, val);
                     }
                 }
-                TemplateOption::Regex {
-                    prompt: _,
-                    pattern: _,
-                    value, mandatory,
-                } => {
+                TemplateOption::Regex { value, .. } => {
                     if let Some(val) = value {
                         ctx.insert(name, val);
                     }
                 }
-                TemplateOption::Choice {
-                    prompt: _,
-                    options: _,
-                    value, mandatory,
-                } => {
+                TemplateOption::Choice { value, .. } => {
                     if let Some(val) = value {
                         ctx.insert(name, val)
                     }
