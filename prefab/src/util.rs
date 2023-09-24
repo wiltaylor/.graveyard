@@ -60,19 +60,19 @@ mod tests {
         let mut tera = Tera::default();
         let ctx = Context::default();
 
-        let filea= src_dir.child("child1.txt");
-        let fileb = src_dir.child("subdir/child2.txt");
+        let file_a = src_dir.child("child1.txt");
+        let file_b = src_dir.child("sub-dir/child2.txt");
 
-        filea.write_str("FileA").unwrap();
-        fileb.write_str("FileB").unwrap();
+        file_a.write_str("FileA").unwrap();
+        file_b.write_str("FileB").unwrap();
 
         copy_all(src_dir.path(), dst_dir.path(),&mut tera,&ctx).unwrap();
 
-        let filea_dest = dst_dir.child("child1.txt");
-        let fileb_dest = dst_dir.child("subdir/child2.txt");
+        let file_a_dest = dst_dir.child("child1.txt");
+        let file_b_dest = dst_dir.child("sub-dir/child2.txt");
         
-        assert!(filea_dest.exists());
-        assert!(fileb_dest.exists());
+        assert!(file_a_dest.exists());
+        assert!(file_b_dest.exists());
         
 
    } 
