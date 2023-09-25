@@ -22,12 +22,14 @@ pub struct NumberUI {
 
 impl NumberUI {
     pub fn new(option: TemplateOption, name: String) -> NumberUI {
+        let float = matches!(option, TemplateOption::Float {..});
+
         let val = option.get_value().unwrap_or("".to_string());
         NumberUI {
             option,
             input: Input::from(val),
             status: EditorStatus::Continue,
-            is_float: false,
+            is_float: float,
             name
         }
     }
@@ -92,7 +94,8 @@ impl OptionUi for NumberUI {
                     self.input.handle_event(&Event::Key(key));
                     let v = self.input.value().clone().to_string();
 
-                    if v.is_empty() || v == *"-" ||(self.is_float && v.parse::<f64>().is_ok()) || v.parse::<i64>().is_ok(){
+                    if v.is_empty() || v == *"-" || (self.is_float && v.parse::<f64>().is_ok()) ||
+                        v.parse::<i64>().is_ok() {
                         //Keep value
                     }else {
                         self.input = Input::new(orig);
