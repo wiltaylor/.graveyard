@@ -143,8 +143,21 @@ fn main() {
 
             if !matches.get_flag("quiet") {
                 let mut terminal = setup_terminal().unwrap();
-                run(&mut terminal, &mut options).unwrap();
+
+                if let Result::Ok(result) = run(&mut terminal, &mut options) {
+                    if !result {
+                        restore_terminal(&mut terminal).unwrap();
+                        println!("Cancelled by user!");
+                        return;
+                    }
+                }else{
+                    restore_terminal(&mut terminal).unwrap();
+                    println!("Unknown Error!");
+                    return;
+                }
+
                 restore_terminal(&mut terminal).unwrap();
+
             }
 
             tmp.set_options(options);

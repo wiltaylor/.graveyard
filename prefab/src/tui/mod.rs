@@ -31,11 +31,11 @@ pub fn restore_terminal(
     Ok(terminal.show_cursor()?)
 }
 
-pub fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, options: &mut HashMap<String,TemplateOption>) -> Result<()> {
+pub fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, options: &mut HashMap<String,TemplateOption>) -> Result<bool> {
     option_menu(terminal, options)
 }
 
-fn option_menu(terminal: &mut Terminal<CrosstermBackend<Stdout>>, options: &mut HashMap<String, TemplateOption>) -> Result<()> {
+fn option_menu(terminal: &mut Terminal<CrosstermBackend<Stdout>>, options: &mut HashMap<String, TemplateOption>) -> Result<bool> {
     let mut state = ListState::default();
     state.select(Some(0));
 
@@ -69,7 +69,7 @@ fn option_menu(terminal: &mut Terminal<CrosstermBackend<Stdout>>, options: &mut 
         if event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
                 if KeyCode::Esc == key.code {
-                    break;
+                    return Ok(false);
                 }
 
                 if KeyCode::Up == key.code {
@@ -113,7 +113,7 @@ fn option_menu(terminal: &mut Terminal<CrosstermBackend<Stdout>>, options: &mut 
                         //Handle done option
                         if index == elements.len() {
                             apply_elements_to_options(options, &elements);
-                            break;
+                            return Ok(true);
                         }
 
                         let element = elements.get_mut(index).unwrap();
@@ -136,8 +136,6 @@ fn option_menu(terminal: &mut Terminal<CrosstermBackend<Stdout>>, options: &mut 
             }
         }
     }
-
-    Ok(())
 }
 
 fn apply_elements_to_options(options:&mut HashMap<String, TemplateOption>, elements: &Vec<Box<dyn OptionUi>>) {

@@ -130,6 +130,7 @@ impl OptionUi for BooleanUI {
     fn start_edit(&mut self) {
         self.status = EditorStatus::Continue;
         self.index = 0;
+        self.state.select(Some(0));
     }
     fn get_option(&self) -> TemplateOption {
         self.option.clone()
