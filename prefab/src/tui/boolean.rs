@@ -36,6 +36,8 @@ impl OptionUi for BooleanUI {
     fn render_edit(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<()> {
         let prompt = self.option.get_prompt();
         let value = self.option.get_value();
+        let name = self.get_name();
+        let mandatory = self.option.is_mandatory();
 
         let mut items: Vec<ListItem> = vec![
             ListItem::new(Line::from("True")),
@@ -54,8 +56,7 @@ impl OptionUi for BooleanUI {
 
         terminal.draw(|frame| {
             let list = List::new(items)
-                .block(Block::default().title("Edit").borders(Borders::ALL))
-                .style(Style::default().fg(Color::White))
+                .block(Block::default().borders(Borders::ALL))
                 .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
                 .highlight_symbol(">>");
 
@@ -64,7 +65,25 @@ impl OptionUi for BooleanUI {
             ];
 
             let paragraph = Paragraph::new(text)
-                .block(Block::default().title("Edit").borders(Borders::ALL))
+                .block(Block::default().title(Line::from(vec![
+                    Span::raw("[").gray(),
+                    Span::raw("Edit:"),
+                    if mandatory {
+                        Span::raw(name).yellow()
+                    }else{
+                        Span::raw(name).blue()
+                    },
+                    Span::raw("]").gray(),
+                    Span::raw("──"),
+                    Span::raw("[").gray(),
+                    Span::raw("↑↓").blue(),
+                    Span::raw("-Select Items "),
+                    Span::raw("Enter").blue(),
+                    Span::raw("-Save "),
+                    Span::raw("Esc").blue(),
+                    Span::raw("-Cancel"),
+                    Span::raw("]").gray(),
+                ])).borders(Borders::ALL))
                 .style(Style::default().fg(Color::White));
 
             let rects = Layout::default()

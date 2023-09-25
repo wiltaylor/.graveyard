@@ -52,13 +52,34 @@ fn option_menu(terminal: &mut Terminal<CrosstermBackend<Stdout>>, options: &mut 
 
 
             if not_ready {
-                items.push(ListItem::new(Line::from(vec![Span::raw("--Done--").red()])));
+                items.push(ListItem::new(Line::from(vec![Span::raw("--Done-- [Must complete all mandatory fields before you can continue!]").red()])));
             }else{
                 items.push(ListItem::new(Line::from(vec![Span::raw("--Done--").green()])));
             }
 
             let list = List::new(items)
-                .block(Block::default().title("Options").borders(Borders::ALL))
+                .block(Block::default().title(Line::from(vec![
+                    Span::raw("[").gray(),
+                    Span::raw("Options"),
+                    Span::raw("]").gray(),
+                    Span::raw("──"),
+                    Span::raw("[").gray(),
+                    Span::raw("↑↓").blue(),
+                    Span::raw("-Select Items "),
+                    Span::raw("Enter").blue(),
+                    Span::raw("-Modify "),
+                    Span::raw("Esc").blue(),
+                    Span::raw("-Cancel"),
+                    Span::raw("]").gray(),
+                    Span::raw("──"),
+                    Span::raw("[").gray(),
+                    Span::raw("Optional ").blue(),
+                    Span::raw("Mandatory ").yellow(),
+                    Span::raw("Need Attention").red(),
+                    Span::raw("]").gray(),
+
+
+                ])).borders(Borders::ALL))
                 .style(Style::default().fg(Color::White))
                 .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
                 .highlight_symbol(">>");

@@ -38,6 +38,8 @@ impl OptionUi for NumberUI {
 
         let val = self.input.value().to_string();
         let prompt = self.option.get_prompt();
+        let name = self.get_name();
+        let mandatory = self.option.is_mandatory();
 
         let text = vec![
             Line::from(vec![Span::raw(prompt).green(), Span::raw(":").yellow()]),
@@ -46,8 +48,24 @@ impl OptionUi for NumberUI {
 
         terminal.draw(|frame| {
             let paragraph = Paragraph::new(text)
-                .block(Block::default().title("[Edit]-(Enter: Confirm, Esq - Cancel) ").borders(Borders::ALL))
-                .style(Style::default().fg(Color::White));
+                .block(Block::default().title(Line::from(vec![
+                    Span::raw("[").gray(),
+                    Span::raw("Edit:"),
+                    if mandatory {
+                        Span::raw(name).yellow()
+                    }else{
+                        Span::raw(name).blue()
+                    },
+                    Span::raw("]").gray(),
+                    Span::raw("──"),
+                    Span::raw("[").gray(),
+                    Span::raw("Enter").blue(),
+                    Span::raw("-Save "),
+                    Span::raw("Esc").blue(),
+                    Span::raw("-Cancel"),
+                    Span::raw("]").gray(),
+                ])).borders(Borders::ALL))
+            .style(Style::default().fg(Color::White));
 
             frame.set_cursor((val.len() as u16) + 1, 2);
             frame.render_widget(paragraph, frame.size())

@@ -41,6 +41,8 @@ impl OptionUi for TextUI {
     ) -> anyhow::Result<()> {
         let prompt = self.option.get_prompt();
         let val = self.input.value().to_string();
+        let name = self.get_name();
+        let mandatory = self.option.is_mandatory();
 
         let input_text = if self.is_valid() {
             Line::from(vec![Span::raw(val.clone())])
@@ -55,7 +57,23 @@ impl OptionUi for TextUI {
 
         terminal.draw(|frame| {
             let paragraph = Paragraph::new(text)
-                .block(Block::default().title("[Edit]-(Enter: Confirm, Esq - Cancel) ").borders(Borders::ALL))
+                .block(Block::default().title(Line::from(vec![
+                    Span::raw("[").gray(),
+                    Span::raw("Edit:"),
+                    if mandatory {
+                        Span::raw(name).yellow()
+                    }else{
+                        Span::raw(name).blue()
+                    },
+                    Span::raw("]").gray(),
+                    Span::raw("──"),
+                    Span::raw("[").gray(),
+                    Span::raw("Enter").blue(),
+                    Span::raw("-Save "),
+                    Span::raw("Esc").blue(),
+                    Span::raw("-Cancel"),
+                    Span::raw("]").gray(),
+                ])).borders(Borders::ALL))
                 .style(Style::default().fg(Color::White));
 
             frame.set_cursor((val.len() as u16) + 1, 2);

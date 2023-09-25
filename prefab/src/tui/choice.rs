@@ -40,6 +40,8 @@ impl OptionUi for ChoiceUI {
         let prompt = self.option.get_prompt();
         let value = self.option.get_value();
         let options = self.option.get_choice_options().expect("You need to have specified options for a choice type!");
+        let name = self.get_name();
+        let mandatory = self.option.is_mandatory();
 
         let mut state = ListState::default();
         state.select(Some(self.index));
@@ -54,7 +56,7 @@ impl OptionUi for ChoiceUI {
 
         terminal.draw(|frame| {
             let list = List::new(items.clone())
-                .block(Block::default().title("Options").borders(Borders::ALL))
+                .block(Block::default().borders(Borders::ALL))
                 .style(Style::default().fg(Color::White))
                 .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
                 .highlight_symbol(">>");
@@ -65,8 +67,25 @@ impl OptionUi for ChoiceUI {
             ];
 
             let paragraph = Paragraph::new(text)
-                .block(Block::default().title("[Edit]-(Enter: Confirm, Esc - Cancel) ").borders(Borders::ALL))
-                .style(Style::default().fg(Color::White));
+                .block(Block::default().title(Line::from(vec![
+                    Span::raw("[").gray(),
+                    Span::raw("Edit:"),
+                    if mandatory {
+                        Span::raw(name).yellow()
+                    }else{
+                        Span::raw(name).blue()
+                    },
+                    Span::raw("]").gray(),
+                    Span::raw("──"),
+                    Span::raw("[").gray(),
+                    Span::raw("↑↓").blue(),
+                    Span::raw("-Select Items "),
+                    Span::raw("Enter").blue(),
+                    Span::raw("-Save "),
+                    Span::raw("Esc").blue(),
+                    Span::raw("-Cancel"),
+                    Span::raw("]").gray(),
+                ])).borders(Borders::ALL))                .style(Style::default().fg(Color::White));
 
             let rects = Layout::default()
                 .direction(Direction::Vertical)
