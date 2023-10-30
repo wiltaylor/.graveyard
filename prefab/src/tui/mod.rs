@@ -125,7 +125,7 @@ fn option_menu(terminal: &mut Terminal<CrosstermBackend<Stdout>>, options: &mut 
 
                 if KeyCode::Enter == key.code {
                     if let Some(index) = state.selected() {
-                        let mut index = index;
+                        let index = index;
 
                         if index == elements.len() && not_ready {
                             continue;
@@ -164,7 +164,7 @@ fn apply_elements_to_options(options:&mut HashMap<String, TemplateOption>, eleme
     let keys: Vec<&String> = opts.keys().collect();
 
     for i in 0..keys.len() {
-        let mut op = options.get_mut(keys[i]).unwrap();
+        let op = options.get_mut(keys[i]).unwrap();
         *op = elements[i].get_option().clone();
     }
 }

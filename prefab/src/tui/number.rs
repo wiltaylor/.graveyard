@@ -6,7 +6,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::prelude::{Color, Span, Style, Stylize};
 use ratatui::Terminal;
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 use prefab::template::TemplateOption;
