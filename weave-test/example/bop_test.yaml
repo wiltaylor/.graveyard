@@ -1,0 +1,20 @@
+name:  Test Suite
+author: Wil Taylor
+description: Test suite for doing stuff in here.
+data_sets:
+  foo:
+    - test: "test"
+    - test: "bar"
+
+steps: 
+  - name: will pass
+    command: sh test.sh pass
+    data_set: foo
+    timeout: 2
+  - name: will inconclusive
+    command: sh test.sh inconclusive
+  - name: sh test.sh skipped
+    command: sh test.sh skipped
+    skip: true
+  - name: will fail
+    command: sh test.sh fail
