@@ -1,5 +1,6 @@
 use std::io::{Write, stdout};
 use std::str::FromStr;
+use std::time::Duration;
 use crossterm::{cursor, QueueableCommand, style, terminal};
 use crossterm::style::{Print, PrintStyledContent, Stylize};
 use tokio::sync::mpsc;
@@ -9,6 +10,7 @@ use crate::test_results::TestResult;
 use anyhow::{bail, Error, Result};
 use crossterm::cursor::MoveDown;
 use crossterm::terminal::ClearType;
+use tokio::time::sleep;
 
 #[derive(Debug,PartialEq, Clone)]
 pub enum UIFormat {
@@ -33,7 +35,7 @@ pub enum UIMessage {
 
 pub struct Ui {
     sender: Option<Sender<UIMessage>>,
-    handler: Option<JoinHandle<Result<()>>>,
+    _handler: Option<JoinHandle<Result<()>>>,
     lines_to_suite: u16,
     lines_to_step: u16,
     format: UIFormat,
@@ -84,10 +86,10 @@ impl Ui {
 
        Ui{
            sender,
-           handler,
+           _handler: handler,
            lines_to_suite: 0,
            lines_to_step: 0,
-           format
+           format,
        }
    }
 
@@ -294,10 +296,15 @@ impl Ui {
         Ok(())
     }
 
-    pub async fn close(mut self) -> Result<()> {
+    pub async fn close(self) -> Result<()> {
         if self.format == UIFormat::Colour {
+
+            //hack: need to give ui loop time to process before exiting.
+            sleep(Duration::from_millis(100)).await;
+
             let sender = self.sender.as_ref().unwrap();
             sender.send(UIMessage::Finish).await?;
+
         }
 
         Ok(())

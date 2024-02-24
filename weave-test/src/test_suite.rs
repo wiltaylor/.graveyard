@@ -52,5 +52,5 @@ pub fn load_from_folder(path: &str) -> Result<Vec<TestSuite>> {
         }
     }
 
-    return Ok(result);
+    Ok(result)
 }

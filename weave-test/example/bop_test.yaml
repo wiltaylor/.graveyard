@@ -10,7 +10,7 @@ steps:
   - name: will pass
     command: sh test.sh pass
     data_set: foo
-    timeout: 2
+    #timeout: 2
   - name: will inconclusive
     command: sh test.sh inconclusive
   - name: sh test.sh skipped
