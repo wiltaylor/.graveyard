@@ -1,0 +1,9 @@
+name: Timeout test
+author: Wil Taylor
+description:
+  Example of a test that times out
+
+steps:
+  - name: This test times out
+    timeout: 1 # 1 second so we don't have to wait ages. Defaults to 300 seconds.
+    command: sh simple.sh hangs

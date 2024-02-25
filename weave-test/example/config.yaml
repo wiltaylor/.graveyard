@@ -1,3 +1,11 @@
+## This is an example of a values file you cna pass in.
+## Values and datasets specified in here will override anything in the existing test files.
+
 env:
   foo: bar
   test: test2
+
+data_sets:
+  foo:
+    - test: "test"
+    - test: "bar"

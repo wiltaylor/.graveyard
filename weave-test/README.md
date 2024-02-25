@@ -13,13 +13,10 @@ cargo install https://github.com/wiltaylor/test-weave
 
 Or just grab an executable form the releases tab and make it executable.
 
-
 ## Getting Started
 Quickest way to get started is to have a look at the example folder of this repository.
 
 weave-test will run any file in the target folder that ends with test.yaml.
-
-
 
 ## Building
 To build the project you first need to have rust installed and then install the following toolchains:

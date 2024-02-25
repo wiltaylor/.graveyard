@@ -73,6 +73,12 @@ impl TestSuiteRunner<'_> {
                     result: TestResult::NotRun,
                     asserts: vec![],
                 });
+
+                let step_name = step.name.clone().unwrap_or("Unnamed".to_string());
+
+                self.ui.start_step(&step_name).await?;
+                self.ui.finish_step(&step_name, TestResult::NotRun).await?;
+
                 continue;
             }
 
@@ -84,6 +90,12 @@ impl TestSuiteRunner<'_> {
                         asserts: vec![],
                     });
                 }
+
+                let step_name = step.name.clone().unwrap_or("Unnamed".to_string());
+
+                self.ui.start_step(&step_name).await?;
+                self.ui.finish_step(&step_name, TestResult::Skip).await?;
+
                 continue;
             }
 
@@ -143,8 +155,6 @@ impl TestSuiteRunner<'_> {
 
                 let mut set_env = env.clone();
                 set_env.append(row);
-                // append_environment(&mut set_env, &Some(row.clone()));
-
 
                 let run_result = if let Ok(r) = execute_command(&step.command, set_env, self.ui, &mut result.asserts, Some(idx), time_out).await {
                     r
@@ -174,7 +184,18 @@ impl TestSuiteRunner<'_> {
             self.ui.finish_set().await?;
 
         } else{
-            result.result = execute_command(&step.command, env, self.ui, &mut result.asserts, None, time_out).await?;
+
+            result.result = if let Ok(r) = execute_command(&step.command, env, self.ui, &mut result.asserts, None, time_out).await {
+                r
+            }else{
+                self.ui.assert("Test Timeout Hit", false).await?;
+                result.asserts.push(AssertResult{
+                    message: "Test timed out!".to_string(),
+                    success: false,
+                    data_set_row: None,
+                });
+                TestResult::Fail
+            };
         }
 
         self.ui.finish_step(&name, result.result.clone()).await?;
