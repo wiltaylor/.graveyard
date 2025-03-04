@@ -12,7 +12,10 @@
 `dart-mcp-server` is the official AI [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol) server for Dart.
 
 - [Features](#features)
-- [Tools](#tools)
+  - [Resource Templates](#resource-templates)
+  - [Tools](#tools)
+    - [Task Management](#task-management)
+    - [Document Management](#document-management)
 - [Setup](#setup)
   - [Authentication token](#authentication-token)
   - [Usage with MCP clients](#usage-with-mcp-clients)
@@ -24,11 +27,36 @@
 
 ## Features
 
-<!-- TODO -->
+### Resource Templates
 
-## Tools
+Provides access to important resources through URI templates:
 
-<!-- TODO -->
+- `dart-config:` - Configuration information about the user's space
+- `dart-task:///{taskId}` - Detailed information about specific tasks
+- `dart-doc:///{docId}` - Detailed information about specific docs
+
+### Tools
+
+The following tools are available through the Dart MCP Server
+
+#### Task Management
+
+- `get_config` - Get information about the user's space, including available assignees, dartboards, folders, statuses, tags, priorities, and sizes
+- `list_tasks` - List tasks with optional filtering by assignee, status, dartboard, priority, due date, and more
+- `create_task` - Create a new task with title, description, status, priority, size, dates, dartboard, assignees, tags, and parent task
+- `get_task` - Retrieve an existing task by its ID
+- `update_task` - Update an existing task's properties
+- `delete_task` - Move a task to the trash (recoverable)
+
+#### Document Management
+
+- `list_docs` - List docs with optional filtering by folder, title, text content, and more
+- `create_doc` - Create a new doc with title, text content, and folder
+- `get_doc` - Retrieve an existing doc by its ID
+- `update_doc` - Update an existing doc's properties
+- `delete_doc` - Move a doc to the trash (recoverable)
+
+Each tool supports comprehensive input validation and returns structured JSON responses.
 
 ## Setup
 
