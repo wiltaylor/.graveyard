@@ -98,8 +98,20 @@ const TaskCreateSchema = z.object({
   parent: z.string().optional(),
 });
 
+const TaskUpdateSchema = TaskCreateSchema.extend({
+  permalink: z.string().optional(),
+});
+
 const WrappedTaskCreateSchema = z.object({
   item: TaskCreateSchema,
+});
+
+const WrappedTaskUpdateSchema = z.object({
+  item: TaskUpdateSchema,
+});
+
+const TaskIdSchema = z.object({
+  id: z.string().regex(/^[a-zA-Z0-9]{12}$/, "Task ID must be 12 alphanumeric characters"),
 });
 
 // Response schemas
@@ -262,6 +274,101 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["title"],
       },
     },
+    {
+      name: "get_task",
+      description: "Retrieve an existing task by its ID. Returns the task's information including title, description, status, priority, dates, and more.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "The 12-character alphanumeric ID of the task",
+            pattern: "^[a-zA-Z0-9]{12}$",
+          },
+        },
+        required: ["id"],
+      },
+    },
+    {
+      name: "update_task",
+      description: "Update an existing task. You can modify any of its properties including title, description, status, priority, dates, assignees, and more.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "The 12-character alphanumeric ID of the task",
+            pattern: "^[a-zA-Z0-9]{12}$",
+          },
+          title: {
+            type: "string",
+            description: "The title of the task",
+          },
+          description: {
+            type: "string",
+            description: "A longer description of the task, which can include markdown formatting",
+          },
+          status: {
+            type: "string",
+            description: "The status from the list of available statuses",
+          },
+          priority: {
+            type: "string",
+            description: "The priority (Critical, High, Medium, or Low)",
+          },
+          size: {
+            type: "number",
+            description: "A number that represents the amount of work needed",
+          },
+          start_at: {
+            type: "string",
+            description: "The start date in ISO format (should be at 9:00am in user's timezone)",
+          },
+          due_at: {
+            type: "string",
+            description: "The due date in ISO format (should be at 9:00am in user's timezone)",
+          },
+          dartboard: {
+            type: "string",
+            description: "The title of the dartboard (project or list of tasks)",
+          },
+          assignees: {
+            type: "array",
+            items: { type: "string" },
+            description: "Array of assignee names or emails (if workspace allows multiple assignees)",
+          },
+          assignee: {
+            type: "string",
+            description: "Single assignee name or email (if workspace doesn't allow multiple assignees)",
+          },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Array of tags to apply to the task",
+          },
+          parent: {
+            type: "string",
+            description: "The ID of the parent task",
+          },
+        },
+        required: ["id"],
+      },
+    },
+    {
+      name: "delete_task",
+      description: "Move an existing task to the trash, where it can be recovered if needed. Nothing else about the task will be changed.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "The 12-character alphanumeric ID of the task",
+            pattern: "^[a-zA-Z0-9]{12}$",
+          },
+        },
+        required: ["id"],
+      },
+    },
   ],
 }));
 
@@ -306,6 +413,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const response = await axios.post(
           `${host}/tasks`,
           wrappedData,
+          { headers }
+        );
+
+        const task = TaskSchema.parse(response.data);
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(task, null, 2) },
+          ],
+        };
+      }
+      case "get_task": {
+        const { id } = TaskIdSchema.parse(request.params.arguments);
+        const response = await axios.get(
+          `${host}/tasks/${id}`,
+          { headers }
+        );
+
+        const task = TaskSchema.parse(response.data);
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(task, null, 2) },
+          ],
+        };
+      }
+      case "update_task": {
+        const { id, ...updateData } = TaskIdSchema.merge(TaskUpdateSchema).parse(request.params.arguments);
+        const wrappedData = WrappedTaskUpdateSchema.parse({ item: updateData });
+        
+        const response = await axios.put(
+          `${host}/tasks/${id}`,
+          wrappedData,
+          { headers }
+        );
+
+        const task = TaskSchema.parse(response.data);
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(task, null, 2) },
+          ],
+        };
+      }
+      case "delete_task": {
+        const { id } = TaskIdSchema.parse(request.params.arguments);
+        const response = await axios.delete(
+          `${host}/tasks/${id}`,
           { headers }
         );
 
