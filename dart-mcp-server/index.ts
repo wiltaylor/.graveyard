@@ -93,7 +93,6 @@ const DocUpdateSchema = DocCreateSchema.extend({
 
 const DocSchema = DocUpdateSchema.extend({
   permalink: z.string(),
-  text: z.string(),
   folder: z.string(),
 });
 
