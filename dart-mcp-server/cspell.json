@@ -14,6 +14,7 @@
     "dictionaries": ["cspell-dictionary"],
     "ignorePaths": [
       "./cspell_dictionary.txt",
+      "./yarn.lock",
       ".eslintignore",
       ".git/**/*",
       ".gitignore",

@@ -32,43 +32,85 @@ const packageJson = JSON.parse(
   readFileSync(join(dirname(filename), "..", "package.json"), "utf-8"),
 );
 
-// Common schemas
+// Task schemas
 const AssigneeSchema = z.object({
   name: z.string(),
   email: z.string(),
-  duid: z.string(),
 });
 
-const TaskSchema = z.object({
-  id: z.string(),
+const TaskCreateSchema = z.object({
   title: z.string(),
-  description: z.string().nullable(),
-  status: z.string().nullable(),
-  priority: z.string().nullable(),
-  size: z.number().nullable(),
-  start_at: z.string().nullable(),
-  due_at: z.string().nullable(),
-  created_at: z.string(),
-  updated_at: z.string(),
-  permalink: z.string(),
-  dartboard: z.string().nullable(),
-  assignees: z.array(AssigneeSchema),
-  tags: z.array(z.string()),
-  parent: z.string().nullable(),
-  is_draft: z.boolean(),
-  in_trash: z.boolean(),
+  description: z.string().optional(),
+  dartboard: z.string().optional(),
+  status: z.string().optional(),
+  priority: z.string().nullable().optional(),
+  size: z.number().nullable().optional(),
+  start_at: z.string().nullable().optional(),
+  due_at: z.string().nullable().optional(),
+  assignees: z.array(z.string()).optional(),
+  assignee: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  parent: z.string().nullable().optional(),
 });
 
-const DocSchema = z.object({
+const TaskUpdateSchema = TaskCreateSchema.extend({
   id: z.string(),
-  title: z.string(),
-  text: z.string().nullable(),
-  folder: z.string().nullable(),
-  created_at: z.string(),
-  updated_at: z.string(),
+});
+
+const TaskSchema = TaskUpdateSchema.extend({
   permalink: z.string(),
-  is_draft: z.boolean(),
-  in_trash: z.boolean(),
+  description: z.string(),
+  dartboard: z.string(),
+  status: z.string(),
+});
+
+const WrappedTaskCreateSchema = z.object({
+  item: TaskCreateSchema,
+});
+
+const WrappedTaskUpdateSchema = z.object({
+  item: TaskUpdateSchema,
+});
+
+const WrappedTaskSchema = z.object({
+  item: TaskSchema,
+});
+
+const TaskIdSchema = z.object({
+  id: z.string().regex(/^[a-zA-Z0-9]{12}$/, "Task ID must be 12 alphanumeric characters"),
+});
+
+// Doc schemas
+const DocCreateSchema = z.object({
+  title: z.string(),
+  text: z.string().optional(),
+  folder: z.string().optional(),
+});
+
+const DocUpdateSchema = DocCreateSchema.extend({
+  id: z.string(),
+});
+
+const DocSchema = DocUpdateSchema.extend({
+  permalink: z.string(),
+  text: z.string(),
+  folder: z.string(),
+});
+
+const WrappedDocCreateSchema = z.object({
+  item: DocCreateSchema,
+});
+
+const WrappedDocUpdateSchema = z.object({
+  item: DocUpdateSchema,
+});
+
+const WrappedDocSchema = z.object({
+  item: DocSchema,
+});
+
+const DocIdSchema = z.object({
+  id: z.string().regex(/^[a-zA-Z0-9]{12}$/, "Doc ID must be 12 alphanumeric characters"),
 });
 
 // Request schemas
@@ -95,37 +137,6 @@ const TaskListParamsSchema = z.object({
   title: z.string().optional(),
 });
 
-const TaskCreateSchema = z.object({
-  title: z.string(),
-  description: z.string().optional(),
-  status: z.string().optional(),
-  priority: z.string().optional(),
-  size: z.number().optional(),
-  start_at: z.string().optional(),
-  due_at: z.string().optional(),
-  dartboard: z.string().optional(),
-  assignees: z.array(z.string()).optional(),
-  assignee: z.string().optional(),
-  tags: z.array(z.string()).optional(),
-  parent: z.string().optional(),
-});
-
-const TaskUpdateSchema = TaskCreateSchema.extend({
-  permalink: z.string().optional(),
-});
-
-const WrappedTaskCreateSchema = z.object({
-  item: TaskCreateSchema,
-});
-
-const WrappedTaskUpdateSchema = z.object({
-  item: TaskUpdateSchema,
-});
-
-const TaskIdSchema = z.object({
-  id: z.string().regex(/^[a-zA-Z0-9]{12}$/, "Task ID must be 12 alphanumeric characters"),
-});
-
 const DocListParamsSchema = z.object({
   folder: z.string().optional(),
   folder_duid: z.string().optional(),
@@ -137,28 +148,6 @@ const DocListParamsSchema = z.object({
   s: z.string().optional(),
   text: z.string().optional(),
   title: z.string().optional(),
-});
-
-const DocCreateSchema = z.object({
-  title: z.string(),
-  text: z.string().optional(),
-  folder: z.string().optional(),
-});
-
-const DocUpdateSchema = DocCreateSchema.extend({
-  permalink: z.string().optional(),
-});
-
-const WrappedDocCreateSchema = z.object({
-  item: DocCreateSchema,
-});
-
-const WrappedDocUpdateSchema = z.object({
-  item: DocUpdateSchema,
-});
-
-const DocIdSchema = z.object({
-  id: z.string().regex(/^[a-zA-Z0-9]{12}$/, "Doc ID must be 12 alphanumeric characters"),
 });
 
 // Response schemas
@@ -173,18 +162,18 @@ const ConfigResponseSchema = z.object({
   sizes: z.array(z.number()),
 });
 
-const TaskListResponseSchema = z.object({
-  items: z.array(TaskSchema),
-  total: z.number(),
-  limit: z.number(),
-  offset: z.number(),
+const PaginationResponseSchema = z.object({
+  count: z.number(),
+  next: z.string().nullable(),
+  previous: z.string().nullable(),
 });
 
-const DocListResponseSchema = z.object({
-  items: z.array(DocSchema),
-  total: z.number(),
-  limit: z.number(),
-  offset: z.number(),
+const TaskListResponseSchema = PaginationResponseSchema.extend({
+  results: z.array(TaskSchema),
+});
+
+const DocListResponseSchema = PaginationResponseSchema.extend({
+  results: z.array(DocSchema),
 });
 
 const server = new Server(
@@ -592,14 +581,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "create_task": {
         const taskData = TaskCreateSchema.parse(request.params.arguments);
         const wrappedData = WrappedTaskCreateSchema.parse({ item: taskData });
-        
         const response = await axios.post(
           `${host}/tasks`,
           wrappedData,
           { headers }
         );
 
-        const task = TaskSchema.parse(response.data);
+        const task = WrappedTaskSchema.parse(response.data);
         return {
           content: [
             { type: "text", text: JSON.stringify(task, null, 2) },
@@ -613,7 +601,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           { headers }
         );
 
-        const task = TaskSchema.parse(response.data);
+        const task = WrappedTaskSchema.parse(response.data);
         return {
           content: [
             { type: "text", text: JSON.stringify(task, null, 2) },
@@ -621,16 +609,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
       case "update_task": {
-        const { id, ...updateData } = TaskIdSchema.merge(TaskUpdateSchema).parse(request.params.arguments);
-        const wrappedData = WrappedTaskUpdateSchema.parse({ item: updateData });
-        
+        const taskData = TaskIdSchema.merge(TaskUpdateSchema).parse(request.params.arguments);
+        const { id } = taskData;
+        const wrappedData = WrappedTaskUpdateSchema.parse({ item: taskData });
         const response = await axios.put(
           `${host}/tasks/${id}`,
           wrappedData,
           { headers }
         );
 
-        const task = TaskSchema.parse(response.data);
+        const task = WrappedTaskSchema.parse(response.data);
         return {
           content: [
             { type: "text", text: JSON.stringify(task, null, 2) },
@@ -644,7 +632,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           { headers }
         );
 
-        const task = TaskSchema.parse(response.data);
+        const task = WrappedTaskSchema.parse(response.data);
         return {
           content: [
             { type: "text", text: JSON.stringify(task, null, 2) },
@@ -668,14 +656,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "create_doc": {
         const docData = DocCreateSchema.parse(request.params.arguments);
         const wrappedData = WrappedDocCreateSchema.parse({ item: docData });
-        
         const response = await axios.post(
           `${host}/docs`,
           wrappedData,
           { headers }
         );
 
-        const doc = DocSchema.parse(response.data);
+        const doc = WrappedDocSchema.parse(response.data);
         return {
           content: [
             { type: "text", text: JSON.stringify(doc, null, 2) },
@@ -689,7 +676,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           { headers }
         );
 
-        const doc = DocSchema.parse(response.data);
+        const doc = WrappedDocSchema.parse(response.data);
         return {
           content: [
             { type: "text", text: JSON.stringify(doc, null, 2) },
@@ -697,16 +684,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
       case "update_doc": {
-        const { id, ...updateData } = DocIdSchema.merge(DocUpdateSchema).parse(request.params.arguments);
-        const wrappedData = WrappedDocUpdateSchema.parse({ item: updateData });
-        
+        const docData = DocIdSchema.merge(DocUpdateSchema).parse(request.params.arguments);
+        const { id } = docData;
+        const wrappedData = WrappedDocUpdateSchema.parse({ item: docData });
         const response = await axios.put(
           `${host}/docs/${id}`,
           wrappedData,
           { headers }
         );
 
-        const doc = DocSchema.parse(response.data);
+        const doc = WrappedDocSchema.parse(response.data);
         return {
           content: [
             { type: "text", text: JSON.stringify(doc, null, 2) },
@@ -720,7 +707,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           { headers }
         );
 
-        const doc = DocSchema.parse(response.data);
+        const doc = WrappedDocSchema.parse(response.data);
         return {
           content: [
             { type: "text", text: JSON.stringify(doc, null, 2) },
