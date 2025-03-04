@@ -1,32 +1,34 @@
 {
-    "name": "dart-mcp-server",
-    "version": "0.1.0",
-    "description": "The MCP server for using the Dart API",
-    "license": "MIT",
-    "author": "Dart (software@itsdart.com)",
-    "homepage": "https://itsdart.com",
-    "bugs": "https://app.itsdart.com/p/r/JFyPnhL9En61",
-    "type": "module",
-    "bin": {
-      "dart-mcp-server": "dist/index.js"
-    },
-    "files": [
-        "dist"
-    ],
-    "scripts": {
-        "build": "tsc && shx chmod +x dist/*.js",
-        "prepare": "npm run build",
-        "watch": "tsc --watch"
-    },
-    "dependencies": {
-        "@modelcontextprotocol/sdk": "~1.5",
-        "@types/node": "~22.13",
-        "axios": "~1.7",
-        "dotenv": "~16.4",
-        "zod": "~3.24"
-    },
-    "devDependencies": {
-        "shx": "0.3.4",
-        "typescript": "5.7.3"
-    }
+  "name": "dart-mcp-server",
+  "version": "0.1.0",
+  "description": "The MCP server for using the Dart API",
+  "license": "MIT",
+  "author": "Dart (software@itsdart.com)",
+  "homepage": "https://itsdart.com",
+  "bugs": "https://app.itsdart.com/p/r/JFyPnhL9En61",
+  "type": "module",
+  "bin": {
+    "dart-mcp-server": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prepare": "npm run build",
+    "build": "tsc && shx chmod +x dist/*.js",
+    "prettier-check": "prettier --check .",
+    "prettier-fix": "prettier --write . --list-different"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "~1.5",
+    "@types/node": "~22.13",
+    "axios": "~1.7",
+    "dotenv": "~16.4",
+    "zod": "~3.24"
+  },
+  "devDependencies": {
+    "prettier": "3.4.2",
+    "shx": "0.3.4",
+    "typescript": "5.7.3"
+  }
 }
