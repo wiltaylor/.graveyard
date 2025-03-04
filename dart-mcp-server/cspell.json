@@ -1,0 +1,24 @@
+{
+    "$schema": "https://raw.githubusercontent.com/streetsidesoftware/cspell/main/cspell.schema.json",
+    "version": "0.2",
+    "useGitignore": true,
+    "enableGlobDot": true,
+    "enabledFileTypes": { "*": true },
+    "dictionaryDefinitions": [
+      {
+        "name": "cspell-dictionary",
+        "path": "./cspell_dictionary.txt",
+        "addWords": true
+      }
+    ],
+    "dictionaries": ["cspell-dictionary"],
+    "ignorePaths": [
+      "./cspell_dictionary.txt",
+      ".eslintignore",
+      ".git/**/*",
+      ".gitignore",
+      ".prettierignore",
+      ".vscode/extensions.json",
+    ]
+  }
+  

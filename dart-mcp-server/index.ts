@@ -59,6 +59,18 @@ const TaskSchema = z.object({
   in_trash: z.boolean(),
 });
 
+const DocSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  text: z.string().nullable(),
+  folder: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  permalink: z.string(),
+  is_draft: z.boolean(),
+  in_trash: z.boolean(),
+});
+
 // Request schemas
 const TaskListParamsSchema = z.object({
   assignee: z.string().optional(),
@@ -114,6 +126,41 @@ const TaskIdSchema = z.object({
   id: z.string().regex(/^[a-zA-Z0-9]{12}$/, "Task ID must be 12 alphanumeric characters"),
 });
 
+const DocListParamsSchema = z.object({
+  folder: z.string().optional(),
+  folder_duid: z.string().optional(),
+  duids: z.string().optional(),
+  in_trash: z.boolean().optional(),
+  is_draft: z.boolean().optional(),
+  limit: z.number().optional(),
+  offset: z.number().optional(),
+  s: z.string().optional(),
+  text: z.string().optional(),
+  title: z.string().optional(),
+});
+
+const DocCreateSchema = z.object({
+  title: z.string(),
+  text: z.string().optional(),
+  folder: z.string().optional(),
+});
+
+const DocUpdateSchema = DocCreateSchema.extend({
+  permalink: z.string().optional(),
+});
+
+const WrappedDocCreateSchema = z.object({
+  item: DocCreateSchema,
+});
+
+const WrappedDocUpdateSchema = z.object({
+  item: DocUpdateSchema,
+});
+
+const DocIdSchema = z.object({
+  id: z.string().regex(/^[a-zA-Z0-9]{12}$/, "Doc ID must be 12 alphanumeric characters"),
+});
+
 // Response schemas
 const ConfigResponseSchema = z.object({
   today: z.string(),
@@ -128,6 +175,13 @@ const ConfigResponseSchema = z.object({
 
 const TaskListResponseSchema = z.object({
   items: z.array(TaskSchema),
+  total: z.number(),
+  limit: z.number(),
+  offset: z.number(),
+});
+
+const DocListResponseSchema = z.object({
+  items: z.array(DocSchema),
   total: z.number(),
   limit: z.number(),
   offset: z.number(),
@@ -369,6 +423,135 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["id"],
       },
     },
+    {
+      name: "list_docs",
+      description: "List docs from Dart with optional filtering parameters. You can filter by folder, title, text content, and more.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          folder: {
+            type: "string",
+            description: "Filter by folder title",
+          },
+          folder_duid: {
+            type: "string",
+            description: "Filter by folder DUID",
+          },
+          duids: {
+            type: "string",
+            description: "Filter by DUIDs",
+          },
+          in_trash: {
+            type: "boolean",
+            description: "Filter by trash status",
+          },
+          is_draft: {
+            type: "boolean",
+            description: "Filter by draft status",
+          },
+          limit: {
+            type: "number",
+            description: "Number of results per page",
+          },
+          offset: {
+            type: "number",
+            description: "Initial index for pagination",
+          },
+          s: {
+            type: "string",
+            description: "Search by title, text, or folder title",
+          },
+          text: {
+            type: "string",
+            description: "Filter by text content",
+          },
+          title: {
+            type: "string",
+            description: "Filter by title",
+          },
+        },
+        required: [],
+      },
+    },
+    {
+      name: "create_doc",
+      description: "Create a new doc in Dart. You can specify title, text content, and folder.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "The title of the doc (required)",
+          },
+          text: {
+            type: "string",
+            description: "The text content of the doc, which can include markdown formatting",
+          },
+          folder: {
+            type: "string",
+            description: "The title of the folder to place the doc in",
+          },
+        },
+        required: ["title"],
+      },
+    },
+    {
+      name: "get_doc",
+      description: "Retrieve an existing doc by its ID. Returns the doc's information including title, text content, folder, and more.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "The 12-character alphanumeric ID of the doc",
+            pattern: "^[a-zA-Z0-9]{12}$",
+          },
+        },
+        required: ["id"],
+      },
+    },
+    {
+      name: "update_doc",
+      description: "Update an existing doc. You can modify its title, text content, and folder.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "The 12-character alphanumeric ID of the doc",
+            pattern: "^[a-zA-Z0-9]{12}$",
+          },
+          title: {
+            type: "string",
+            description: "The title of the doc",
+          },
+          text: {
+            type: "string",
+            description: "The text content of the doc, which can include markdown formatting",
+          },
+          folder: {
+            type: "string",
+            description: "The title of the folder to place the doc in",
+          },
+        },
+        required: ["id"],
+      },
+    },
+    {
+      name: "delete_doc",
+      description: "Move an existing doc to the trash, where it can be recovered if needed. Nothing else about the doc will be changed.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "The 12-character alphanumeric ID of the doc",
+            pattern: "^[a-zA-Z0-9]{12}$",
+          },
+        },
+        required: ["id"],
+      },
+    },
   ],
 }));
 
@@ -465,6 +648,82 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [
             { type: "text", text: JSON.stringify(task, null, 2) },
+          ],
+        };
+      }
+      case "list_docs": {
+        const params = DocListParamsSchema.parse(request.params.arguments);
+        const response = await axios.get(
+          `${host}/docs/list`,
+          { headers, params }
+        );
+
+        const docs = DocListResponseSchema.parse(response.data);
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(docs, null, 2) },
+          ],
+        };
+      }
+      case "create_doc": {
+        const docData = DocCreateSchema.parse(request.params.arguments);
+        const wrappedData = WrappedDocCreateSchema.parse({ item: docData });
+        
+        const response = await axios.post(
+          `${host}/docs`,
+          wrappedData,
+          { headers }
+        );
+
+        const doc = DocSchema.parse(response.data);
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(doc, null, 2) },
+          ],
+        };
+      }
+      case "get_doc": {
+        const { id } = DocIdSchema.parse(request.params.arguments);
+        const response = await axios.get(
+          `${host}/docs/${id}`,
+          { headers }
+        );
+
+        const doc = DocSchema.parse(response.data);
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(doc, null, 2) },
+          ],
+        };
+      }
+      case "update_doc": {
+        const { id, ...updateData } = DocIdSchema.merge(DocUpdateSchema).parse(request.params.arguments);
+        const wrappedData = WrappedDocUpdateSchema.parse({ item: updateData });
+        
+        const response = await axios.put(
+          `${host}/docs/${id}`,
+          wrappedData,
+          { headers }
+        );
+
+        const doc = DocSchema.parse(response.data);
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(doc, null, 2) },
+          ],
+        };
+      }
+      case "delete_doc": {
+        const { id } = DocIdSchema.parse(request.params.arguments);
+        const response = await axios.delete(
+          `${host}/docs/${id}`,
+          { headers }
+        );
+
+        const doc = DocSchema.parse(response.data);
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(doc, null, 2) },
           ],
         };
       }
