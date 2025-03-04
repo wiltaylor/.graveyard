@@ -15,15 +15,16 @@ import { fileURLToPath } from "url";
 
 dotenv.config();
 
-const dartToken = process.env.DART_TOKEN;
-if (!dartToken) {
+const token = process.env.DART_TOKEN;
+if (!token) {
   console.error("DART_TOKEN environment variable is required");
   process.exit(1);
 }
-const dartHost = process.env.DART_HOST || "https://app.itsdart.com";
+const hostBase = process.env.DART_HOST || "https://app.itsdart.com";
+const host = `${hostBase}/api/v0/chatgpt`;
 
 const headers = {
-  Authorization: `Bearer ${dartToken}`,
+  Authorization: `Bearer ${token}`,
 };
 
 const filename = fileURLToPath(import.meta.url);
@@ -31,6 +32,34 @@ const packageJson = JSON.parse(
   readFileSync(join(dirname(filename), "..", "package.json"), "utf-8"),
 );
 
+// Common schemas
+const AssigneeSchema = z.object({
+  name: z.string(),
+  email: z.string(),
+  duid: z.string(),
+});
+
+const TaskSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string().nullable(),
+  status: z.string().nullable(),
+  priority: z.string().nullable(),
+  size: z.number().nullable(),
+  start_at: z.string().nullable(),
+  due_at: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  permalink: z.string(),
+  dartboard: z.string().nullable(),
+  assignees: z.array(AssigneeSchema),
+  tags: z.array(z.string()),
+  parent: z.string().nullable(),
+  is_draft: z.boolean(),
+  in_trash: z.boolean(),
+});
+
+// Request schemas
 const TaskListParamsSchema = z.object({
   assignee: z.string().optional(),
   assignee_duid: z.string().optional(),
@@ -54,6 +83,44 @@ const TaskListParamsSchema = z.object({
   title: z.string().optional(),
 });
 
+const TaskCreateSchema = z.object({
+  title: z.string(),
+  description: z.string().optional(),
+  status: z.string().optional(),
+  priority: z.string().optional(),
+  size: z.number().optional(),
+  start_at: z.string().optional(),
+  due_at: z.string().optional(),
+  dartboard: z.string().optional(),
+  assignees: z.array(z.string()).optional(),
+  assignee: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  parent: z.string().optional(),
+});
+
+const WrappedTaskCreateSchema = z.object({
+  item: TaskCreateSchema,
+});
+
+// Response schemas
+const ConfigResponseSchema = z.object({
+  today: z.string(),
+  assignees: z.array(AssigneeSchema),
+  dartboards: z.array(z.string()),
+  folders: z.array(z.string()),
+  statuses: z.array(z.string()),
+  tags: z.array(z.string()),
+  priorities: z.array(z.string()),
+  sizes: z.array(z.number()),
+});
+
+const TaskListResponseSchema = z.object({
+  items: z.array(TaskSchema),
+  total: z.number(),
+  limit: z.number(),
+  offset: z.number(),
+});
+
 const server = new Server(
   {
     name: "dart-mcp",
@@ -68,6 +135,15 @@ const server = new Server(
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
+    {
+      name: "get_config",
+      description: "Get information about the user's space, including all of the possible values that can be provided to other endpoints. This includes available assignees, dartboards, folders, statuses, tags, priorities, and sizes.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
     {
       name: "list_tasks",
       description:
@@ -126,6 +202,66 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: [],
       },
     },
+    {
+      name: "create_task",
+      description: "Create a new task in Dart. You can specify title, description, status, priority, size, dates, dartboard, assignees, tags, and parent task.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "The title of the task (required)",
+          },
+          description: {
+            type: "string",
+            description: "A longer description of the task, which can include markdown formatting",
+          },
+          status: {
+            type: "string",
+            description: "The status from the list of available statuses",
+          },
+          priority: {
+            type: "string",
+            description: "The priority (Critical, High, Medium, or Low)",
+          },
+          size: {
+            type: "number",
+            description: "A number that represents the amount of work needed",
+          },
+          start_at: {
+            type: "string",
+            description: "The start date in ISO format (should be at 9:00am in user's timezone)",
+          },
+          due_at: {
+            type: "string",
+            description: "The due date in ISO format (should be at 9:00am in user's timezone)",
+          },
+          dartboard: {
+            type: "string",
+            description: "The title of the dartboard (project or list of tasks)",
+          },
+          assignees: {
+            type: "array",
+            items: { type: "string" },
+            description: "Array of assignee names or emails (if workspace allows multiple assignees)",
+          },
+          assignee: {
+            type: "string",
+            description: "Single assignee name or email (if workspace doesn't allow multiple assignees)",
+          },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Array of tags to apply to the task",
+          },
+          parent: {
+            type: "string",
+            description: "The ID of the parent task",
+          },
+        },
+        required: ["title"],
+      },
+    },
   ],
 }));
 
@@ -136,16 +272,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     switch (request.params.name) {
+      case "get_config": {
+        const response = await axios.get(
+          `${host}/config`,
+          { headers }
+        );
+
+        const config = ConfigResponseSchema.parse(response.data);
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(config, null, 2) },
+          ],
+        };
+      }
       case "list_tasks": {
         const params = TaskListParamsSchema.parse(request.params.arguments);
         const response = await axios.get(
-          `${dartHost}/api/v0/chatgpt/tasks/list`,
+          `${host}/tasks/list`,
           { headers, params },
         );
 
+        const tasks = TaskListResponseSchema.parse(response.data);
         return {
           content: [
-            { type: "text", text: JSON.stringify(response.data, null, 2) },
+            { type: "text", text: JSON.stringify(tasks, null, 2) },
+          ],
+        };
+      }
+      case "create_task": {
+        const taskData = TaskCreateSchema.parse(request.params.arguments);
+        const wrappedData = WrappedTaskCreateSchema.parse({ item: taskData });
+        
+        const response = await axios.post(
+          `${host}/tasks`,
+          wrappedData,
+          { headers }
+        );
+
+        const task = TaskSchema.parse(response.data);
+        return {
+          content: [
+            { type: "text", text: JSON.stringify(task, null, 2) },
           ],
         };
       }
