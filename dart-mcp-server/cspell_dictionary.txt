@@ -2,5 +2,4 @@ duid
 duids
 modelcontextprotocol
 projectmanagement
-pyproject
 taskmanagement

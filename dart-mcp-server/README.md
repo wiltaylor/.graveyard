@@ -1,8 +1,7 @@
 <div align="center">
   <h1>Dart MCP Server</h1>
   <p>
-    <a href="https://pypi.org/project/dart-mcp-server"><img src="https://img.shields.io/pypi/v/dart-mcp-server" alt="PyPI"></a>
-    <a href="pyproject.toml"><img src="https://img.shields.io/pypi/pyversions/dart-mcp-server" alt="Supported Python Versions"></a>
+    <a href="https://npmjs.com/package/dart-mcp-server"><img src="https://img.shields.io/npm/v/dart-mcp-server" alt="NPM"></a>
     <a href="LICENSE"><img src="https://img.shields.io/github/license/its-dart/dart-mcp-server" alt="License"></a>
   </p>
 </div>
