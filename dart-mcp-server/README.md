@@ -17,10 +17,8 @@
     - [Task management](#task-management)
     - [Document management](#document-management)
 - [Setup](#setup)
-  - [Authentication token](#authentication-token)
-  - [Usage with MCP clients](#usage-with-mcp-clients)
-    - [Docker](#docker)
-  - [NPX](#npx)
+  - [Claude Desktop + npx](#claude-desktop--npx)
+  - [Claude Desktop + Docker](#claude-desktop--docker)
 - [Help and Resources](#help-and-resources)
 - [Contributing](#contributing)
 - [License](#license)
@@ -70,53 +68,48 @@ Each tool supports comprehensive input validation and returns structured JSON re
 
 ## Setup
 
-### Authentication token
+The easiest way to run the MCP server is with `npx`, but a Docker setup is also available.
 
-Copy your authentication token from [your Dart profile](https://app.itsdart.com/?settings=account) and use that below.
+### Claude Desktop + npx 
 
-### Usage with MCP clients
+1. [Install Claude Desktop](https://claude.ai/download) as needed
+2. [Install npx](https://nodejs.org/en/download), which comes bundled with Node, as needed
+3. Copy your authentication token from [your Dart profile](https://app.itsdart.com/?settings=account) and use that below
+4. Add the following to your `claude_desktop_config.json`, which can be found in Claude Desktop > Settings > Developer > Edit Config
+   ```json
+   {
+     "mcpServers": {
+       "dart": {
+         "command": "npx",
+         "args": ["-y", "dart-mcp-server"],
+         "env": {
+           "DART_TOKEN": "dsa_..."
+         }
+       }
+     }
+   }
+   ```
 
-#### Docker
+### Claude Desktop + Docker
 
-Run
-
-```bash
-docker build -t mcp/dart .
-```
-
-To use this with Claude Desktop, add the following to your `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "dart": {
-      "command": "docker",
-      "args": ["run", "-i", "--rm", "-e", "DART_TOKEN", "mcp/dart"],
-      "env": {
-        "DART_TOKEN": "dsa_..."
-      }
-    }
-  }
-}
-```
-
-### NPX
-
-To use this with Claude Desktop, add the following to your `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "dart": {
-      "command": "npx",
-      "args": ["-y", "dart-mcp-server"],
-      "env": {
-        "DART_TOKEN": "dsa_..."
-      }
-    }
-  }
-}
-```
+1. [Install Claude Desktop](https://claude.ai/download) as needed
+2. [Install Docker](https://www.docker.com/products/docker-desktop/) as needed
+3. Build the Docker container with `docker build -t mcp/dart .`
+4. Copy your authentication token from [your Dart profile](https://app.itsdart.com/?settings=account) and use that below
+5. Add the following to your `claude_desktop_config.json`, which can be found in Claude Desktop > Settings > Developer > Edit Config
+   ```json
+   {
+     "mcpServers": {
+       "dart": {
+         "command": "docker",
+         "args": ["run", "-i", "--rm", "-e", "DART_TOKEN", "mcp/dart"],
+         "env": {
+           "DART_TOKEN": "dsa_..."
+         }
+       }
+     }
+   }
+   ```
 
 ## Help and Resources
 

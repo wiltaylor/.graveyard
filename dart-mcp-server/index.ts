@@ -1002,6 +1002,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (error instanceof z.ZodError) {
       throw new Error(`Invalid input: ${JSON.stringify(error.errors)}`);
     }
+    if (axios.isAxiosError(error)) {
+      throw new Error(`API error: ${error.response?.status ?? 500} ${JSON.stringify(error.response?.data) || error.message || "(unknown error)"}`);
+    }
     throw error;
   }
 });

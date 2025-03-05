@@ -18,7 +18,7 @@
      "mcpServers": {
        "dart": {
          "command": "node",
-         "args": ["<path to workspace>/dart-mcp-server/dist/index.js"],
+         "args": ["<PATH_TO_WORKSPACE>/dart-mcp-server/dist/index.js"],
          "env": {
            "DART_TOKEN": "dsa_...",
            "DART_HOST": "http://localhost:5173"
