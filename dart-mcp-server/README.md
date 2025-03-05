@@ -12,10 +12,11 @@
 `dart-mcp-server` is the official AI [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol) server for Dart.
 
 - [Features](#features)
-  - [Resource Templates](#resource-templates)
+  - [Prompts](#prompts)
+  - [Resource templates](#resource-templates)
   - [Tools](#tools)
-    - [Task Management](#task-management)
-    - [Document Management](#document-management)
+    - [Task management](#task-management)
+    - [Document management](#document-management)
 - [Setup](#setup)
   - [Authentication token](#authentication-token)
   - [Usage with MCP clients](#usage-with-mcp-clients)
@@ -27,9 +28,19 @@
 
 ## Features
 
-### Resource Templates
+### Prompts
 
-Provides access to important resources through URI templates:
+The following prompts are available
+
+- `create-task` - Create a new task in Dart with title, description, status, priority, and assignee
+- `create-doc` - Create a new document in Dart with title, text content, and folder
+- `summarize-tasks` - Get a summary of tasks with optional filtering by status and assignee
+
+These prompts make it easy for AI assistants to perform common actions in Dart without needing to understand the underlying API details.
+
+### Resource templates
+
+The following resources are available
 
 - `dart-config:` - Configuration information about the user's space
 - `dart-task:///{taskId}` - Detailed information about specific tasks
@@ -37,9 +48,9 @@ Provides access to important resources through URI templates:
 
 ### Tools
 
-The following tools are available through the Dart MCP Server
+The following tools are available
 
-#### Task Management
+#### Task management
 
 - `get_config` - Get information about the user's space, including available assignees, dartboards, folders, statuses, tags, priorities, and sizes
 - `list_tasks` - List tasks with optional filtering by assignee, status, dartboard, priority, due date, and more
@@ -48,7 +59,7 @@ The following tools are available through the Dart MCP Server
 - `update_task` - Update an existing task's properties
 - `delete_task` - Move a task to the trash (recoverable)
 
-#### Document Management
+#### Document management
 
 - `list_docs` - List docs with optional filtering by folder, title, text content, and more
 - `create_doc` - Create a new doc with title, text content, and folder

@@ -10,6 +10,9 @@ import {
   ReadResourceRequestSchema,
   ResourceTemplate,
   Tool,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
+  Prompt,
 } from "@modelcontextprotocol/sdk/types.js";
 import axios from "axios";
 import { z } from "zod";
@@ -187,6 +190,75 @@ const DocListResponseSchema = PaginationResponseSchema.extend({
 });
 
 // Server resources
+const createTaskPrompt: Prompt = {
+  name: "create-task",
+  description: "Create a new task in Dart",
+  arguments: [
+    {
+      name: "title",
+      description: "Title of the task",
+      required: true,
+    },
+    {
+      name: "description",
+      description: "Description of the task",
+      required: false,
+    },
+    {
+      name: "status",
+      description: "Status of the task",
+      required: false,
+    },
+    {
+      name: "priority",
+      description: "Priority of the task",
+      required: false,
+    },
+    {
+      name: "assignee",
+      description: "Email of the assignee",
+      required: false,
+    },
+  ],
+};
+const createDocPrompt: Prompt = {
+  name: "create-doc",
+  description: "Create a new document in Dart",
+  arguments: [
+    {
+      name: "title",
+      description: "Title of the document",
+      required: true,
+    },
+    {
+      name: "text",
+      description: "Content of the document",
+      required: false,
+    },
+    {
+      name: "folder",
+      description: "Folder to place the document in",
+      required: false,
+    },
+  ],
+};
+const summarizeTasksPrompt: Prompt = {
+  name: "summarize-tasks",
+  description: "Get a summary of tasks with optional filtering",
+  arguments: [
+    {
+      name: "status",
+      description: "Filter by status (e.g., 'In Progress', 'Done')",
+      required: false,
+    },
+    {
+      name: "assignee",
+      description: "Filter by assignee email",
+      required: false,
+    },
+  ],
+};
+
 const resourceTemplates: ResourceTemplate[] = [
   {
     uriTemplate: "dart-config:",
@@ -207,7 +279,7 @@ const resourceTemplates: ResourceTemplate[] = [
         description: "The unique identifier of the Dart task",
       },
     },
-    examples: ["dart-task:///9qkqtB8n2Qn6"],
+    examples: ["dart-task:///9q5qtB8n2Qn6"],
   },
   {
     uriTemplate: "dart-doc:///{docId}",
@@ -220,7 +292,7 @@ const resourceTemplates: ResourceTemplate[] = [
         description: "The unique identifier of the Dart doc",
       },
     },
-    examples: ["dart-doc:///9qkqtB8n2Qn6"],
+    examples: ["dart-doc:///9q5qtB8n2Qn6"],
   },
 ];
 
@@ -642,11 +714,91 @@ const server = new Server(
   },
   {
     capabilities: {
+      prompts: {},
       resources: {},
       tools: {},
     },
   },
 );
+
+server.setRequestHandler(ListPromptsRequestSchema, async () => {
+  return {
+    prompts: [createTaskPrompt, createDocPrompt, summarizeTasksPrompt],
+  };
+});
+
+server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+  const promptName = request.params.name;
+
+  if (promptName === "create-task") {
+    const title = request.params.arguments?.title || "(no title)";
+    const description = request.params.arguments?.description || "";
+    const status = request.params.arguments?.status || "";
+    const priority = request.params.arguments?.priority || "";
+    const assignee = request.params.arguments?.assignee || "";
+
+    return {
+      description: "Create a new task in Dart",
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `Create a new task in Dart with the following details:
+Title: ${title}
+${description ? `Description: ${description}` : ""}
+${status ? `Status: ${status}` : ""}
+${priority ? `Priority: ${priority}` : ""}
+${assignee ? `Assignee: ${assignee}` : ""}`,
+          },
+        },
+      ],
+    };
+  }
+
+  if (promptName === "create-doc") {
+    const title = request.params.arguments?.title || "(no title)";
+    const text = request.params.arguments?.text || "";
+    const folder = request.params.arguments?.folder || "";
+
+    return {
+      description: "Create a new document in Dart",
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `Create a new document in Dart with the following details:
+Title: ${title}
+${text ? `Content: ${text}` : ""}
+${folder ? `Folder: ${folder}` : ""}`,
+          },
+        },
+      ],
+    };
+  }
+
+  if (promptName === "summarize-tasks") {
+    const status = request.params.arguments?.status || "";
+    const assignee = request.params.arguments?.assignee || "";
+
+    return {
+      description: "Get a summary of tasks with optional filtering",
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `Summarize the tasks in Dart${status ? ` with status "${status}"` : ""}${assignee ? ` assigned to ${assignee}` : ""}.
+Please include the total count, group by status, and list any high priority items.`,
+          },
+        },
+      ],
+    };
+  }
+
+  throw new Error(`Unknown prompt: ${promptName}`);
+});
 
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
   const tasks = await listTasks();
@@ -665,15 +817,17 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
 });
 
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-  const uri = new URL(request.params.uri);
-  const path = uri.pathname.replace(/^\//, "");
+  const { uri } = request.params;
+  const url = new URL(uri);
+  const path = url.pathname.replace(/^\//, "");
+  const { protocol } = url;
 
-  if (uri.protocol === "dart-config") {
+  if (protocol === "dart-config") {
     const config = await getConfig();
     return {
       contents: [
         {
-          uri: request.params.uri,
+          uri,
           mimeType: "application/json",
           text: JSON.stringify(config, null, 2),
         },
@@ -681,12 +835,12 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     };
   }
 
-  if (uri.protocol === "dart-task:") {
+  if (protocol === "dart-task:") {
     const task = await getTask(path);
     return {
       contents: [
         {
-          uri: request.params.uri,
+          uri,
           mimeType: "application/json",
           text: JSON.stringify(task, null, 2),
         },
@@ -694,12 +848,12 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     };
   }
 
-  if (uri.protocol === "dart-doc:") {
+  if (protocol === "dart-doc:") {
     const doc = await getDoc(path);
     return {
       contents: [
         {
-          uri: request.params.uri,
+          uri,
           mimeType: "application/json",
           text: JSON.stringify(doc, null, 2),
         },
@@ -707,7 +861,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     };
   }
 
-  throw new Error(`Unsupported resource URI: ${request.params.uri}`);
+  throw new Error(`Unknown resource: ${uri}`);
 });
 
 server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
