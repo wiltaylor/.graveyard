@@ -12,7 +12,11 @@
 `dart-mcp-server` is the official AI [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol) server for Dart.
 
 - [Features](#features)
-- [Tools](#tools)
+  - [Prompts](#prompts)
+  - [Resource templates](#resource-templates)
+  - [Tools](#tools)
+    - [Task management](#task-management)
+    - [Document management](#document-management)
 - [Setup](#setup)
   - [Authentication token](#authentication-token)
   - [Usage with MCP clients](#usage-with-mcp-clients)
@@ -24,11 +28,46 @@
 
 ## Features
 
-<!-- TODO -->
+### Prompts
 
-## Tools
+The following prompts are available
 
-<!-- TODO -->
+- `create-task` - Create a new task in Dart with title, description, status, priority, and assignee
+- `create-doc` - Create a new document in Dart with title, text content, and folder
+- `summarize-tasks` - Get a summary of tasks with optional filtering by status and assignee
+
+These prompts make it easy for AI assistants to perform common actions in Dart without needing to understand the underlying API details.
+
+### Resource templates
+
+The following resources are available
+
+- `dart-config:` - Configuration information about the user's space
+- `dart-task:///{taskId}` - Detailed information about specific tasks
+- `dart-doc:///{docId}` - Detailed information about specific docs
+
+### Tools
+
+The following tools are available
+
+#### Task management
+
+- `get_config` - Get information about the user's space, including available assignees, dartboards, folders, statuses, tags, priorities, and sizes
+- `list_tasks` - List tasks with optional filtering by assignee, status, dartboard, priority, due date, and more
+- `create_task` - Create a new task with title, description, status, priority, size, dates, dartboard, assignees, tags, and parent task
+- `get_task` - Retrieve an existing task by its ID
+- `update_task` - Update an existing task's properties
+- `delete_task` - Move a task to the trash (recoverable)
+
+#### Document management
+
+- `list_docs` - List docs with optional filtering by folder, title, text content, and more
+- `create_doc` - Create a new doc with title, text content, and folder
+- `get_doc` - Retrieve an existing doc by its ID
+- `update_doc` - Update an existing doc's properties
+- `delete_doc` - Move a doc to the trash (recoverable)
+
+Each tool supports comprehensive input validation and returns structured JSON responses.
 
 ## Setup
 

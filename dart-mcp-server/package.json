@@ -1,10 +1,17 @@
 {
   "name": "dart-mcp-server",
   "version": "0.1.0",
-  "description": "The MCP server for using the Dart API",
+  "description": "The Dart MCP server",
   "license": "MIT",
   "author": "Dart (software@itsdart.com)",
-  "homepage": "https://itsdart.com",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "homepage": "https://github.com/its-dart/dart-mcp-server",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/its-dart/dart-mcp-server.git"
+  },
   "bugs": "https://app.itsdart.com/p/r/JFyPnhL9En61",
   "type": "module",
   "bin": {
@@ -17,7 +24,8 @@
     "prepare": "npm run build",
     "build": "tsc && shx chmod +x dist/*.js",
     "prettier-check": "prettier --check .",
-    "prettier-fix": "prettier --write . --list-different"
+    "prettier-fix": "prettier --write . --list-different",
+    "release": "release-it"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "~1.5",
@@ -30,5 +38,14 @@
     "prettier": "3.4.2",
     "shx": "0.3.4",
     "typescript": "5.7.3"
+  },
+  "keywords": [
+    "dart",
+    "projectmanagement",
+    "taskmanagement"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }
