@@ -221,6 +221,7 @@ const createTaskPrompt: Prompt = {
     },
   ],
 };
+
 const createDocPrompt: Prompt = {
   name: "create-doc",
   description: "Create a new document in Dart",
@@ -242,6 +243,7 @@ const createDocPrompt: Prompt = {
     },
   ],
 };
+
 const summarizeTasksPrompt: Prompt = {
   name: "summarize-tasks",
   description: "Get a summary of tasks with optional filtering",
@@ -259,42 +261,42 @@ const summarizeTasksPrompt: Prompt = {
   ],
 };
 
-const resourceTemplates: ResourceTemplate[] = [
-  {
-    uriTemplate: "dart-config:",
-    name: "Dart config",
-    description:
-      "Information about the authenticated user associated with the API key, including their role, teams, and settings.",
-    parameters: {},
-    examples: ["dart-config:"],
-  },
-  {
-    uriTemplate: "dart-task:///{taskId}",
-    name: "Dart task",
-    description:
-      "A Dart task with its title, description, status, priority, dates, and more. Use this to fetch detailed information about a specific task.",
-    parameters: {
-      taskId: {
-        type: "string",
-        description: "The unique identifier of the Dart task",
-      },
+const configResourceTemplate: ResourceTemplate = {
+  uriTemplate: "dart-config:",
+  name: "Dart config",
+  description:
+    "Information about the authenticated user associated with the API key, including their role, teams, and settings.",
+  parameters: {},
+  examples: ["dart-config:"],
+};
+
+const taskResourceTemplate: ResourceTemplate = {
+  uriTemplate: "dart-task:///{taskId}",
+  name: "Dart task",
+  description:
+    "A Dart task with its title, description, status, priority, dates, and more. Use this to fetch detailed information about a specific task.",
+  parameters: {
+    taskId: {
+      type: "string",
+      description: "The unique identifier of the Dart task",
     },
-    examples: ["dart-task:///9q5qtB8n2Qn6"],
   },
-  {
-    uriTemplate: "dart-doc:///{docId}",
-    name: "Dart doc",
-    description:
-      "A Dart doc with its title, text content, and folder. Use this to fetch detailed information about a specific doc.",
-    parameters: {
-      docId: {
-        type: "string",
-        description: "The unique identifier of the Dart doc",
-      },
+  examples: ["dart-task:///9q5qtB8n2Qn6"],
+};
+
+const docResourceTemplate: ResourceTemplate = {
+  uriTemplate: "dart-doc:///{docId}",
+  name: "Dart doc",
+  description:
+    "A Dart doc with its title, text content, and folder. Use this to fetch detailed information about a specific doc.",
+  parameters: {
+    docId: {
+      type: "string",
+      description: "The unique identifier of the Dart doc",
     },
-    examples: ["dart-doc:///9q5qtB8n2Qn6"],
   },
-];
+  examples: ["dart-doc:///9q5qtB8n2Qn6"],
+};
 
 const getConfigTool: Tool = {
   name: "get_config",
@@ -721,11 +723,9 @@ const server = new Server(
   },
 );
 
-server.setRequestHandler(ListPromptsRequestSchema, async () => {
-  return {
-    prompts: [createTaskPrompt, createDocPrompt, summarizeTasksPrompt],
-  };
-});
+server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+  prompts: [createTaskPrompt, createDocPrompt, summarizeTasksPrompt],
+}));
 
 server.setRequestHandler(GetPromptRequestSchema, async (request) => {
   const promptName = request.params.name;
@@ -800,6 +800,14 @@ Please include the total count, group by status, and list any high priority item
   throw new Error(`Unknown prompt: ${promptName}`);
 });
 
+server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
+  resourceTemplates: [
+    configResourceTemplate,
+    taskResourceTemplate,
+    docResourceTemplate,
+  ],
+}));
+
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
   const tasks = await listTasks();
   const taskResources = tasks.results.map((task) => ({
@@ -862,12 +870,6 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   }
 
   throw new Error(`Unknown resource: ${uri}`);
-});
-
-server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
-  return {
-    resourceTemplates: resourceTemplates,
-  };
 });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
