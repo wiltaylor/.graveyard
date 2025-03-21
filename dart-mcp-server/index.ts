@@ -53,8 +53,8 @@ const TaskCreateSchema = z.object({
   status: z.string().optional(),
   priority: z.string().nullable().optional(),
   size: z.number().nullable().optional(),
-  start_at: z.string().nullable().optional(),
-  due_at: z.string().nullable().optional(),
+  startAt: z.string().nullable().optional(),
+  dueAt: z.string().nullable().optional(),
   assignees: z.array(z.string()).optional(),
   assignee: z.string().optional(),
   tags: z.array(z.string()).optional(),
@@ -396,12 +396,12 @@ const createTaskTool: Tool = {
         type: "number",
         description: "A number that represents the amount of work needed",
       },
-      start_at: {
+      startAt: {
         type: "string",
         description:
           "The start date in ISO format (should be at 9:00am in user's timezone)",
       },
-      due_at: {
+      dueAt: {
         type: "string",
         description:
           "The due date in ISO format (should be at 9:00am in user's timezone)",
@@ -485,12 +485,12 @@ const updateTaskTool: Tool = {
         type: "number",
         description: "A number that represents the amount of work needed",
       },
-      start_at: {
+      startAt: {
         type: "string",
         description:
           "The start date in ISO format (should be at 9:00am in user's timezone)",
       },
-      due_at: {
+      dueAt: {
         type: "string",
         description:
           "The due date in ISO format (should be at 9:00am in user's timezone)",
