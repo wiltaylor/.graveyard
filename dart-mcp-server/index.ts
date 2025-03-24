@@ -29,7 +29,7 @@ if (!token) {
   process.exit(1);
 }
 const hostBase = process.env.DART_HOST || "https://app.itsdart.com";
-const host = `${hostBase}/api/v0/chatgpt`;
+const host = `${hostBase}/api/v0/public`;
 
 const headers = {
   Authorization: `Bearer ${token}`,
