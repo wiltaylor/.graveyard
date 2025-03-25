@@ -17,8 +17,12 @@
     - [Task management](#task-management)
     - [Document management](#document-management)
 - [Setup](#setup)
-  - [Claude Desktop + npx](#claude-desktop--npx)
-  - [Claude Desktop + Docker](#claude-desktop--docker)
+  - [Find the MCP settings file for the client](#find-the-mcp-settings-file-for-the-client)
+    - [Claude](#claude)
+    - [Cline](#cline)
+    - [Any other client](#any-other-client)
+  - [Set up the MCP server](#set-up-the-mcp-server)
+  - [Variant: setup with Docker](#variant-setup-with-docker)
 - [Help and Resources](#help-and-resources)
 - [Contributing](#contributing)
 - [License](#license)
@@ -70,12 +74,31 @@ Each tool supports comprehensive input validation and returns structured JSON re
 
 The easiest way to run the MCP server is with `npx`, but a Docker setup is also available.
 
-### Claude Desktop + npx 
+### Find the MCP settings file for the client
+
+#### Claude
 
 1. [Install Claude Desktop](https://claude.ai/download) as needed
-2. [Install npx](https://nodejs.org/en/download), which comes bundled with Node, as needed
-3. Copy your authentication token from [your Dart profile](https://app.itsdart.com/?settings=account) and use that below
-4. Add the following to your `claude_desktop_config.json`, which can be found in Claude Desktop > Settings > Developer > Edit Config
+2. Open the `claude_desktop_config.json` file, which can be located by opening the Claude Desktop app, going into its Settings, opening the 'Developer' tab, and clicking the 'Edit Config' button
+3. Follow the 'Set up the MCP server' steps below
+
+#### Cline
+
+1. [Install Cline](https://cline.bot/) in your IDE as needed
+2. Install the MCP server by opening your IDE, opening the Cline sidebar, clicking the 'MCP Servers' icon button that is second from left at the top, opening the 'Installed' tab, and clicking the 'Configure MCP Servers' button
+3. Follow the 'Set up the MCP server' steps below
+
+#### Any other client
+
+1. Find the MCP settings file, usually `[client]_mcp_settings.json`
+2. Follow the 'Set up the MCP server' steps below
+
+### Set up the MCP server
+
+1. [Install npx](https://nodejs.org/en/download), which comes bundled with Node, as needed
+2. Copy your authentication token from [your Dart profile](https://app.itsdart.com/?settings=account)
+3. Add the following to your MCP setup, being sure to replace `dsa...` with your actual Dart token
+
    ```json
    {
      "mcpServers": {
@@ -90,13 +113,15 @@ The easiest way to run the MCP server is with `npx`, but a Docker setup is also 
    }
    ```
 
-### Claude Desktop + Docker
+### Variant: setup with Docker
 
-1. [Install Claude Desktop](https://claude.ai/download) as needed
-2. [Install Docker](https://www.docker.com/products/docker-desktop/) as needed
-3. Build the Docker container with `docker build -t mcp/dart .`
-4. Copy your authentication token from [your Dart profile](https://app.itsdart.com/?settings=account) and use that below
-5. Add the following to your `claude_desktop_config.json`, which can be found in Claude Desktop > Settings > Developer > Edit Config
+If the `npx` setup above does not work well, we also provide a Docker setup. Follow the instructions above to find the MCP settings file
+
+1. [Install Docker](https://www.docker.com/products/docker-desktop/) as needed
+2. Build the Docker container with `docker build -t mcp/dart .`
+3. Copy your authentication token from [your Dart profile](https://app.itsdart.com/?settings=account)
+4. Add the following to your MCP setup, being sure to replace `dsa...` with your actual Dart token
+
    ```json
    {
      "mcpServers": {

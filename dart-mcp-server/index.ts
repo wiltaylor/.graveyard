@@ -130,7 +130,8 @@ const TaskListParamsSchema = z.object({
   dartboard: z.string().optional(),
   dartboard_duid: z.string().optional(),
   description: z.string().optional(),
-  due_at: z.string().optional(),
+  due_at_before: z.string().optional(),
+  due_at_after: z.string().optional(),
   duids: z.string().optional(),
   in_trash: z.boolean().optional(),
   is_draft: z.boolean().optional(),
@@ -139,7 +140,8 @@ const TaskListParamsSchema = z.object({
   offset: z.number().optional(),
   priority: z.string().optional(),
   size: z.number().optional(),
-  start_at: z.string().optional(),
+  start_at_before: z.string().optional(),
+  start_at_after: z.string().optional(),
   status: z.string().optional(),
   status_duid: z.string().optional(),
   subscriber_duid: z.string().optional(),
@@ -336,9 +338,13 @@ const listTasksTool: Tool = {
         type: "string",
         description: "Filter by description content",
       },
-      due_at: {
+      due_at_before: {
         type: "string",
-        description: "Filter by due date (ISO format)",
+        description: "Filter by due date before (ISO format)",
+      },
+      due_at_after: {
+        type: "string",
+        description: "Filter by due date after (ISO format)",
       },
       duids: { type: "string", description: "Filter by DUIDs" },
       in_trash: { type: "boolean", description: "Filter by trash status" },
@@ -351,9 +357,13 @@ const listTasksTool: Tool = {
       },
       priority: { type: "string", description: "Filter by priority" },
       size: { type: "number", description: "Filter by task size" },
-      start_at: {
+      start_at_before: {
         type: "string",
-        description: "Filter by start date (ISO format)",
+        description: "Filter by start date before (ISO format)",
+      },
+      start_at_after: {
+        type: "string",
+        description: "Filter by start date after (ISO format)",
       },
       status: { type: "string", description: "Filter by status" },
       status_duid: { type: "string", description: "Filter by status DUID" },
