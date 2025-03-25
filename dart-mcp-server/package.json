@@ -29,12 +29,12 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "~1.5",
-    "@types/node": "~22.13",
     "axios": "~1.8",
     "dotenv": "~16.4",
     "zod": "~3.24"
   },
   "devDependencies": {
+    "@types/node": "22.13.13",
     "prettier": "3.4.2",
     "release-it": "17.11.0",
     "shx": "0.3.4",
