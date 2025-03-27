@@ -58,7 +58,7 @@ const TaskCreateSchema = z.object({
   assignees: z.array(z.string()).optional(),
   assignee: z.string().optional(),
   tags: z.array(z.string()).optional(),
-  parent: z.string().nullable().optional(),
+  parentId: z.string().nullable().optional(),
 });
 
 const TaskUpdateSchema = TaskCreateSchema.extend({
@@ -436,7 +436,7 @@ const createTaskTool: Tool = {
         items: { type: "string" },
         description: "Array of tags to apply to the task",
       },
-      parent: {
+      parentId: {
         type: "string",
         description: "The ID of the parent task",
       },
@@ -525,7 +525,7 @@ const updateTaskTool: Tool = {
         items: { type: "string" },
         description: "Array of tags to apply to the task",
       },
-      parent: {
+      parentId: {
         type: "string",
         description: "The ID of the parent task",
       },
