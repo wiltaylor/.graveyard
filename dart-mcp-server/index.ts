@@ -22,11 +22,11 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import {
   ConfigService,
-  DocService,
   DocCreate,
+  DocService,
   DocUpdate,
-  TaskService,
   TaskCreate,
+  TaskService,
   TaskUpdate,
 } from "dart-tools-ts";
 
