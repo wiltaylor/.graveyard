@@ -56,13 +56,14 @@ const TaskCreateSchema = z.object({
   startAt: z.string().nullable().optional(),
   dueAt: z.string().nullable().optional(),
   assignees: z.array(z.string()).optional(),
-  assignee: z.string().optional(),
+  assignee: z.string().nullable().optional(),
   tags: z.array(z.string()).optional(),
   parentId: z.string().nullable().optional(),
 });
 
 const TaskUpdateSchema = TaskCreateSchema.extend({
   id: z.string(),
+  title: z.string().optional(),
 });
 
 const TaskSchema = TaskUpdateSchema.extend({
@@ -98,6 +99,7 @@ const DocCreateSchema = z.object({
 
 const DocUpdateSchema = DocCreateSchema.extend({
   id: z.string(),
+  title: z.string().optional(),
 });
 
 const DocSchema = DocUpdateSchema.extend({
