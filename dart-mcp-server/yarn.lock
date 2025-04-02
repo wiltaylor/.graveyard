@@ -1123,10 +1123,10 @@ cross-spawn@^7.0.3:
     shebang-command "^2.0.0"
     which "^2.0.1"
 
-dart-tools-ts@0.3.0:
-  version "0.3.0"
-  resolved "https://registry.yarnpkg.com/dart-tools-ts/-/dart-tools-ts-0.3.0.tgz#d2a8b30fd0d67de1fabca1d87a1964f7c48cfdee"
-  integrity sha512-/UerUEzDY4jAkf2Y6QEXfbd+O+N+FSKmVYE0IR+yjlmJVqiwI9U7S0E8aZ5/NN5KPPDGRwEaa16Z5JcjFDh6CQ==
+dart-tools@~0.3.1:
+  version "0.3.1"
+  resolved "https://registry.yarnpkg.com/dart-tools/-/dart-tools-0.3.1.tgz#7081cdc0f7108677c58696d83121b47436bd96dc"
+  integrity sha512-rBDURSOpT+CqQLvt1DjSiWQlxzZxwm2nnEKV7Vf0SEyd4xaBqJs91Ja8+WiA2qj0Vrdx9UaHGlKTAOt8PnH62A==
   dependencies:
     axios "~1.8"
 

@@ -28,7 +28,7 @@ import {
   TaskCreate,
   TaskService,
   TaskUpdate,
-} from "dart-tools-ts";
+} from "dart-tools";
 
 const token = process.env.DART_TOKEN;
 if (!token) {
