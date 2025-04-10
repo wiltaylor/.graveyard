@@ -15,12 +15,11 @@ import {
   GetPromptRequestSchema,
   Prompt,
 } from "@modelcontextprotocol/sdk/types.js";
-import axios from "axios";
-import { z } from "zod";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import {
+  ApiError,
   ConfigService,
   DocCreate,
   DocService,
@@ -41,17 +40,13 @@ const packageJson = JSON.parse(
   readFileSync(join(dirname(filename), "..", "package.json"), "utf-8"),
 );
 
-const TaskIdSchema = z.object({
-  id: z
-    .string()
-    .regex(/^[a-zA-Z0-9]{12}$/, "Task ID must be 12 alphanumeric characters"),
-});
-
-const DocIdSchema = z.object({
-  id: z
-    .string()
-    .regex(/^[a-zA-Z0-9]{12}$/, "Doc ID must be 12 alphanumeric characters"),
-});
+const getValidatedDuid = (duid: string): string => {
+  const regex = /^[a-zA-Z0-9]{12}$/;
+  if (!regex.test(duid)) {
+    throw new Error(`DUID must be 12 alphanumeric characters`);
+  }
+  return duid;
+};
 
 // Server resources
 const createTaskPrompt: Prompt = {
@@ -752,23 +747,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
       case "create_task": {
-        const task = await TaskService.createTask({
-          item: request.params.arguments as TaskCreate,
-        });
+        const taskData = request.params.arguments as TaskCreate;
+        const task = await TaskService.createTask({ item: taskData });
         return {
           content: [{ type: "text", text: JSON.stringify(task, null, 2) }],
         };
       }
       case "get_task": {
-        const { id } = TaskIdSchema.parse(request.params.arguments);
+        const id = getValidatedDuid(request.params.arguments.id as string);
         const task = await TaskService.retrieveTask(id);
         return {
           content: [{ type: "text", text: JSON.stringify(task, null, 2) }],
         };
       }
       case "update_task": {
+        const id = getValidatedDuid(request.params.arguments.id as string);
         const taskData = request.params.arguments as TaskUpdate;
-        const task = await TaskService.updateTask(taskData.id, {
+        const task = await TaskService.updateTask(id, {
           item: taskData,
         });
         return {
@@ -776,7 +771,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
       case "delete_task": {
-        const { id } = TaskIdSchema.parse(request.params.arguments);
+        const id = getValidatedDuid(request.params.arguments.id as string);
         const task = await TaskService.deleteTask(id);
         return {
           content: [{ type: "text", text: JSON.stringify(task, null, 2) }],
@@ -789,29 +784,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
       case "create_doc": {
+        const docData = request.params.arguments as DocCreate;
         const doc = await DocService.createDoc({
-          item: request.params.arguments as DocCreate,
+          item: docData,
         });
         return {
           content: [{ type: "text", text: JSON.stringify(doc, null, 2) }],
         };
       }
       case "get_doc": {
-        const { id } = DocIdSchema.parse(request.params.arguments);
+        const id = getValidatedDuid(request.params.arguments.id as string);
         const doc = await DocService.retrieveDoc(id);
         return {
           content: [{ type: "text", text: JSON.stringify(doc, null, 2) }],
         };
       }
       case "update_doc": {
+        const id = getValidatedDuid(request.params.arguments.id as string);
         const docData = request.params.arguments as DocUpdate;
-        const doc = await DocService.updateDoc(docData.id, { item: docData });
+        const doc = await DocService.updateDoc(id, { item: docData });
         return {
           content: [{ type: "text", text: JSON.stringify(doc, null, 2) }],
         };
       }
       case "delete_doc": {
-        const { id } = DocIdSchema.parse(request.params.arguments);
+        const id = getValidatedDuid(request.params.arguments.id as string);
         const doc = await DocService.deleteDoc(id);
         return {
           content: [{ type: "text", text: JSON.stringify(doc, null, 2) }],
@@ -821,12 +818,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error(`Unknown tool: ${request.params.name}`);
     }
   } catch (error) {
-    if (error instanceof z.ZodError) {
-      throw new Error(`Invalid input: ${JSON.stringify(error.errors)}`);
-    }
-    if (axios.isAxiosError(error)) {
+    if (error instanceof ApiError) {
       throw new Error(
-        `API error: ${error.response?.status ?? 500} ${JSON.stringify(error.response?.data) || error.message || "(unknown error)"}`,
+        `API error: ${error.status} ${JSON.stringify(error.body) || error.message || "(unknown error)"}`,
       );
     }
     throw error;

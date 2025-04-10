@@ -1123,10 +1123,10 @@ cross-spawn@^7.0.3:
     shebang-command "^2.0.0"
     which "^2.0.1"
 
-dart-tools@~0.3.1:
-  version "0.3.1"
-  resolved "https://registry.yarnpkg.com/dart-tools/-/dart-tools-0.3.1.tgz#7081cdc0f7108677c58696d83121b47436bd96dc"
-  integrity sha512-rBDURSOpT+CqQLvt1DjSiWQlxzZxwm2nnEKV7Vf0SEyd4xaBqJs91Ja8+WiA2qj0Vrdx9UaHGlKTAOt8PnH62A==
+dart-tools@~0.3:
+  version "0.3.2"
+  resolved "https://registry.yarnpkg.com/dart-tools/-/dart-tools-0.3.2.tgz#27d7fc67e57606f871fadd8e3b1ee6bf2d74548f"
+  integrity sha512-sbqBekN29+o92kIzVDVx87O5Wc1h4UJBfv07Mb4GytKkUNpUF4z97Dqhy404oVcWevRHkxaVagRMEGvf/6IEXA==
   dependencies:
     axios "~1.8"
 
@@ -3401,7 +3401,7 @@ zod-to-json-schema@^3.24.1:
   resolved "https://registry.yarnpkg.com/zod-to-json-schema/-/zod-to-json-schema-3.24.5.tgz#d1095440b147fb7c2093812a53c54df8d5df50a3"
   integrity sha512-/AuWwMP+YqiPbsJx5D6TfgRTc4kTLjsh5SOcd4bLsfUg2RcEXrFMJl1DGgdHy2aCfsIA/cr/1JM0xcB2GZji8g==
 
-zod@^3.23.8, zod@~3.24:
+zod@^3.23.8:
   version "3.24.2"
   resolved "https://registry.yarnpkg.com/zod/-/zod-3.24.2.tgz#8efa74126287c675e92f46871cfc8d15c34372b3"
   integrity sha512-lY7CDW43ECgW9u1TcT3IoXHflywfVqDYze4waEz812jR/bZ8FHDsl7pFQoSZTz5N+2NqRXs8GBwnAwo3ZNxqhQ==
