@@ -31,7 +31,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "~1.5",
     "axios": "~1.8",
-    "dart-tools": "~0.3.1",
+    "dart-tools": "~0.3",
     "dotenv": "~16.4",
     "zod": "~3.24"
   },
