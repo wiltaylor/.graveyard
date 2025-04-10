@@ -29,6 +29,8 @@ import {
   TaskUpdate,
 } from "dart-tools";
 
+const ID_REGEX = /^[a-zA-Z0-9]{12}$/;
+
 const token = process.env.DART_TOKEN;
 if (!token) {
   console.error("DART_TOKEN environment variable is required");
@@ -40,12 +42,15 @@ const packageJson = JSON.parse(
   readFileSync(join(dirname(filename), "..", "package.json"), "utf-8"),
 );
 
-const getValidatedDuid = (duid: string): string => {
-  const regex = /^[a-zA-Z0-9]{12}$/;
-  if (!regex.test(duid)) {
-    throw new Error(`DUID must be 12 alphanumeric characters`);
+const getIdValidated = (strMaybe: any): string => {
+  if (typeof strMaybe !== "string" && !(strMaybe instanceof String)) {
+    throw new Error("ID must be a string");
   }
-  return duid;
+  const id = strMaybe.toString();
+  if (!ID_REGEX.test(id)) {
+    throw new Error(`ID must be 12 alphanumeric characters`);
+  }
+  return id;
 };
 
 // Server resources
@@ -181,7 +186,7 @@ const listTasksTool: Tool = {
       },
       assignee_duid: {
         type: "string",
-        description: "Filter by assignee DUID",
+        description: "Filter by assignee ID",
       },
       dartboard: {
         type: "string",
@@ -189,7 +194,7 @@ const listTasksTool: Tool = {
       },
       dartboard_duid: {
         type: "string",
-        description: "Filter by dartboard DUID",
+        description: "Filter by dartboard ID",
       },
       description: {
         type: "string",
@@ -203,7 +208,7 @@ const listTasksTool: Tool = {
         type: "string",
         description: "Filter by due date after (ISO format)",
       },
-      duids: { type: "string", description: "Filter by DUIDs" },
+      duids: { type: "string", description: "Filter by IDs" },
       in_trash: { type: "boolean", description: "Filter by trash status" },
       is_draft: { type: "boolean", description: "Filter by draft status" },
       kind: { type: "string", description: "Filter by task kind" },
@@ -223,10 +228,10 @@ const listTasksTool: Tool = {
         description: "Filter by start date after (ISO format)",
       },
       status: { type: "string", description: "Filter by status" },
-      status_duid: { type: "string", description: "Filter by status DUID" },
+      status_duid: { type: "string", description: "Filter by status ID" },
       subscriber_duid: {
         type: "string",
-        description: "Filter by subscriber DUID",
+        description: "Filter by subscriber ID",
       },
       tag: { type: "string", description: "Filter by tag" },
       title: { type: "string", description: "Filter by title" },
@@ -421,11 +426,11 @@ const listDocsTool: Tool = {
       },
       folder_duid: {
         type: "string",
-        description: "Filter by folder DUID",
+        description: "Filter by folder ID",
       },
       duids: {
         type: "string",
-        description: "Filter by DUIDs",
+        description: "Filter by IDs",
       },
       in_trash: {
         type: "boolean",
@@ -754,14 +759,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
       case "get_task": {
-        const id = getValidatedDuid(request.params.arguments.id as string);
+        const id = getIdValidated(request.params.arguments.id);
         const task = await TaskService.retrieveTask(id);
         return {
           content: [{ type: "text", text: JSON.stringify(task, null, 2) }],
         };
       }
       case "update_task": {
-        const id = getValidatedDuid(request.params.arguments.id as string);
+        const id = getIdValidated(request.params.arguments.id);
         const taskData = request.params.arguments as TaskUpdate;
         const task = await TaskService.updateTask(id, {
           item: taskData,
@@ -771,7 +776,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
       case "delete_task": {
-        const id = getValidatedDuid(request.params.arguments.id as string);
+        const id = getIdValidated(request.params.arguments.id);
         const task = await TaskService.deleteTask(id);
         return {
           content: [{ type: "text", text: JSON.stringify(task, null, 2) }],
@@ -793,14 +798,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
       case "get_doc": {
-        const id = getValidatedDuid(request.params.arguments.id as string);
+        const id = getIdValidated(request.params.arguments.id);
         const doc = await DocService.retrieveDoc(id);
         return {
           content: [{ type: "text", text: JSON.stringify(doc, null, 2) }],
         };
       }
       case "update_doc": {
-        const id = getValidatedDuid(request.params.arguments.id as string);
+        const id = getIdValidated(request.params.arguments.id);
         const docData = request.params.arguments as DocUpdate;
         const doc = await DocService.updateDoc(id, { item: docData });
         return {
@@ -808,7 +813,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
       case "delete_doc": {
-        const id = getValidatedDuid(request.params.arguments.id as string);
+        const id = getIdValidated(request.params.arguments.id);
         const doc = await DocService.deleteDoc(id);
         return {
           content: [{ type: "text", text: JSON.stringify(doc, null, 2) }],
