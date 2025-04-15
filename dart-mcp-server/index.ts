@@ -7,7 +7,6 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
   ListResourceTemplatesRequestSchema,
-  ListResourcesRequestSchema,
   ReadResourceRequestSchema,
   ResourceTemplate,
   Tool,
@@ -53,9 +52,10 @@ const getIdValidated = (strMaybe: any): string => {
   return id;
 };
 
-// Server resources
-const createTaskPrompt: Prompt = {
-  name: "create-task",
+// Prompts
+const CREATE_TASK_PROMPT_NAME = "Create task";
+const CREATE_TASK_PROMPT: Prompt = {
+  name: CREATE_TASK_PROMPT_NAME,
   description: "Create a new task in Dart",
   arguments: [
     {
@@ -86,8 +86,9 @@ const createTaskPrompt: Prompt = {
   ],
 };
 
-const createDocPrompt: Prompt = {
-  name: "create-doc",
+const CREATE_DOC_PROMPT_NAME = "Create doc";
+const CREATE_DOC_PROMPT: Prompt = {
+  name: CREATE_DOC_PROMPT_NAME,
   description: "Create a new document in Dart",
   arguments: [
     {
@@ -108,8 +109,9 @@ const createDocPrompt: Prompt = {
   ],
 };
 
-const summarizeTasksPrompt: Prompt = {
-  name: "summarize-tasks",
+const SUMMARIZE_TASKS_PROMPT_NAME = "Summarize tasks";
+const SUMMARIZE_TASKS_PROMPT: Prompt = {
+  name: SUMMARIZE_TASKS_PROMPT_NAME,
   description: "Get a summary of tasks with optional filtering",
   arguments: [
     {
@@ -125,7 +127,8 @@ const summarizeTasksPrompt: Prompt = {
   ],
 };
 
-const configResourceTemplate: ResourceTemplate = {
+// Resources
+const CONFIG_RESOURCE_TEMPLATE: ResourceTemplate = {
   uriTemplate: "dart-config:",
   name: "Dart config",
   description:
@@ -134,7 +137,7 @@ const configResourceTemplate: ResourceTemplate = {
   examples: ["dart-config:"],
 };
 
-const taskResourceTemplate: ResourceTemplate = {
+const TASK_RESOURCE_TEMPLATE: ResourceTemplate = {
   uriTemplate: "dart-task:///{taskId}",
   name: "Dart task",
   description:
@@ -148,7 +151,7 @@ const taskResourceTemplate: ResourceTemplate = {
   examples: ["dart-task:///9q5qtB8n2Qn6"],
 };
 
-const docResourceTemplate: ResourceTemplate = {
+const DOC_RESOURCE_TEMPLATE: ResourceTemplate = {
   uriTemplate: "dart-doc:///{docId}",
   name: "Dart doc",
   description:
@@ -162,7 +165,8 @@ const docResourceTemplate: ResourceTemplate = {
   examples: ["dart-doc:///9q5qtB8n2Qn6"],
 };
 
-const getConfigTool: Tool = {
+// Tools
+const GET_CONFIG_TOOL: Tool = {
   name: "get_config",
   description:
     "Get information about the user's space, including all of the possible values that can be provided to other endpoints. This includes available assignees, dartboards, folders, statuses, tags, priorities, and sizes.",
@@ -173,7 +177,7 @@ const getConfigTool: Tool = {
   },
 };
 
-const listTasksTool: Tool = {
+const LIST_TASKS_TOOL: Tool = {
   name: "list_tasks",
   description:
     "List tasks from Dart with optional filtering parameters. You can filter by assignee, status, dartboard, priority, due date, and more.",
@@ -240,7 +244,7 @@ const listTasksTool: Tool = {
   },
 };
 
-const createTaskTool: Tool = {
+const CREATE_TASK_TOOL: Tool = {
   name: "create_task",
   description:
     "Create a new task in Dart. You can specify title, description, status, priority, size, dates, dartboard, assignees, tags, and parent task.",
@@ -307,7 +311,7 @@ const createTaskTool: Tool = {
   },
 };
 
-const getTaskTool: Tool = {
+const GET_TASK_TOOL: Tool = {
   name: "get_task",
   description:
     "Retrieve an existing task by its ID. Returns the task's information including title, description, status, priority, dates, and more.",
@@ -324,7 +328,7 @@ const getTaskTool: Tool = {
   },
 };
 
-const updateTaskTool: Tool = {
+const UPDATE_TASK_TOOL: Tool = {
   name: "update_task",
   description:
     "Update an existing task. You can modify any of its properties including title, description, status, priority, dates, assignees, and more.",
@@ -396,7 +400,7 @@ const updateTaskTool: Tool = {
   },
 };
 
-const deleteTaskTool: Tool = {
+const DELETE_TASK_TOOL: Tool = {
   name: "delete_task",
   description:
     "Move an existing task to the trash, where it can be recovered if needed. Nothing else about the task will be changed.",
@@ -413,7 +417,7 @@ const deleteTaskTool: Tool = {
   },
 };
 
-const listDocsTool: Tool = {
+const LIST_DOCS_TOOL: Tool = {
   name: "list_docs",
   description:
     "List docs from Dart with optional filtering parameters. You can filter by folder, title, text content, and more.",
@@ -465,7 +469,7 @@ const listDocsTool: Tool = {
   },
 };
 
-const createDocTool: Tool = {
+const CREATE_DOC_TOOL: Tool = {
   name: "create_doc",
   description:
     "Create a new doc in Dart. You can specify title, text content, and folder.",
@@ -490,7 +494,7 @@ const createDocTool: Tool = {
   },
 };
 
-const getDocTool: Tool = {
+const GET_DOC_TOOL: Tool = {
   name: "get_doc",
   description:
     "Retrieve an existing doc by its ID. Returns the doc's information including title, text content, folder, and more.",
@@ -507,7 +511,7 @@ const getDocTool: Tool = {
   },
 };
 
-const updateDocTool: Tool = {
+const UPDATE_DOC_TOOL: Tool = {
   name: "update_doc",
   description:
     "Update an existing doc. You can modify its title, text content, and folder.",
@@ -537,7 +541,7 @@ const updateDocTool: Tool = {
   },
 };
 
-const deleteDocTool: Tool = {
+const DELETE_DOC_TOOL: Tool = {
   name: "delete_doc",
   description:
     "Move an existing doc to the trash, where it can be recovered if needed. Nothing else about the doc will be changed.",
@@ -570,13 +574,13 @@ const server = new Server(
 );
 
 server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-  prompts: [createTaskPrompt, createDocPrompt, summarizeTasksPrompt],
+  prompts: [CREATE_TASK_PROMPT, CREATE_DOC_PROMPT, SUMMARIZE_TASKS_PROMPT],
 }));
 
 server.setRequestHandler(GetPromptRequestSchema, async (request) => {
   const promptName = request.params.name;
 
-  if (promptName === "create-task") {
+  if (promptName === CREATE_TASK_PROMPT_NAME) {
     const title = request.params.arguments?.title || "(no title)";
     const description = request.params.arguments?.description || "";
     const status = request.params.arguments?.status || "";
@@ -602,7 +606,7 @@ ${assignee ? `Assignee: ${assignee}` : ""}`,
     };
   }
 
-  if (promptName === "create-doc") {
+  if (promptName === CREATE_DOC_PROMPT_NAME) {
     const title = request.params.arguments?.title || "(no title)";
     const text = request.params.arguments?.text || "";
     const folder = request.params.arguments?.folder || "";
@@ -624,7 +628,7 @@ ${folder ? `Folder: ${folder}` : ""}`,
     };
   }
 
-  if (promptName === "summarize-tasks") {
+  if (promptName === SUMMARIZE_TASKS_PROMPT_NAME) {
     const status = request.params.arguments?.status || "";
     const assignee = request.params.arguments?.assignee || "";
 
@@ -648,25 +652,11 @@ Please include the total count, group by status, and list any high priority item
 
 server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
   resourceTemplates: [
-    configResourceTemplate,
-    taskResourceTemplate,
-    docResourceTemplate,
+    CONFIG_RESOURCE_TEMPLATE,
+    TASK_RESOURCE_TEMPLATE,
+    DOC_RESOURCE_TEMPLATE,
   ],
 }));
-
-server.setRequestHandler(ListResourcesRequestSchema, async () => {
-  const tasks = await TaskService.listTasks({});
-  const taskResources = tasks.results.map((task) => ({
-    uri: `dart-task:///${task.id}`,
-    name: task.title,
-  }));
-  const docs = await DocService.listDocs({});
-  const docResources = docs.results.map((doc) => ({
-    uri: `dart-doc:///${doc.id}`,
-    name: doc.title,
-  }));
-  return { resources: [...taskResources, ...docResources] };
-});
 
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   const { uri } = request.params;
@@ -718,17 +708,17 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
-    getConfigTool,
-    listTasksTool,
-    createTaskTool,
-    getTaskTool,
-    updateTaskTool,
-    deleteTaskTool,
-    listDocsTool,
-    createDocTool,
-    getDocTool,
-    updateDocTool,
-    deleteDocTool,
+    GET_CONFIG_TOOL,
+    LIST_TASKS_TOOL,
+    CREATE_TASK_TOOL,
+    GET_TASK_TOOL,
+    UPDATE_TASK_TOOL,
+    DELETE_TASK_TOOL,
+    LIST_DOCS_TOOL,
+    CREATE_DOC_TOOL,
+    GET_DOC_TOOL,
+    UPDATE_DOC_TOOL,
+    DELETE_DOC_TOOL,
   ],
 }));
 
