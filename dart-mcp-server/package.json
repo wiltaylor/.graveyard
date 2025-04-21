@@ -26,7 +26,7 @@
     "build": "tsc && shx chmod +x dist/*.js",
     "prettier-check": "prettier --check .",
     "prettier-fix": "prettier --write . --list-different",
-    "release": "release-it"
+    "release": "yarn build && release-it"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "~1.5",
