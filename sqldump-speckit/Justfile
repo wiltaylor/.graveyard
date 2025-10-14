@@ -1,0 +1,49 @@
+# Justfile for MSSQL Database Dump Tool
+
+# Default recipe (shows help)
+default:
+    @just --list
+
+# Build the project
+build:
+    dotnet build src/MsSqlDump/MsSqlDump.csproj
+
+# Run tests
+test:
+    dotnet test tests/MsSqlDump.Tests/MsSqlDump.Tests.csproj
+
+# Run the tool (example: just run dump -s localhost -d Northwind -w -o ./output)
+run *ARGS:
+    dotnet run --project src/MsSqlDump/MsSqlDump.csproj -- {{ARGS}}
+
+# Publish the tool as a standalone executable
+publish:
+    dotnet publish src/MsSqlDump/MsSqlDump.csproj -c Release -o ./publish
+
+# Start Docker test databases
+docker-up:
+    docker compose -f tests/TestDatabases/docker-compose.yml up -d
+
+# Stop Docker test databases
+docker-down:
+    docker compose -f tests/TestDatabases/docker-compose.yml down
+
+# Setup Northwind test database (run after docker-up)
+setup-testdb:
+    @echo "Waiting for SQL Server to be ready..."
+    @sleep 10
+    docker exec -i speckit-test-mssql-2019 /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'YourStrong!Passw0rd' -C -i /setup/Northwind/setup.sql
+
+# Clean build artifacts
+clean:
+    dotnet clean
+    rm -rf src/MsSqlDump/bin src/MsSqlDump/obj
+    rm -rf tests/MsSqlDump.Tests/bin tests/MsSqlDump.Tests/obj
+    rm -rf publish
+
+# Restore NuGet packages
+restore:
+    dotnet restore
+
+# Run the full development cycle
+dev: restore build test

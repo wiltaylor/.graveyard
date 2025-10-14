@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>mssqldump</AssemblyName>
+    <RootNamespace>MsSqlDump</RootNamespace>
+    <Version>1.0.0</Version>
+    <Authors>MsSqlDump Team</Authors>
+    <Description>MSSQL Database Dump Tool - Export SQL Server databases to organized SQL scripts</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.1.5" />
+    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+    <PackageReference Include="Spectre.Console" Version="0.48.0" />
+  </ItemGroup>
+
+</Project>
