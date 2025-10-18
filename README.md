@@ -62,6 +62,9 @@ A NixOS flake for workspace management (work in progress).
 ### [dev-profile](dev-profile/templates/)
 A collection of development profile templates.
 
+### [transmission-docker](transmission-docker/Dockerfile)
+A Docker image for Transmission BitTorrent client.
+
 ## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
