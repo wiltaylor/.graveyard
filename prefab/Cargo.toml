@@ -1,0 +1,23 @@
+[package]
+name = "prefab"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dev-dependencies]
+assert_fs = "1.0.13"
+
+[dependencies]
+anyhow = "1.0.75"
+clap = { version = "4.4.2", features = ["cargo"]}
+color-eyre = "0.6.2"
+crossterm = "0.27.0"
+ratatui = { version = "0.23.0", features = ["all-widgets" ]}
+regex = "1.9.5"
+serde = { version = "1.0.188", features = ["derive"] }
+tera = "1.19.1"
+thiserror = "1.0.48"
+toml = "0.7.6"
+tracing = "0.1.37"
+tui-input = "0.8.0"
