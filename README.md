@@ -41,6 +41,9 @@ A C# framework for web scraping and screen automation using PowerShell cmdlets w
 ### [testbook](testbook/README.md)
 An mdbook template project for creating documentation books.
 
+### [public-wks](public-wks/flake.nix)
+A NixOS flake for managing public workspaces including development, browsers, games, office, video editing, and torrent environments with home isolation.
+
 ## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
