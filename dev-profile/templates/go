@@ -1,0 +1,16 @@
+#!/bin/sh
+PRJNAME=$2
+
+nix flake init -t github:wiltaylor/nix-template#golang
+
+git init
+
+sed -i "s/myApp/$PRJNAME/g" .dev.yaml
+sed -i "s/myApp/$PRJNAME/g" .gitignore
+sed -i "s/myApp/$PRJNAME/g" flake.nix
+sed -i "s/myApp/$PRJNAME/g" go.mod  
+sed -i "s/myApp/$PRJNAME/g" shell.nix
+sed -i "s/myApp/$PRJNAME/g" README.md
+
+git add .
+git commit -m "Initial commit"
