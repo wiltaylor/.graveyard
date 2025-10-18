@@ -1,0 +1,7 @@
+name: Example inconclusive test
+author: Wil Taylor
+description: This is a test that doesn't return any status. It is marked as inconclusive rather than failed.
+
+steps:
+  - name: This test returns nothing
+    command: sh simple.sh unknown

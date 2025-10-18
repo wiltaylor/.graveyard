@@ -1,0 +1,16 @@
+name: DataSet examples
+author: Wil Taylor
+description:
+  A dataset is a array of environment variables that will be passed into a test and run one row after another.
+data_sets:
+  example1:
+    - VARA: "first"
+      VARB: "yay"
+    - VARA: "second"
+      VARB: "boo"
+
+
+steps:
+  - name: First s
+    data_set: example1
+    command: sh simple.sh dataset

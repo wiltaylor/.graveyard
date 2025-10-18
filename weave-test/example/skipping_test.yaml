@@ -1,0 +1,13 @@
+name: Example of skipping a test
+author: Wil Taylor
+description:
+  You can mark tests as skip to stop it running when the test suite is run.
+
+steps:
+  - name: First step that passes
+    command: sh simple.sh a
+  - name: Skipped test wont run
+    command: sh simple.sh b
+    skip: true
+  - name: This one will run
+    command: sh simple.sh a

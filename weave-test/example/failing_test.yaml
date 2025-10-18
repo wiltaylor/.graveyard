@@ -1,0 +1,11 @@
+name: Example failing test
+author: Wil Taylor
+description: Example of a failing test. Shows how it stops executing tests after it fails.
+
+steps:
+  - name: First step that passes
+    command: sh simple.sh a
+  - name: Failing test
+    command: sh simple.sh failing
+  - name: Test that wont run because previous one failed.
+    command: sh simple.sh b
