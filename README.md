@@ -71,6 +71,9 @@ A demo Nix workspace using nixwks for workspace management with hello and toilet
 ### [LinuxFromScratch](LinuxFromScratch/README.md)
 A NixOS flake-based Linux From Scratch configuration with custom modules for bash, grub, i3wm, and user management.
 
+### [kn](kn/README.md)
+A TUI-based knowledge management tool written in Go for viewing and searching markdown files.
+
 ## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
