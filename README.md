@@ -56,6 +56,9 @@ A Go-based development environment tool with Nix flake integration.
 ### [vmlab-go](vmlab-go/README.md)
 A Go-based virtual machine lab tool.
 
+### [nixwks](nixwks/README.md)
+A NixOS flake for workspace management (work in progress).
+
 ## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
