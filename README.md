@@ -74,6 +74,9 @@ A NixOS flake-based Linux From Scratch configuration with custom modules for bas
 ### [kn](kn/README.md)
 A TUI-based knowledge management tool written in Go for viewing and searching markdown files.
 
+### [vmlab-failed](vmlab-failed/flake.nix)
+A virtual machine lab tool project (archived).
+
 ## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
