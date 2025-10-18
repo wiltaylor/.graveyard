@@ -29,6 +29,9 @@ A Jupyter Lab environment with multiple kernels installed including Bash, C++, C
 ### [Nix Template](nix-template/README.md)
 A collection of Nix flake templates for various programming languages and project types including basic flakes, books, Go, overlays, and Rust.
 
+### [PetStoreCLI](PetStoreCLI/readme.md)
+A C# command-line interface for managing pet store data using the Petstore API.
+
 ## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
