@@ -26,6 +26,9 @@ A simple testing tool originally designed to work with Config-Weave but can be u
 ### [Jupyter All](jupyter-all/README.md)
 A Jupyter Lab environment with multiple kernels installed including Bash, C++, C#, PowerShell, F#, Go, Graphviz dot, GNUPlot, Lua, IRuby, Rust, and TypeScript/JavaScript.
 
+### [Nix ISO](nix-iso/README.md)
+A NixOS flake for generating custom NixOS installers with i3 window manager, Firefox, common CLI tools, and LUKS btrfs encryption scripts.
+
 ### [Nix Template](nix-template/README.md)
 A collection of Nix flake templates for various programming languages and project types including basic flakes, books, Go, overlays, and Rust.
 
