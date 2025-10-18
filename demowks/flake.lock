@@ -1,0 +1,59 @@
+{
+  "nodes": {
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1641076644,
+        "narHash": "sha256-4x90qQM4wOfPAzdMnN1BnzVp7eO6wle+F5NmVkJ48qM=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "0fd74961da9fe2640ad2fbd960c3af08246e6749",
+        "type": "github"
+      },
+      "original": {
+        "id": "nixpkgs",
+        "type": "indirect"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
+        "lastModified": 1640871638,
+        "narHash": "sha256-ty6sGnJUQEkCd43At5U3DRQZD7rPARz5VginSW6hZ3k=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "5b091d4fbe3b7b7493c3b46fe0842e4b30ea24b3",
+        "type": "github"
+      },
+      "original": {
+        "id": "nixpkgs",
+        "ref": "nixos-unstable",
+        "type": "indirect"
+      }
+    },
+    "root": {
+      "inputs": {
+        "nixpkgs": "nixpkgs",
+        "wks": "wks"
+      }
+    },
+    "wks": {
+      "inputs": {
+        "nixpkgs": "nixpkgs_2"
+      },
+      "locked": {
+        "lastModified": 1641116665,
+        "narHash": "sha256-Y7brTNOUghr+bQ/jzTQee/ym1HMBPT2LbCjzbskWMmA=",
+        "owner": "wiltaylor",
+        "repo": "nixwks",
+        "rev": "bd63a50e52c93e81360d5db6d8d99ae1045db2af",
+        "type": "github"
+      },
+      "original": {
+        "owner": "wiltaylor",
+        "repo": "nixwks",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
