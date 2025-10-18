@@ -44,6 +44,9 @@ An mdbook template project for creating documentation books.
 ### [public-wks](public-wks/flake.nix)
 A NixOS flake for managing public workspaces including development, browsers, games, office, video editing, and torrent environments with home isolation.
 
+### [nixpkgs-overlay](nixpkgs-overlay/README.md)
+A NixOS flake providing overlay packages for nixpkgs including g810-led, i3blocks-contrib, and jetbrains-toolbox.
+
 ## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
