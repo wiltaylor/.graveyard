@@ -50,6 +50,9 @@ A NixOS flake providing overlay packages for nixpkgs including g810-led, i3block
 ### [interviewdemo](interviewdemo/README.md)
 A demonstration interview project showcasing a C# ASP.NET Core web application with Angular frontend, real-time SignalR communication, and number processing features.
 
+### [dev-old](dev-old/README.md)
+A Go-based development environment tool with Nix flake integration.
+
 ## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
