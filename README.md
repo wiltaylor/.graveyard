@@ -65,6 +65,9 @@ A collection of development profile templates.
 ### [transmission-docker](transmission-docker/Dockerfile)
 A Docker image for Transmission BitTorrent client.
 
+### [demowks](demowks/flake.nix)
+A demo Nix workspace using nixwks for workspace management with hello and toilet packages.
+
 ## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
