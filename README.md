@@ -20,6 +20,9 @@ A simple Rust-based tool for generating project templates, heavily influenced by
 ### [WindowsUpdatePS](WindowsUpdatePS/README.md)
 A PowerShell module for managing Windows Updates.
 
+### [Weave Test](weave-test/README.md)
+A simple testing tool originally designed to work with Config-Weave but can be used standalone. Features portable cross-platform testing with environment variables and stdout.
+
 ## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
