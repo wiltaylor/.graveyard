@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InterviewDemoApp.Web", "InterviewDemoApp.Web\InterviewDemoApp.Web.csproj", "{9F809354-80FB-4B48-AE1B-15D22A1D7506}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InterviewDemoApp.Core", "InterviewDemoApp.Core\InterviewDemoApp.Core.csproj", "{FA421116-1946-4EED-B361-71EE4E76B014}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InterviewDemoApp.Test", "InterviewDemoApp.Test\InterviewDemoApp.Test.csproj", "{64CB58E5-2488-4977-B21F-D17B768AC28A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{9F809354-80FB-4B48-AE1B-15D22A1D7506}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9F809354-80FB-4B48-AE1B-15D22A1D7506}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9F809354-80FB-4B48-AE1B-15D22A1D7506}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9F809354-80FB-4B48-AE1B-15D22A1D7506}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FA421116-1946-4EED-B361-71EE4E76B014}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FA421116-1946-4EED-B361-71EE4E76B014}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FA421116-1946-4EED-B361-71EE4E76B014}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FA421116-1946-4EED-B361-71EE4E76B014}.Release|Any CPU.Build.0 = Release|Any CPU
+		{64CB58E5-2488-4977-B21F-D17B768AC28A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{64CB58E5-2488-4977-B21F-D17B768AC28A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{64CB58E5-2488-4977-B21F-D17B768AC28A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{64CB58E5-2488-4977-B21F-D17B768AC28A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
