@@ -1,0 +1,2 @@
+This is a test file to verify the auto-close PR workflow.
+This PR should be automatically closed by the GitHub Action.
