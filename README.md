@@ -23,6 +23,9 @@ A PowerShell module for managing Windows Updates.
 ### [Weave Test](weave-test/README.md)
 A simple testing tool originally designed to work with Config-Weave but can be used standalone. Features portable cross-platform testing with environment variables and stdout.
 
+### [Jupyter All](jupyter-all/README.md)
+A Jupyter Lab environment with multiple kernels installed including Bash, C++, C#, PowerShell, F#, Go, Graphviz dot, GNUPlot, Lua, IRuby, Rust, and TypeScript/JavaScript.
+
 ## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
