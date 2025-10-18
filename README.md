@@ -53,6 +53,9 @@ A demonstration interview project showcasing a C# ASP.NET Core web application w
 ### [dev-old](dev-old/README.md)
 A Go-based development environment tool with Nix flake integration.
 
+### [vmlab-go](vmlab-go/README.md)
+A Go-based virtual machine lab tool.
+
 ## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
