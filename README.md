@@ -12,6 +12,14 @@ There is no point raising pull requests on the project as I have configured gith
 ## Repository Structure
 Each project is placed in its own subfolder and will have its own README explaining what it is (sometimes).
 
+## Archived Projects
+
+### [Prefab](prefab/README.md)
+A simple Rust-based tool for generating project templates, heavily influenced by Cookie Cutter and using the Tera template language.
+
+### [WindowsUpdatePS](WindowsUpdatePS/README.md)
+A PowerShell module for managing Windows Updates.
+
 ## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
