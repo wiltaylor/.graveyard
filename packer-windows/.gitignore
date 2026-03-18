@@ -1,0 +1,13 @@
+Windows/ISO/
+Windows/Blank/
+Windows/output-vmware-iso/
+Windows/packer_cache/
+*.box
+Windows/output-*/*
+Windows/windows*/*
+Windows/floppy/*
+Windows/tools/
+Windows/tests/*
+Windows/*TestResults.xml
+Windows/vagrantfile-windows*.template
+Windows/Windows*.json

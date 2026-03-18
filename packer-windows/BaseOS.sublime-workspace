@@ -1,0 +1,337 @@
+{
+	"auto_complete":
+	{
+		"selected_items":
+		[
+			[
+				"Write",
+				"Write-LogMSG"
+			],
+			[
+				"osv",
+				"osvirtualbox"
+			],
+			[
+				"buildl",
+				"buildlist"
+			],
+			[
+				"Gen",
+				"Generator"
+			],
+			[
+				"box",
+				"boxtype"
+			],
+			[
+				"pr",
+				"provider"
+			],
+			[
+				"no",
+				"NoNewWindow"
+			],
+			[
+				"tr",
+				"trusted"
+			],
+			[
+				"req",
+				"required"
+			]
+		]
+	},
+	"buffers":
+	[
+		{
+			"file": "Windows/templates/vagrantfile-base",
+			"settings":
+			{
+				"buffer_size": 1286,
+				"line_ending": "Windows"
+			}
+		}
+	],
+	"build_system": "",
+	"command_palette":
+	{
+		"height": 392.0,
+		"selected_items":
+		[
+			[
+				"install ",
+				"Package Control: Install Package"
+			]
+		],
+		"width": 400.0
+	},
+	"console":
+	{
+		"height": 125.0
+	},
+	"distraction_free":
+	{
+		"menu_visible": true,
+		"show_minimap": false,
+		"show_open_files": false,
+		"show_tabs": false,
+		"side_bar_visible": false,
+		"status_bar_visible": false
+	},
+	"file_history":
+	[
+		"/F/Virtual Machines/BaseOS/Windows/templates/build-base",
+		"/F/Virtual Machines/BaseOS/Windows/templates/vagrantfile-base",
+		"/F/Virtual Machines/BaseOS/Windows/templates/packerjson-base",
+		"/F/Virtual Machines/BaseOS/Windows/psake-build.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/floppy/Windows10x64-virtualbox/build.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/floppy/Windows10x64-vmware/build.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/templates/testscript-base",
+		"/F/Virtual Machines/BaseOS/.gitignore",
+		"/F/Virtual Machines/BaseOS/Windows/deploymentscript/Build.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/deploymentscript/Helper.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/templates/unattend-base",
+		"/F/Virtual Machines/BaseOS/Windows/floppy/Windows7x64-virtualbox/helper.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows10x64/autounattend.xml",
+		"/F/Virtual Machines/BaseOS/Windows/templates/sysprep-base",
+		"/F/Virtual Machines/BaseOS/Windows/Windows2012x64-base.json",
+		"/F/Virtual Machines/BaseOS/Windows/tests/Windows2008R2.tests.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/scripts/vagrantuser.cmd",
+		"/F/Virtual Machines/BaseOS/Windows/scripts/openssh.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/Windows8x86-base.json",
+		"/F/Virtual Machines/BaseOS/Windows/Windows8x64-base.json",
+		"/F/Virtual Machines/BaseOS/Windows/Windows8.1x86-base.json",
+		"/F/Virtual Machines/BaseOS/Windows/Windows8.1x64-base.json",
+		"/F/Virtual Machines/BaseOS/Windows/Windows7x86-base.json",
+		"/F/Virtual Machines/BaseOS/Windows/Windows7x64-base.json",
+		"/F/Virtual Machines/BaseOS/Windows/Windows2012R2Corex64-base.json",
+		"/F/Virtual Machines/BaseOS/Windows/Windows2012Corex64-base.json",
+		"/F/Virtual Machines/BaseOS/Windows/Windows10x86-base.json",
+		"/F/Virtual Machines/BaseOS/Windows/Windows2008R2x64-base.json",
+		"/F/Virtual Machines/BaseOS/Windows/vagrantfile-Windows10x64.template",
+		"/F/Virtual Machines/BaseOS/Windows/Generators.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/vagrantfile-Windows10x86.template",
+		"/F/Virtual Machines/BaseOS/Windows/Windows10x64-base.json",
+		"/F/Virtual Machines/BaseOS/Windows/Windows2012R2x64-base.json",
+		"/F/Virtual Machines/BaseOS/Windows/vagrantfile-Windows2008R2x64.template",
+		"/F/Virtual Machines/BaseOS/Windows/vagrantfile-Windows2012Corex64.template",
+		"/F/Virtual Machines/BaseOS/Windows/vagrantfile-Windows2012R2Corex64.template",
+		"/F/Virtual Machines/BaseOS/Windows/vagrantfile-Windows2012R2x64.template",
+		"/F/Virtual Machines/BaseOS/Windows/vagrantfile-Windows2012x64.template",
+		"/F/Virtual Machines/BaseOS/Windows/vagrantfile-Windows7x64.template",
+		"/F/Virtual Machines/BaseOS/Windows/vagrantfile-Windows7x86.template",
+		"/F/Virtual Machines/BaseOS/Windows/vagrantfile-Windows8.1x64.template",
+		"/F/Virtual Machines/BaseOS/Windows/vagrantfile-Windows8.1x86.template",
+		"/F/Virtual Machines/BaseOS/Windows/vagrantfile-Windows8x64.template",
+		"/F/Virtual Machines/BaseOS/Windows/vagrantfile-Windows8x86.template",
+		"/F/Virtual Machines/BaseOS/Windows/tests/Windows8.tests.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/tests/Windows8.1.tests.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/tests/Windows2012R2.tests.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/tests/Windows2012.tests.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/tests/Windows10.tests.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/tests/Windows7.tests.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows8x64/autounattend.xml",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows2012R2x64-/autounattend.xml",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows2012R2x64Core-/autounattend.xml",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows2012x64Core-/autounattend.xml",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows2012x64-/autounattend.xml",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows2008R2x64-/autounattend.xml",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows10x86-/autounattend.xml",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows10x64-/autounattend.xml",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows8.1x86-/autounattend.xml",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows8.1x64-/autounattend.xml",
+		"/F/Virtual Machines/BaseOS/Windows/Windows10x64.json",
+		"/F/Virtual Machines/BaseOS/Windows/Windows8.1x64.json",
+		"/F/Virtual Machines/BaseOS/ReadMe.txt",
+		"/F/Virtual Machines/BaseOS/Windows/scripts/powershell.cmd",
+		"/F/Virtual Machines/BaseOS/Windows/scripts/fixnetwork.ps1",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows7x64/Autounattend.xml",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows7x64/sysprep.xml",
+		"/F/Virtual Machines/BaseOS/Windows/answerfiles/Windows7x86/sysprep.xml",
+		"/F/Virtual Machines/BaseOS/Windows/Windows7x64-basessh.json",
+		"/F/Virtual Machines/BaseOS/Windows/Windows7x64-base-vmware.json",
+		"/F/Virtual Machines/BaseOS/Windows/Windows7x64-base-vbox.json",
+		"/F/Virtual Machines/BaseOS/Windows/scripts/vmtools.cmd",
+		"/C/Users/Wil/AppData/Roaming/Sublime Text 2/Packages/User/Preferences.sublime-settings",
+		"/F/Virtual Machines/BaseOS/Windows/scripts/hibernation.cmd",
+		"/F/Virtual Machines/BaseOS/Windows/scripts/rdp.cmd",
+		"/F/Virtual Machines/BaseOS/Windows/scripts/disableautoupdate.cmd",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/oneget/Berksfile",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/devlaptop/recipes/powershell.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/devlaptop/Berksfile",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/devlaptop/metadata.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/devlaptop/recipes/default.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/oneget/providers/source.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/oneget/resources/source.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/oneget/resources/pkg.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/oneget/providers/pkg.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/oneget/providers/source",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/devlaptop/recipes/software.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/oneget/metadata.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/devlaptop/resources/package.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/devlaptop/providers/package.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/oneget/providers/package.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/oneget/resources/package.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/devlaptop/resources/oneget_package.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/DevLaptop/recipes/default.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/devlaptop/recipes/environment.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/devlaptop/attributes/default.rb",
+		"/F/Virtual Machines/Labs/devlaptop/Vagrantfile",
+		"/F/Virtual Machines/Labs/devlaptop/.gitignore",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/providers/oneget_package.rb",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/providers/oneget_package",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/devlaptop/resources/package",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/DevLaptop/Berksfile.lock",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/DevLaptop/Berksfile",
+		"/F/Virtual Machines/Labs/devlaptop/cookbooks/DevLaptop/metadata.rb"
+	],
+	"find":
+	{
+		"height": 34.0
+	},
+	"find_in_files":
+	{
+		"height": 0.0,
+		"where_history":
+		[
+			"",
+			"*.jason"
+		]
+	},
+	"find_state":
+	{
+		"case_sensitive": false,
+		"find_history":
+		[
+			"Write-LogMSG",
+			"Write-LogMSG '",
+			"-Args",
+			"Install-WebPackage",
+			"Invoke-WebPackage",
+			"Write-Log",
+			"amd64",
+			"\"headless\": true,",
+			"\"headless\": false,",
+			"amd64"
+		],
+		"highlight": true,
+		"in_selection": false,
+		"preserve_case": false,
+		"regex": false,
+		"replace_history":
+		[
+			"Write-LogMSG Info '",
+			"-ArgumentList",
+			"Invoke-Exe",
+			"Install-WebPackage",
+			"Write-LogMSG",
+			"<!ARCH!>",
+			"\"headless\": false,",
+			"\"headless\": true,",
+			"x86"
+		],
+		"reverse": false,
+		"show_context": true,
+		"use_buffer2": true,
+		"whole_word": false,
+		"wrap": true
+	},
+	"groups":
+	[
+		{
+			"sheets":
+			[
+				{
+					"buffer": 0,
+					"file": "Windows/templates/vagrantfile-base",
+					"settings":
+					{
+						"buffer_size": 1286,
+						"regions":
+						{
+						},
+						"selection":
+						[
+							[
+								981,
+								981
+							]
+						],
+						"settings":
+						{
+							"syntax": "Packages/Ruby/Ruby.tmLanguage",
+							"tab_size": 4,
+							"translate_tabs_to_spaces": true
+						},
+						"translation.x": 0.0,
+						"translation.y": 0.0,
+						"zoom_level": 1.0
+					},
+					"type": "text"
+				}
+			]
+		}
+	],
+	"incremental_find":
+	{
+		"height": 0.0
+	},
+	"input":
+	{
+		"height": 31.0
+	},
+	"layout":
+	{
+		"cells":
+		[
+			[
+				0,
+				0,
+				1,
+				1
+			]
+		],
+		"cols":
+		[
+			0.0,
+			1.0
+		],
+		"rows":
+		[
+			0.0,
+			1.0
+		]
+	},
+	"menu_visible": true,
+	"output.exec":
+	{
+		"height": 100.0
+	},
+	"replace":
+	{
+		"height": 62.0
+	},
+	"save_all_on_build": true,
+	"select_file":
+	{
+		"height": 0.0,
+		"selected_items":
+		[
+		],
+		"width": 0.0
+	},
+	"select_project":
+	{
+		"height": 0.0,
+		"selected_items":
+		[
+		],
+		"width": 0.0
+	},
+	"show_minimap": true,
+	"show_open_files": false,
+	"show_tabs": true,
+	"side_bar_visible": true,
+	"side_bar_width": 310.0,
+	"status_bar_visible": true
+}
