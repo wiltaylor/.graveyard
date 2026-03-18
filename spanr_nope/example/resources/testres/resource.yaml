@@ -1,0 +1,11 @@
+- name: "MyResource"
+  description: "my test resource"
+  author: "Wil Taylor"
+  version: "0.1.0"
+  testcommand: "python"
+  applycommand: "python"
+  testarguments: ["resource.py", "test"]
+  applyarguments: ["resource.py", "apply"]
+  properties:
+    testprop1: no
+    testprop2: yes

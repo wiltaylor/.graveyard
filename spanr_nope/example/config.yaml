@@ -1,0 +1,10 @@
+name: "Name of config here"
+author: "Your name here"
+description: "Your script description here"
+version: "0.1.0"
+items: 
+  - name: "MyConfig"
+    resource: "MyResource"
+    options:
+      op1: "5" 
+      op2: "123"
