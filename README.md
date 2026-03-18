@@ -77,6 +77,15 @@ A TUI-based knowledge management tool written in Go for viewing and searching ma
 ### [vmlab-failed](vmlab-failed/flake.nix)
 A virtual machine lab tool project (archived).
 
+### [Bldr](bldr/README.md)
+Build tool.
+
+### [Docker RMarkdown](Docker-RMarkdown/README.md)
+Docker container for RMarkdown rendering.
+
+### [WTDevTools](wtdevtools/README.md)
+Development tools collection.
+
 ## Security Warning ⚠️
 
 ### [Neovitality](neovitality/README.md)
