@@ -1,0 +1,10 @@
+---
+title: Demo Book
+author: Wil Taylor
+documentclass: book
+output: bookdown::pdf_book
+description: Example book bla bla bla
+---
+
+# Intro
+This is some text in the index file.
