@@ -79,6 +79,15 @@ A virtual machine lab tool project (archived).
 
 ## Security Warning ⚠️
 
+### [Neovitality](neovitality/README.md)
+Neovim configuration and plugins.
+
+### [SysMod](sysmod/README.md)
+System module management tool.
+
+### [SysPkg](syspkg/README.md)
+System package management tool.
+
 ### [Dart MCP Server](dart-mcp-server/README.md)
 A Dart MCP (Model Context Protocol) server implementation.
 
