@@ -4,7 +4,7 @@ Individual projects within this graveyard may include their own licence file. If
 
 ## MIT Licence
 
-Copyright Wil Taylor (c) 2024
+Copyright Wil Taylor (c) 2026
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
