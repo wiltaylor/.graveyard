@@ -92,8 +92,6 @@ Archived project.
 ### [spanr-test](spanr-test/README.md)
 Archived project.
 
-## Security Warning ⚠️
-
 ### [Neovitality](neovitality/README.md)
 Neovim configuration and plugins.
 
@@ -111,6 +109,8 @@ A command-line tool for dumping SQL Server database schemas.
 
 ### [Wil Dev](wil-dev/Dockerfile)
 Development environment Dockerfile.
+
+## Security Warning ⚠️
 
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
 
