@@ -86,6 +86,9 @@ Docker container for RMarkdown rendering.
 ### [WTDevTools](wtdevtools/README.md)
 Development tools collection.
 
+### [ArchIso](ArchIso/README.md)
+Archived project.
+
 ## Security Warning ⚠️
 
 ### [Neovitality](neovitality/README.md)
