@@ -1,0 +1,14 @@
+{
+	"Name": "Test",
+	"Generators": 
+	[
+		{
+			"Name": "Project",
+			"ScriptFileName": "Project.csx"
+		},
+		{
+			"Name": "Item",
+			"ScriptFileName": "Item.csx"
+		}
+	]
+}
