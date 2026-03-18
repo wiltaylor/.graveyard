@@ -1,0 +1,17 @@
+{
+    "iso_url": "https://software-download.microsoft.com/download/pr/17134.1.180410-1804.rs4_release_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso",
+    "iso_checksum": "a4ea45ec1282e85fc84af49acf7a8d649c31ac5c",
+    "iso_checksum_type": "sha1",
+    "vbox_guestos": "Windows10_64",
+    "vmware_guestos": "windows9-64",
+    "vm_name": "Windows10x64",
+    "vmware_scsibus": "lsisas1068",
+    "headless": "false",
+    "shutdown_command": "shutdown.exe /s /t 0 /f",
+    "shutdown_timeout": "1h",
+    "arch": "x64",
+    "patchvm": "true",
+    "cleanvm": "true",
+    "boxtag": "none",
+    "cm": "nocm"
+}

@@ -1,0 +1,17 @@
+{
+    "iso_url": "http://download.microsoft.com/download/B/9/9/B999286E-0A47-406D-8B3D-5B5AD7373A4A/9600.16384.WINBLUE_RTM.130821-1623_X64FRE_ENTERPRISE_EVAL_EN-US-IRM_CENA_X64FREE_EN-US_DV5.ISO",
+    "iso_checksum": "73321fa912305e5a16096ef62380a91ee1f112da",
+    "iso_checksum_type": "sha1",
+    "vbox_guestos": "Windows8_64",
+    "vmware_guestos": "windows8-64",
+    "vmware_scsibus": "lsisas1068",
+    "vm_name": "Windows8.1x64",
+    "headless": "true",
+    "shutdown_command": "shutdown.exe /s /t 0 /f",
+    "shutdown_timeout": "1h",
+    "arch": "x64",
+    "patchvm": "true",
+    "cleanvm": "true",
+    "boxtag": "none",
+    "cm": "nocm"
+}

@@ -1,0 +1,8 @@
+output*/
+packer_cache/
+*.box
+tools/
+temp/
+box/
+boxtest/
+*.exe
