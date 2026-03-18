@@ -89,6 +89,9 @@ Development tools collection.
 ### [ArchIso](ArchIso/README.md)
 Archived project.
 
+### [spanr-test](spanr-test/README.md)
+Archived project.
+
 ## Security Warning ⚠️
 
 ### [Neovitality](neovitality/README.md)
