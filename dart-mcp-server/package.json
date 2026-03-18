@@ -1,0 +1,54 @@
+{
+  "name": "dart-mcp-server",
+  "version": "0.1.13",
+  "description": "The Dart MCP server",
+  "license": "MIT",
+  "author": "Dart (software@itsdart.com)",
+  "engines": {
+    "node": ">=20"
+  },
+  "homepage": "https://github.com/its-dart/dart-mcp-server",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/its-dart/dart-mcp-server.git"
+  },
+  "bugs": "https://app.itsdart.com/p/r/JFyPnhL9En61",
+  "type": "module",
+  "bin": {
+    "dart-mcp-server": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "start:mcp-inspector": "yarn run build && CLIENT_PORT=9001 SERVER_PORT=9000 npx @modelcontextprotocol/inspector node dist/index.js",
+    "prepare": "npm run build",
+    "build": "tsc && shx chmod +x dist/*.js",
+    "prettier-check": "prettier --check .",
+    "prettier-fix": "prettier --write . --list-different",
+    "req-up-all": "yarn upgrade-interactive --latest --exact --ignore-workspace-root-check",
+    "release": "yarn build && release-it"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "~1.11",
+    "dart-tools": "~0.3",
+    "dotenv": "~16.5"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/inspector": "0.12.0",
+    "@types/node": "22.15.18",
+    "prettier": "3.5.3",
+    "release-it": "19.0.2",
+    "shx": "0.4.0",
+    "typescript": "5.8.3"
+  },
+  "keywords": [
+    "dart",
+    "projectmanagement",
+    "taskmanagement"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
