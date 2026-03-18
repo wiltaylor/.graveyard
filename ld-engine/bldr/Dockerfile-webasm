@@ -1,0 +1,14 @@
+# Game engine toolchain builder
+FROM ubuntu as Linux_x86
+RUN apt-get update -y && apt-get install curl build-essential cmake wget git python3 python2.7 default-jdk python-pip python3-pip -y
+#RUN pip3 install http.server
+RUN git clone https://github.com/emscripten-core/emsdk.git /opt/ems
+WORKDIR /opt/ems
+RUN ./emsdk update-tags
+RUN ./emsdk install latest
+RUN ./emsdk activate latest
+ENV EMSDK="/opt/ems"
+ENV PATH="${EMSDK}:${EMSDK}/emscripten/sdk:${EMSDK}/upstream/emscripten:${EMSDK}/llvm/clang/bin:${EMSDK}/node/current/bin:${EMSDK}/binaryen/bin:${PATH}"
+
+# This causes emscripten to cache SDL and c++ stl modules.
+RUN cd /tmp && echo "#include <iostream>\nint main(){ std::cout << 1; return 0; }" > /tmp/main.cpp && emcc -s USE_SDL=2 -s USE_SDL_IMAGE=2 -s USE_SDL_TTF=2 -s USE_SDL_MIXER=2 /tmp/main.cpp

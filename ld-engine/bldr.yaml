@@ -1,0 +1,65 @@
+name: ld-engine
+description: Ludum Dare Game Engine
+folders:
+        - host_path: .
+          virt_path: /prj
+          no_fix: false
+actions:
+        - name: build
+          act_type: Meta
+          depend: [ "linux_x64", "windows_x64", "macos_x64", "web" ]
+        - name: build-debug
+          act_type: Meta
+          depend: [ "linux_x64_debug" ]
+        - name: linux_x64
+          act_type: OneShot
+          image: ld-engine:linux
+          command: make
+          args: ["BUILDFORPLATFORM=linux"]
+          working_dir: "/prj"
+        - name: linux_x64_debug
+          act_type: OneShot
+          image: ld-engine:linux
+          command: make 
+          args: ["-n", "main", "BUILDFORPLATFORM=linux"]
+        - name: windows_x64
+          act_type: OneShot
+          image: ld-engine:windows
+          command: make
+          args: ["BUILDFORPLATFORM=windows"]
+          working_dir: "/prj"
+        - name: macos_x64
+          act_type: OneShot
+          image: ld-engine:macos
+          command: make
+          args: ["BUILDFORPLATFORM=macos"]
+          working_dir: "/prj"
+        - name: web
+          act_type: OneShot
+          image: ld-engine:webasm
+          command: make
+          args: ["BUILDFORPLATFORM=web"]
+          working_dir: "/prj"
+        - name: serve
+          act_type: OneShot
+          image: ld-engine:webasm
+          command: emrun
+          args: [ "--no_browser", "--port", "8000", "." ]
+          working_dir: "/prj/bin/web"
+          net: host
+        - name: clean
+          act_type: Meta
+          depend: ["clean-bin", "clean-obj"]
+        - name: clean-bin
+          act_type: Host
+          command: rm
+          args: ["-fr", "bin"]
+        - name: clean-obj
+          act_type: Host
+          command: rm
+          args: ["-fr", "obj"]
+        - name: emver
+          act_type: OneShot
+          image: ld-engine:windows
+          command: ls 
+          args: [ "/winlib/lib" ]

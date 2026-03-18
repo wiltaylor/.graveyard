@@ -1,0 +1,13 @@
+# Game engine toolchain builder
+
+FROM ubuntu as Linux_x86
+RUN apt-get update -y && apt-get install curl build-essential cmake wget git -y
+RUN apt-get install mingw-w64 libz-mingw-w64-dev libz-mingw-w64 autoconf zip unzip -y
+RUN mkdir /winlib
+RUN wget https://www.libsdl.org/release/SDL2-devel-2.0.12-mingw.tar.gz && tar -C /winlib -zxvf SDL2-devel-2.0.12-mingw.tar.gz && rm /SDL2-devel-2.0.12-mingw.tar.gz && mv /winlib/SDL2-2.0.12/x86_64-w64-mingw32/bin /winlib/bin && mv /winlib/SDL2-2.0.12/x86_64-w64-mingw32/lib /winlib/lib && mv /winlib/SDL2-2.0.12/x86_64-w64-mingw32/include /winlib/include && rm -fr /winlib/SDL2-2.0.12
+
+RUN wget https://www.libsdl.org/projects/SDL_image/release/SDL2_image-devel-2.0.5-mingw.tar.gz && tar -C /winlib -zxvf SDL2_image-devel-2.0.5-mingw.tar.gz && rm SDL2_image-devel-2.0.5-mingw.tar.gz && cp -R /winlib/SDL2_image-2.0.5/x86_64-w64-mingw32/bin /winlib && cp -R /winlib/SDL2_image-2.0.5/x86_64-w64-mingw32/lib /winlib && cp -R /winlib/SDL2_image-2.0.5/x86_64-w64-mingw32/include /winlib && rm -fr /winlib/SDL2_image-2.0.5
+
+RUN wget https://www.libsdl.org/projects/SDL_mixer/release/SDL2_mixer-devel-2.0.4-mingw.tar.gz && tar -C /winlib -zxvf SDL2_mixer-devel-2.0.4-mingw.tar.gz && rm SDL2_mixer-devel-2.0.4-mingw.tar.gz && cp -R /winlib/SDL2_mixer-2.0.4/x86_64-w64-mingw32/bin /winlib && cp -R /winlib/SDL2_mixer-2.0.4/x86_64-w64-mingw32/lib /winlib && cp -R /winlib/SDL2_mixer-2.0.4/x86_64-w64-mingw32/include /winlib && rm -fr /winlib/SDL2_mixer-2.0.4
+
+RUN wget https://www.libsdl.org/projects/SDL_ttf/release/SDL2_ttf-devel-2.0.15-mingw.tar.gz && tar -C /winlib -zxvf SDL2_ttf-devel-2.0.15-mingw.tar.gz && rm SDL2_ttf-devel-2.0.15-mingw.tar.gz && cp -R /winlib/SDL2_ttf-2.0.15/x86_64-w64-mingw32/bin /winlib && cp -R /winlib/SDL2_ttf-2.0.15/x86_64-w64-mingw32/bin /winlib && cp -R /winlib/SDL2_ttf-2.0.15/x86_64-w64-mingw32/lib /winlib && cp -R /winlib/SDL2_ttf-2.0.15/x86_64-w64-mingw32/include /winlib && rm -fr /winlib/SDL2_ttf-2.0.15 

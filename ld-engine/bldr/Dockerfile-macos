@@ -1,0 +1,19 @@
+# Game engine toolchain builder
+
+FROM ubuntu as mac-buildchain
+RUN apt-get update -y && apt-get install curl build-essential cmake wget git -y
+RUN apt-get install clang gcc g++ zlib1g-dev libmpc-dev libmpfr-dev libgmp-dev \
+libxml2-dev libssl-dev -y 
+RUN git clone https://github.com/tpoechtrager/osxcross && \
+cd osxcross/tarballs && \
+wget -nc https://s3.dockerproject.org/darwin/v2/MacOSX10.10.sdk.tar.xz
+RUN cd osxcross && UNATTENDED=yes OSX_VERSION_MIN=10.7 ./build.sh
+
+FROM ubuntu
+RUN apt-get update -y && apt-get install curl build-essential cmake wget git -y
+RUN apt-get install clang gcc g++ zlib1g-dev libmpc-dev libmpfr-dev libgmp-dev libxml2-dev libssl-dev -y 
+COPY --from=mac-buildchain /osxcross /osxcross
+ENV PATH="/osxcross/target/bin:${PATH}"
+ENV MACOSX_DEPLOYMENT_TARGET=10.7
+ENV UNATTENDED=1
+RUN osxcross-macports install libsdl2 libsdl2_mixer libsdl2_image libsdl2_ttf
