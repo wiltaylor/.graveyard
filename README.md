@@ -79,6 +79,15 @@ A virtual machine lab tool project (archived).
 
 ## Security Warning ⚠️
 
+### [Dart MCP Server](dart-mcp-server/README.md)
+A Dart MCP (Model Context Protocol) server implementation.
+
+### [SQLDump SpecKit](sqldump-speckit/README.md)
+A command-line tool for dumping SQL Server database schemas.
+
+### [Wil Dev](wil-dev/Dockerfile)
+Development environment Dockerfile.
+
 These projects are abandoned and unmaintained. They may contain security vulnerabilities, bugs, or other issues. Use the code at your own risk. No warranty or support is provided, and no security updates will be made.
 
 **By using any code from this repository, you acknowledge that:**
