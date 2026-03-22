@@ -74,9 +74,17 @@ examples:
 clean:
     cargo clean
 
-# Generate and open documentation
+# Generate and open API documentation
 doc:
     cargo doc --workspace --all-features --no-deps --open
+
+# Build the mdbook documentation
+book:
+    mdbook build docs
+
+# Serve the mdbook documentation with live reload
+book-serve:
+    mdbook serve docs --open
 
 # Build only the compiler (no runtime/lsp/dap)
 build-compiler:
