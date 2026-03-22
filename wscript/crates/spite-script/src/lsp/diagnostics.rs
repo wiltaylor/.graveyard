@@ -4,6 +4,7 @@ use tower_lsp::lsp_types::*;
 use crate::query_db::{DiagnosticInfo, Severity};
 
 /// Convert internal diagnostics to LSP diagnostics.
+#[allow(dead_code)]
 pub fn to_lsp_diagnostics(diags: &[DiagnosticInfo]) -> Vec<Diagnostic> {
     diags
         .iter()

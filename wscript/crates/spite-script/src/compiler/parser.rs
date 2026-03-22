@@ -22,6 +22,7 @@ impl ParseDiagnostic {
         Self { span, message: message.into(), code: None, hint: None }
     }
 
+    #[allow(dead_code)]
     fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
         self
@@ -119,6 +120,7 @@ impl<'a> Parser<'a> {
         self.diagnostics.push(ParseDiagnostic::new(span, message));
     }
 
+    #[allow(dead_code)]
     fn error_with_hint(&mut self, span: Span, message: impl Into<String>, hint: impl Into<String>) {
         self.diagnostics.push(ParseDiagnostic::new(span, message).with_hint(hint));
     }
@@ -143,6 +145,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Synchronize, consuming a semicolon or RBrace if found.
+    #[allow(dead_code)]
     fn synchronize_past_semi(&mut self) {
         self.synchronize();
         self.eat(&TokenKind::Semicolon);
@@ -551,6 +554,7 @@ impl<'a> Parser<'a> {
     }
 
     // `+` token check helper (not in TokenKind as keyword, it's Plus)
+    #[allow(dead_code)]
     fn eat_plus(&mut self) -> bool {
         self.eat(&TokenKind::Plus).is_some()
     }

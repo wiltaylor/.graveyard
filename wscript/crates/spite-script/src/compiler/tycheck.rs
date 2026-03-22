@@ -1771,6 +1771,7 @@ impl<'a> TypeEnv<'a> {
     // Expression checking (top-down)
     // -----------------------------------------------------------------------
 
+    #[allow(dead_code)]
     fn check_expr(&mut self, expr: &Expr, expected: &Type) -> Type {
         // For lambdas, propagate expected function type to infer parameter types.
         if let ExprKind::Lambda {

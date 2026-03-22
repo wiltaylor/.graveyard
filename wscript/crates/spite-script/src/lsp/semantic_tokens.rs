@@ -26,13 +26,13 @@ pub const TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
 ];
 
 const TT_KEYWORD: u32 = 0;
-const TT_FUNCTION: u32 = 1;
+const _TT_FUNCTION: u32 = 1;
 const TT_VARIABLE: u32 = 2;
 const TT_STRING: u32 = 3;
 const TT_NUMBER: u32 = 4;
 const TT_OPERATOR: u32 = 5;
 const TT_COMMENT: u32 = 6;
-const TT_TYPE: u32 = 7;
+const _TT_TYPE: u32 = 7;
 const _TT_PARAMETER: u32 = 8;
 const TT_MACRO: u32 = 9;
 const _TT_ENUM_MEMBER: u32 = 10;

@@ -409,6 +409,7 @@ struct EmitCtx<'a> {
     string_offsets: &'a [(u32, u32)],
     struct_layouts: &'a [StructLayout],
     memory: MemoryId,
+    #[allow(dead_code)]
     stack_ptr: GlobalId,
 }
 
@@ -652,8 +653,7 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
         // ── Struct operations ─────────────────────────────────────────
         IrExpr::StructNew { layout_index, fields } => {
             if let Some(layout) = ctx.struct_layouts.get(*layout_index as usize) {
-                let size = layout.size;
-                let sp = ctx.stack_ptr;
+                let _size = layout.size;
                 let memory = ctx.memory;
 
                 // Bump stack pointer down: new_sp = sp - size

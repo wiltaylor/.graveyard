@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 /// The SpiteScript DAP server.
 pub struct SpiteDapServer {
+    #[allow(dead_code)]
     engine: Engine,
     source_path: Option<PathBuf>,
     port: u16,
