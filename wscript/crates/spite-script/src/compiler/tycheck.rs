@@ -59,7 +59,7 @@ impl Type {
 
     /// Returns `true` for the error/unknown sentinels.
     pub fn is_error_or_unknown(&self) -> bool {
-        matches!(self, Type::Error | Type::Unknown)
+        matches!(self, Type::Error | Type::Unknown | Type::TypeVar(_))
     }
 }
 
@@ -307,7 +307,7 @@ struct MethodSig {
 
 fn string_methods(name: &str) -> Option<MethodSig> {
     match name {
-        "len" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::I64) }),
+        "len" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::I32) }),
         "is_empty" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::Bool) }),
         "contains" => Some(MethodSig { params: vec![Type::String], ret: Type::Primitive(PrimitiveType::Bool) }),
         "starts_with" => Some(MethodSig { params: vec![Type::String], ret: Type::Primitive(PrimitiveType::Bool) }),
@@ -327,7 +327,7 @@ fn string_methods(name: &str) -> Option<MethodSig> {
 
 fn array_methods(elem: &Type, name: &str) -> Option<MethodSig> {
     match name {
-        "len" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::I64) }),
+        "len" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::I32) }),
         "is_empty" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::Bool) }),
         "push" => Some(MethodSig { params: vec![elem.clone()], ret: Type::Unit }),
         "pop" => Some(MethodSig { params: vec![], ret: Type::Option(Box::new(elem.clone())) }),
@@ -371,6 +371,32 @@ fn array_methods(elem: &Type, name: &str) -> Option<MethodSig> {
         }),
         "join" => Some(MethodSig { params: vec![Type::String], ret: Type::String }),
         "sort" => Some(MethodSig { params: vec![], ret: Type::Array(Box::new(elem.clone())) }),
+        "min" => Some(MethodSig { params: vec![], ret: elem.clone() }),
+        "max" => Some(MethodSig { params: vec![], ret: elem.clone() }),
+        "count" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::I32) }),
+        "dedup" => Some(MethodSig { params: vec![], ret: Type::Array(Box::new(elem.clone())) }),
+        "take" => Some(MethodSig { params: vec![Type::Primitive(PrimitiveType::I32)], ret: Type::Array(Box::new(elem.clone())) }),
+        "skip" => Some(MethodSig { params: vec![Type::Primitive(PrimitiveType::I32)], ret: Type::Array(Box::new(elem.clone())) }),
+        "any" | "all" | "none" => {
+            let cb = Type::Fn { params: vec![elem.clone()], ret: Box::new(Type::Primitive(PrimitiveType::Bool)) };
+            Some(MethodSig { params: vec![cb], ret: Type::Primitive(PrimitiveType::Bool) })
+        }
+        "find" => {
+            let cb = Type::Fn { params: vec![elem.clone()], ret: Box::new(Type::Primitive(PrimitiveType::Bool)) };
+            Some(MethodSig { params: vec![cb], ret: Type::Option(Box::new(elem.clone())) })
+        }
+        "for_each" => {
+            let cb = Type::Fn { params: vec![elem.clone()], ret: Box::new(Type::Unit) };
+            Some(MethodSig { params: vec![cb], ret: Type::Unit })
+        }
+        "fold" => Some(MethodSig { params: vec![elem.clone(), Type::Unknown], ret: elem.clone() }),
+        "reduce" => {
+            let cb = Type::Fn { params: vec![elem.clone(), elem.clone()], ret: Box::new(elem.clone()) };
+            Some(MethodSig { params: vec![cb], ret: elem.clone() })
+        }
+        "get" => Some(MethodSig { params: vec![Type::Primitive(PrimitiveType::I64)], ret: Type::Option(Box::new(elem.clone())) }),
+        "clone" => Some(MethodSig { params: vec![], ret: Type::Array(Box::new(elem.clone())) }),
+        "extend" => Some(MethodSig { params: vec![Type::Array(Box::new(elem.clone()))], ret: Type::Unit }),
         _ => None,
     }
 }
@@ -427,7 +453,7 @@ fn result_methods(ok: &Type, err: &Type, name: &str) -> Option<MethodSig> {
 
 fn map_methods(key: &Type, val: &Type, name: &str) -> Option<MethodSig> {
     match name {
-        "len" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::I64) }),
+        "len" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::I32) }),
         "is_empty" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::Bool) }),
         "contains_key" => Some(MethodSig { params: vec![key.clone()], ret: Type::Primitive(PrimitiveType::Bool) }),
         "get" => Some(MethodSig { params: vec![key.clone()], ret: Type::Option(Box::new(val.clone())) }),
@@ -997,8 +1023,56 @@ impl<'a> TypeEnv<'a> {
     }
 
     fn check_impl_block(&mut self, ib: &ImplBlock) {
+        // Resolve the self type for this impl block.
+        let self_ty = self.resolve_type_expr(&ib.self_type);
+
+        // Register methods in fn_sigs with mangled names.
+        let type_name = match &ib.self_type.kind {
+            TypeExprKind::Named { name, .. } => name.clone(),
+            _ => SmolStr::new("Unknown"),
+        };
+
         for method in &ib.methods {
-            self.check_fn_decl(method);
+            // Register as TypeName__method_name for method resolution.
+            let mangled = SmolStr::from(format!("{}__{}",  type_name, method.name));
+            let params: Vec<Type> = method.params.iter().filter_map(|p| match &p.kind {
+                ParamKind::SelfRef { .. } => None,
+                ParamKind::Named { ty, .. } => Some(self.resolve_type_expr(ty)),
+            }).collect();
+            let ret = method.return_type.as_ref()
+                .map(|t| self.resolve_type_expr(t))
+                .unwrap_or(Type::Unit);
+            let fn_ty = Type::Fn { params, ret: Box::new(ret) };
+            self.fn_sigs.insert(mangled, fn_ty);
+        }
+
+        for method in &ib.methods {
+            self.push_scope();
+
+            // Bind `self` in the method scope.
+            self.define(SmolStr::new("self"), self_ty.clone(), false);
+
+            // Bind named parameters.
+            for p in &method.params {
+                match &p.kind {
+                    ParamKind::SelfRef { .. } => {} // already bound as `self`
+                    ParamKind::Named { name, ty, .. } => {
+                        let resolved = self.resolve_type_expr(ty);
+                        self.define(name.clone(), resolved, false);
+                    }
+                }
+            }
+
+            let ret_ty = method.return_type.as_ref()
+                .map(|t| self.resolve_type_expr(t))
+                .unwrap_or(Type::Unit);
+            self.current_return_type = Some(ret_ty.clone());
+
+            let body_ty = self.check_block(&method.body);
+            self.unify(&body_ty, &ret_ty, method.span);
+
+            self.current_return_type = None;
+            self.pop_scope();
         }
     }
 
@@ -1521,7 +1595,20 @@ impl<'a> TypeEnv<'a> {
             // ── Pipe (lhs |> rhs) ────────────────────────────────────
             ExprKind::Pipe { lhs, rhs } => {
                 let lhs_ty = self.infer_expr(lhs);
-                // rhs should be a callable that accepts lhs_ty.
+                // Treat pipe as method call: lhs |> func(args) == lhs.func(args)
+                // Check if rhs is a Call to a known pipeline function.
+                if let ExprKind::Call { callee, args } = &rhs.kind {
+                    if let ExprKind::Ident(name) = &callee.kind {
+                        let pipeline_ops = ["filter", "map", "collect", "take", "skip",
+                            "any", "all", "find", "for_each", "fold", "reduce",
+                            "sum", "min", "max", "count", "sort", "reverse", "dedup",
+                            "enumerate", "first", "last", "contains"];
+                        if pipeline_ops.contains(&name.as_str()) {
+                            let arg_types: Vec<Type> = args.iter().map(|a| self.infer_expr(&a.value)).collect();
+                            return self.check_method_call(&lhs_ty, name, &arg_types, expr.span);
+                        }
+                    }
+                }
                 let rhs_ty = self.infer_expr(rhs);
                 let resolved = self.resolve(&rhs_ty);
                 match &resolved {
@@ -1910,9 +1997,20 @@ impl<'a> TypeEnv<'a> {
             Type::Result(ok, err) => result_methods(ok, err, method.as_str()),
             Type::Map(k, v) => map_methods(k, v, method.as_str()),
             Type::Struct(idx) => {
-                // Look up impl methods — for now we don't track them, so fall through.
-                let _ = idx;
-                None
+                // Look up impl methods by checking fn_sigs for mangled names.
+                let type_name = self.structs.get(*idx)
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default();
+                let mangled = format!("{}__{}",  type_name, method);
+                if let Some(fn_ty) = self.fn_sigs.get(mangled.as_str()).cloned() {
+                    if let Type::Fn { params, ret } = fn_ty {
+                        Some(MethodSig { params, ret: *ret })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             }
             _ if receiver.is_error_or_unknown() => return Type::Unknown,
             _ => None,

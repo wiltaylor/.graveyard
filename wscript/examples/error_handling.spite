@@ -21,7 +21,7 @@ fn load_config(path: String) -> Result<String> {
     ensure!(!path.is_empty(), "path cannot be empty");
     // Simulate file loading
     if path == "missing.txt" {
-        return Err(AppError::NotFound { path: path });
+        return Err("not found");
     }
     return Ok("config_data");
 }
