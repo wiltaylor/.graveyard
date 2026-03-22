@@ -63,7 +63,12 @@ check-file FILE:
 
 # Run all example scripts
 examples:
-    @for f in examples/*.spite; do echo "=== $$f ==="; cargo run -p spite-cli -- run "$$f" || true; echo; done
+    #!/usr/bin/env bash
+    for f in examples/*.spite; do
+        echo "=== $f ==="
+        cargo run -p spite-cli -- run "$f" || true
+        echo
+    done
 
 # Clean build artifacts
 clean:
@@ -79,6 +84,10 @@ build-compiler:
 
 # Run a quick smoke test
 smoke: build
-    @echo "Smoke test: checking example files..."
-    @for f in examples/*.spite; do echo "  checking $$f..."; cargo run -p spite-cli -- check "$$f" || true; done
-    @echo "Done."
+    #!/usr/bin/env bash
+    echo "Smoke test: checking example files..."
+    for f in examples/*.spite; do
+        echo "  checking $f..."
+        cargo run -p spite-cli -- check "$f" || true
+    done
+    echo "Done."
