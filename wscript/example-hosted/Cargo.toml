@@ -1,0 +1,13 @@
+[package]
+name = "example-hosted"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Example application that embeds SpiteScript as a scripting engine"
+
+[[bin]]
+name = "example-hosted"
+path = "src/main.rs"
+
+[dependencies]
+spite-script = { path = "../crates/spite-script", features = ["runtime"] }

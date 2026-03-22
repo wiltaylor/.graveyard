@@ -86,6 +86,10 @@ book:
 book-serve:
     mdbook serve docs --open
 
+# Run the hosted example application
+example-hosted:
+    cargo run -p example-hosted
+
 # Build only the compiler (no runtime/lsp/dap)
 build-compiler:
     cargo build -p spite-script --no-default-features

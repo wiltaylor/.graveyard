@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/spite-script", "crates/spite-cli"]
+members = ["crates/spite-script", "crates/spite-cli", "example-hosted"]
 
 [workspace.package]
 version = "0.1.0"
