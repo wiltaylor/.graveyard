@@ -1,0 +1,24 @@
+[package]
+name = "spite-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI runner for SpiteScript"
+
+[[bin]]
+name = "spite"
+path = "src/main.rs"
+
+[features]
+default = ["lsp", "dap"]
+lsp = ["dep:tower-lsp"]
+dap = []
+
+[dependencies]
+spite-script = { path = "../spite-script", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+miette = { version = "7", features = ["fancy"] }
+env_logger = "0.11"
+log = "0.4"
+tower-lsp = { version = "0.20", optional = true }

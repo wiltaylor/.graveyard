@@ -1,0 +1,56 @@
+/// Demonstrate error handling patterns.
+
+@error
+enum AppError {
+    @msg("not found: '{path}'")
+    NotFound { path: String },
+
+    @msg("invalid input: {reason}")
+    InvalidInput { reason: String },
+}
+
+fn parse_number(s: String) -> Result<i32> {
+    if s.is_empty() {
+        bail!("empty string");
+    }
+    // turbofish: s.parse::<i32>() — simplified for now
+    return Ok(42);
+}
+
+fn load_config(path: String) -> Result<String> {
+    ensure!(!path.is_empty(), "path cannot be empty");
+    // Simulate file loading
+    if path == "missing.txt" {
+        return Err(AppError::NotFound { path: path });
+    }
+    return Ok("config_data");
+}
+
+@export
+fn main() {
+    // Using ? operator
+    let config = match load_config("app.toml") {
+        Ok(data) => data,
+        Err(e) => {
+            print(`Config error: ${e}`);
+            return;
+        },
+    };
+    print(`Loaded: ${config}`);
+
+    // Option handling
+    let items = [10, 20, 30];
+    let first = items.first().unwrap_or(0);
+    print(`First item: ${first}`);
+
+    // Pattern matching on Result
+    match parse_number("42") {
+        Ok(n) => print(`Parsed: ${n}`),
+        Err(e) => print(`Parse error: ${e}`),
+    }
+
+    match parse_number("abc") {
+        Ok(n) => print(`Parsed: ${n}`),
+        Err(e) => print(`Parse error: ${e}`),
+    }
+}
