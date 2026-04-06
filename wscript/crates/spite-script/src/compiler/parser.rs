@@ -203,6 +203,7 @@ impl<'a> Parser<'a> {
             TokenKind::Trait => Some(Item::TraitDecl(self.parse_trait_decl(attrs))),
             TokenKind::Impl => Some(Item::ImplBlock(self.parse_impl_block())),
             TokenKind::Const => Some(Item::ConstDecl(self.parse_const_decl())),
+            TokenKind::Let => Some(Item::GlobalDecl(self.parse_global_decl())),
             _ => {
                 if !attrs.is_empty() {
                     let span = attrs[0].span;
@@ -781,12 +782,29 @@ impl<'a> Parser<'a> {
             TokenKind::Trait => Some(Item::TraitDecl(self.parse_trait_decl(attrs))),
             TokenKind::Impl => Some(Item::ImplBlock(self.parse_impl_block())),
             TokenKind::Const => Some(Item::ConstDecl(self.parse_const_decl())),
+            TokenKind::Let => Some(Item::GlobalDecl(self.parse_global_decl())),
             _ => {
                 let span = self.peek_span();
                 self.error(span, "expected item declaration after attributes");
                 None
             }
         }
+    }
+
+    fn parse_global_decl(&mut self) -> GlobalDecl {
+        let start = self.expect(&TokenKind::Let);
+        let mutable = self.eat(&TokenKind::Mut).is_some();
+        let name = self.expect_ident();
+        let ty = if self.eat(&TokenKind::Colon).is_some() {
+            Some(self.parse_type())
+        } else {
+            None
+        };
+        self.expect(&TokenKind::Eq);
+        let value = self.parse_expr();
+        self.expect(&TokenKind::Semicolon);
+        let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
+        GlobalDecl { span, name, mutable, ty, value }
     }
 
     fn parse_let_stmt(&mut self) -> Stmt {

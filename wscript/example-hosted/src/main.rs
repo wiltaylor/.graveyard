@@ -107,6 +107,36 @@ fn main() {
         other => panic!("expected nested inner, got {other:?}"),
     }
 
+    // ── Top-level globals: host ↔ script. ───────────────────────────
+    // Script declares `let mut tick_count: i32 = 0;` and
+    // `let mut difficulty: i32 = 1;`. Host pokes `difficulty` before each
+    // tick, script updates `tick_count`, host reads it back.
+    vm.set_global("difficulty", Value::I32(3)).expect("set difficulty");
+    assert_eq!(
+        vm.get_global("difficulty").unwrap(),
+        Value::I32(3),
+        "difficulty roundtrip"
+    );
+    let t1 = vm.call("tick", &[]).expect("tick1");
+    let t2 = vm.call("tick", &[]).expect("tick2");
+    println!("  tick 1 -> {t1:?}, tick 2 -> {t2:?}");
+    assert_eq!(t1, Some(Value::I32(3)));
+    assert_eq!(t2, Some(Value::I32(6)));
+    let tick_count = vm.get_global("tick_count").expect("get tick_count");
+    println!("  host-observed tick_count = {tick_count:?}");
+    assert_eq!(tick_count, Value::I32(6));
+
+    // Script-side struct field mutation (now that lower_assign handles it).
+    let hp_after = vm
+        .call("damage", &[Value::I32(state_ptr), Value::I32(25)])
+        .expect("damage");
+    println!("  damage(25) -> hp {hp_after:?}");
+    assert_eq!(hp_after, Some(Value::I32(75)));
+    let view_dmg = vm.read_struct_at(state_ptr, "PlayerState").expect("re-read");
+    if let Some(FieldValue::Primitive(Value::I32(h))) = view_dmg.get("hp") {
+        assert_eq!(*h, 75, "script-side field mutation must survive in memory");
+    }
+
     // Second pointer from a different allocation — Vm persistence check.
     let state2 = match vm.call("init_state", &[]).expect("init2") {
         Some(Value::I32(p)) => p,
@@ -133,6 +163,9 @@ fn main() {
     let score2 = vm2.call("read_score", &[Value::I32(ptr2)]).expect("read");
     assert_eq!(score2, Some(Value::I32(0)), "fresh Vm must start with score=0");
     println!("  fresh Vm read_score -> {score2:?}");
+    let tc2 = vm2.get_global("tick_count").expect("tick_count global");
+    assert_eq!(tc2, Value::I32(0), "fresh Vm must reset tick_count global");
+    println!("  fresh Vm tick_count -> {tc2:?}");
 
     println!("OK");
 }

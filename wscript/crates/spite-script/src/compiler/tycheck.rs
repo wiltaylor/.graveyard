@@ -870,8 +870,18 @@ impl<'a> TypeEnv<'a> {
             Item::EnumDecl(ed) => self.collect_enum(ed),
             Item::FnDecl(fd) => self.collect_fn(fd),
             Item::ConstDecl(cd) => self.collect_const(cd),
+            Item::GlobalDecl(gd) => self.collect_global(gd),
             Item::TraitDecl(_) | Item::ImplBlock(_) | Item::Error(_) => {}
         }
+    }
+
+    fn collect_global(&mut self, gd: &GlobalDecl) {
+        let ty = gd
+            .ty
+            .as_ref()
+            .map(|t| self.resolve_type_expr(t))
+            .unwrap_or(Type::Unknown);
+        self.define(gd.name.clone(), ty, gd.mutable);
     }
 
     fn collect_struct(&mut self, sd: &StructDecl) {
@@ -955,6 +965,7 @@ impl<'a> TypeEnv<'a> {
         match item {
             Item::FnDecl(fd) => self.check_fn_decl(fd),
             Item::ConstDecl(cd) => self.check_const_decl(cd),
+            Item::GlobalDecl(gd) => self.check_global_decl(gd),
             Item::ImplBlock(ib) => self.check_impl_block(ib),
             Item::StructDecl(_) | Item::EnumDecl(_) | Item::TraitDecl(_) | Item::Error(_) => {}
         }
@@ -996,6 +1007,16 @@ impl<'a> TypeEnv<'a> {
         }
         let resolved = self.resolve(&init_ty);
         self.define(cd.name.clone(), resolved, false);
+    }
+
+    fn check_global_decl(&mut self, gd: &GlobalDecl) {
+        let init_ty = self.infer_expr(&gd.value);
+        if let Some(ty_expr) = &gd.ty {
+            let ann = self.resolve_type_expr(ty_expr);
+            self.unify(&init_ty, &ann, gd.span);
+        }
+        let resolved = self.resolve(&init_ty);
+        self.define(gd.name.clone(), resolved, gd.mutable);
     }
 
     fn check_impl_block(&mut self, ib: &ImplBlock) {

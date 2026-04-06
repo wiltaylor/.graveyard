@@ -52,6 +52,9 @@ struct Lowerer {
     /// `BindingRegistry` passed to `lower()`. Calls that resolve to one of
     /// these names are emitted as `HostCall` under module "host".
     user_host_fns: HashMap<SmolStr, (Vec<IrType>, IrType)>,
+    /// Top-level `let` / `let mut` globals, keyed by name → (IR type, mutable).
+    /// Used to resolve ident reads/writes in function bodies to GlobalGet/Set.
+    global_names: HashMap<SmolStr, (IrType, bool)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +95,7 @@ pub fn lower(program: &ast::Program, debug_mode: bool, bindings: &BindingRegistr
         const_values: HashMap::new(),
         trait_sigs: HashMap::new(),
         user_host_fns,
+        global_names: HashMap::new(),
     };
 
     // Register built-in Option and Result struct layouts so that
@@ -152,6 +156,7 @@ impl Lowerer {
         match item {
             ast::Item::FnDecl(f) => self.lower_fn_decl(f),
             ast::Item::ConstDecl(c) => self.lower_const_decl(c),
+            ast::Item::GlobalDecl(g) => self.lower_global_decl(g),
             ast::Item::StructDecl(s) => self.lower_struct_decl(s),
             ast::Item::EnumDecl(e) => self.lower_enum_decl(e),
             ast::Item::ImplBlock(ib) => self.lower_impl_block(ib),
@@ -281,6 +286,27 @@ impl Lowerer {
         let init = self.lower_expr(&c.value, &mut ctx);
         // Store in the constant folding map so references substitute directly.
         self.const_values.insert(c.name.clone(), init);
+    }
+
+    fn lower_global_decl(&mut self, g: &ast::GlobalDecl) {
+        let ty = match &g.ty {
+            Some(te) => self.lower_type_expr(te),
+            None => match &g.value.kind {
+                ast::ExprKind::IntLit(_) => IrType::I32,
+                ast::ExprKind::FloatLit(_) => IrType::F64,
+                ast::ExprKind::BoolLit(_) => IrType::Bool,
+                _ => IrType::I32,
+            },
+        };
+        let mut ctx = FnCtx::new();
+        let init = self.lower_expr(&g.value, &mut ctx);
+        self.global_names.insert(g.name.clone(), (ty, g.mutable));
+        self.module.globals.push(IrGlobal {
+            name: g.name.clone(),
+            ty,
+            init: Some(init),
+            mutable: g.mutable,
+        });
     }
 
     // ── Trait declarations ──────────────────────────────────────────────
@@ -819,11 +845,70 @@ impl Lowerer {
             return;
         }
 
+        // Field assignment: `obj.field = value` (and compound variants).
+        if let ExprKind::FieldAccess { object, field } = &target.kind {
+            let mut found = None;
+            for (li, layout) in self.module.struct_layouts.iter().enumerate() {
+                for (fi, f) in layout.fields.iter().enumerate() {
+                    if f.name == *field {
+                        found = Some((li as u32, fi as u32));
+                        break;
+                    }
+                }
+                if found.is_some() {
+                    break;
+                }
+            }
+            if let Some((layout_index, field_index)) = found {
+                let obj_ir = self.lower_expr(object, ctx);
+                let final_rhs = match op {
+                    AssignOp::Assign => rhs,
+                    _ => {
+                        let lhs_read = IrExpr::FieldGet {
+                            object: Box::new(self.lower_expr(object, ctx)),
+                            layout_index,
+                            field_index,
+                        };
+                        let bin_op = match op {
+                            AssignOp::AddAssign => IrBinOp::AddI32,
+                            AssignOp::SubAssign => IrBinOp::SubI32,
+                            AssignOp::MulAssign => IrBinOp::MulI32,
+                            AssignOp::DivAssign => IrBinOp::DivI32S,
+                            AssignOp::RemAssign => IrBinOp::RemI32S,
+                            AssignOp::BitAndAssign => IrBinOp::AndI32,
+                            AssignOp::BitOrAssign => IrBinOp::OrI32,
+                            AssignOp::BitXorAssign => IrBinOp::XorI32,
+                            AssignOp::ShlAssign => IrBinOp::ShlI32,
+                            AssignOp::ShrAssign => IrBinOp::ShrI32S,
+                            AssignOp::Assign => unreachable!(),
+                        };
+                        IrExpr::BinOp {
+                            op: bin_op,
+                            lhs: Box::new(lhs_read),
+                            rhs: Box::new(rhs),
+                        }
+                    }
+                };
+                out.push(IrStmt::Expr(IrExpr::FieldSet {
+                    object: Box::new(obj_ir),
+                    layout_index,
+                    field_index,
+                    value: Box::new(final_rhs),
+                }));
+                return;
+            }
+        }
+
         // Resolve target to an IrLValue.
         let lvalue = match &target.kind {
             ExprKind::Ident(name) => {
-                let idx = ctx.lookup(name).unwrap_or(0);
-                IrLValue::Local(idx)
+                if let Some(idx) = ctx.lookup(name) {
+                    IrLValue::Local(idx)
+                } else if self.global_names.contains_key(name) {
+                    IrLValue::Global(name.clone())
+                } else {
+                    IrLValue::Local(0)
+                }
             }
             ExprKind::Path(parts) => {
                 // Treat as global for now.
@@ -873,13 +958,7 @@ impl Lowerer {
     fn make_compound(&self, lvalue: &IrLValue, op: IrBinOp, rhs: IrExpr) -> IrExpr {
         let lhs = match lvalue {
             IrLValue::Local(idx) => IrExpr::LocalGet(*idx),
-            IrLValue::Global(name) => {
-                // Read via a placeholder — codegen will resolve.
-                IrExpr::Call {
-                    func: name.clone(),
-                    args: Vec::new(),
-                }
-            }
+            IrLValue::Global(name) => IrExpr::GlobalGet(name.clone()),
             _ => IrExpr::IntConst(0),
         };
         IrExpr::BinOp {
@@ -925,6 +1004,8 @@ impl Lowerer {
                 }
                 if let Some(idx) = ctx.lookup(name) {
                     IrExpr::LocalGet(idx)
+                } else if self.global_names.contains_key(name) {
+                    IrExpr::GlobalGet(name.clone())
                 } else {
                     // Could be a global or a function reference; emit as a
                     // zero-arg call placeholder for now.

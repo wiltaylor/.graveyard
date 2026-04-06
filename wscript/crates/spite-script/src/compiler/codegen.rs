@@ -85,6 +85,9 @@ struct WasmCodegen {
     module: Module,
     fn_ids: HashMap<SmolStr, FunctionId>,
     host_fn_ids: HashMap<SmolStr, FunctionId>,
+    /// User-declared top-level globals (from script `let` items), keyed by
+    /// script name. Exported as `g_<name>` so the host `Vm` can read/write.
+    user_globals: HashMap<SmolStr, GlobalId>,
     /// (offset, length) for each string constant in linear memory.
     string_offsets: Vec<(u32, u32)>,
     #[allow(dead_code)]
@@ -120,6 +123,7 @@ impl WasmCodegen {
             module,
             fn_ids: HashMap::new(),
             host_fn_ids: HashMap::new(),
+            user_globals: HashMap::new(),
             string_offsets: Vec::new(),
             memory,
             stack_ptr,
@@ -364,6 +368,17 @@ impl WasmCodegen {
             );
         }
 
+        // User-declared globals: emit as WASM locals with const initializers
+        // and export as `g_<name>` for host read/write via the Vm API.
+        for g in &ir.globals {
+            let vt = ir_to_val(g.ty);
+            let init = const_expr_for_init(g.ty, g.init.as_ref());
+            let gid = self.module.globals.add_local(vt, g.mutable, false, init);
+            let export_name = format!("g_{}", g.name);
+            self.module.exports.add(&export_name, gid);
+            self.user_globals.insert(g.name.clone(), gid);
+        }
+
         // Two-pass approach: first register all function signatures so that
         // forward references and self-recursion resolve correctly.
 
@@ -424,13 +439,21 @@ impl WasmCodegen {
             // Re-emit the real body through the builder's instr_seq API.
             let fn_ids = self.fn_ids.clone();
             let host_fn_ids = self.host_fn_ids.clone();
+            let user_globals = self.user_globals.clone();
+            let fn_ret_types: HashMap<SmolStr, IrType> = ir
+                .functions
+                .iter()
+                .map(|f| (f.name.clone(), f.ret_type))
+                .collect();
             let builder = local_fn.builder_mut();
             {
                 let mut body = builder.instr_seq(entry);
                 let ctx = EmitCtx {
                     locals: &reg.all_locals,
                     fn_ids: &fn_ids,
+                    fn_ret_types: &fn_ret_types,
                     host_fn_ids: &host_fn_ids,
+                    user_globals: &user_globals,
                     string_offsets: &self.string_offsets,
                     struct_layouts: &ir.struct_layouts,
                     memory: self.memory,
@@ -480,7 +503,9 @@ impl WasmCodegen {
 struct EmitCtx<'a> {
     locals: &'a [LocalId],
     fn_ids: &'a HashMap<SmolStr, FunctionId>,
+    fn_ret_types: &'a HashMap<SmolStr, IrType>,
     host_fn_ids: &'a HashMap<SmolStr, FunctionId>,
+    user_globals: &'a HashMap<SmolStr, GlobalId>,
     string_offsets: &'a [(u32, u32)],
     struct_layouts: &'a [StructLayout],
     memory: MemoryId,
@@ -523,6 +548,13 @@ fn emit_stmt(stmt: &IrStmt, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
             match target {
                 IrLValue::Local(idx) => {
                     body.local_set(ctx.local(*idx));
+                }
+                IrLValue::Global(name) => {
+                    if let Some(&gid) = ctx.user_globals.get(name) {
+                        body.instr(walrus::ir::GlobalSet { global: gid });
+                    } else {
+                        body.drop();
+                    }
                 }
                 _ => {
                     body.drop();
@@ -647,6 +679,13 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
                 body.i32_const(0);
             }
         }
+        IrExpr::GlobalGet(name) => {
+            if let Some(&gid) = ctx.user_globals.get(name) {
+                body.instr(walrus::ir::GlobalGet { global: gid });
+            } else {
+                body.i32_const(0);
+            }
+        }
         IrExpr::LocalGet(idx) => {
             body.local_get(ctx.local(*idx));
         }
@@ -669,6 +708,12 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
             }
             if let Some(&fid) = ctx.fn_ids.get(func) {
                 body.call(fid);
+                // Unit-returning fns produce nothing on the WASM stack, but
+                // we're in expression position here — push a dummy 0 so the
+                // surrounding drop/use sees something.
+                if matches!(ctx.fn_ret_types.get(func), Some(IrType::Unit)) {
+                    body.i32_const(0);
+                }
             } else {
                 // Unknown function — drop args and push default
                 for _ in args {
@@ -1040,6 +1085,21 @@ fn emit_default_val(body: &mut InstrSeqBuilder, vt: ValType) {
         ValType::F64 => { body.f64_const(0.0); }
         _ => { body.i32_const(0); }
     }
+}
+
+fn const_expr_for_init(ty: IrType, init: Option<&IrExpr>) -> ConstExpr {
+    let val = match (ty, init) {
+        (IrType::I64, Some(IrExpr::IntConst(v))) => walrus::ir::Value::I64(*v),
+        (_, Some(IrExpr::IntConst(v))) => walrus::ir::Value::I32(*v as i32),
+        (_, Some(IrExpr::BoolConst(b))) => walrus::ir::Value::I32(if *b { 1 } else { 0 }),
+        (IrType::F32, Some(IrExpr::FloatConst(f))) => walrus::ir::Value::F32(*f as f32),
+        (_, Some(IrExpr::FloatConst(f))) => walrus::ir::Value::F64(*f),
+        (IrType::I64, _) => walrus::ir::Value::I64(0),
+        (IrType::F32, _) => walrus::ir::Value::F32(0.0),
+        (IrType::F64, _) => walrus::ir::Value::F64(0.0),
+        _ => walrus::ir::Value::I32(0),
+    };
+    ConstExpr::Value(val)
 }
 
 fn ir_to_val(ty: IrType) -> ValType {

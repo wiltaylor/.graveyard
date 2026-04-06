@@ -1,8 +1,17 @@
 // Example script for the long-lived Vm embedding API.
 //
-// Script-side fn assignment to struct fields is currently limited in the
-// compiler, so state mutation is driven from the host via write_struct_at.
-// The Vm retains linear memory across calls so allocations persist.
+// State mutation can happen either from the host (via write_struct_at /
+// set_global) or from the script (via struct field assignment and top-level
+// globals). The Vm retains linear memory and globals across calls.
+
+let mut tick_count: i32 = 0;
+let mut difficulty: i32 = 1;
+
+@export
+fn tick() -> i32 {
+    tick_count = tick_count + difficulty;
+    return tick_count;
+}
 
 struct Inner {
     flag: bool,
@@ -35,5 +44,11 @@ fn read_score(state: PlayerState) -> i32 {
 @export
 fn announce(state: PlayerState) -> i32 {
     log_event("turn-start");
+    return state.hp;
+}
+
+@export
+fn damage(state: PlayerState, amount: i32) -> i32 {
+    state.hp = state.hp - amount;
     return state.hp;
 }

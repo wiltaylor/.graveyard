@@ -196,6 +196,81 @@ fn test_struct_basic() {
     "#), 30);
 }
 
+#[test]
+fn test_void_fn_call_baseline() {
+    assert_eq!(run_i32(r#"
+        fn noop() {}
+        @export fn main() -> i32 {
+            noop();
+            return 42;
+        }
+    "#), 42);
+}
+
+#[test]
+fn test_top_level_let_read() {
+    assert_eq!(run_i32(r#"
+        let base: i32 = 40;
+        @export fn main() -> i32 {
+            return base + 2;
+        }
+    "#), 42);
+}
+
+#[test]
+fn test_top_level_let_mut_assign() {
+    assert_eq!(run_i32(r#"
+        let mut counter: i32 = 0;
+        fn bump() {
+            counter = counter + 1;
+        }
+        @export fn main() -> i32 {
+            bump();
+            bump();
+            bump();
+            return counter;
+        }
+    "#), 3);
+}
+
+#[test]
+fn test_top_level_let_compound_assign() {
+    assert_eq!(run_i32(r#"
+        let mut total: i32 = 10;
+        @export fn main() -> i32 {
+            total += 5;
+            total *= 2;
+            return total;
+        }
+    "#), 30);
+}
+
+#[test]
+fn test_struct_field_assign() {
+    assert_eq!(run_i32(r#"
+        struct Pair { a: i32, b: i32 }
+        @export fn main() -> i32 {
+            let mut p = Pair { a: 10, b: 20 };
+            p.a = 100;
+            p.b = p.b + 5;
+            return p.a + p.b;
+        }
+    "#), 125);
+}
+
+#[test]
+fn test_struct_field_compound_assign() {
+    assert_eq!(run_i32(r#"
+        struct Pair { a: i32, b: i32 }
+        @export fn main() -> i32 {
+            let mut p = Pair { a: 10, b: 20 };
+            p.a += 5;
+            p.b *= 2;
+            return p.a + p.b;
+        }
+    "#), 55);
+}
+
 // ── Enums and Match ─────────────────────────────────────────────────
 
 #[test]

@@ -200,6 +200,9 @@ pub enum IrExpr {
     // String constants
     StringConst(u32),
 
+    /// Read a user-declared top-level global (produced by a top-level `let`).
+    GlobalGet(SmolStr),
+
     // Cast between IR types
     Cast {
         expr: Box<IrExpr>,

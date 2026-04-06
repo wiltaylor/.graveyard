@@ -28,7 +28,18 @@ pub enum Item {
     TraitDecl(TraitDecl),
     ImplBlock(ImplBlock),
     ConstDecl(ConstDecl),
+    GlobalDecl(GlobalDecl),
     Error(Span),
+}
+
+/// A top-level `let` or `let mut` declaration — produces a WASM global.
+#[derive(Debug, Clone)]
+pub struct GlobalDecl {
+    pub span: Span,
+    pub name: SmolStr,
+    pub mutable: bool,
+    pub ty: Option<TypeExpr>,
+    pub value: Expr,
 }
 
 // ---------------------------------------------------------------------------
