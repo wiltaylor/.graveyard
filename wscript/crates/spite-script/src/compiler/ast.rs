@@ -178,7 +178,7 @@ pub enum TypeExprKind {
     OptionType(Box<TypeExpr>),
     ResultType(Box<TypeExpr>, Option<Box<TypeExpr>>),
     FnType { params: Vec<TypeExpr>, ret: Box<TypeExpr> },
-    RefType(Box<TypeExpr>),
+    RefType { inner: Box<TypeExpr>, mutable: bool },
     Tuple(Vec<TypeExpr>),
     Unit,
     Named { name: SmolStr, args: Option<Vec<TypeExpr>> },
@@ -550,6 +550,8 @@ pub enum UnaryOp {
     Not,
     BitNot,
     Ref,
+    RefMut,
+    Deref,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

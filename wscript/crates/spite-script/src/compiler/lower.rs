@@ -430,7 +430,7 @@ impl Lowerer {
             ast::TypeExprKind::Array(_)
             | ast::TypeExprKind::Map(_, _)
             | ast::TypeExprKind::FnType { .. }
-            | ast::TypeExprKind::RefType(_)
+            | ast::TypeExprKind::RefType { .. }
             | ast::TypeExprKind::Tuple(_) => IrType::Ptr,
             ast::TypeExprKind::Named { name, .. } => {
                 if self.enum_names.contains_key(name) {
@@ -440,6 +440,24 @@ impl Lowerer {
                 }
             }
             ast::TypeExprKind::Error => IrType::I32,
+        }
+    }
+
+    /// Estimate the byte size of a lowered IR expression's result.
+    /// For primitives, uses their natural size; for pointers/structs, 4 bytes (i32 handle).
+    fn ir_expr_size(&self, _expr: &IrExpr, _ctx: &FnCtx) -> u32 {
+        // For now, all values stored in ref cells are pointer-sized (i32).
+        // Primitives (i32, bool, ptr) = 4 bytes, f64/i64 = 8 bytes.
+        // We default to 4 since most values are i32/ptr.
+        // TODO: track the actual type through lowering for f64/i64 refs.
+        4
+    }
+
+    /// Map a value size back to an IrType for HeapStore/HeapLoad.
+    fn ir_type_for_value_size(&self, size: u32) -> IrType {
+        match size {
+            8 => IrType::I64,
+            _ => IrType::I32,
         }
     }
 }
@@ -769,6 +787,20 @@ impl Lowerer {
     ) {
         let rhs = self.lower_expr(value, ctx);
 
+        // Handle deref assignment: *ref = value → HeapStore
+        if let ExprKind::Unary { op: UnaryOp::Deref, operand } = &target.kind {
+            let addr = self.lower_expr(operand, ctx);
+            // Store as I32 (default for all ref cell values).
+            // TODO: track actual inner type for f64/i64 refs.
+            out.push(IrStmt::Expr(IrExpr::HeapStore {
+                addr: Box::new(addr),
+                offset: 0,
+                value: Box::new(rhs),
+                ty: IrType::I32,
+            }));
+            return;
+        }
+
         // Resolve target to an IrLValue.
         let lvalue = match &target.kind {
             ExprKind::Ident(name) => {
@@ -954,26 +986,88 @@ impl Lowerer {
 
             // ── Unary operations ────────────────────────────────────────
             ExprKind::Unary { op, operand } => {
-                let use_f64 = infer_expr_type(operand, ctx) == IrType::F64;
-                let inner = self.lower_expr(operand, ctx);
                 match op {
-                    // Integer negation: lower as `0 - x` since WASM has no i32.neg.
-                    UnaryOp::Neg if !use_f64 => {
-                        IrExpr::BinOp {
-                            op: IrBinOp::SubI32,
-                            lhs: Box::new(IrExpr::IntConst(0)),
-                            rhs: Box::new(inner),
+                    // Reference creation: &x or &mut x
+                    // Allocate a ref cell [rc:i32 | data:N] and store the value
+                    UnaryOp::Ref | UnaryOp::RefMut => {
+                        let inner = self.lower_expr(operand, ctx);
+                        let value_size = self.ir_expr_size(&inner, ctx);
+                        let total_size = 4 + value_size; // refcount header + data
+                        let alloc_local = ctx.new_local("__ref_alloc".into(), IrType::Ptr);
+                        let data_local = ctx.new_local("__ref_data".into(), IrType::Ptr);
+                        // Sequence: alloc, store rc=1, store value, return data ptr
+                        IrExpr::Block {
+                            stmts: vec![
+                                // alloc_local = HeapAlloc(total_size)
+                                IrStmt::Let {
+                                    local: alloc_local,
+                                    ty: IrType::Ptr,
+                                    value: Some(IrExpr::HeapAlloc { size: total_size }),
+                                },
+                                // data_local = alloc_local + 4
+                                IrStmt::Let {
+                                    local: data_local,
+                                    ty: IrType::Ptr,
+                                    value: Some(IrExpr::BinOp {
+                                        op: IrBinOp::AddI32,
+                                        lhs: Box::new(IrExpr::LocalGet(alloc_local)),
+                                        rhs: Box::new(IrExpr::IntConst(4)),
+                                    }),
+                                },
+                                // Store refcount = 1 at alloc_local
+                                IrStmt::Expr(IrExpr::HeapStore {
+                                    addr: Box::new(IrExpr::LocalGet(alloc_local)),
+                                    offset: 0,
+                                    value: Box::new(IrExpr::IntConst(1)),
+                                    ty: IrType::I32,
+                                }),
+                                // Store value at data_local
+                                IrStmt::Expr(IrExpr::HeapStore {
+                                    addr: Box::new(IrExpr::LocalGet(data_local)),
+                                    offset: 0,
+                                    value: Box::new(inner),
+                                    ty: self.ir_type_for_value_size(value_size),
+                                }),
+                            ],
+                            result: Box::new(IrExpr::LocalGet(data_local)),
+                        }
+                    }
+                    // Dereference: *ref
+                    UnaryOp::Deref => {
+                        let inner = self.lower_expr(operand, ctx);
+                        // The operand is a pointer (Ptr) to a ref cell.
+                        // The dereferenced value type defaults to I32 for now
+                        // (i32, bool, ptr all stored as 4 bytes).
+                        // TODO: track actual inner type for f64/i64 refs.
+                        IrExpr::HeapLoad {
+                            addr: Box::new(inner),
+                            offset: 0,
+                            ty: IrType::I32,
                         }
                     }
                     _ => {
-                        let ir_op = if use_f64 && *op == UnaryOp::Neg {
-                            IrUnaryOp::NegF64
-                        } else {
-                            lower_unaryop(*op)
-                        };
-                        IrExpr::UnaryOp {
-                            op: ir_op,
-                            operand: Box::new(inner),
+                        let use_f64 = infer_expr_type(operand, ctx) == IrType::F64;
+                        let inner = self.lower_expr(operand, ctx);
+                        match op {
+                            // Integer negation: lower as `0 - x` since WASM has no i32.neg.
+                            UnaryOp::Neg if !use_f64 => {
+                                IrExpr::BinOp {
+                                    op: IrBinOp::SubI32,
+                                    lhs: Box::new(IrExpr::IntConst(0)),
+                                    rhs: Box::new(inner),
+                                }
+                            }
+                            _ => {
+                                let ir_op = if use_f64 && *op == UnaryOp::Neg {
+                                    IrUnaryOp::NegF64
+                                } else {
+                                    lower_unaryop(*op)
+                                };
+                                IrExpr::UnaryOp {
+                                    op: ir_op,
+                                    operand: Box::new(inner),
+                                }
+                            }
                         }
                     }
                 }
@@ -986,6 +1080,16 @@ impl Lowerer {
                     ExprKind::Ident(name) => {
                         let idx = ctx.lookup(name).unwrap_or(0);
                         IrExpr::LocalSet(idx, Box::new(rhs))
+                    }
+                    // *ref = value → HeapStore into the ref cell
+                    ExprKind::Unary { op: UnaryOp::Deref, operand } => {
+                        let addr = self.lower_expr(operand, ctx);
+                        IrExpr::HeapStore {
+                            addr: Box::new(addr),
+                            offset: 0,
+                            value: Box::new(rhs),
+                            ty: IrType::I32,
+                        }
                     }
                     _ => rhs, // fallback
                 }
@@ -3050,7 +3154,8 @@ fn lower_unaryop(op: UnaryOp) -> IrUnaryOp {
         UnaryOp::Neg => IrUnaryOp::NegI32,
         UnaryOp::Not => IrUnaryOp::EqzI32,
         UnaryOp::BitNot => IrUnaryOp::NotI32,
-        UnaryOp::Ref => IrUnaryOp::EqzI32, // placeholder — ref not meaningful in WASM
+        // Ref/RefMut/Deref are handled specially in lower_expr, not here
+        UnaryOp::Ref | UnaryOp::RefMut | UnaryOp::Deref => IrUnaryOp::EqzI32,
     }
 }
 

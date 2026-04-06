@@ -31,7 +31,7 @@ pub enum Type {
         params: Vec<Type>,
         ret: Box<Type>,
     },
-    Ref(Box<Type>),
+    Ref { inner: Box<Type>, mutable: bool },
     Struct(usize),
     Enum(usize),
     /// Propagated error type — poisoned, suppresses further diagnostics.
@@ -92,7 +92,9 @@ impl fmt::Display for Type {
                 }
                 write!(f, ") -> {ret}")
             }
-            Type::Ref(inner) => write!(f, "&{inner}"),
+            Type::Ref { inner, mutable } => {
+                if *mutable { write!(f, "&mut {inner}") } else { write!(f, "&{inner}") }
+            }
             Type::Struct(id) => write!(f, "Struct#{id}"),
             Type::Enum(id) => write!(f, "Enum#{id}"),
             Type::Error => write!(f, "<error>"),
@@ -580,7 +582,7 @@ impl<'a> TypeEnv<'a> {
                 params: params.iter().map(|t| self.resolve(t)).collect(),
                 ret: Box::new(self.resolve(ret)),
             },
-            Type::Ref(inner) => Type::Ref(Box::new(self.resolve(inner))),
+            Type::Ref { inner, mutable } => Type::Ref { inner: Box::new(self.resolve(inner)), mutable: *mutable },
             _ => ty.clone(),
         }
     }
@@ -659,9 +661,14 @@ impl<'a> TypeEnv<'a> {
                     ret: Box::new(ret),
                 }
             }
-            (Type::Ref(ia), Type::Ref(ib)) => {
+            (Type::Ref { inner: ia, mutable: ma }, Type::Ref { inner: ib, mutable: mb }) => {
                 let inner = self.unify(ia, ib, span);
-                Type::Ref(Box::new(inner))
+                // &mut T coerces to &T (mut && !mut = false, which is correct).
+                // &T does NOT coerce to &mut T — that would be caught below
+                // if someone tries to pass &T where &mut T is expected, because
+                // unification makes mutable = false, and the caller checks.
+                let mutable = *ma && *mb;
+                Type::Ref { inner: Box::new(inner), mutable }
             }
             _ => {
                 self.error(span, "E001", format!("type mismatch: expected `{a}`, found `{b}`"));
@@ -795,8 +802,8 @@ impl<'a> TypeEnv<'a> {
                     ret: Box::new(r),
                 }
             }
-            TypeExprKind::RefType(inner) => {
-                Type::Ref(Box::new(self.resolve_type_expr(inner)))
+            TypeExprKind::RefType { inner, mutable } => {
+                Type::Ref { inner: Box::new(self.resolve_type_expr(inner)), mutable: *mutable }
             }
             TypeExprKind::Tuple(items) => {
                 Type::Tuple(items.iter().map(|t| self.resolve_type_expr(t)).collect())
@@ -1341,7 +1348,35 @@ impl<'a> TypeEnv<'a> {
                         }
                         ot
                     }
-                    UnaryOp::Ref => Type::Ref(Box::new(ot)),
+                    UnaryOp::Ref => Type::Ref { inner: Box::new(ot), mutable: false },
+                    UnaryOp::RefMut => {
+                        // Check that the operand is a mutable binding
+                        if let ExprKind::Ident(name) = &operand.kind {
+                            if let Some(binding) = self.lookup(name) {
+                                if !binding.mutable {
+                                    self.error(
+                                        expr.span,
+                                        "E001",
+                                        format!("cannot create mutable reference to immutable binding `{name}`"),
+                                    );
+                                }
+                            }
+                        }
+                        Type::Ref { inner: Box::new(ot), mutable: true }
+                    }
+                    UnaryOp::Deref => {
+                        match ot {
+                            Type::Ref { inner, .. } => *inner,
+                            _ => {
+                                self.error(
+                                    expr.span,
+                                    "E001",
+                                    format!("cannot dereference non-reference type `{ot}`"),
+                                );
+                                Type::Error
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1351,7 +1386,22 @@ impl<'a> TypeEnv<'a> {
                 let rhs_ty = self.infer_expr(value);
 
                 // Check mutability.
-                if let ExprKind::Ident(name) = &target.kind {
+                if let ExprKind::Unary { op: UnaryOp::Deref, operand } = &target.kind {
+                    // Assignment through dereference: *ref = value
+                    // The reference must be &mut
+                    let ref_ty = self.resolve(&lhs_ty);
+                    // lhs_ty is already the dereferenced type, so check the operand's type
+                    let operand_ty = self.infer_expr(operand);
+                    let resolved_ref = self.resolve(&operand_ty);
+                    if let Type::Ref { mutable: false, .. } = &resolved_ref {
+                        self.error(
+                            expr.span,
+                            "E007",
+                            "cannot assign through immutable reference".to_string(),
+                        );
+                    }
+                    let _ = ref_ty; // suppress unused warning
+                } else if let ExprKind::Ident(name) = &target.kind {
                     if let Some(binding) = self.lookup(name.as_str()) {
                         if !binding.mutable {
                             self.error(
@@ -1379,6 +1429,11 @@ impl<'a> TypeEnv<'a> {
             ExprKind::FieldAccess { object, field } => {
                 let obj_ty = self.infer_expr(object);
                 let resolved = self.resolve(&obj_ty);
+                // Auto-deref: unwrap one level of reference
+                let resolved = match &resolved {
+                    Type::Ref { inner, .. } => self.resolve(inner),
+                    _ => resolved,
+                };
                 match &resolved {
                     Type::Struct(idx) => {
                         let idx = *idx;
@@ -1467,6 +1522,11 @@ impl<'a> TypeEnv<'a> {
             } => {
                 let obj_ty = self.infer_expr(object);
                 let resolved_obj = self.resolve(&obj_ty);
+                // Auto-deref: unwrap one level of reference for method calls
+                let resolved_obj = match &resolved_obj {
+                    Type::Ref { inner, .. } => self.resolve(inner),
+                    _ => resolved_obj,
+                };
                 let arg_types: Vec<Type> = args.iter().map(|a| self.infer_expr(&a.value)).collect();
                 self.check_method_call(&resolved_obj, method, &arg_types, expr.span)
             }

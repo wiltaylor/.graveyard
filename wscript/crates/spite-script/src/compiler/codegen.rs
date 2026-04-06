@@ -40,6 +40,8 @@ struct WasmCodegen {
     memory: MemoryId,
     #[allow(dead_code)]
     stack_ptr: GlobalId,
+    /// Bump allocator pointer — starts after string data segment.
+    heap_ptr: GlobalId,
     source_map: SourceMap,
     #[allow(dead_code)]
     debug_mode: bool,
@@ -55,6 +57,14 @@ impl WasmCodegen {
             false,
             ConstExpr::Value(walrus::ir::Value::I32(65536)),
         );
+        // Bump allocator pointer — initialized to 4096, after string data segment region.
+        // Will be adjusted after string data is placed.
+        let heap_ptr = module.globals.add_local(
+            ValType::I32,
+            true,
+            false,
+            ConstExpr::Value(walrus::ir::Value::I32(4096)),
+        );
         Self {
             module,
             fn_ids: HashMap::new(),
@@ -62,6 +72,7 @@ impl WasmCodegen {
             string_offsets: Vec::new(),
             memory,
             stack_ptr,
+            heap_ptr,
             source_map: SourceMap::new(),
             debug_mode,
         }
@@ -361,6 +372,7 @@ impl WasmCodegen {
                     struct_layouts: &ir.struct_layouts,
                     memory: self.memory,
                     stack_ptr: self.stack_ptr,
+                    heap_ptr: self.heap_ptr,
                 };
                 emit_stmts(&func.body, &mut body, &ctx);
 
@@ -411,6 +423,8 @@ struct EmitCtx<'a> {
     memory: MemoryId,
     #[allow(dead_code)]
     stack_ptr: GlobalId,
+    /// Bump allocator global for heap allocation.
+    heap_ptr: GlobalId,
 }
 
 impl<'a> EmitCtx<'a> {
@@ -653,33 +667,70 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
         // ── Struct operations ─────────────────────────────────────────
         IrExpr::StructNew { layout_index, fields } => {
             if let Some(layout) = ctx.struct_layouts.get(*layout_index as usize) {
-                let _size = layout.size;
                 let memory = ctx.memory;
+                let total_size = 4 + layout.size; // 4 bytes refcount header + struct data
 
-                // Bump stack pointer down: new_sp = sp - size
-                // Read sp, subtract, write back
-                body.i32_const(0); // placeholder for global.get sp
-                // We can't use GlobalGet directly due to walrus macro issues.
-                // Workaround: use a local to hold the struct pointer.
-                // Actually, let's just use a simple bump allocator offset.
-                // Allocate from a fixed region starting at 1024.
-                // This is a simplification — real impl needs proper allocator.
-                body.drop(); // drop the 0
+                // Bump allocate: base_addr = heap_ptr; heap_ptr += total_size
+                // Save current heap_ptr to a temp local
+                // We use a two-pass approach: first emit the allocation,
+                // then store fields, then push the data pointer.
 
-                // Use a simple allocation: struct pointer = 1024 + layout_index * 256
-                let base = 1024 + (*layout_index as i32) * 256;
+                // alloc_addr = heap_ptr
+                body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
+                // Advance heap_ptr by total_size
+                body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
+                body.i32_const(total_size as i32);
+                body.binop(walrus::ir::BinaryOp::I32Add);
+                body.instr(walrus::ir::GlobalSet { global: ctx.heap_ptr });
+                // Stack: [alloc_addr]
 
-                // Store each field
+                // data_ptr = alloc_addr + 4 (skip refcount header)
+                // But we need alloc_addr for both storing refcount and computing data_ptr.
+                // Use a local to hold alloc_addr. We'll reuse local 0 pattern via
+                // duplicating the value on the stack using local.tee-like patterns.
+
+                // Actually, let's store alloc_addr in a temp, then do our work.
+                // We need to find an unused local. Use the first local as a temp.
+                // Better approach: emit alloc_addr, store refcount, then compute data_ptr.
+
+                // Stack has: [alloc_addr]
+                // Store refcount = 1 at alloc_addr
+                // We need alloc_addr twice (for store + for computing data_ptr + for field stores)
+                // Duplicate by re-reading global (it's already advanced, so subtract back)
+                // Actually simpler: re-get heap_ptr and subtract total_size
+                body.drop(); // drop alloc_addr, we'll recompute
+
+                // Recompute alloc_addr = heap_ptr - total_size
+                // Store refcount at alloc_addr
+                body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
+                body.i32_const(total_size as i32);
+                body.binop(walrus::ir::BinaryOp::I32Sub);
+                // Stack: [alloc_addr]
+                // Store refcount = 1
+                body.i32_const(1);
+                emit_store(body, memory, IrType::I32, 0);
+
+                // Store each field at (alloc_addr + 4 + field.offset)
                 for (i, field_expr) in fields.iter().enumerate() {
                     if let Some(fl) = layout.fields.get(i) {
-                        body.i32_const(base + fl.offset as i32); // addr
+                        // Compute data_ptr + field.offset
+                        body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
+                        body.i32_const(total_size as i32);
+                        body.binop(walrus::ir::BinaryOp::I32Sub);
+                        body.i32_const(4 + fl.offset as i32);
+                        body.binop(walrus::ir::BinaryOp::I32Add);
+                        // Stack: [field_addr]
                         emit_expr(field_expr, body, ctx);
                         emit_store(body, memory, fl.ty, 0);
                     }
                 }
 
-                // Push base pointer as result
-                body.i32_const(base);
+                // Push data_ptr (alloc_addr + 4) as result
+                body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
+                body.i32_const(total_size as i32);
+                body.binop(walrus::ir::BinaryOp::I32Sub);
+                body.i32_const(4);
+                body.binop(walrus::ir::BinaryOp::I32Add);
             } else {
                 body.i32_const(0);
             }
@@ -719,13 +770,82 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
             emit_expr(object, body, ctx);
         }
 
-        // Heap/RC/enum ops — placeholder: push 0
-        IrExpr::HeapAlloc { .. }
-        | IrExpr::HeapLoad { .. }
-        | IrExpr::HeapStore { .. }
-        | IrExpr::RcIncr(_)
-        | IrExpr::RcDecr(_)
-        | IrExpr::EnumTag(_)
+        // ── Heap allocation (bump allocator) ─────────────────────────
+        IrExpr::HeapAlloc { size } => {
+            // result = heap_ptr; heap_ptr += size
+            body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
+            // Advance heap_ptr
+            body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
+            body.i32_const(*size as i32);
+            body.binop(walrus::ir::BinaryOp::I32Add);
+            body.instr(walrus::ir::GlobalSet { global: ctx.heap_ptr });
+            // Stack: [old heap_ptr] = allocated address
+        }
+
+        // ── Heap load ────────────────────────────────────────────────
+        IrExpr::HeapLoad { addr, offset, ty } => {
+            emit_expr(addr, body, ctx);
+            if *offset > 0 {
+                body.i32_const(*offset as i32);
+                body.binop(walrus::ir::BinaryOp::I32Add);
+            }
+            emit_load(body, ctx.memory, *ty, 0);
+        }
+
+        // ── Heap store ───────────────────────────────────────────────
+        IrExpr::HeapStore { addr, offset, value, ty } => {
+            emit_expr(addr, body, ctx);
+            if *offset > 0 {
+                body.i32_const(*offset as i32);
+                body.binop(walrus::ir::BinaryOp::I32Add);
+            }
+            emit_expr(value, body, ctx);
+            emit_store(body, ctx.memory, *ty, 0);
+            // HeapStore as expression pushes 0 (unit-like)
+            body.i32_const(0);
+        }
+
+        // ── Reference counting ───────────────────────────────────────
+        IrExpr::RcIncr(ptr_expr) => {
+            // refcount is at ptr - 4; increment it; push ptr
+            emit_expr(ptr_expr, body, ctx);
+            // Duplicate ptr: compute rc_addr = ptr - 4
+            // We need ptr on the stack at the end, so re-emit
+            emit_expr(ptr_expr, body, ctx);
+            body.i32_const(4);
+            body.binop(walrus::ir::BinaryOp::I32Sub);
+            // Stack: [ptr, rc_addr]
+            // Load refcount
+            emit_expr(ptr_expr, body, ctx);
+            body.i32_const(4);
+            body.binop(walrus::ir::BinaryOp::I32Sub);
+            emit_load(body, ctx.memory, IrType::I32, 0);
+            // Stack: [ptr, rc_addr, refcount]
+            body.i32_const(1);
+            body.binop(walrus::ir::BinaryOp::I32Add);
+            // Stack: [ptr, rc_addr, refcount+1]
+            emit_store(body, ctx.memory, IrType::I32, 0);
+            // Stack: [ptr]
+        }
+
+        IrExpr::RcDecr(ptr_expr) => {
+            // refcount is at ptr - 4; decrement it; push ptr
+            emit_expr(ptr_expr, body, ctx);
+            emit_expr(ptr_expr, body, ctx);
+            body.i32_const(4);
+            body.binop(walrus::ir::BinaryOp::I32Sub);
+            emit_expr(ptr_expr, body, ctx);
+            body.i32_const(4);
+            body.binop(walrus::ir::BinaryOp::I32Sub);
+            emit_load(body, ctx.memory, IrType::I32, 0);
+            body.i32_const(1);
+            body.binop(walrus::ir::BinaryOp::I32Sub);
+            emit_store(body, ctx.memory, IrType::I32, 0);
+            // Stack: [ptr]
+        }
+
+        // Enum/indirect call — placeholder: push 0
+        IrExpr::EnumTag(_)
         | IrExpr::EnumPayload { .. }
         | IrExpr::CallIndirect { .. } => {
             body.i32_const(0);

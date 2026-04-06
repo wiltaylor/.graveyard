@@ -12,6 +12,30 @@ fn run_i32(source: &str) -> i32 {
     }
 }
 
+/// Helper: compile a script and check it produces a diagnostic containing the given substring.
+/// Type check errors are currently emitted as warnings, so we check all diagnostics.
+fn check_type_error(source: &str, expected_msg: &str) {
+    let engine = Engine::new();
+    match engine.load(source) {
+        Ok(result) => {
+            assert!(
+                result.diagnostics.iter().any(|d| d.message.contains(expected_msg)),
+                "Expected diagnostic containing '{}', but got: {:?}",
+                expected_msg,
+                result.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+        Err(diags) => {
+            assert!(
+                diags.iter().any(|d| d.message.contains(expected_msg)),
+                "Expected diagnostic containing '{}', but got: {:?}",
+                expected_msg,
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
 /// Helper: compile a script and check it has no errors.
 fn check_ok(source: &str) {
     let engine = Engine::new();
@@ -463,4 +487,132 @@ fn test_parse_all_examples() {
             let _ = engine.load(&source);
         }
     }
+}
+
+// ── Reference types ────────────────────────────────────────────────
+
+#[test]
+fn test_ref_basic_i32() {
+    assert_eq!(run_i32(r#"
+        @export
+        fn main() -> i32 {
+            let x: i32 = 42;
+            let r: &i32 = &x;
+            return *r;
+        }
+    "#), 42);
+}
+
+#[test]
+fn test_ref_mut_i32() {
+    assert_eq!(run_i32(r#"
+        @export
+        fn main() -> i32 {
+            let mut y: i32 = 10;
+            let mr: &mut i32 = &mut y;
+            *mr = 20;
+            return *mr;
+        }
+    "#), 20);
+}
+
+#[test]
+fn test_ref_pass_to_function() {
+    assert_eq!(run_i32(r#"
+        fn read_ref(r: &i32) -> i32 {
+            return *r;
+        }
+
+        @export
+        fn main() -> i32 {
+            let x: i32 = 99;
+            let r: &i32 = &x;
+            return read_ref(r);
+        }
+    "#), 99);
+}
+
+#[test]
+fn test_ref_mut_pass_to_function() {
+    assert_eq!(run_i32(r#"
+        fn add_one(r: &mut i32) -> i32 {
+            *r = *r + 1;
+            return *r;
+        }
+
+        @export
+        fn main() -> i32 {
+            let mut v: i32 = 5;
+            let mr: &mut i32 = &mut v;
+            return add_one(mr);
+        }
+    "#), 6);
+}
+
+#[test]
+fn test_ref_mut_coerces_to_ref() {
+    assert_eq!(run_i32(r#"
+        fn read_ref(r: &i32) -> i32 {
+            return *r;
+        }
+
+        @export
+        fn main() -> i32 {
+            let mut x: i32 = 7;
+            let mr: &mut i32 = &mut x;
+            return read_ref(mr);
+        }
+    "#), 7);
+}
+
+#[test]
+fn test_ref_immutable_assign_error() {
+    check_type_error(r#"
+        @export
+        fn main() -> i32 {
+            let x: i32 = 1;
+            let r: &i32 = &x;
+            *r = 2;
+            return *r;
+        }
+    "#, "cannot assign through immutable reference");
+}
+
+#[test]
+fn test_ref_mut_from_immutable_error() {
+    check_type_error(r#"
+        @export
+        fn main() -> i32 {
+            let x: i32 = 1;
+            let r: &mut i32 = &mut x;
+            return *r;
+        }
+    "#, "cannot create mutable reference to immutable binding");
+}
+
+#[test]
+fn test_deref_non_ref_error() {
+    check_type_error(r#"
+        @export
+        fn main() -> i32 {
+            let x: i32 = 5;
+            return *x;
+        }
+    "#, "cannot dereference non-reference type");
+}
+
+#[test]
+fn test_multiple_struct_instances() {
+    // This test verifies the bump allocator works correctly with multiple
+    // instances of the same struct type (was broken with fixed-offset allocator).
+    assert_eq!(run_i32(r#"
+        struct Point { x: i32, y: i32 }
+
+        @export
+        fn main() -> i32 {
+            let p1 = Point { x: 1, y: 2 };
+            let p2 = Point { x: 10, y: 20 };
+            return p1.x + p2.x;
+        }
+    "#), 11);
 }

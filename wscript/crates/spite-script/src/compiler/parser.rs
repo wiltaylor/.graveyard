@@ -588,12 +588,13 @@ impl<'a> Parser<'a> {
                 TypeExpr { span, kind: TypeExprKind::Tuple(types) }
             }
 
-            // Reference type &T
+            // Reference type &T or &mut T
             TokenKind::Amp => {
                 self.advance();
+                let mutable = self.eat(&TokenKind::Mut).is_some();
                 let inner = self.parse_type();
                 let span = start.merge(inner.span);
-                TypeExpr { span, kind: TypeExprKind::RefType(Box::new(inner)) }
+                TypeExpr { span, kind: TypeExprKind::RefType { inner: Box::new(inner), mutable } }
             }
 
             // Fn(A, B) -> R
@@ -1066,9 +1067,19 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Amp => {
                 self.advance();
+                let (op, operand) = if self.eat(&TokenKind::Mut).is_some() {
+                    (UnaryOp::RefMut, self.parse_unary())
+                } else {
+                    (UnaryOp::Ref, self.parse_unary())
+                };
+                let span = start.merge(operand.span);
+                Expr { span, kind: ExprKind::Unary { op, operand: Box::new(operand) } }
+            }
+            TokenKind::Star => {
+                self.advance();
                 let operand = self.parse_unary();
                 let span = start.merge(operand.span);
-                Expr { span, kind: ExprKind::Unary { op: UnaryOp::Ref, operand: Box::new(operand) } }
+                Expr { span, kind: ExprKind::Unary { op: UnaryOp::Deref, operand: Box::new(operand) } }
             }
             _ => self.parse_postfix(),
         }
