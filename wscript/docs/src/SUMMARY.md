@@ -16,6 +16,7 @@
     - [Enums](./language/enums.md)
     - [Pattern Matching](./language/pattern-matching.md)
     - [Closures and Lambdas](./language/closures.md)
+    - [References](./language/references.md)
     - [Tuples](./language/tuples.md)
     - [Arrays](./language/arrays.md)
     - [Maps](./language/maps.md)

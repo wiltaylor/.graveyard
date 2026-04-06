@@ -1,6 +1,6 @@
 # Variables and Bindings
 
-SpiteScript provides three ways to introduce named values: `let` bindings, `let mut` bindings, and `const` declarations. Bindings are block-scoped and immutable by default.
+SpiteScript provides three ways to introduce named values: `let` bindings, `let mut` bindings, and `const` declarations. Bindings are immutable by default. Most bindings are block-scoped, but `let`, `let mut`, and `const` may also appear at the top level of a file as globals (see [Top-Level Declarations](#top-level-declarations) below).
 
 ## `let` Bindings
 
@@ -127,6 +127,42 @@ let (a, b, c, d) = triple;   // ERROR: expected 4 elements, found 3
 ```
 
 Destructuring in `let` bindings is limited to tuples in SpiteScript v0.1. Struct destructuring and array destructuring are not supported.
+
+## Top-Level Declarations
+
+`let`, `let mut`, and `const` may appear at the top level of a file, outside any function. These become globals — their state persists for the lifetime of the `Vm` instance and is shared across calls to exported functions:
+
+```spite
+let mut tick_count: i32 = 0;
+let mut difficulty: i32 = 1;
+let mut greeting: str = "hello";
+
+const MAX_HP: i32 = 100;
+
+@export
+fn tick() -> i32 {
+    tick_count = tick_count + difficulty;
+    return tick_count;
+}
+```
+
+Struct-typed globals are allowed; their non-constant initializers run once, at `Vm` instantiation time, inside a synthesized start function:
+
+```spite
+struct PlayerState {
+    hp: i32,
+    score: i32,
+    name: str,
+}
+
+let mut world: PlayerState = PlayerState {
+    hp: 50,
+    score: 0,
+    name: "world",
+};
+```
+
+Top-level mutable globals can be read and written from the host across calls via `Vm::get_global` / `Vm::set_global` (and `read_global_struct` / `write_global_struct` for struct-typed globals). See the [Globals](../embedding/globals.md) embedding chapter for details.
 
 ## Variable Shadowing
 

@@ -2,6 +2,8 @@
 
 The `String` type in SpiteScript is a heap-allocated, UTF-8 encoded, growable string. Strings are reference-counted -- assignment shares the reference rather than copying the data. Use `.clone()` when you need an independent copy.
 
+`str` is accepted as an alias for `String` and is the preferred spelling at the host boundary (for example, on top-level globals surfaced to the embedder). The two names refer to the same type; use whichever reads better in context.
+
 ## String Literals
 
 String literals are enclosed in double quotes and support escape sequences:

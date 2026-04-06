@@ -1,60 +1,82 @@
 # Globals
 
-Globals are pre-bound values available to scripts without any declaration. They appear as identifiers in the script's top-level scope.
+Globals are top-level `let`, `let mut`, or `const` declarations in a script. They are declared by the script itself — the host does not pre-register them. After a script is instantiated into a `Vm`, the host can read and write mutable globals across calls, and the `Vm` retains linear memory and global state until it is dropped.
 
-## Registering Globals
+## Declaring Globals in a Script
 
-```rust
-use spite_script::bindings::{GlobalBinding, ScriptType};
-use spite_script::Value;
-
-engine.bindings_mut().globals.insert(
-    "config_path".to_string(),
-    GlobalBinding {
-        name: "config_path".to_string(),
-        value: Value::String("/etc/app/config.toml".to_string()),
-        ty: ScriptType::String,
-    },
-);
-```
-
-## Using in Scripts
-
-Globals are available without declaration:
+Top-level declarations live outside any function. Their initializers run once, inside a synthesized `__spite_init_globals` start function, when the `Vm` is instantiated:
 
 ```spite
-// config_path is available as a pre-bound identifier
-let path = config_path;
+let mut tick_count: i32 = 0;
+let mut difficulty: i32 = 1;
+let mut greeting: str = "hello";
+
+const MAX_HP: i32 = 100;
+
+@export
+fn tick() -> i32 {
+    tick_count = tick_count + difficulty;
+    return tick_count;
+}
 ```
 
-## Reading Globals After Execution
+Struct-typed globals are allowed as well; their non-constant initializers run in the same start function:
 
-After a script runs, you can read globals that the script may have modified:
+```spite
+struct PlayerState {
+    hp: i32,
+    score: i32,
+    name: str,
+}
+
+let mut world: PlayerState = PlayerState {
+    hp: 50,
+    score: 0,
+    name: "world",
+};
+```
+
+## Accessing Globals from the Host
+
+Instantiate the compiled script into a long-lived `Vm`, then use `get_global` / `set_global` for primitive globals and `read_global_struct` / `write_global_struct` for struct-typed globals:
 
 ```rust
-// The script's global state is isolated per call,
-// but you can read return values from exported functions.
-let result: i32 = script.call(&engine, "compute", &[])?;
+use spite_script::{Engine, Value};
+
+let mut engine = Engine::new();
+let result = engine.load_script(source)?;
+let script = result.script.expect("compilation succeeded");
+
+let script_engine = engine.script_engine().expect("runtime available");
+let mut vm = script.instantiate(script_engine)?;
+
+// Read a primitive global.
+let diff = vm.get_global("difficulty")?;        // Value::I32(1)
+
+// Write a primitive global (including `str`, which is interned into the
+// host string table).
+vm.set_global("difficulty", Value::I32(3))?;
+vm.set_global("greeting", Value::Str("hi there".into()))?;
+
+// Call an exported function — global state persists across calls.
+let tick1 = vm.call("tick", &[])?;              // Some(I32(3))
+let tick2 = vm.call("tick", &[])?;              // Some(I32(6))
 ```
 
-## Common Patterns
-
-Globals are useful for:
-
-- **Configuration** — Pass settings into scripts (`config`, `env`)
-- **Service handles** — Provide database connections, HTTP clients
-- **Constants** — Application-specific constants (`VERSION`, `APP_NAME`)
+`set_global` rejects struct-typed globals; use `write_global_struct` to update struct fields in place:
 
 ```rust
-engine.bindings_mut().globals.insert("VERSION".into(), GlobalBinding {
-    name: "VERSION".into(),
-    value: Value::String("1.0.0".into()),
-    ty: ScriptType::String,
-});
-
-engine.bindings_mut().globals.insert("MAX_RETRIES".into(), GlobalBinding {
-    name: "MAX_RETRIES".into(),
-    value: Value::I32(3),
-    ty: ScriptType::I32,
-});
+let view = vm.read_global_struct("world")?;    // StructView (recursive)
+// ... inspect fields via reflection ...
 ```
+
+## Iterating Reflection Metadata
+
+`Vm::globals()` yields a `GlobalInfo` per declared top-level global, including its name and kind (primitive `ScriptType` or struct name). This is useful for debuggers and editors that want to enumerate script state.
+
+## Notes and Limits
+
+- There is **no host-registered globals API**. The host cannot inject a new global name into the script's scope; the script must declare it.
+- A `Vm` owns its linear memory and global storage. Drop the `Vm` to reset state, or create a new one from the same `CompiledScript`.
+- `str` globals are stored as `i32` handles into a host-side string table. `get_global` / `set_global` transparently resolve and intern strings for you.
+- `bool` globals are stored as `i32` (0 or 1) but surface as `Value::Bool`.

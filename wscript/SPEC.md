@@ -265,10 +265,15 @@ Types
 │   ├── Option<T>      = Some(T) | None
 │   ├── Result<T, E>   = Ok(T) | Err(E)
 │   └── Result<T>      = Result<T, Error>  (type alias)
+├── References (bump-allocated pointers into Vm linear memory)
+│   ├── &T             (shared reference)
+│   └── &mut T         (exclusive reference)
 └── Special
     ├── Error          (type-erased, heap error value)
     ├── Ref<T>         (shared mutable cell)
     └── ()             (unit — zero-sized return type)
+
+References (`&T`, `&mut T`) are formed with the prefix `&` / `&mut` operators and dereferenced with prefix `*`. `&mut T` may only be formed from a `let mut` binding. References are backed by a bump allocator inside the `Vm`'s linear memory and remain valid for the lifetime of the `Vm`. There is no borrow checker — the `&T` vs `&mut T` distinction is enforced at type-check time only.
 ```
 
 ### Type Inference Rules
@@ -321,6 +326,22 @@ let mut w: String = "";  // mutable, explicit type
 Bindings are **immutable by default**. The `mut` keyword is required to allow reassignment or to call `&mut self` methods.
 
 Bindings are **block-scoped**. A binding shadows an outer binding of the same name within an inner block.
+
+### Top-Level (Global) Declarations
+
+`let`, `let mut`, and `const` may appear at the top level of a file, outside any function:
+
+```
+let mut tick_count: i32 = 0;
+let mut greeting: str = "hello";
+
+struct PlayerState { hp: i32, score: i32, name: str }
+let mut world: PlayerState = PlayerState { hp: 50, score: 0, name: "world" };
+```
+
+Initializers for top-level bindings run once, at `Vm` instantiation, inside a synthesized `__spite_init_globals` start function. Non-constant initializers (including struct construction and `str` interning) are allowed. Top-level mutable globals persist across calls to exported functions and are accessible from the host via `Vm::get_global` / `Vm::set_global` (primitives) and `Vm::read_global_struct` / `Vm::write_global_struct` (structs).
+
+There is no host-registered globals API — the script declares its own globals.
 
 ### `const` Declarations
 
@@ -2409,6 +2430,9 @@ item            = fn_decl
                 | trait_decl
                 | impl_block
                 | const_decl
+                | global_decl
+
+global_decl     = 'let' 'mut'? IDENT (':' type)? '=' expr ';'
 
 fn_decl         = attr* 'fn' IDENT generic_params? '(' params? ')' return_type? block
 
@@ -2435,7 +2459,8 @@ return_type     = '->' type
 
 type            = 'i8' | 'i16' | 'i32' | 'i64' | 'i128'
                 | 'u8' | 'u16' | 'u32' | 'u64' | 'u128'
-                | 'f32' | 'f64' | 'bool' | 'char' | 'String'
+                | 'f32' | 'f64' | 'bool' | 'char' | 'String' | 'str'
+                | '&' 'mut'? type
                 | type '[]'
                 | 'Map' '<' type ',' type '>'
                 | 'Option' '<' type '>'
@@ -2471,7 +2496,7 @@ eq_expr         = cmp_expr (('==' | '!=') cmp_expr)*
 cmp_expr        = add_expr (('<' | '>' | '<=' | '>=' | '<=>') add_expr)*
 add_expr        = mul_expr (('+' | '-') mul_expr)*
 mul_expr        = unary_expr (('*' | '/' | '%') unary_expr)*
-unary_expr      = ('-' | '!' | 'not') unary_expr | postfix_expr
+unary_expr      = ('-' | '!' | 'not' | '*' | '&' 'mut'?) unary_expr | postfix_expr
 postfix_expr    = primary_expr (method_call | index | field | '?')*
 method_call     = '.' IDENT generic_args? '(' args? ')'
 index           = '[' expr ']'

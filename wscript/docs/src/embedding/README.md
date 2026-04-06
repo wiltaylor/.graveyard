@@ -6,7 +6,7 @@ This section covers:
 
 - **[Host Functions](./host-functions.md)** — Register Rust closures that scripts can call
 - **[Host Types](./host-types.md)** — Expose Rust types with methods to scripts
-- **[Globals](./globals.md)** — Provide pre-bound values to scripts
+- **[Globals](./globals.md)** — Read and write script-declared top-level globals across calls
 
 ## How It Works
 

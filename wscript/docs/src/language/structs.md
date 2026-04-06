@@ -126,13 +126,31 @@ let x_val = p.x;     // 3.0
 let y_val = p.y;     // 4.0
 ```
 
-Mutate fields on a `let mut` binding:
+## Field Assignment
+
+Assign directly to a struct field with `=`, `+=`, `-=`, etc. The receiver must be a `let mut` binding (or reached through another mutable path such as `self` inside a `&mut self` method, or a struct-typed top-level global):
 
 ```spite
 let mut p = Point { x: 3.0, y: 4.0 };
 p.x = 10.0;
 p.y += 1.0;
 ```
+
+Field assignment also works on struct-typed top-level globals:
+
+```spite
+struct PlayerState { hp: i32, score: i32 }
+
+let mut world: PlayerState = PlayerState { hp: 50, score: 0 };
+
+@export
+fn damage(amount: i32) -> i32 {
+    world.hp = world.hp - amount;
+    return world.hp;
+}
+```
+
+Assigning to a field of an immutable binding is a compile error.
 
 ## `impl` Blocks
 
