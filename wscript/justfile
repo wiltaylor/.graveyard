@@ -94,6 +94,46 @@ example-hosted:
 build-compiler:
     cargo build -p wscript --no-default-features
 
+# Build + run example-hosted as a fully-static musl binary using `cross`.
+# Verifies wscript can be embedded inside a statically-linked Rust binary.
+# Requires: `cargo install cross` and a running Docker daemon.
+test-musl:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v cross >/dev/null 2>&1; then
+        echo "error: 'cross' is not installed. Run: cargo install cross --git https://github.com/cross-rs/cross" >&2
+        exit 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        echo "error: docker daemon is not running (cross needs docker)" >&2
+        exit 1
+    fi
+    TARGET=x86_64-unknown-linux-musl
+    echo "=== building example-hosted for $TARGET via cross ==="
+    cross build --release --target "$TARGET" -p example-hosted
+    BIN="target/$TARGET/release/example-hosted"
+    echo "=== verifying binary is statically linked ==="
+    file "$BIN"
+    if ldd "$BIN" 2>&1 | grep -qv 'statically linked\|not a dynamic'; then
+        echo "error: binary appears to have dynamic dependencies" >&2
+        ldd "$BIN" || true
+        exit 1
+    fi
+    echo "=== running static musl binary ==="
+    "$BIN"
+    echo "=== musl integration test OK ==="
+
+# Build-only musl check (faster; does not execute the binary)
+test-musl-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v cross >/dev/null 2>&1; then
+        echo "error: 'cross' is not installed. Run: cargo install cross --git https://github.com/cross-rs/cross" >&2
+        exit 1
+    fi
+    cross build --release --target x86_64-unknown-linux-musl -p wscript --features full
+    cross build --release --target x86_64-unknown-linux-musl -p example-hosted
+
 # Run a quick smoke test
 smoke: build
     #!/usr/bin/env bash
