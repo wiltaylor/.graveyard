@@ -13,17 +13,68 @@ use walrus::{
 
 use super::ir::*;
 use super::source_map::{SourceMap, SourceMapEntry};
+use crate::bindings::ScriptType;
+use crate::reflect::{FieldInfo, FieldType, StructTypeInfo, TypeLayouts};
 
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
 /// Generate WASM bytes (and a source map) from an IR module.
-pub fn codegen(ir: &IrModule, debug_mode: bool) -> (Vec<u8>, SourceMap) {
+pub fn codegen(ir: &IrModule, debug_mode: bool) -> (Vec<u8>, SourceMap, TypeLayouts) {
     let mut cg = WasmCodegen::new(debug_mode);
     cg.emit_module(ir);
     let wasm_bytes = cg.module.emit_wasm();
-    (wasm_bytes, cg.source_map)
+    let layouts = build_type_layouts(ir);
+    (wasm_bytes, cg.source_map, layouts)
+}
+
+/// Build a `TypeLayouts` from the IR struct layouts. User-facing struct
+/// types only — skips internal `__` prefixed layouts.
+fn build_type_layouts(ir: &IrModule) -> TypeLayouts {
+    let mut out = TypeLayouts::default();
+    for layout in &ir.struct_layouts {
+        if layout.name.starts_with("__") {
+            continue;
+        }
+        let fields = layout
+            .fields
+            .iter()
+            .map(|f| {
+                let ty = match f.type_name.as_deref() {
+                    Some("str") => FieldType::Primitive(ScriptType::Str),
+                    Some(name)
+                        if ir
+                            .struct_layouts
+                            .iter()
+                            .any(|s| s.name.as_str() == name && !name.starts_with("__")) =>
+                    {
+                        FieldType::Struct(name.to_string())
+                    }
+                    _ => FieldType::Primitive(ir_to_script_type(f.ty)),
+                };
+                FieldInfo { name: f.name.to_string(), ty, offset: f.offset }
+            })
+            .collect();
+        out.structs.push(StructTypeInfo {
+            name: layout.name.to_string(),
+            size: layout.size,
+            fields,
+        });
+    }
+    out
+}
+
+fn ir_to_script_type(ty: IrType) -> ScriptType {
+    match ty {
+        IrType::I32 => ScriptType::I32,
+        IrType::I64 => ScriptType::I64,
+        IrType::F32 => ScriptType::F32,
+        IrType::F64 => ScriptType::F64,
+        IrType::Bool => ScriptType::Bool,
+        IrType::Ptr => ScriptType::I32,
+        IrType::Unit => ScriptType::Unit,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -280,6 +331,18 @@ impl WasmCodegen {
         let panic_ty = self.module.types.add(&[ValType::I32], &[]);
         let (panic_fn, _) = self.module.add_import_func("env", "__panic", panic_ty);
         self.host_fn_ids.insert("__panic".into(), panic_fn);
+
+        // User-registered host function imports (module: "host").
+        for imp in &ir.user_host_imports {
+            let params: Vec<ValType> = imp.params.iter().map(|t| ir_to_val(*t)).collect();
+            let results: Vec<ValType> = match imp.ret {
+                IrType::Unit => vec![],
+                other => vec![ir_to_val(other)],
+            };
+            let ty = self.module.types.add(&params, &results);
+            let (fid, _) = self.module.add_import_func("host", imp.name.as_str(), ty);
+            self.host_fn_ids.insert(imp.name.clone(), fid);
+        }
 
         // Embed string constants as a data segment in linear memory.
         // Place string data at offset 0 in memory (before the stack).

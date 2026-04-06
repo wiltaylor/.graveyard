@@ -11,6 +11,7 @@ use smol_str::SmolStr;
 use super::ast::{self, AssignOp, BinOp, ExprKind, Pattern, Stmt, UnaryOp};
 use super::ir::*;
 use super::token::Span;
+use crate::bindings::{BindingRegistry, ScriptType};
 
 // ---------------------------------------------------------------------------
 // Lowerer state
@@ -47,6 +48,10 @@ struct Lowerer {
     const_values: HashMap<SmolStr, IrExpr>,
     /// Recorded trait method signatures (trait_name → vec of method sigs).
     trait_sigs: HashMap<SmolStr, Vec<IrFnSig>>,
+    /// User-registered host fn signatures keyed by name. Populated from the
+    /// `BindingRegistry` passed to `lower()`. Calls that resolve to one of
+    /// these names are emitted as `HostCall` under module "host".
+    user_host_fns: HashMap<SmolStr, (Vec<IrType>, IrType)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -54,7 +59,17 @@ struct Lowerer {
 // ---------------------------------------------------------------------------
 
 /// Lower an AST `Program` into an `IrModule`.
-pub fn lower(program: &ast::Program, debug_mode: bool) -> IrModule {
+pub fn lower(program: &ast::Program, debug_mode: bool, bindings: &BindingRegistry) -> IrModule {
+    let mut user_host_fns: HashMap<SmolStr, (Vec<IrType>, IrType)> = HashMap::new();
+    let mut user_host_imports: Vec<IrHostImport> = Vec::new();
+    for (name, hf) in &bindings.functions {
+        let params: Vec<IrType> = hf.params.iter().map(|p| script_type_to_ir(&p.ty)).collect();
+        let ret = script_type_to_ir(&hf.return_type);
+        let nm = SmolStr::new(name);
+        user_host_fns.insert(nm.clone(), (params.clone(), ret));
+        user_host_imports.push(IrHostImport { name: nm, params, ret });
+    }
+
     let mut lowerer = Lowerer {
         module: IrModule {
             functions: Vec::new(),
@@ -62,6 +77,7 @@ pub fn lower(program: &ast::Program, debug_mode: bool) -> IrModule {
             enum_layouts: Vec::new(),
             string_constants: Vec::new(),
             globals: Vec::new(),
+            user_host_imports,
         },
         string_table: HashMap::new(),
         debug_mode,
@@ -75,6 +91,7 @@ pub fn lower(program: &ast::Program, debug_mode: bool) -> IrModule {
         method_map: HashMap::new(),
         const_values: HashMap::new(),
         trait_sigs: HashMap::new(),
+        user_host_fns,
     };
 
     // Register built-in Option and Result struct layouts so that
@@ -101,8 +118,8 @@ impl Lowerer {
         self.module.struct_layouts.push(StructLayout {
             name: "__Option".into(),
             fields: vec![
-                StructFieldLayout { name: "tag".into(), ty: IrType::I32, offset: 0 },
-                StructFieldLayout { name: "value".into(), ty: IrType::I32, offset: 4 },
+                StructFieldLayout { name: "tag".into(), ty: IrType::I32, offset: 0, type_name: None },
+                StructFieldLayout { name: "value".into(), ty: IrType::I32, offset: 4, type_name: None },
             ],
             size: 8,
             field_offsets: vec![0, 4],
@@ -114,8 +131,8 @@ impl Lowerer {
         self.module.struct_layouts.push(StructLayout {
             name: "__Result".into(),
             fields: vec![
-                StructFieldLayout { name: "tag".into(), ty: IrType::I32, offset: 0 },
-                StructFieldLayout { name: "value".into(), ty: IrType::I32, offset: 4 },
+                StructFieldLayout { name: "tag".into(), ty: IrType::I32, offset: 0, type_name: None },
+                StructFieldLayout { name: "value".into(), ty: IrType::I32, offset: 4, type_name: None },
             ],
             size: 8,
             field_offsets: vec![0, 4],
@@ -315,16 +332,17 @@ impl Lowerer {
         for f in &s.fields {
             let ty = self.lower_type_expr(&f.ty);
             let size = type_size(ty);
-            // Align offset to the field's natural alignment.
             let align = size;
             if align > 0 {
                 offset = (offset + align - 1) & !(align - 1);
             }
             field_offsets.push(offset);
+            let type_name = type_expr_name(&f.ty);
             fields.push(StructFieldLayout {
                 name: f.name.clone(),
                 ty,
                 offset,
+                type_name,
             });
             offset += size;
         }
@@ -390,8 +408,8 @@ impl Lowerer {
             self.module.struct_layouts.push(StructLayout {
                 name: SmolStr::new(format!("__enum_{}", e.name)),
                 fields: vec![
-                    StructFieldLayout { name: "tag".into(), ty: IrType::I32, offset: 0 },
-                    StructFieldLayout { name: "value".into(), ty: IrType::I32, offset: 4 },
+                    StructFieldLayout { name: "tag".into(), ty: IrType::I32, offset: 0, type_name: None },
+                    StructFieldLayout { name: "value".into(), ty: IrType::I32, offset: 4, type_name: None },
                 ],
                 size: 8,
                 field_offsets: vec![0, 4],
@@ -561,7 +579,7 @@ impl Lowerer {
                     for i in 0..n {
                         let offset = (i as u32) * 4;
                         field_offsets.push(offset);
-                        fields.push(StructFieldLayout { name: SmolStr::new(format!("_{}", i)), ty: IrType::I32, offset });
+                        fields.push(StructFieldLayout { name: SmolStr::new(format!("_{}", i)), ty: IrType::I32, offset, type_name: None });
                     }
                     let layout_idx = self.module.struct_layouts.len() as u32;
                     self.module.struct_layouts.push(StructLayout { name: tuple_name.clone(), fields, size: (n as u32) * 4, field_offsets });
@@ -1180,6 +1198,15 @@ impl Lowerer {
                     }
                 }
 
+                if let Some((_params, ret)) = self.user_host_fns.get(&func_name).cloned() {
+                    return IrExpr::HostCall {
+                        module: "host".into(),
+                        name: func_name,
+                        args: final_args,
+                        ret,
+                    };
+                }
+
                 IrExpr::Call {
                     func: func_name,
                     args: final_args,
@@ -1642,6 +1669,7 @@ impl Lowerer {
                             name: SmolStr::new(format!("_{}", i)),
                             ty: IrType::I32,
                             offset,
+                            type_name: None,
                         });
                     }
                     let layout_idx = self.module.struct_layouts.len() as u32;
@@ -3253,5 +3281,25 @@ fn collect_free_vars_stmt(
             }
         }
         _ => {}
+    }
+}
+
+fn script_type_to_ir(st: &ScriptType) -> IrType {
+    match st {
+        ScriptType::I32 => IrType::I32,
+        ScriptType::I64 => IrType::I64,
+        ScriptType::F32 => IrType::F32,
+        ScriptType::F64 => IrType::F64,
+        ScriptType::Bool => IrType::Bool,
+        ScriptType::Str => IrType::I32,
+        ScriptType::Unit => IrType::Unit,
+    }
+}
+
+fn type_expr_name(t: &ast::TypeExpr) -> Option<SmolStr> {
+    match &t.kind {
+        ast::TypeExprKind::Named { name, .. } => Some(name.clone()),
+        ast::TypeExprKind::StringType => Some(SmolStr::new("str")),
+        _ => None,
     }
 }

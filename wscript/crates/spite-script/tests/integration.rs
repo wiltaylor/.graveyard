@@ -6,8 +6,8 @@ use spite_script::Engine;
 fn run_i32(source: &str) -> i32 {
     let engine = Engine::new();
     match engine.run(source, "main", &[]) {
-        Ok(spite_script::Value::I32(v)) => v,
-        Ok(other) => panic!("Expected I32, got {:?}", other),
+        Ok(Some(spite_script::Value::I32(v))) => v,
+        Ok(other) => panic!("Expected Some(I32), got {:?}", other),
         Err(e) => panic!("Execution error: {}", e),
     }
 }

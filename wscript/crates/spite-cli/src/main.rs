@@ -99,12 +99,10 @@ fn cmd_run(file: PathBuf, function: &str, debug: bool, fuel: Option<u64>) -> mie
                 })?;
 
                 match script.call(script_engine, function, &[]) {
-                    Ok(value) => {
-                        // Only print non-unit return values.
-                        if !matches!(value, spite_script::Value::Unit) {
-                            println!("{}", value);
-                        }
+                    Ok(Some(value)) => {
+                        println!("{}", value);
                     }
+                    Ok(None) => {}
                     Err(panic) => {
                         eprintln!("script panic: {}", panic.message);
                         for frame in &panic.trace {

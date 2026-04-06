@@ -47,6 +47,7 @@ pub struct CompileResult {
     pub ast: ast::Program,
     pub diagnostics: Vec<Diagnostic>,
     pub wasm_bytes: Option<Vec<u8>>,
+    pub type_layouts: crate::reflect::TypeLayouts,
 }
 
 impl CompileResult {
@@ -95,14 +96,15 @@ pub fn compile(
     }));
 
     // Phase 4: Lower to IR
-    let ir_module = lower::lower(&ast, debug_mode);
+    let ir_module = lower::lower(&ast, debug_mode, bindings);
 
     // Phase 5: Codegen to WASM
-    let (wasm_bytes, _source_map) = codegen::codegen(&ir_module, debug_mode);
+    let (wasm_bytes, _source_map, type_layouts) = codegen::codegen(&ir_module, debug_mode);
 
     Ok(CompileResult {
         ast,
         diagnostics,
         wasm_bytes: Some(wasm_bytes),
+        type_layouts,
     })
 }

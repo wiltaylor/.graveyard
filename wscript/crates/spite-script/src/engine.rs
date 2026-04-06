@@ -1,5 +1,6 @@
 use crate::bindings::BindingRegistry;
 use crate::runtime::value::Value;
+use std::sync::Arc;
 
 /// The main entry point for the SpiteScript engine.
 pub struct Engine {
@@ -56,16 +57,16 @@ impl Engine {
         self
     }
 
-    /// Register a host function. Returns a builder for adding docs.
+    /// Register a host function. The closure returns `Ok(None)` for unit,
+    /// `Ok(Some(v))` for a value, or `Err(msg)` to trap the script.
     pub fn register_fn_raw(
         &mut self,
         name: &str,
         params: Vec<crate::bindings::ParamInfo>,
         return_type: crate::bindings::ScriptType,
-        closure: impl Fn(&[Value]) -> Result<Value, String> + Send + Sync + 'static,
+        closure: impl Fn(&[Value]) -> Result<Option<Value>, String> + Send + Sync + 'static,
     ) -> &mut Self {
         use crate::bindings::HostFnBinding;
-        use std::sync::Arc;
         let binding = HostFnBinding {
             name: name.to_string(),
             params,
@@ -104,11 +105,17 @@ impl Engine {
             (&compile_result.wasm_bytes, &self.script_engine)
         {
             let source_map = crate::compiler::source_map::SourceMap::new();
+            let layouts = Arc::new(compile_result.type_layouts);
+            // Clone the bindings registry into an Arc so the CompiledScript
+            // can hold it for linker wiring at instantiate time.
+            let bindings = Arc::new(clone_bindings(&self.bindings));
             match crate::runtime::vm::CompiledScript::from_wasm_bytes(
                 script_engine,
                 wasm_bytes,
                 source.to_string(),
                 source_map,
+                layouts,
+                bindings,
             ) {
                 Ok(s) => Some(s),
                 Err(e) => {
@@ -126,14 +133,14 @@ impl Engine {
         })
     }
 
-    /// Convenience method: compile and run the given function (defaults to "main").
+    /// Convenience method: compile, instantiate, call, and dispose.
     #[cfg(feature = "runtime")]
     pub fn run(
         &self,
         source: &str,
         fn_name: &str,
         args: &[Value],
-    ) -> Result<Value, Box<dyn std::error::Error>> {
+    ) -> Result<Option<Value>, Box<dyn std::error::Error>> {
         let load_result = self
             .load_script(source)
             .map_err(|diags| {
@@ -141,15 +148,19 @@ impl Engine {
                 format!("Compilation failed:\n{}", msgs.join("\n"))
             })?;
 
-        let script = load_result.script.ok_or("No WASM module produced (compilation may have had errors or codegen is not yet implemented)")?;
+        let script = load_result
+            .script
+            .ok_or("No WASM module produced (compilation may have had errors)")?;
 
         let script_engine = self
             .script_engine
             .as_ref()
             .ok_or("ScriptEngine not available")?;
 
-        script
-            .call(script_engine, fn_name, args)
+        let mut vm = script
+            .instantiate(script_engine)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        vm.call(fn_name, args)
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
     }
 
@@ -186,4 +197,30 @@ impl LoadResult {
     pub fn has_errors(&self) -> bool {
         self.diagnostics.iter().any(|d| d.severity == crate::compiler::DiagnosticSeverity::Error)
     }
+}
+
+/// Clone a BindingRegistry (Arcs of closures + metadata) into a new owned one
+/// so `CompiledScript` can hold an independent copy.
+fn clone_bindings(src: &BindingRegistry) -> BindingRegistry {
+    use crate::bindings::HostFnBinding;
+    let mut out = BindingRegistry::new();
+    for (name, hf) in &src.functions {
+        out.functions.insert(
+            name.clone(),
+            HostFnBinding {
+                name: hf.name.clone(),
+                params: hf.params.iter().map(|p| crate::bindings::ParamInfo {
+                    name: p.name.clone(),
+                    ty: p.ty.clone(),
+                }).collect(),
+                return_type: hf.return_type.clone(),
+                doc: hf.doc.clone(),
+                param_docs: hf.param_docs.clone(),
+                return_doc: hf.return_doc.clone(),
+                examples: hf.examples.clone(),
+                closure: hf.closure.clone(),
+            },
+        );
+    }
+    out
 }

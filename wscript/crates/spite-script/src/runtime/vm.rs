@@ -1,17 +1,27 @@
 //! Wasmtime-based script execution.
 
+use crate::bindings::{BindingRegistry, ScriptType};
 use crate::compiler::source_map::SourceMap;
+use crate::reflect::{FieldType, FieldValue, StructTypeInfo, StructView, TypeLayouts};
 use crate::runtime::debug::*;
 use crate::runtime::value::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use wasmtime::{Caller, Engine as WasmEngine, Linker, Module, Store};
+use wasmtime::{Caller, Engine as WasmEngine, Instance, Linker, Module, Store};
 
 /// Host store data for string, array, and map operations.
-struct StoreData {
-    strings: Vec<String>,
-    arrays: Vec<Vec<i32>>,
-    maps: Vec<HashMap<i32, i32>>,
+pub(crate) struct StoreData {
+    pub(crate) strings: Vec<String>,
+    pub(crate) arrays: Vec<Vec<i32>>,
+    pub(crate) maps: Vec<HashMap<i32, i32>>,
+}
+
+impl StoreData {
+    fn intern_string(&mut self, s: String) -> i32 {
+        let idx = self.strings.len() as i32;
+        self.strings.push(s);
+        idx
+    }
 }
 
 /// Configuration for the script engine.
@@ -80,6 +90,8 @@ pub struct CompiledScript {
     exports: Vec<ExportedFn>,
     source: String,
     breakpoints: Arc<Mutex<BreakpointTable>>,
+    layouts: Arc<TypeLayouts>,
+    bindings: Arc<BindingRegistry>,
 }
 
 impl CompiledScript {
@@ -89,10 +101,11 @@ impl CompiledScript {
         wasm_bytes: &[u8],
         source: String,
         source_map: SourceMap,
+        layouts: Arc<TypeLayouts>,
+        bindings: Arc<BindingRegistry>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let module = Module::new(&engine.wasm_engine, wasm_bytes)?;
 
-        // Extract exported function metadata from the module.
         let exports = module
             .exports()
             .filter_map(|export| {
@@ -112,23 +125,19 @@ impl CompiledScript {
             exports,
             source,
             breakpoints: Arc::new(Mutex::new(BreakpointTable::new())),
+            layouts,
+            bindings,
         })
     }
 
-    /// Create a new compiled script from a pre-built Wasmtime module (legacy API).
-    pub fn new(
-        module: Module,
-        source_map: SourceMap,
-        exports: Vec<ExportedFn>,
-        source: String,
-    ) -> Self {
-        Self {
-            module,
-            source_map,
-            exports,
-            source,
-            breakpoints: Arc::new(Mutex::new(BreakpointTable::new())),
-        }
+    /// Reflection: look up a user struct type by name.
+    pub fn type_info(&self, name: &str) -> Option<&StructTypeInfo> {
+        self.layouts.get(name)
+    }
+
+    /// Reflection: iterate all user struct types.
+    pub fn types(&self) -> &[StructTypeInfo] {
+        &self.layouts.structs
     }
 
     /// Return the list of exported functions.
@@ -151,14 +160,11 @@ impl CompiledScript {
         &self.module
     }
 
-    /// Call an exported function by name.
-    pub fn call(
-        &self,
-        engine: &ScriptEngine,
-        fn_name: &str,
-        args: &[Value],
-    ) -> Result<Value, ScriptPanic> {
-        // Create a store with StoreData for string/array host state.
+    /// Instantiate the script into a long-lived `Vm`. The returned `Vm` owns
+    /// its own `Store` and `Instance` — all state (linear memory, globals,
+    /// host string table) persists across `Vm::call` invocations until the
+    /// `Vm` is dropped.
+    pub fn instantiate(&self, engine: &ScriptEngine) -> Result<Vm, ScriptPanic> {
         let mut store = Store::new(
             &engine.wasm_engine,
             StoreData {
@@ -168,7 +174,6 @@ impl CompiledScript {
             },
         );
 
-        // Create a linker and register host imports.
         let mut linker: Linker<StoreData> = Linker::new(&engine.wasm_engine);
 
         // Register __print(ptr: i32, len: i32) — reads a UTF-8 string from WASM memory and prints it.
@@ -807,37 +812,131 @@ impl CompiledScript {
                 trace: vec![],
             })?;
 
+        // ── User-registered host functions (module "host") ─────────────
+        for (name, hf) in &self.bindings.functions {
+            let closure = Arc::clone(&hf.closure);
+            let param_tys: Vec<ScriptType> = hf.params.iter().map(|p| p.ty.clone()).collect();
+            let ret_ty = hf.return_type.clone();
+            let fn_name = name.clone();
+            let param_count = param_tys.len();
+
+            // Build a dynamic wasmtime Func using typed I/O from ScriptType.
+            // Use wasmtime::Func::new with a dynamic signature.
+            use wasmtime::{Func, FuncType, Val, ValType};
+            let params_val: Vec<ValType> = param_tys
+                .iter()
+                .map(|st| match st {
+                    ScriptType::I64 => ValType::I64,
+                    ScriptType::F32 => ValType::F32,
+                    ScriptType::F64 => ValType::F64,
+                    _ => ValType::I32,
+                })
+                .collect();
+            let results_val: Vec<ValType> = match &ret_ty {
+                ScriptType::Unit => vec![],
+                ScriptType::I64 => vec![ValType::I64],
+                ScriptType::F32 => vec![ValType::F32],
+                ScriptType::F64 => vec![ValType::F64],
+                _ => vec![ValType::I32],
+            };
+            let ty = FuncType::new(&engine.wasm_engine, params_val, results_val);
+            let param_tys_clone = param_tys.clone();
+            let ret_ty_clone = ret_ty.clone();
+            let fn_name_for_err = fn_name.clone();
+            let func = Func::new(
+                &mut store,
+                ty,
+                move |mut caller, params: &[Val], results: &mut [Val]| {
+                    if params.len() != param_count {
+                        return Err(wasmtime::Error::msg(format!(
+                            "host fn '{}' arity mismatch",
+                            fn_name_for_err
+                        )));
+                    }
+                    let mut values: Vec<Value> = Vec::with_capacity(param_count);
+                    for (i, st) in param_tys_clone.iter().enumerate() {
+                        let v = match (st, &params[i]) {
+                            (ScriptType::I32, Val::I32(x)) => Value::I32(*x),
+                            (ScriptType::Bool, Val::I32(x)) => Value::Bool(*x != 0),
+                            (ScriptType::I64, Val::I64(x)) => Value::I64(*x),
+                            (ScriptType::F32, Val::F32(bits)) => Value::F32(f32::from_bits(*bits)),
+                            (ScriptType::F64, Val::F64(bits)) => Value::F64(f64::from_bits(*bits)),
+                            (ScriptType::Str, Val::I32(handle)) => {
+                                let s = caller
+                                    .data()
+                                    .strings
+                                    .get(*handle as usize)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                Value::Str(s)
+                            }
+                            _ => {
+                                return Err(wasmtime::Error::msg(format!(
+                                    "host fn '{}' argument type mismatch at {}",
+                                    fn_name_for_err, i
+                                )));
+                            }
+                        };
+                        values.push(v);
+                    }
+                    let out = closure(&values).map_err(wasmtime::Error::msg)?;
+                    match (&ret_ty_clone, out) {
+                        (ScriptType::Unit, _) => {}
+                        (ScriptType::I32, Some(Value::I32(v))) => results[0] = Val::I32(v),
+                        (ScriptType::Bool, Some(Value::Bool(v))) => {
+                            results[0] = Val::I32(if v { 1 } else { 0 })
+                        }
+                        (ScriptType::I64, Some(Value::I64(v))) => results[0] = Val::I64(v),
+                        (ScriptType::F32, Some(Value::F32(v))) => {
+                            results[0] = Val::F32(v.to_bits())
+                        }
+                        (ScriptType::F64, Some(Value::F64(v))) => {
+                            results[0] = Val::F64(v.to_bits())
+                        }
+                        (ScriptType::Str, Some(Value::Str(s))) => {
+                            let h = caller.data_mut().intern_string(s);
+                            results[0] = Val::I32(h);
+                        }
+                        (ret, got) => {
+                            return Err(wasmtime::Error::msg(format!(
+                                "host fn '{}' return type mismatch: expected {:?}, got {:?}",
+                                fn_name_for_err, ret, got
+                            )));
+                        }
+                    }
+                    Ok(())
+                },
+            );
+            linker
+                .define(&mut store, "host", &fn_name, func)
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register host fn {fn_name}: {e}"),
+                    trace: vec![],
+                })?;
+        }
+
         // Instantiate the module.
         let instance = linker
             .instantiate(&mut store, &self.module)
             .map_err(|e| self.trap_to_panic(&e.to_string()))?;
 
-        // Look up the exported function.
-        let func = instance.get_func(&mut store, fn_name).ok_or_else(|| ScriptPanic {
-            message: format!("Function '{}' not found in module exports", fn_name),
-            trace: vec![],
-        })?;
+        Ok(Vm {
+            store,
+            instance,
+            layouts: Arc::clone(&self.layouts),
+        })
+    }
 
-        // Convert args from Value to wasmtime::Val.
-        let params: Vec<wasmtime::Val> = args.iter().map(value_to_wasm_val).collect();
-
-        // Prepare result buffer based on the function's type.
-        let func_ty = func.ty(&store);
-        let result_count = func_ty.results().len();
-        let mut results = vec![wasmtime::Val::I32(0); result_count];
-
-        // Call the function.
-        func.call(&mut store, &params, &mut results)
-            .map_err(|e| self.trap_to_panic(&e.to_string()))?;
-
-        // Convert results back to Value.
-        if results.is_empty() {
-            Ok(Value::Unit)
-        } else if results.len() == 1 {
-            Ok(wasm_val_to_value(&results[0]))
-        } else {
-            Ok(Value::Tuple(results.iter().map(wasm_val_to_value).collect()))
-        }
+    /// Convenience: instantiate + call + discard. Prefer `instantiate` for
+    /// stateful usage.
+    pub fn call(
+        &self,
+        engine: &ScriptEngine,
+        fn_name: &str,
+        args: &[Value],
+    ) -> Result<Option<Value>, ScriptPanic> {
+        let mut vm = self.instantiate(engine)?;
+        vm.call(fn_name, args)
     }
 
     /// Convert a WASM trap error message into a ScriptPanic with source-mapped trace.
@@ -880,32 +979,275 @@ impl CompiledScript {
     }
 }
 
-/// Convert a `Value` into a `wasmtime::Val`.
+/// Convert a `Value` into a `wasmtime::Val`. Strings must be handled
+/// separately against a `StoreData` — this helper only covers primitives.
 fn value_to_wasm_val(value: &Value) -> wasmtime::Val {
     match value {
-        Value::I8(v) => wasmtime::Val::I32(*v as i32),
-        Value::I16(v) => wasmtime::Val::I32(*v as i32),
         Value::I32(v) => wasmtime::Val::I32(*v),
         Value::I64(v) => wasmtime::Val::I64(*v),
-        Value::U8(v) => wasmtime::Val::I32(*v as i32),
-        Value::U16(v) => wasmtime::Val::I32(*v as i32),
-        Value::U32(v) => wasmtime::Val::I32(*v as i32),
-        Value::U64(v) => wasmtime::Val::I64(*v as i64),
         Value::F32(v) => wasmtime::Val::F32(v.to_bits()),
         Value::F64(v) => wasmtime::Val::F64(v.to_bits()),
         Value::Bool(v) => wasmtime::Val::I32(if *v { 1 } else { 0 }),
-        // Types that don't have a direct WASM representation default to i32(0).
-        _ => wasmtime::Val::I32(0),
+        Value::Str(_) => wasmtime::Val::I32(0),
     }
 }
 
-/// Convert a `wasmtime::Val` back into a `Value`.
 fn wasm_val_to_value(val: &wasmtime::Val) -> Value {
     match val {
         wasmtime::Val::I32(v) => Value::I32(*v),
         wasmtime::Val::I64(v) => Value::I64(*v),
         wasmtime::Val::F32(v) => Value::F32(f32::from_bits(*v)),
         wasmtime::Val::F64(v) => Value::F64(f64::from_bits(*v)),
-        _ => Value::Unit,
+        _ => Value::I32(0),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Long-lived Vm
+// ---------------------------------------------------------------------------
+
+/// A live script instance. Owns its own `Store` and `Instance`; dropping it
+/// disposes the script state.
+pub struct Vm {
+    store: Store<StoreData>,
+    instance: Instance,
+    layouts: Arc<TypeLayouts>,
+}
+
+impl Vm {
+    /// Call an exported function by name. Strings in `args` are interned into
+    /// the store's string table and the handle is passed to the script. A
+    /// return value of `None` means unit.
+    pub fn call(&mut self, fn_name: &str, args: &[Value]) -> Result<Option<Value>, ScriptPanic> {
+        let func = self
+            .instance
+            .get_func(&mut self.store, fn_name)
+            .ok_or_else(|| ScriptPanic {
+                message: format!("Function '{}' not found in module exports", fn_name),
+                trace: vec![],
+            })?;
+
+        let params: Vec<wasmtime::Val> = args
+            .iter()
+            .map(|v| match v {
+                Value::Str(s) => {
+                    let h = self.store.data_mut().intern_string(s.clone());
+                    wasmtime::Val::I32(h)
+                }
+                other => value_to_wasm_val(other),
+            })
+            .collect();
+
+        let func_ty = func.ty(&self.store);
+        let result_count = func_ty.results().len();
+        let mut results = vec![wasmtime::Val::I32(0); result_count];
+
+        func.call(&mut self.store, &params, &mut results)
+            .map_err(|e| ScriptPanic { message: e.to_string(), trace: vec![] })?;
+
+        if results.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(wasm_val_to_value(&results[0])))
+        }
+    }
+
+    /// Read a primitive WASM global exported as `g_<name>`.
+    pub fn get_global(&mut self, name: &str) -> Result<Value, String> {
+        let export_name = format!("g_{name}");
+        let g = self
+            .instance
+            .get_global(&mut self.store, &export_name)
+            .ok_or_else(|| format!("global '{name}' not found"))?;
+        Ok(wasm_val_to_value(&g.get(&mut self.store)))
+    }
+
+    /// Write a primitive WASM global exported as `g_<name>`.
+    pub fn set_global(&mut self, name: &str, v: Value) -> Result<(), String> {
+        let export_name = format!("g_{name}");
+        let g = self
+            .instance
+            .get_global(&mut self.store, &export_name)
+            .ok_or_else(|| format!("global '{name}' not found"))?;
+        let val = match v {
+            Value::Str(s) => {
+                let h = self.store.data_mut().intern_string(s);
+                wasmtime::Val::I32(h)
+            }
+            other => value_to_wasm_val(&other),
+        };
+        g.set(&mut self.store, val).map_err(|e| e.to_string())
+    }
+
+    /// Look up reflection info for a type.
+    pub fn type_info(&self, name: &str) -> Option<&StructTypeInfo> {
+        self.layouts.get(name)
+    }
+
+    /// Read a script struct starting at linear-memory pointer `base`.
+    /// Walks `FieldInfo` recursively: primitives load directly, `str` fields
+    /// load the handle and resolve through the host string table, nested
+    /// struct fields recurse.
+    pub fn read_struct_at(&mut self, base: i32, type_name: &str) -> Result<StructView, String> {
+        let info = self
+            .layouts
+            .get(type_name)
+            .ok_or_else(|| format!("unknown struct type '{type_name}'"))?
+            .clone();
+        self.read_struct_info(base, &info)
+    }
+
+    fn read_struct_info(
+        &mut self,
+        base: i32,
+        info: &StructTypeInfo,
+    ) -> Result<StructView, String> {
+        let memory = self
+            .instance
+            .get_memory(&mut self.store, "memory")
+            .ok_or_else(|| "script has no exported memory".to_string())?;
+        let mut fields = Vec::with_capacity(info.fields.len());
+        for field in &info.fields {
+            let addr = (base as u32 + field.offset) as usize;
+            let data = memory.data(&self.store);
+            let value = match &field.ty {
+                FieldType::Primitive(ScriptType::I32) => {
+                    FieldValue::Primitive(Value::I32(read_i32(data, addr)?))
+                }
+                FieldType::Primitive(ScriptType::Bool) => FieldValue::Primitive(Value::Bool(
+                    read_i32(data, addr)? != 0,
+                )),
+                FieldType::Primitive(ScriptType::I64) => {
+                    FieldValue::Primitive(Value::I64(read_i64(data, addr)?))
+                }
+                FieldType::Primitive(ScriptType::F32) => FieldValue::Primitive(Value::F32(
+                    f32::from_bits(read_i32(data, addr)? as u32),
+                )),
+                FieldType::Primitive(ScriptType::F64) => FieldValue::Primitive(Value::F64(
+                    f64::from_bits(read_i64(data, addr)? as u64),
+                )),
+                FieldType::Primitive(ScriptType::Str) => {
+                    let handle = read_i32(data, addr)?;
+                    let s = self
+                        .store
+                        .data()
+                        .strings
+                        .get(handle as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    FieldValue::Primitive(Value::Str(s))
+                }
+                FieldType::Primitive(ScriptType::Unit) => FieldValue::Primitive(Value::I32(0)),
+                FieldType::Struct(nested_name) => {
+                    let ptr = read_i32(data, addr)?;
+                    let nested = self
+                        .layouts
+                        .get(nested_name)
+                        .ok_or_else(|| format!("unknown nested struct '{nested_name}'"))?
+                        .clone();
+                    FieldValue::Nested(self.read_struct_info(ptr, &nested)?)
+                }
+            };
+            fields.push((field.name.clone(), value));
+        }
+        Ok(StructView { type_name: info.name.clone(), fields })
+    }
+
+    /// Write a set of primitive/string fields into a struct at linear-memory
+    /// pointer `base`. Nested struct fields and unknown fields return an
+    /// error.
+    pub fn write_struct_at(
+        &mut self,
+        base: i32,
+        type_name: &str,
+        fields: &[(&str, Value)],
+    ) -> Result<(), String> {
+        let info = self
+            .layouts
+            .get(type_name)
+            .ok_or_else(|| format!("unknown struct type '{type_name}'"))?
+            .clone();
+        for (name, value) in fields {
+            let field = info
+                .fields
+                .iter()
+                .find(|f| f.name == *name)
+                .ok_or_else(|| format!("unknown field '{name}' on {type_name}"))?;
+            let addr = (base as u32 + field.offset) as usize;
+            match (&field.ty, value.clone()) {
+                (FieldType::Primitive(ScriptType::I32), Value::I32(v)) => {
+                    self.write_i32(addr, v)?
+                }
+                (FieldType::Primitive(ScriptType::Bool), Value::Bool(v)) => {
+                    self.write_i32(addr, if v { 1 } else { 0 })?
+                }
+                (FieldType::Primitive(ScriptType::I64), Value::I64(v)) => {
+                    self.write_i64(addr, v)?
+                }
+                (FieldType::Primitive(ScriptType::F32), Value::F32(v)) => {
+                    self.write_i32(addr, v.to_bits() as i32)?
+                }
+                (FieldType::Primitive(ScriptType::F64), Value::F64(v)) => {
+                    self.write_i64(addr, v.to_bits() as i64)?
+                }
+                (FieldType::Primitive(ScriptType::Str), Value::Str(s)) => {
+                    let h = self.store.data_mut().intern_string(s);
+                    self.write_i32(addr, h)?;
+                }
+                (FieldType::Struct(_), _) => {
+                    return Err(format!(
+                        "write_struct_at: nested struct field '{name}' unsupported"
+                    ))
+                }
+                (ft, v) => {
+                    return Err(format!(
+                        "write_struct_at: type mismatch for '{name}': field {:?}, got {}",
+                        ft,
+                        v.type_name()
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn write_i32(&mut self, addr: usize, v: i32) -> Result<(), String> {
+        let memory = self
+            .instance
+            .get_memory(&mut self.store, "memory")
+            .ok_or_else(|| "script has no exported memory".to_string())?;
+        let data = memory.data_mut(&mut self.store);
+        if addr + 4 > data.len() {
+            return Err("address out of bounds".into());
+        }
+        data[addr..addr + 4].copy_from_slice(&v.to_le_bytes());
+        Ok(())
+    }
+
+    fn write_i64(&mut self, addr: usize, v: i64) -> Result<(), String> {
+        let memory = self
+            .instance
+            .get_memory(&mut self.store, "memory")
+            .ok_or_else(|| "script has no exported memory".to_string())?;
+        let data = memory.data_mut(&mut self.store);
+        if addr + 8 > data.len() {
+            return Err("address out of bounds".into());
+        }
+        data[addr..addr + 8].copy_from_slice(&v.to_le_bytes());
+        Ok(())
+    }
+}
+
+fn read_i32(data: &[u8], addr: usize) -> Result<i32, String> {
+    if addr + 4 > data.len() {
+        return Err("address out of bounds".into());
+    }
+    Ok(i32::from_le_bytes(data[addr..addr + 4].try_into().unwrap()))
+}
+
+fn read_i64(data: &[u8], addr: usize) -> Result<i64, String> {
+    if addr + 8 > data.len() {
+        return Err("address out of bounds".into());
+    }
+    Ok(i64::from_le_bytes(data[addr..addr + 8].try_into().unwrap()))
 }

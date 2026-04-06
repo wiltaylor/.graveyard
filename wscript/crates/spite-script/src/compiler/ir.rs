@@ -13,6 +13,16 @@ pub struct IrModule {
     pub enum_layouts: Vec<EnumLayout>,
     pub string_constants: Vec<String>,
     pub globals: Vec<IrGlobal>,
+    /// User-registered host function imports to emit in the WASM module.
+    /// Resolved in the runtime linker under module name "host".
+    pub user_host_imports: Vec<IrHostImport>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IrHostImport {
+    pub name: SmolStr,
+    pub params: Vec<IrType>,
+    pub ret: IrType,
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +377,9 @@ pub struct StructFieldLayout {
     pub name: SmolStr,
     pub ty: IrType,
     pub offset: u32,
+    /// If this field is a named user type (struct or string), the type name.
+    /// Used by reflection to resolve nested struct fields and string fields.
+    pub type_name: Option<SmolStr>,
 }
 
 // ---------------------------------------------------------------------------

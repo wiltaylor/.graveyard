@@ -833,43 +833,12 @@ impl<'a> TypeEnv<'a> {
 
     fn from_script_type(st: &ScriptType) -> Type {
         match st {
-            ScriptType::I8 => Type::Primitive(PrimitiveType::I8),
-            ScriptType::I16 => Type::Primitive(PrimitiveType::I16),
             ScriptType::I32 => Type::Primitive(PrimitiveType::I32),
             ScriptType::I64 => Type::Primitive(PrimitiveType::I64),
-            ScriptType::I128 => Type::Primitive(PrimitiveType::I128),
-            ScriptType::U8 => Type::Primitive(PrimitiveType::U8),
-            ScriptType::U16 => Type::Primitive(PrimitiveType::U16),
-            ScriptType::U32 => Type::Primitive(PrimitiveType::U32),
-            ScriptType::U64 => Type::Primitive(PrimitiveType::U64),
-            ScriptType::U128 => Type::Primitive(PrimitiveType::U128),
             ScriptType::F32 => Type::Primitive(PrimitiveType::F32),
             ScriptType::F64 => Type::Primitive(PrimitiveType::F64),
             ScriptType::Bool => Type::Primitive(PrimitiveType::Bool),
-            ScriptType::Char => Type::Primitive(PrimitiveType::Char),
-            ScriptType::String => Type::String,
-            ScriptType::Array(inner) => {
-                Type::Array(Box::new(Self::from_script_type(inner)))
-            }
-            ScriptType::Map(k, v) => Type::Map(
-                Box::new(Self::from_script_type(k)),
-                Box::new(Self::from_script_type(v)),
-            ),
-            ScriptType::Tuple(items) => {
-                Type::Tuple(items.iter().map(|t| Self::from_script_type(t)).collect())
-            }
-            ScriptType::Option(inner) => {
-                Type::Option(Box::new(Self::from_script_type(inner)))
-            }
-            ScriptType::Result(ok, err) => Type::Result(
-                Box::new(Self::from_script_type(ok)),
-                Box::new(Self::from_script_type(err)),
-            ),
-            ScriptType::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|p| Self::from_script_type(p)).collect(),
-                ret: Box::new(Self::from_script_type(ret)),
-            },
-            ScriptType::Named(_) => Type::Unknown,
+            ScriptType::Str => Type::String,
             ScriptType::Unit => Type::Unit,
         }
     }
@@ -2255,12 +2224,9 @@ mod tests {
     fn from_script_type_round_trip() {
         let cases = vec![
             (ScriptType::I32, Type::Primitive(PrimitiveType::I32)),
-            (ScriptType::String, Type::String),
+            (ScriptType::Str, Type::String),
             (ScriptType::Unit, Type::Unit),
-            (
-                ScriptType::Array(Box::new(ScriptType::Bool)),
-                Type::Array(Box::new(Type::Primitive(PrimitiveType::Bool))),
-            ),
+            (ScriptType::Bool, Type::Primitive(PrimitiveType::Bool)),
         ];
         for (st, expected) in cases {
             assert_eq!(TypeEnv::from_script_type(&st), expected);
