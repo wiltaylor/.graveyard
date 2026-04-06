@@ -1,6 +1,6 @@
 # Grammar Reference
 
-This is an informal EBNF grammar for SpiteScript. The parser implementation is authoritative — this reference is for quick lookup.
+This is an informal EBNF grammar for Wscript. The parser implementation is authoritative — this reference is for quick lookup.
 
 ## Program Structure
 

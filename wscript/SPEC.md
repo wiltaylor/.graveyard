@@ -339,7 +339,7 @@ struct PlayerState { hp: i32, score: i32, name: str }
 let mut world: PlayerState = PlayerState { hp: 50, score: 0, name: "world" };
 ```
 
-Initializers for top-level bindings run once, at `Vm` instantiation, inside a synthesized `__spite_init_globals` start function. Non-constant initializers (including struct construction and `str` interning) are allowed. Top-level mutable globals persist across calls to exported functions and are accessible from the host via `Vm::get_global` / `Vm::set_global` (primitives) and `Vm::read_global_struct` / `Vm::write_global_struct` (structs).
+Initializers for top-level bindings run once, at `Vm` instantiation, inside a synthesized `__wscript_init_globals` start function. Non-constant initializers (including struct construction and `str` interning) are allowed. Top-level mutable globals persist across calls to exported functions and are accessible from the host via `Vm::get_global` / `Vm::set_global` (primitives) and `Vm::read_global_struct` / `Vm::write_global_struct` (structs).
 
 There is no host-registered globals API — the script declares its own globals.
 

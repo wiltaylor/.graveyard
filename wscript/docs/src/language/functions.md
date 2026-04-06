@@ -1,12 +1,12 @@
 # Functions
 
-Functions in SpiteScript are declared with the `fn` keyword. They are statically typed, support default parameters and named arguments, and can be passed as values.
+Functions in Wscript are declared with the `fn` keyword. They are statically typed, support default parameters and named arguments, and can be passed as values.
 
 ## Declaration Syntax
 
 A function declaration specifies a name, parameters with types, an optional return type, and a body:
 
-```spite
+```wscript
 fn add(a: i32, b: i32) -> i32 {
     return a + b;
 }
@@ -20,9 +20,9 @@ Parameters must always have explicit type annotations. The return type appears a
 
 ## No Implicit Returns
 
-SpiteScript requires an explicit `return` statement in all function bodies. There is no implicit return from the final expression. This is a deliberate design choice for clarity:
+Wscript requires an explicit `return` statement in all function bodies. There is no implicit return from the final expression. This is a deliberate design choice for clarity:
 
-```spite
+```wscript
 // Correct -- explicit return
 fn add(a: i32, b: i32) -> i32 {
     return a + b;
@@ -46,7 +46,7 @@ These exceptions exist because they are expression contexts, not statement conte
 
 Functions can have multiple `return` statements for early exit:
 
-```spite
+```wscript
 fn classify(n: i32) -> String {
     if n < 0 {
         return "negative";
@@ -62,7 +62,7 @@ fn classify(n: i32) -> String {
 
 Functions that perform side effects and return nothing omit the return type annotation. They implicitly return `()` (the unit type):
 
-```spite
+```wscript
 fn log_message(msg: String) {
     print(`[LOG] ${msg}`);
     // implicit return ()
@@ -76,7 +76,7 @@ fn update_counter(counter: Ref<i32>) {
 
 You may write an explicit `return;` (without a value) to exit early from a unit-returning function:
 
-```spite
+```wscript
 fn maybe_log(msg: String, verbose: bool) {
     if !verbose {
         return;
@@ -89,7 +89,7 @@ fn maybe_log(msg: String, verbose: bool) {
 
 Parameters can have default values. Callers may omit arguments for parameters with defaults:
 
-```spite
+```wscript
 fn connect(host: String, port: u16 = 8080, timeout_ms: u64 = 5000) -> Result<()> {
     // ...
     return Ok(());
@@ -103,7 +103,7 @@ connect("localhost", 3000, 1000);                // port=3000, timeout_ms=1000
 
 Default values must be compile-time expressions. Parameters with defaults must come after parameters without defaults:
 
-```spite
+```wscript
 // Correct
 fn create_user(name: String, role: String = "viewer", active: bool = true) -> User {
     return User { name, role, active };
@@ -119,7 +119,7 @@ fn bad(x: i32 = 0, y: i32) -> i32 {   // ERROR
 
 When calling functions with default parameters, you can use named arguments to skip over defaults or call in a different order. Positional arguments must appear before named arguments:
 
-```spite
+```wscript
 fn connect(host: String, port: u16 = 8080, timeout_ms: u64 = 5000) -> Result<()> {
     // ...
     return Ok(());
@@ -134,7 +134,7 @@ connect("localhost", port: 3000, timeout_ms: 1000);
 
 Named arguments are particularly useful for functions with several defaulted parameters:
 
-```spite
+```wscript
 fn create_window(
     title: String,
     width: u32 = 800,
@@ -153,7 +153,7 @@ create_window("Editor", width: 1200, height: 900);
 
 Named functions can be used as values. They coerce to the `Fn(...)` type:
 
-```spite
+```wscript
 fn double(x: i32) -> i32 {
     return x * 2;
 }
@@ -173,14 +173,14 @@ apply(triple, 5);     // 15
 
 Functions can be stored in variables:
 
-```spite
+```wscript
 let operation: Fn(i32) -> i32 = double;
 let result = operation(21);    // 42
 ```
 
 Functions can be stored in arrays:
 
-```spite
+```wscript
 let transforms: Fn(i32) -> i32[] = [double, triple, |x| x + 1];
 
 for f in transforms {
@@ -191,7 +191,7 @@ for f in transforms {
 
 Functions can be returned from other functions:
 
-```spite
+```wscript
 fn make_multiplier(factor: i32) -> Fn(i32) -> i32 {
     return |x| x * factor;
 }
@@ -204,19 +204,19 @@ times_five(3)    // 15
 
 The `Fn` type describes the signature of a callable value. The syntax is:
 
-```spite
+```wscript
 Fn(ParamType1, ParamType2) -> ReturnType
 ```
 
 For functions that take no arguments:
 
-```spite
+```wscript
 Fn() -> i32
 ```
 
 For functions that return unit:
 
-```spite
+```wscript
 Fn(String)          // implicitly returns ()
 Fn(String) -> ()    // equivalent, explicit
 ```
@@ -225,9 +225,9 @@ Both named functions and lambdas/closures satisfy `Fn` types. The `Fn` type does
 
 ## Higher-Order Function Patterns
 
-Functions that take or return other functions are common in SpiteScript. Here are typical patterns:
+Functions that take or return other functions are common in Wscript. Here are typical patterns:
 
-```spite
+```wscript
 // Predicate function
 fn filter_items(items: i32[], predicate: Fn(i32) -> bool) -> i32[] {
     return items.filter(predicate).collect();
@@ -237,7 +237,7 @@ let positives = filter_items([-1, 2, -3, 4], |x| x > 0);
 // [2, 4]
 ```
 
-```spite
+```wscript
 // Transformation chain
 fn compose(f: Fn(i32) -> i32, g: Fn(i32) -> i32) -> Fn(i32) -> i32 {
     return |x| f(g(x));
@@ -251,7 +251,7 @@ add_one_then_double(3)   // 8  (3+1=4, 4*2=8)
 
 Functions marked with `@export` are callable from the Rust host application after the script is compiled:
 
-```spite
+```wscript
 @export
 fn process(items: i32[]) -> i32 {
     return items.filter(|x| x > 0).sum();
@@ -267,7 +267,7 @@ Without `@export`, functions may be inlined or optimized away by the compiler. O
 
 If your script defines a single entry point, mark it with `@export`:
 
-```spite
+```wscript
 @export
 fn main() {
     let data = load_data();
@@ -286,7 +286,7 @@ fn analyze(data: i32[]) -> String {
 
 Here is a function that demonstrates several features together -- default parameters, named arguments, and functions as values:
 
-```spite
+```wscript
 fn process_records(
     records: String[],
     transform: Fn(String) -> String = |s| s,

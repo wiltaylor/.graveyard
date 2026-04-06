@@ -1,12 +1,12 @@
 # Enums
 
-Enums in SpiteScript define types that can be one of several named variants. Variants can carry no data, tuple data, or named-field data. Enums support methods through `impl` blocks and are a natural fit for pattern matching.
+Enums in Wscript define types that can be one of several named variants. Variants can carry no data, tuple data, or named-field data. Enums support methods through `impl` blocks and are a natural fit for pattern matching.
 
 ## Basic Enums
 
 A simple enum with unit variants (no associated data):
 
-```spite
+```wscript
 enum Direction {
     North,
     South,
@@ -19,7 +19,7 @@ let d = Direction::North;
 
 Unit enums are useful for representing a fixed set of options:
 
-```spite
+```wscript
 enum Color {
     Red,
     Green,
@@ -37,20 +37,20 @@ enum LogLevel {
 
 Variants are accessed via the `::` path separator:
 
-```spite
+```wscript
 let level = LogLevel::Warn;
 let color = Color::Blue;
 ```
 
 ## Data-Carrying Enums
 
-Enum variants can carry data. SpiteScript supports three variant kinds in a single enum.
+Enum variants can carry data. Wscript supports three variant kinds in a single enum.
 
 ### Tuple Variants
 
 A variant with positional data fields:
 
-```spite
+```wscript
 enum Shape {
     Circle(f64),               // one field: radius
     Rectangle(f64, f64),       // two fields: width, height
@@ -64,7 +64,7 @@ let rect = Shape::Rectangle(3.0, 4.0);
 
 A variant with named fields:
 
-```spite
+```wscript
 enum Event {
     Click { x: i32, y: i32, button: String },
     KeyPress { key: char, modifiers: String[] },
@@ -79,7 +79,7 @@ let key = Event::KeyPress { key: 'a', modifiers: ["ctrl"] };
 
 A single enum can mix unit, tuple, and struct variants:
 
-```spite
+```wscript
 enum Shape {
     Circle(f64),                   // tuple variant
     Rectangle(f64, f64),           // tuple variant
@@ -96,7 +96,7 @@ let s3 = Shape::Point;
 
 The `match` expression is the primary way to work with enum values. The compiler requires that all variants are covered (exhaustive matching):
 
-```spite
+```wscript
 fn describe(d: Direction) -> String {
     return match d {
         Direction::North => "heading north",
@@ -111,7 +111,7 @@ fn describe(d: Direction) -> String {
 
 Bind the inner fields to names:
 
-```spite
+```wscript
 fn area(shape: Shape) -> f64 {
     return match shape {
         Shape::Circle(r)       => r * r * 3.14159,
@@ -126,7 +126,7 @@ fn area(shape: Shape) -> f64 {
 
 Bind fields by name. Use `..` to ignore remaining fields:
 
-```spite
+```wscript
 fn handle_event(event: Event) {
     match event {
         Event::Click { x, y, button } => {
@@ -146,7 +146,7 @@ fn handle_event(event: Event) {
 
 Use `_` to match any value without binding it, or as a catch-all arm:
 
-```spite
+```wscript
 fn is_circle(shape: Shape) -> bool {
     return match shape {
         Shape::Circle(_) => true,
@@ -159,7 +159,7 @@ fn is_circle(shape: Shape) -> bool {
 
 Add conditions with `if`:
 
-```spite
+```wscript
 fn describe_shape(shape: Shape) -> String {
     return match shape {
         Shape::Circle(r) if r > 100.0 => "large circle",
@@ -176,7 +176,7 @@ fn describe_shape(shape: Shape) -> String {
 
 For matching a single variant, `if let` is more concise than a full `match`:
 
-```spite
+```wscript
 if let Shape::Circle(radius) = shape {
     print(`circle with radius ${radius}`);
 }
@@ -192,7 +192,7 @@ For a complete guide to patterns, including `@` bindings and `while let`, see th
 
 Define methods on enums with `impl` blocks, just like structs:
 
-```spite
+```wscript
 enum Shape {
     Circle(f64),
     Rectangle(f64, f64),
@@ -234,7 +234,7 @@ print(s.is_zero_area());   // false
 
 Enums can also have static methods for constructing commonly used variants:
 
-```spite
+```wscript
 impl Shape {
     fn unit_circle() -> Shape {
         return Shape::Circle(1.0);
@@ -251,11 +251,11 @@ let sq = Shape::square(5.0);
 
 ## Built-in Enums: `Option` and `Result`
 
-SpiteScript's `Option` and `Result` types are enums. They follow the same patterns:
+Wscript's `Option` and `Result` types are enums. They follow the same patterns:
 
 ### `Option<T>`
 
-```spite
+```wscript
 let some_val: Option<i32> = Some(42);
 let no_val: Option<i32> = None;
 
@@ -267,7 +267,7 @@ match some_val {
 
 ### `Result<T, E>`
 
-```spite
+```wscript
 let ok_val: Result<i32, String> = Ok(42);
 let err_val: Result<i32, String> = Err("something went wrong");
 
@@ -277,13 +277,13 @@ match ok_val {
 }
 ```
 
-These types are used throughout SpiteScript for optional values and error handling. See the error handling section of the specification for details on `?`, `@error`, and related features.
+These types are used throughout Wscript for optional values and error handling. See the error handling section of the specification for details on `?`, `@error`, and related features.
 
 ## Complete Example
 
 Here is a complete example showing an enum with mixed variant types, methods, and pattern matching:
 
-```spite
+```wscript
 enum Expression {
     Number(f64),
     Add(Expression, Expression),

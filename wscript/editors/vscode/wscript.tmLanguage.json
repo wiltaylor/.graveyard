@@ -1,0 +1,72 @@
+{
+  "scopeName": "source.wscript",
+  "name": "Wscript",
+  "fileTypes": ["ws"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#template-strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#attributes" },
+    { "include": "#macros" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "match": "///.*$", "name": "comment.line.documentation.wscript" },
+        { "match": "//.*$", "name": "comment.line.double-slash.wscript" },
+        { "begin": "/\\*", "end": "\\*/", "name": "comment.block.wscript" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        { "begin": "\"", "end": "\"", "name": "string.quoted.double.wscript",
+          "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.wscript" }] },
+        { "begin": "'", "end": "'", "name": "string.quoted.single.wscript",
+          "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.wscript" }] }
+      ]
+    },
+    "template-strings": {
+      "begin": "`", "end": "`", "name": "string.template.wscript",
+      "patterns": [
+        { "begin": "\\$\\{", "end": "\\}", "name": "meta.template.expression.wscript",
+          "patterns": [{ "include": "$self" }] }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "match": "\\b0x[0-9a-fA-F_]+\\b", "name": "constant.numeric.hex.wscript" },
+        { "match": "\\b0b[01_]+\\b", "name": "constant.numeric.binary.wscript" },
+        { "match": "\\b0o[0-7_]+\\b", "name": "constant.numeric.octal.wscript" },
+        { "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9]+)?(f32|f64)?\\b", "name": "constant.numeric.float.wscript" },
+        { "match": "\\b[0-9][0-9_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128)?\\b", "name": "constant.numeric.integer.wscript" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        { "match": "\\b(let|mut|const|fn|return|if|else|match|for|in|while|loop|break|continue|struct|impl|trait|enum|as|pub)\\b", "name": "keyword.control.wscript" },
+        { "match": "\\b(and|or|not)\\b", "name": "keyword.operator.wscript" },
+        { "match": "\\b(true|false)\\b", "name": "constant.language.boolean.wscript" },
+        { "match": "\\b(self|Self)\\b", "name": "variable.language.wscript" },
+        { "match": "\\b(None|Some|Ok|Err)\\b", "name": "support.type.wscript" }
+      ]
+    },
+    "types": {
+      "match": "\\b(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|f32|f64|bool|char|String|Map|Option|Result|Ref|Fn)\\b",
+      "name": "support.type.primitive.wscript"
+    },
+    "attributes": {
+      "match": "@\\w+", "name": "meta.attribute.wscript"
+    },
+    "macros": {
+      "match": "\\b\\w+!", "name": "entity.name.function.macro.wscript"
+    },
+    "operators": {
+      "match": "\\|>|<=>|\\.\\.|\\.\\.=|=>|->|::|&&|\\|\\||[+\\-*/%=<>!&|^~?]",
+      "name": "keyword.operator.wscript"
+    }
+  }
+}

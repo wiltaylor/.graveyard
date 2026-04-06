@@ -1,6 +1,6 @@
 # Architecture
 
-SpiteScript compiles source text to WebAssembly (WASM) in memory and executes it via an embedded Wasmtime instance. The WASM binary is never written to disk.
+Wscript compiles source text to WebAssembly (WASM) in memory and executes it via an embedded Wasmtime instance. The WASM binary is never written to disk.
 
 ## Compilation Pipeline
 
@@ -54,7 +54,7 @@ Generics are monomorphised at compile time. Each instantiation of a generic func
 ## Module Layout
 
 ```
-crates/spite-script/src/
+crates/wscript/src/
 ├── lib.rs                   — public API
 ├── engine.rs                — Engine builder, config
 ├── bindings.rs              — host binding registry

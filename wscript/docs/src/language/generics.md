@@ -203,7 +203,7 @@ impl SortedList<T: Comparable> {
 
 ## Monomorphisation
 
-SpiteScript compiles generics using **monomorphisation**. Each unique combination of
+Wscript compiles generics using **monomorphisation**. Each unique combination of
 type arguments produces a distinct, specialized copy of the function or struct in the
 compiled WASM output.
 

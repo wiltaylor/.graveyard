@@ -1,12 +1,12 @@
 # Variables and Bindings
 
-SpiteScript provides three ways to introduce named values: `let` bindings, `let mut` bindings, and `const` declarations. Bindings are immutable by default. Most bindings are block-scoped, but `let`, `let mut`, and `const` may also appear at the top level of a file as globals (see [Top-Level Declarations](#top-level-declarations) below).
+Wscript provides three ways to introduce named values: `let` bindings, `let mut` bindings, and `const` declarations. Bindings are immutable by default. Most bindings are block-scoped, but `let`, `let mut`, and `const` may also appear at the top level of a file as globals (see [Top-Level Declarations](#top-level-declarations) below).
 
 ## `let` Bindings
 
 The `let` keyword introduces an immutable binding. Once assigned, the value cannot be changed:
 
-```spite
+```wscript
 let x = 42;
 let name = "Alice";
 let items = [1, 2, 3];
@@ -14,7 +14,7 @@ let items = [1, 2, 3];
 
 Attempting to reassign an immutable binding is a compile error:
 
-```spite
+```wscript
 let x = 42;
 x = 100;  // ERROR: cannot assign to immutable binding 'x'
 ```
@@ -23,7 +23,7 @@ x = 100;  // ERROR: cannot assign to immutable binding 'x'
 
 Add the `mut` keyword to allow reassignment:
 
-```spite
+```wscript
 let mut count = 0;
 count = count + 1;
 count += 1;
@@ -31,7 +31,7 @@ count += 1;
 
 The `mut` keyword is also required to call methods that take `&mut self`:
 
-```spite
+```wscript
 let mut items = [1, 2, 3];
 items.push(4);        // push requires &mut self
 items[0] = 99;        // index assignment requires mut
@@ -44,7 +44,7 @@ frozen.push(4);       // ERROR: cannot call &mut self method on immutable bindin
 
 Type annotations are optional when the compiler can infer the type. You can add them for clarity or when inference needs help:
 
-```spite
+```wscript
 let x = 42;              // inferred as i32
 let y: f64 = 3.14;       // explicit type annotation
 let mut z = 0;            // inferred as i32
@@ -53,7 +53,7 @@ let mut w: String = "";   // explicit type annotation
 
 Type annotations are required in a few situations:
 
-```spite
+```wscript
 // Empty collections need annotations so the compiler knows the element type
 let empty: i32[] = [];
 let lookup: Map<String, i32> = #{};
@@ -64,7 +64,7 @@ const MAX: i32 = 1024;
 
 The annotation syntax places the type after a colon, following the binding name:
 
-```spite
+```wscript
 let name: Type = value;
 ```
 
@@ -72,7 +72,7 @@ let name: Type = value;
 
 Constants are compile-time values. They must have an explicit type annotation and their value must be a compile-time expression (literals and arithmetic on literals):
 
-```spite
+```wscript
 const MAX_SIZE: i32 = 1024;
 const PI: f64 = 3.14159265358979;
 const BUFFER_SIZE: u64 = 4 * 1024;
@@ -81,7 +81,7 @@ const GREETING: String = "hello";
 
 Constants are inlined at every use site. They cannot be modified and do not occupy a runtime binding:
 
-```spite
+```wscript
 const LIMIT: i32 = 100;
 
 fn check(n: i32) -> bool {
@@ -95,7 +95,7 @@ Constants differ from immutable `let` bindings in that they are evaluated at com
 
 Tuple bindings can be destructured in a `let` statement:
 
-```spite
+```wscript
 let pair = (42, "hello");
 let (number, greeting) = pair;
 // number is 42, greeting is "hello"
@@ -103,7 +103,7 @@ let (number, greeting) = pair;
 
 Use `_` to discard fields you do not need:
 
-```spite
+```wscript
 let triple = (1, true, 3.14);
 let (first, _, third) = triple;
 // first is 1, third is 3.14
@@ -111,7 +111,7 @@ let (first, _, third) = triple;
 
 Destructuring also works with `let mut`:
 
-```spite
+```wscript
 let mut pair = (0, 0);
 let (mut x, mut y) = some_function();
 x += 1;
@@ -120,19 +120,19 @@ y += 1;
 
 The destructured shape must exactly match the tuple arity:
 
-```spite
+```wscript
 let triple = (1, 2, 3);
 let (a, b) = triple;         // ERROR: expected 2 elements, found 3
 let (a, b, c, d) = triple;   // ERROR: expected 4 elements, found 3
 ```
 
-Destructuring in `let` bindings is limited to tuples in SpiteScript v0.1. Struct destructuring and array destructuring are not supported.
+Destructuring in `let` bindings is limited to tuples in Wscript v0.1. Struct destructuring and array destructuring are not supported.
 
 ## Top-Level Declarations
 
 `let`, `let mut`, and `const` may appear at the top level of a file, outside any function. These become globals — their state persists for the lifetime of the `Vm` instance and is shared across calls to exported functions:
 
-```spite
+```wscript
 let mut tick_count: i32 = 0;
 let mut difficulty: i32 = 1;
 let mut greeting: str = "hello";
@@ -148,7 +148,7 @@ fn tick() -> i32 {
 
 Struct-typed globals are allowed; their non-constant initializers run once, at `Vm` instantiation time, inside a synthesized start function:
 
-```spite
+```wscript
 struct PlayerState {
     hp: i32,
     score: i32,
@@ -168,7 +168,7 @@ Top-level mutable globals can be read and written from the host across calls via
 
 A new `let` binding with the same name as an existing one creates a new binding that shadows the old one. The old binding still exists but is no longer accessible by that name:
 
-```spite
+```wscript
 let x = 5;
 let x = x + 1;    // new binding shadows the old one; x is now 6
 let x = x * 2;    // shadows again; x is now 12
@@ -176,7 +176,7 @@ let x = x * 2;    // shadows again; x is now 12
 
 Shadowing is useful for transforming a value through several steps without needing distinct names:
 
-```spite
+```wscript
 let input = "  42  ";
 let input = input.trim();
 let input = input.parse::<i32>().unwrap();
@@ -185,7 +185,7 @@ let input = input.parse::<i32>().unwrap();
 
 Unlike mutation, shadowing creates an entirely new binding. The new binding can even have a different type:
 
-```spite
+```wscript
 let value = "100";          // String
 let value = value.parse::<i32>().unwrap();  // i32
 ```
@@ -194,7 +194,7 @@ let value = value.parse::<i32>().unwrap();  // i32
 
 Bindings are scoped to the block in which they are declared. A block is delimited by `{` and `}`. Inner blocks can access bindings from outer blocks, but not the reverse:
 
-```spite
+```wscript
 let outer = 10;
 
 {
@@ -209,7 +209,7 @@ let outer = 10;
 
 Shadowing within a block does not affect the outer binding:
 
-```spite
+```wscript
 let x = 5;
 {
     let x = x * 2;   // shadows x within this block
@@ -220,7 +220,7 @@ print(x);             // prints 5 -- the outer x is unchanged
 
 Block scoping applies to all control flow constructs:
 
-```spite
+```wscript
 for i in 0..10 {
     let squared = i * i;
     // squared is only available within the for body
@@ -237,7 +237,7 @@ if condition {
 
 Here is a more complete example demonstrating several binding concepts together:
 
-```spite
+```wscript
 const TAX_RATE: f64 = 0.08;
 
 fn calculate_total(items: (String, f64)[]) -> f64 {

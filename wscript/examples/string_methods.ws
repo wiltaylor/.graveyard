@@ -1,0 +1,17 @@
+@export
+fn main() -> i32 {
+    let s = "Hello, World!";
+    let upper = s.to_uppercase();
+    print(upper);
+
+    let has_hello = s.contains("Hello");
+    print(has_hello);
+
+    let trimmed = "  spaces  ".trim();
+    print(trimmed);
+
+    let replaced = s.replace("World", "Wscript");
+    print(replaced);
+
+    return s.len();
+}

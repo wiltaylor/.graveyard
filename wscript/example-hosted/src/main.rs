@@ -1,4 +1,4 @@
-//! Example: embedding SpiteScript with the new long-lived `Vm` API.
+//! Example: embedding Wscript with the new long-lived `Vm` API.
 //!
 //! Demonstrates:
 //!   - Persistent script state across multiple `Vm::call` invocations
@@ -8,8 +8,8 @@
 //!     including recursion into nested struct fields.
 //!   - Disposing the `Vm` and starting fresh to prove state resets.
 
-use spite_script::reflect::{FieldValue, StructView};
-use spite_script::{Engine, ParamInfo, ScriptType, Value};
+use wscript::reflect::{FieldValue, StructView};
+use wscript::{Engine, ParamInfo, ScriptType, Value};
 
 fn main() {
     let mut engine = Engine::new();
@@ -27,7 +27,7 @@ fn main() {
         },
     );
 
-    let source = include_str!("../scripts/state.spite");
+    let source = include_str!("../scripts/state.ws");
     let load = engine.load_script(source).expect("load failed");
     for d in &load.diagnostics {
         println!("  [diag] {d}");
@@ -99,7 +99,7 @@ fn main() {
         Some(FieldValue::Nested(inner)) => {
             println!("  inner nested struct with {} field(s)", inner.fields.len());
             if let Some(FieldValue::Primitive(Value::Bool(flag))) = inner.get("flag") {
-                assert_eq!(*flag, false);
+                assert!(!(*flag));
             } else {
                 panic!("inner.flag missing");
             }
@@ -152,7 +152,7 @@ fn main() {
     }
 
     // ── Struct-typed top-level global. ──────────────────────────────
-    // `world: PlayerState` initializer runs in __spite_init_globals at
+    // `world: PlayerState` initializer runs in __wscript_init_globals at
     // instantiation time; host reads/writes via read_global_struct /
     // write_global_struct.
     println!("  --- global structs ---");
@@ -168,11 +168,10 @@ fn main() {
     if let Some(FieldValue::Primitive(Value::Str(name))) = world_view.get("name") {
         assert_eq!(name, "world");
     }
-    if let Some(FieldValue::Nested(inner)) = world_view.get("inner") {
-        if let Some(FieldValue::Primitive(Value::Bool(flag))) = inner.get("flag") {
+    if let Some(FieldValue::Nested(inner)) = world_view.get("inner")
+        && let Some(FieldValue::Primitive(Value::Bool(flag))) = inner.get("flag") {
             assert!(*flag, "nested init'd flag must be true");
         }
-    }
 
     vm.write_global_struct(
         "world",

@@ -7,8 +7,8 @@ Host functions are Rust closures that scripts can call as if they were built-in.
 Use `Engine::register_fn_raw` to register a host function:
 
 ```rust
-use spite_script::{Engine, Value};
-use spite_script::bindings::{ParamInfo, ScriptType};
+use wscript::{Engine, Value};
+use wscript::bindings::{ParamInfo, ScriptType};
 
 let mut engine = Engine::new();
 
@@ -50,7 +50,7 @@ Host functions declare their parameter and return types using `ScriptType`:
 
 Host functions are called without any special syntax:
 
-```spite
+```wscript
 // Just call it — no import needed:
 let data = read_file("config.json");
 ```

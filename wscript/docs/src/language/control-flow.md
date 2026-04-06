@@ -1,12 +1,12 @@
 # Control Flow
 
-SpiteScript provides `if`/`else`, `match`, `for`, `while`, and `loop` constructs. Several of these can be used as both statements and expressions.
+Wscript provides `if`/`else`, `match`, `for`, `while`, and `loop` constructs. Several of these can be used as both statements and expressions.
 
 ## `if` / `else if` / `else`
 
 The basic `if` statement:
 
-```spite
+```wscript
 if temperature > 100 {
     print("too hot!");
 }
@@ -14,7 +14,7 @@ if temperature > 100 {
 
 With `else if` and `else` branches:
 
-```spite
+```wscript
 if score >= 90 {
     print("A");
 } else if score >= 80 {
@@ -32,15 +32,15 @@ Braces are always required around the body of each branch. There is no single-st
 
 When used as an expression, `if` produces a value. All branches must produce the same type, and the `else` branch is required:
 
-```spite
+```wscript
 let label = if x > 0 { "positive" } else if x < 0 { "negative" } else { "zero" };
 ```
 
-```spite
+```wscript
 let abs_value = if n >= 0 { n } else { -n };
 ```
 
-```spite
+```wscript
 let message = if count == 1 {
     "1 item"
 } else {
@@ -50,7 +50,7 @@ let message = if count == 1 {
 
 When used as an expression, the last expression in each branch block is the value of that branch (this is the expression context exception to the explicit `return` rule):
 
-```spite
+```wscript
 let discount = if is_member {
     0.20
 } else if order_total > 100.0 {
@@ -64,7 +64,7 @@ let discount = if is_member {
 
 The `match` expression tests a value against a series of patterns. It is exhaustive -- the compiler requires that all possible values are covered:
 
-```spite
+```wscript
 match direction {
     Direction::North => print("going north"),
     Direction::South => print("going south"),
@@ -77,7 +77,7 @@ match direction {
 
 `match` produces a value. All arms must return the same type:
 
-```spite
+```wscript
 let description = match status_code {
     200 => "OK",
     404 => "Not Found",
@@ -88,7 +88,7 @@ let description = match status_code {
 
 ### Literal Patterns
 
-```spite
+```wscript
 match x {
     0 => print("zero"),
     1 => print("one"),
@@ -98,7 +98,7 @@ match x {
 
 ### Range Patterns
 
-```spite
+```wscript
 let category = match age {
     0..13  => "child",
     13..20 => "teenager",
@@ -109,7 +109,7 @@ let category = match age {
 
 ### Tuple Patterns
 
-```spite
+```wscript
 let msg = match (ok, count) {
     (true,  0) => "ok but empty",
     (true,  _) => "ok with data",
@@ -121,7 +121,7 @@ let msg = match (ok, count) {
 
 Add an `if` guard to a pattern for additional conditions:
 
-```spite
+```wscript
 let description = match n {
     n if n < 0   => "negative",
     0            => "zero",
@@ -132,7 +132,7 @@ let description = match n {
 
 ### Enum Variant Patterns
 
-```spite
+```wscript
 match shape {
     Shape::Circle(r)       => r * r * 3.14159,
     Shape::Rectangle(w, h) => w * h,
@@ -143,7 +143,7 @@ match shape {
 
 ### `Option` and `Result` Patterns
 
-```spite
+```wscript
 match maybe_value {
     Some(val) => print(`got: ${val}`),
     None      => print("nothing"),
@@ -159,7 +159,7 @@ match load_file("config.txt") {
 
 Bind the matched value to a name with `@`:
 
-```spite
+```wscript
 match shape {
     s @ Shape::Circle(_) => {
         print(`matched a circle: ${s.describe()}`);
@@ -174,7 +174,7 @@ match shape {
 
 `if let` is shorthand for matching a single pattern:
 
-```spite
+```wscript
 if let Some(val) = maybe_value {
     print(`got: ${val}`);
 }
@@ -188,7 +188,7 @@ if let Ok(data) = load_file("config.txt") {
 
 `while let` loops as long as the pattern matches:
 
-```spite
+```wscript
 while let Some(item) = iter.next() {
     process(item);
 }
@@ -202,7 +202,7 @@ For full pattern matching details, see the [Pattern Matching](../pattern-matchin
 
 ### Iterating Over Arrays
 
-```spite
+```wscript
 let names = ["Alice", "Bob", "Carol"];
 
 for name in names {
@@ -214,7 +214,7 @@ for name in names {
 
 Maps iterate as `(key, value)` tuples:
 
-```spite
+```wscript
 let scores = #{ "alice": 95, "bob": 87, "carol": 92 };
 
 for (name, score) in scores {
@@ -226,7 +226,7 @@ for (name, score) in scores {
 
 Use `.enumerate()` to get `(index, value)` pairs:
 
-```spite
+```wscript
 let items = ["a", "b", "c"];
 
 for (index, item) in items.enumerate() {
@@ -241,7 +241,7 @@ for (index, item) in items.enumerate() {
 
 The `..` operator creates an exclusive range. The `..=` operator creates an inclusive range:
 
-```spite
+```wscript
 // Exclusive range: 0, 1, 2, ..., 9
 for i in 0..10 {
     print(i);
@@ -257,7 +257,7 @@ for i in 0..=10 {
 
 Use `.step_by()` to skip elements:
 
-```spite
+```wscript
 // 0, 5, 10, 15, ..., 95
 for i in (0..100).step_by(5) {
     print(i);
@@ -268,7 +268,7 @@ for i in (0..100).step_by(5) {
 
 Use `.reverse()` for descending iteration:
 
-```spite
+```wscript
 // 10, 9, 8, ..., 1
 for i in (1..=10).reverse() {
     print(i);
@@ -279,7 +279,7 @@ for i in (1..=10).reverse() {
 
 `while` repeats as long as its condition is true:
 
-```spite
+```wscript
 let mut count = 0;
 
 while count < 10 {
@@ -288,7 +288,7 @@ while count < 10 {
 }
 ```
 
-```spite
+```wscript
 let mut input = read_line();
 
 while input != "quit" {
@@ -301,7 +301,7 @@ while input != "quit" {
 
 `loop` creates an infinite loop. It must be exited with `break`:
 
-```spite
+```wscript
 loop {
     let input = read_line();
     if input == "quit" {
@@ -315,7 +315,7 @@ loop {
 
 `loop` can produce a value via `break`:
 
-```spite
+```wscript
 let result = loop {
     let val = compute();
     if val > 100 {
@@ -330,7 +330,7 @@ The `break` with a value is only valid inside `loop`, not inside `for` or `while
 
 `loop` is useful for retry logic:
 
-```spite
+```wscript
 let data = loop {
     match fetch_data() {
         Ok(d)  => break d,
@@ -346,7 +346,7 @@ let data = loop {
 
 `break` exits the innermost loop. `continue` skips to the next iteration:
 
-```spite
+```wscript
 for i in 0..100 {
     if i % 2 == 0 {
         continue;   // skip even numbers
@@ -361,7 +361,7 @@ for i in 0..100 {
 
 `break` and `continue` work in `for`, `while`, and `loop`. They affect the innermost enclosing loop:
 
-```spite
+```wscript
 for row in 0..10 {
     for col in 0..10 {
         if col > row {
@@ -377,7 +377,7 @@ for row in 0..10 {
 
 Control flow constructs compose naturally:
 
-```spite
+```wscript
 fn find_first_match(grid: i32[][], target: i32) -> Option<(u64, u64)> {
     for (row_idx, row) in grid.enumerate() {
         for (col_idx, val) in row.enumerate() {
@@ -390,7 +390,7 @@ fn find_first_match(grid: i32[][], target: i32) -> Option<(u64, u64)> {
 }
 ```
 
-```spite
+```wscript
 fn process_commands(commands: String[]) -> Result<()> {
     for cmd in commands {
         match cmd.split_once(" ") {

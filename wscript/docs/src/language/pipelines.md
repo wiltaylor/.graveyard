@@ -1,6 +1,6 @@
 # Pipelines and Iterators
 
-Pipelines are SpiteScript's primary mechanism for functional data transformation.
+Pipelines are Wscript's primary mechanism for functional data transformation.
 They are **lazy** -- no intermediate collection is allocated until a terminal
 operation is called. The pipe operator `|>` and method chaining syntax are equivalent.
 

@@ -1,7 +1,7 @@
 # Built-in Macros
 
 Macros are invoked with `name!(...)` syntax. The `!` distinguishes them from regular
-function calls. SpiteScript provides a fixed set of built-in macros -- user-defined
+function calls. Wscript provides a fixed set of built-in macros -- user-defined
 macros are not supported.
 
 ## `error!(msg)` -- Create an Error

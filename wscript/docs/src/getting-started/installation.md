@@ -1,19 +1,19 @@
 # Installation
 
-## Adding SpiteScript as a Cargo Dependency
+## Adding Wscript as a Cargo Dependency
 
-Add `spite-script` to your project's `Cargo.toml`:
+Add `wscript` to your project's `Cargo.toml`:
 
 ```toml
 [dependencies]
-spite-script = "0.1"
+wscript = "0.1"
 ```
 
 This pulls in the default feature set, which includes the `runtime` feature for compiling and executing scripts via Wasmtime.
 
 ### Feature Flags
 
-SpiteScript uses Cargo feature flags to let you include only the components you need:
+Wscript uses Cargo feature flags to let you include only the components you need:
 
 | Feature | Default | Dependencies Enabled | Description |
 |---------|---------|---------------------|-------------|
@@ -27,42 +27,42 @@ SpiteScript uses Cargo feature flags to let you include only the components you 
 
 ```toml
 # Compiler only -- type-check scripts without executing them:
-spite-script = { version = "0.1", default-features = false }
+wscript = { version = "0.1", default-features = false }
 
 # Runtime + LSP support (for an application that runs scripts and serves an LSP):
-spite-script = { version = "0.1", features = ["lsp"] }
+wscript = { version = "0.1", features = ["lsp"] }
 
 # Everything:
-spite-script = { version = "0.1", features = ["full"] }
+wscript = { version = "0.1", features = ["full"] }
 ```
 
 When no features are enabled (not even `runtime`), the crate still provides the full compiler pipeline -- lexer, parser, type checker, and IR lowering -- so you can check scripts for errors without needing the Wasmtime dependency.
 
 ## Installing the CLI
 
-The SpiteScript CLI is a separate crate called `spite-cli` that produces a binary named `spite`. It depends on the `spite-script` library with all features enabled.
+The Wscript CLI is a separate crate called `wscript-cli` that produces a binary named `wscript`. It depends on the `wscript` library with all features enabled.
 
 ### From the Repository
 
-If you have the SpiteScript repository cloned locally:
+If you have the Wscript repository cloned locally:
 
 ```sh
-cargo install --path crates/spite-cli
+cargo install --path crates/wscript-cli
 ```
 
-This installs the `spite` binary into your Cargo bin directory (typically `~/.cargo/bin/`).
+This installs the `wscript` binary into your Cargo bin directory (typically `~/.cargo/bin/`).
 
 ### Running Without Installing
 
 You can also run the CLI directly from the repository without installing it globally:
 
 ```sh
-cargo run -p spite-cli -- run examples/hello.spite
+cargo run -p wscript-cli -- run examples/hello.ws
 ```
 
 ## Building from Source
 
-SpiteScript uses [just](https://github.com/casey/just) as a command runner. If you do not have `just` installed:
+Wscript uses [just](https://github.com/casey/just) as a command runner. If you do not have `just` installed:
 
 ```sh
 cargo install just
@@ -96,8 +96,8 @@ The repository is a Cargo workspace with two crates:
 
 | Crate | Path | Description |
 |-------|------|-------------|
-| `spite-script` | `crates/spite-script/` | The core library -- compiler, runtime, LSP, DAP |
-| `spite-cli` | `crates/spite-cli/` | The `spite` command-line tool |
+| `wscript` | `crates/wscript/` | The core library -- compiler, runtime, LSP, DAP |
+| `wscript-cli` | `crates/wscript-cli/` | The `wscript` command-line tool |
 
 ### Key Dependencies
 

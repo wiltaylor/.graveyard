@@ -1,13 +1,13 @@
 # Using as a Rust Library
 
-This chapter walks through the SpiteScript embedding API: creating an engine, registering host functions, compiling scripts, and calling exported functions from Rust.
+This chapter walks through the Wscript embedding API: creating an engine, registering host functions, compiling scripts, and calling exported functions from Rust.
 
 ## Creating an Engine
 
-The `Engine` is the main entry point for SpiteScript. It owns the Wasmtime engine, the host binding registry, and configuration state.
+The `Engine` is the main entry point for Wscript. It owns the Wasmtime engine, the host binding registry, and configuration state.
 
 ```rust
-use spite_script::Engine;
+use wscript::Engine;
 
 let engine = Engine::new();
 ```
@@ -30,8 +30,8 @@ Before compiling any scripts, register the Rust functions you want scripts to be
 Use `register_fn_raw` to register a function with explicit parameter and return type declarations:
 
 ```rust
-use spite_script::{Engine, Value};
-use spite_script::bindings::{ParamInfo, ScriptType};
+use wscript::{Engine, Value};
+use wscript::bindings::{ParamInfo, ScriptType};
 
 let mut engine = Engine::new();
 
@@ -57,9 +57,9 @@ engine.register_fn_raw(
 );
 ```
 
-The type mapping between Rust and SpiteScript is:
+The type mapping between Rust and Wscript is:
 
-| Rust Type | SpiteScript Type |
+| Rust Type | Wscript Type |
 |-----------|-----------------|
 | `i8`, `i16`, `i32`, `i64`, `i128` | `i8`, `i16`, `i32`, `i64`, `i128` |
 | `u8`, `u16`, `u32`, `u64`, `u128` | `u8`, `u16`, `u32`, `u64`, `u128` |
@@ -157,10 +157,10 @@ Each `call` creates a fresh Wasmtime `Store` with a new linear memory. Scripts a
 
 ### Return Values
 
-The return value is a `Value` enum that mirrors the SpiteScript type system:
+The return value is a `Value` enum that mirrors the Wscript type system:
 
 ```rust
-use spite_script::Value;
+use wscript::Value;
 
 match value {
     Value::Unit => { /* () return */ }
@@ -179,8 +179,8 @@ match value {
 Here is a full example that registers a host function, compiles a script, and calls an exported function:
 
 ```rust
-use spite_script::{Engine, Value};
-use spite_script::bindings::{ParamInfo, ScriptType};
+use wscript::{Engine, Value};
+use wscript::bindings::{ParamInfo, ScriptType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = Engine::new();
@@ -282,7 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Error Handling
 
-The SpiteScript API surfaces errors at two levels:
+The Wscript API surfaces errors at two levels:
 
 ### Compile Errors (`CompileResult`)
 
@@ -330,6 +330,6 @@ Example output:
 
 ```
 Script panicked: index out of bounds: index 10, length 3
-  at process  script.spite:15:8
-  at main  script.spite:5:4
+  at process  script.ws:15:8
+  at main  script.ws:5:4
 ```

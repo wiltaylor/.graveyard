@@ -1,21 +1,21 @@
 {
-  "name": "spite-script",
-  "displayName": "SpiteScript",
-  "description": "SpiteScript language support",
+  "name": "wscript",
+  "displayName": "Wscript",
+  "description": "Wscript language support",
   "version": "0.1.0",
   "engines": { "vscode": "^1.75.0" },
   "categories": ["Programming Languages"],
   "contributes": {
     "languages": [{
-      "id": "spite",
-      "aliases": ["SpiteScript", "spite"],
-      "extensions": [".spite"],
+      "id": "wscript",
+      "aliases": ["Wscript", "wscript"],
+      "extensions": [".ws"],
       "configuration": "./language-configuration.json"
     }],
     "grammars": [{
-      "language": "spite",
-      "scopeName": "source.spite",
-      "path": "./spite-script.tmLanguage.json"
+      "language": "wscript",
+      "scopeName": "source.wscript",
+      "path": "./wscript.tmLanguage.json"
     }]
   }
 }

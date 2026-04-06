@@ -1,6 +1,6 @@
 # Tooling
 
-SpiteScript ships with built-in tooling for a first-class development experience:
+Wscript ships with built-in tooling for a first-class development experience:
 
 - **[LSP Server](./lsp.md)** — Language Server Protocol for editor integration (completions, hover, diagnostics, and more)
 - **[DAP Server](./dap.md)** — Debug Adapter Protocol for step-through debugging in VS Code
@@ -11,10 +11,10 @@ Both servers are designed to be **host-aware** — they know about all registere
 
 ```bash
 # Start the LSP server (editors connect via stdio)
-spite lsp
+wscript lsp
 
 # Start the DAP server (VS Code connects via TCP)
-spite dap --port 6009
+wscript dap --port 6009
 ```
 
-Both servers can also be started programmatically from within a Rust application that embeds SpiteScript, ensuring the IDE tooling has access to all host bindings.
+Both servers can also be started programmatically from within a Rust application that embeds Wscript, ensuring the IDE tooling has access to all host bindings.

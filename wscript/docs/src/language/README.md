@@ -1,16 +1,16 @@
 # Language Overview
 
-SpiteScript is a statically-typed, expression-oriented scripting language designed to be embedded in Rust host applications. It compiles source text to WebAssembly in memory at runtime and executes it via an embedded Wasmtime instance.
+Wscript is a statically-typed, expression-oriented scripting language designed to be embedded in Rust host applications. It compiles source text to WebAssembly in memory at runtime and executes it via an embedded Wasmtime instance.
 
 ## Syntax Heritage
 
-SpiteScript's syntax draws from three languages:
+Wscript's syntax draws from three languages:
 
 - **Rust** -- `let`/`let mut` bindings, `match` expressions, `enum` with data variants, `impl` blocks, `Option`/`Result` types, and trait-based generics.
 - **Rhai** -- lightweight scripting feel, no borrow checker, ref-counted heap values, and embeddable-first design.
 - **TypeScript** -- template string literals with `${expr}` interpolation, familiar operator set, and pragmatic type inference.
 
-If you have experience with any of these languages, SpiteScript should feel immediately familiar.
+If you have experience with any of these languages, Wscript should feel immediately familiar.
 
 ## Key Characteristics
 
@@ -18,7 +18,7 @@ If you have experience with any of these languages, SpiteScript should feel imme
 
 `if`/`else`, `match`, and `loop` can all be used as expressions that produce values:
 
-```spite
+```wscript
 let label = if x > 0 { "positive" } else { "negative" };
 
 let area = match shape {
@@ -38,7 +38,7 @@ let result = loop {
 
 Types are checked at compile time, but explicit annotations are usually optional. The compiler uses bidirectional type inference to determine types from context:
 
-```spite
+```wscript
 let x = 42;                  // inferred as i32
 let name = "Alice";           // inferred as String
 let items = [1, 2, 3];       // inferred as i32[]
@@ -69,7 +69,7 @@ The entire runtime -- compiler, LSP server, and DAP server -- ships as a single 
 
 ## Quick Example
 
-```spite
+```wscript
 struct Task {
     name: String,
     priority: i32,

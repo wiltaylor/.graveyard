@@ -1,6 +1,6 @@
 # Pattern Matching
 
-Pattern matching in SpiteScript is performed with the `match` expression, `if let`, and
+Pattern matching in Wscript is performed with the `match` expression, `if let`, and
 `while let`. Matches are exhaustive -- the compiler rejects any `match` that does not
 cover every possible value of the scrutinee type.
 

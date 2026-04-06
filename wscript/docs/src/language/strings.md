@@ -1,6 +1,6 @@
 # Strings
 
-The `String` type in SpiteScript is a heap-allocated, UTF-8 encoded, growable string. Strings are reference-counted -- assignment shares the reference rather than copying the data. Use `.clone()` when you need an independent copy.
+The `String` type in Wscript is a heap-allocated, UTF-8 encoded, growable string. Strings are reference-counted -- assignment shares the reference rather than copying the data. Use `.clone()` when you need an independent copy.
 
 `str` is accepted as an alias for `String` and is the preferred spelling at the host boundary (for example, on top-level globals surfaced to the embedder). The two names refer to the same type; use whichever reads better in context.
 
@@ -8,7 +8,7 @@ The `String` type in SpiteScript is a heap-allocated, UTF-8 encoded, growable st
 
 String literals are enclosed in double quotes and support escape sequences:
 
-```spite
+```wscript
 let greeting = "hello, world";
 let with_newline = "line one\nline two";
 let with_tab = "col1\tcol2";
@@ -29,7 +29,7 @@ String literals support the same escape sequences as character literals:
 | `\0` | Null character |
 | `\u{HHHHHH}` | Unicode scalar by hex code point |
 
-```spite
+```wscript
 let path = "C:\\Users\\alice\\docs";
 let emoji = "\u{1F980}";    // crab emoji
 let null_terminated = "data\0";
@@ -39,7 +39,7 @@ let null_terminated = "data\0";
 
 Template strings use backticks and support `${expr}` interpolation. Any expression can appear inside `${}` -- it is fully evaluated at runtime:
 
-```spite
+```wscript
 let name = "Alice";
 let age = 30;
 
@@ -50,7 +50,7 @@ let math = `2 + 2 = ${2 + 2}`;
 
 Interpolated expressions can be arbitrarily complex:
 
-```spite
+```wscript
 let label = `Status: ${if ok { "success" } else { "failure" }}`;
 let summary = `Found ${items.len()} items totaling ${items.sum()}`;
 let formatted = `Price: $${(price * 100.0).round() / 100.0}`;
@@ -58,7 +58,7 @@ let formatted = `Price: $${(price * 100.0).round() / 100.0}`;
 
 Template strings can span multiple lines:
 
-```spite
+```wscript
 let html = `
 <div class="user">
     <h1>${user.name}</h1>
@@ -71,7 +71,7 @@ let html = `
 
 Strings can be concatenated with the `+` operator. This creates a new string:
 
-```spite
+```wscript
 let first = "hello";
 let second = " world";
 let combined = first + second;   // "hello world"
@@ -79,7 +79,7 @@ let combined = first + second;   // "hello world"
 
 You can also use `+=` for appending to a mutable binding:
 
-```spite
+```wscript
 let mut result = "items: ";
 for item in items {
     result += item + ", ";
@@ -90,7 +90,7 @@ for item in items {
 
 Use range syntax to extract a substring by byte offsets:
 
-```spite
+```wscript
 let s = "hello, world";
 let hello = s[0..5];      // "hello"
 let world = s[7..12];     // "world"
@@ -102,7 +102,7 @@ Slicing panics if the indices do not fall on a UTF-8 character boundary. For saf
 
 ### Length and Emptiness
 
-```spite
+```wscript
 let s = "hello";
 
 s.len()          // 5 (byte length, u64)
@@ -113,7 +113,7 @@ s.is_empty()     // false
 
 For ASCII strings, `len()` and `char_count()` return the same value. They differ for strings containing multi-byte UTF-8 characters:
 
-```spite
+```wscript
 let emoji = "🦀🦀🦀";
 emoji.len()          // 12 (each crab emoji is 4 bytes)
 emoji.char_count()   // 3
@@ -121,7 +121,7 @@ emoji.char_count()   // 3
 
 ### Searching
 
-```spite
+```wscript
 let s = "hello, world";
 
 s.contains("world")        // true
@@ -136,22 +136,22 @@ s.find("xyz")              // None
 
 ### Replacing
 
-```spite
+```wscript
 let s = "hello, world";
-let replaced = s.replace("world", "SpiteScript");
-// "hello, SpiteScript"
+let replaced = s.replace("world", "Wscript");
+// "hello, Wscript"
 ```
 
 `replace` replaces all occurrences and returns a new string:
 
-```spite
+```wscript
 let s = "aaa bbb aaa";
 s.replace("aaa", "ccc")   // "ccc bbb ccc"
 ```
 
 ### Case Conversion
 
-```spite
+```wscript
 let s = "Hello, World";
 
 s.to_uppercase()    // "HELLO, WORLD"
@@ -160,7 +160,7 @@ s.to_lowercase()    // "hello, world"
 
 ### Trimming
 
-```spite
+```wscript
 let s = "  hello  ";
 
 s.trim()            // "hello"
@@ -170,7 +170,7 @@ s.trim_end()        // "  hello"
 
 ### Splitting
 
-```spite
+```wscript
 let csv = "alice,bob,carol";
 
 let names = csv.split(",");
@@ -182,14 +182,14 @@ let pair = csv.split_once(",");
 
 `split` always returns a `String[]`. `split_once` returns `Option<(String, String)>` -- `None` if the separator is not found:
 
-```spite
+```wscript
 let no_comma = "hello world";
 no_comma.split_once(",")    // None
 ```
 
 ### Characters and Bytes
 
-```spite
+```wscript
 let s = "hello";
 
 let chars = s.chars();   // ['h', 'e', 'l', 'l', 'o'] -- char[]
@@ -200,7 +200,7 @@ let bytes = s.bytes();   // [104, 101, 108, 108, 111] -- u8[]
 
 The `parse` method converts a string to a numeric or boolean type. It returns a `Result`:
 
-```spite
+```wscript
 let n = "42".parse::<i32>();       // Ok(42)
 let f = "3.14".parse::<f64>();     // Ok(3.14)
 let b = "true".parse::<bool>();    // Ok(true)
@@ -209,7 +209,7 @@ let bad = "abc".parse::<i32>();    // Err(...)
 
 Use `?` or `unwrap` to extract the parsed value:
 
-```spite
+```wscript
 fn parse_config(s: String) -> Result<i32> {
     let value = s.trim().parse::<i32>()?;
     return Ok(value);
@@ -218,14 +218,14 @@ fn parse_config(s: String) -> Result<i32> {
 
 ### Repeating
 
-```spite
+```wscript
 let stars = "*".repeat(10);     // "**********"
 let dashes = "-".repeat(40);    // 40 dashes
 ```
 
 ### Padding
 
-```spite
+```wscript
 let num = "42";
 
 num.pad_start(5, '0')     // "00042"
@@ -235,7 +235,7 @@ num.pad_start(5, ' ')     // "   42"
 
 `pad_start` pads the beginning of the string until it reaches the target length. `pad_end` pads the end. If the string is already at or above the target length, it is returned unchanged:
 
-```spite
+```wscript
 let long = "already long enough";
 long.pad_start(5, ' ')    // "already long enough" (unchanged)
 ```
@@ -244,14 +244,14 @@ long.pad_start(5, ' ')    // "already long enough" (unchanged)
 
 Because strings are reference-counted, assignment shares the same underlying data:
 
-```spite
+```wscript
 let a = "hello";
 let b = a;          // b and a share the same string data (ref count = 2)
 ```
 
 If you need an independent copy, use `.clone()`:
 
-```spite
+```wscript
 let a = "hello";
 let b = a.clone();  // b is a separate copy
 ```

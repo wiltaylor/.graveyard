@@ -1,6 +1,6 @@
 # Embedding Guide
 
-SpiteScript is designed from the ground up to be embedded in Rust applications. The host application controls what scripts can do by registering functions, types, and global values before compilation.
+Wscript is designed from the ground up to be embedded in Rust applications. The host application controls what scripts can do by registering functions, types, and global values before compilation.
 
 This section covers:
 
@@ -17,7 +17,7 @@ The embedding workflow follows three steps:
 3. **Execute** — Call exported script functions, passing and receiving values
 
 ```rust
-use spite_script::Engine;
+use wscript::Engine;
 
 let mut engine = Engine::new();
 

@@ -1,6 +1,6 @@
 # Traits
 
-Traits define shared behavior that types can implement. They are SpiteScript's
+Traits define shared behavior that types can implement. They are Wscript's
 mechanism for polymorphism -- a function can accept any type that implements a given
 trait, without knowing the concrete type at the definition site.
 
@@ -115,7 +115,7 @@ fn largest<T: Comparable>(a: T, b: T) -> T {
 
 ## Built-in Traits
 
-SpiteScript provides these built-in traits in the standard library:
+Wscript provides these built-in traits in the standard library:
 
 | Trait | Description |
 |-------|-------------|

@@ -1,12 +1,12 @@
 # Editor Setup
 
-SpiteScript provides a VS Code extension for syntax highlighting, an LSP server for full IDE support, and a DAP server for step debugging.
+Wscript provides a VS Code extension for syntax highlighting, an LSP server for full IDE support, and a DAP server for step debugging.
 
 ## VS Code Extension
 
 The repository includes a TextMate grammar and VS Code extension in the `editors/vscode/` directory. This extension provides:
 
-- Syntax highlighting for `.spite` files
+- Syntax highlighting for `.ws` files
 - Bracket matching and auto-closing pairs
 - Comment toggling (`//` and `/* */`)
 - Indentation rules
@@ -18,15 +18,15 @@ The extension is not yet published to the VS Code marketplace. To use it locally
 1. Open VS Code
 2. Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`)
 3. Run **Developer: Install Extension from Location...**
-4. Select the `editors/vscode/` directory from the SpiteScript repository
+4. Select the `editors/vscode/` directory from the Wscript repository
 
 Alternatively, you can symlink the extension into your VS Code extensions directory:
 
 ```sh
-ln -s /path/to/spite-script/editors/vscode ~/.vscode/extensions/spite-script
+ln -s /path/to/wscript/editors/vscode ~/.vscode/extensions/wscript
 ```
 
-After installing, VS Code will recognize `.spite` files and apply syntax highlighting automatically.
+After installing, VS Code will recognize `.ws` files and apply syntax highlighting automatically.
 
 ## Configuring the LSP Server
 
@@ -34,21 +34,21 @@ The LSP server provides completions, hover information, diagnostics, go-to-defin
 
 ### VS Code Configuration
 
-Add the following to your VS Code `settings.json` to use the SpiteScript LSP:
+Add the following to your VS Code `settings.json` to use the Wscript LSP:
 
 ```json
 {
-    "spite.lsp.serverPath": "spite",
-    "spite.lsp.serverArgs": ["lsp"]
+    "wscript.lsp.serverPath": "wscript",
+    "wscript.lsp.serverArgs": ["lsp"]
 }
 ```
 
-If you are using a generic LSP client extension (such as [vscode-languageclient](https://github.com/microsoft/vscode-languageserver-node) or a custom extension), configure it to launch `spite lsp` as the language server for files with the `spite` language ID:
+If you are using a generic LSP client extension (such as [vscode-languageclient](https://github.com/microsoft/vscode-languageserver-node) or a custom extension), configure it to launch `wscript lsp` as the language server for files with the `wscript` language ID:
 
 ```json
 {
     "languageServerExample.trace.server": "verbose",
-    "[spite]": {
+    "[wscript]": {
         "editor.semanticHighlighting.enabled": true
     }
 }
@@ -56,12 +56,12 @@ If you are using a generic LSP client extension (such as [vscode-languageclient]
 
 ### Running from the Repository
 
-If you have not installed the `spite` binary globally, you can point the LSP configuration at the Cargo build:
+If you have not installed the `wscript` binary globally, you can point the LSP configuration at the Cargo build:
 
 ```json
 {
-    "spite.lsp.serverPath": "cargo",
-    "spite.lsp.serverArgs": ["run", "-p", "spite-cli", "--", "lsp"]
+    "wscript.lsp.serverPath": "cargo",
+    "wscript.lsp.serverArgs": ["run", "-p", "wscript-cli", "--", "lsp"]
 }
 ```
 
@@ -93,9 +93,9 @@ Once the LSP server is running, you get the following IDE features:
 
 ### Host Binding Awareness
 
-A key feature of the SpiteScript LSP is that it is aware of all host-registered functions and types. When you run the LSP server from your application binary (rather than the standalone `spite` CLI), every function and type you registered with the engine appears in completions, hover, and type checking. See the [Embedding Guide](../embedding/README.md) for details on registering host bindings.
+A key feature of the Wscript LSP is that it is aware of all host-registered functions and types. When you run the LSP server from your application binary (rather than the standalone `wscript` CLI), every function and type you registered with the engine appears in completions, hover, and type checking. See the [Embedding Guide](../embedding/README.md) for details on registering host bindings.
 
-When using the standalone `spite lsp` command, only the standard library is available since no host bindings are registered.
+When using the standalone `wscript lsp` command, only the standard library is available since no host bindings are registered.
 
 ## Configuring the DAP Server
 
@@ -106,7 +106,7 @@ The DAP server enables step debugging in VS Code and other editors that support 
 Start the server on a TCP port (default 6009):
 
 ```sh
-spite dap --port 6009
+wscript dap --port 6009
 ```
 
 Or from the repository:
@@ -127,9 +127,9 @@ Add the following configuration to your `.vscode/launch.json`:
     "version": "0.2.0",
     "configurations": [
         {
-            "type": "spite",
+            "type": "wscript",
             "request": "launch",
-            "name": "Debug SpiteScript",
+            "name": "Debug Wscript",
             "program": "${file}",
             "debugServer": 6009
         }
@@ -137,14 +137,14 @@ Add the following configuration to your `.vscode/launch.json`:
 }
 ```
 
-If the `spite` debug adapter type is not recognized, you can use the generic `debugServer` approach. Add this to your `launch.json`:
+If the `wscript` debug adapter type is not recognized, you can use the generic `debugServer` approach. Add this to your `launch.json`:
 
 ```json
 {
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug SpiteScript",
+            "name": "Debug Wscript",
             "type": "node",
             "request": "launch",
             "debugServer": 6009,
@@ -178,8 +178,8 @@ Host types that were registered with `debug_display` and `debug_children` render
 
 A typical debugging workflow:
 
-1. Start the DAP server: `spite dap --port 6009`
-2. Open your `.spite` file in VS Code
+1. Start the DAP server: `wscript dap --port 6009`
+2. Open your `.ws` file in VS Code
 3. Set breakpoints by clicking in the editor gutter
 4. Press `F5` to launch the debug session (using the `launch.json` configuration above)
 5. The script compiles in debug mode and runs until a breakpoint is hit
@@ -196,18 +196,18 @@ For Neovim with `nvim-lspconfig`, add the following to your configuration:
 local lspconfig = require('lspconfig')
 local configs = require('lspconfig.configs')
 
-if not configs.spite then
-    configs.spite = {
+if not configs.ws then
+    configs.ws = {
         default_config = {
-            cmd = { 'spite', 'lsp' },
-            filetypes = { 'spite' },
+            cmd = { 'wscript', 'lsp' },
+            filetypes = { 'wscript' },
             root_dir = lspconfig.util.find_git_ancestor,
             settings = {},
         },
     }
 end
 
-lspconfig.spite.setup{}
+lspconfig.ws.setup{}
 ```
 
 You will also need to add a filetype detection rule:
@@ -215,7 +215,7 @@ You will also need to add a filetype detection rule:
 ```lua
 vim.filetype.add({
     extension = {
-        spite = 'spite',
+        wscript = 'wscript',
     },
 })
 ```
@@ -226,15 +226,15 @@ Add to your `~/.config/helix/languages.toml`:
 
 ```toml
 [[language]]
-name = "spite"
-scope = "source.spite"
-file-types = ["spite"]
-language-servers = ["spite-lsp"]
+name = "wscript"
+scope = "source.ws"
+file-types = ["wscript"]
+language-servers = ["wscript-lsp"]
 comment-token = "//"
 indent = { tab-width = 4, unit = "    " }
 
-[language-server.spite-lsp]
-command = "spite"
+[language-server.ws-lsp]
+command = "wscript"
 args = ["lsp"]
 ```
 
@@ -245,16 +245,16 @@ Zed supports custom language servers. Add to your Zed settings:
 ```json
 {
     "lsp": {
-        "spite": {
+        "wscript": {
             "binary": {
-                "path": "spite",
+                "path": "wscript",
                 "arguments": ["lsp"]
             }
         }
     },
     "languages": {
-        "SpiteScript": {
-            "language_servers": ["spite"]
+        "Wscript": {
+            "language_servers": ["wscript"]
         }
     }
 }

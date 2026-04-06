@@ -1,12 +1,12 @@
-# Example: Hosting SpiteScript
+# Example: Hosting Wscript
 
-This is a complete example of a Rust application that embeds SpiteScript as its scripting engine.
+This is a complete example of a Rust application that embeds Wscript as its scripting engine.
 
 ## What It Demonstrates
 
 1. **Creating an Engine** and configuring it
 2. **Registering host functions** (`log_event`, `get_config`) that scripts can call
-3. **Loading scripts from files** (`scripts/game_logic.spite`, `scripts/config_processor.spite`)
+3. **Loading scripts from files** (`scripts/game_logic.ws`, `scripts/config_processor.ws`)
 4. **Calling exported script functions** with arguments and receiving results
 5. **Running inline scripts** compiled from string literals
 6. **Error handling** for compilation failures and runtime panics
@@ -29,13 +29,13 @@ cargo run -p example-hosted
 
 ```
 example-hosted/
-├── Cargo.toml              # Depends on spite-script with "runtime" feature
+├── Cargo.toml              # Depends on wscript with "runtime" feature
 ├── README.md
 ├── src/
 │   └── main.rs             # Host application
 └── scripts/
-    ├── game_logic.spite     # Game simulation script
-    └── config_processor.spite  # Configuration processing script
+    ├── game_logic.ws     # Game simulation script
+    └── config_processor.ws  # Configuration processing script
 ```
 
 ## Key Code Patterns
@@ -58,7 +58,7 @@ engine.register_fn_raw(
 ### Loading and calling a script
 
 ```rust
-let source = std::fs::read_to_string("script.spite")?;
+let source = std::fs::read_to_string("script.ws")?;
 let result = engine.load_script(&source)?;
 let script = result.script.unwrap();
 let se = engine.script_engine().unwrap();

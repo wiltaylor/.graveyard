@@ -7,7 +7,7 @@ Host types let you expose Rust structs to scripts as first-class types with meth
 Use the `BindingRegistry` to register a type with methods:
 
 ```rust
-use spite_script::bindings::{HostTypeBinding, HostFnBinding, ParamInfo, ScriptType};
+use wscript::bindings::{HostTypeBinding, HostFnBinding, ParamInfo, ScriptType};
 use std::any::TypeId;
 
 let mut binding = HostTypeBinding {
@@ -27,7 +27,7 @@ engine.bindings_mut().types.insert("DbConnection".to_string(), binding);
 
 Registered types appear as first-class types in scripts:
 
-```spite
+```wscript
 // Assuming DbConnection is registered with a query method:
 let rows = db.query("SELECT * FROM users");
 ```

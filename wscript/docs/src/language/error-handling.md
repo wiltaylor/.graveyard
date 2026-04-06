@@ -1,6 +1,6 @@
 # Error Handling
 
-SpiteScript uses `Option<T>` and `Result<T, E>` for error handling. There are no
+Wscript uses `Option<T>` and `Result<T, E>` for error handling. There are no
 exceptions. Errors are values that must be explicitly handled, propagated with `?`,
 or deliberately discarded.
 
@@ -275,7 +275,7 @@ fn handle_error(e: Error) {
 
 ## Error Macros
 
-SpiteScript provides convenience macros for common error patterns.
+Wscript provides convenience macros for common error patterns.
 
 ### `error!(msg)` -- Create an Error
 

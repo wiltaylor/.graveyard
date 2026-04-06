@@ -1,11 +1,11 @@
 # DAP Server
 
-The SpiteScript DAP server enables step-through debugging in editors that support the Debug Adapter Protocol, such as VS Code. It is enabled by the `dap` Cargo feature.
+The Wscript DAP server enables step-through debugging in editors that support the Debug Adapter Protocol, such as VS Code. It is enabled by the `dap` Cargo feature.
 
 ## Starting the Server
 
 ```bash
-spite dap --port 6009
+wscript dap --port 6009
 ```
 
 The server listens on the specified TCP port for a single debug client connection.
@@ -19,9 +19,9 @@ Add a launch configuration to `.vscode/launch.json`:
     "version": "0.2.0",
     "configurations": [
         {
-            "type": "spite",
+            "type": "wscript",
             "request": "launch",
-            "name": "Debug SpiteScript",
+            "name": "Debug Wscript",
             "program": "${file}",
             "debugServer": 6009
         }

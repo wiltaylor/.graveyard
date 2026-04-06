@@ -1,4 +1,4 @@
-# SpiteScript
+# Wscript
 
 A statically-typed, expression-oriented scripting language designed to be embedded in Rust applications. Compiles to WebAssembly in-memory and executes via Wasmtime JIT.
 
@@ -21,13 +21,13 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-spite-script = "0.1"
+wscript = "0.1"
 ```
 
 Basic usage:
 
 ```rust
-use spite_script::Engine;
+use wscript::Engine;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = Engine::new();
@@ -35,17 +35,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register host functions
     engine.register_fn_raw(
         "greet",
-        vec![spite_script::bindings::ParamInfo {
+        vec![wscript::bindings::ParamInfo {
             name: "name".into(),
-            ty: spite_script::bindings::ScriptType::String,
+            ty: wscript::bindings::ScriptType::String,
         }],
-        spite_script::bindings::ScriptType::String,
+        wscript::bindings::ScriptType::String,
         |args| {
             let name = match &args[0] {
-                spite_script::Value::String(s) => s.clone(),
+                wscript::Value::String(s) => s.clone(),
                 _ => return Err("expected string".into()),
             };
-            Ok(spite_script::Value::String(format!("Hello, {}!", name)))
+            Ok(wscript::Value::String(format!("Hello, {}!", name)))
         },
     );
 
@@ -67,17 +67,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Install the CLI:
 
 ```sh
-cargo install --path crates/spite-cli
+cargo install --path crates/wscript-cli
 ```
 
 Or run directly from the repo:
 
 ```sh
 # Run a script
-just run examples/hello.spite
+just run examples/hello.ws
 
 # Check for errors without running
-just check-file examples/hello.spite
+just check-file examples/hello.ws
 
 # Start LSP server (for editor integration)
 just lsp
@@ -93,7 +93,7 @@ just dap 9229
 
 ### Variables and Types
 
-```spite
+```wscript
 let x = 42;                  // immutable, inferred i32
 let y: f64 = 3.14;           // explicit type
 let mut z = 0;               // mutable
@@ -104,7 +104,7 @@ let map = #{ "key": value }; // Map<String, T>
 
 ### Functions
 
-```spite
+```wscript
 fn add(a: i32, b: i32) -> i32 {
     return a + b;
 }
@@ -116,7 +116,7 @@ fn greet(name: String, greeting: String = "Hello") -> String {
 
 ### Structs and Enums
 
-```spite
+```wscript
 struct Point {
     x: f64,
     y: f64,
@@ -136,7 +136,7 @@ enum Shape {
 
 ### Pipelines
 
-```spite
+```wscript
 let result = items
     .filter(|x| x > 0)
     .map(|x| x * 2)
@@ -151,7 +151,7 @@ let result = items
 
 ### Pattern Matching
 
-```spite
+```wscript
 match shape {
     Shape::Circle(r) => r * r * 3.14159,
     Shape::Rectangle(w, h) => w * h,
@@ -160,7 +160,7 @@ match shape {
 
 ### Error Handling
 
-```spite
+```wscript
 fn load(path: String) -> Result<String> {
     let data = read_file(path)?;    // ? propagates errors
     return Ok(data.trim());
@@ -178,19 +178,19 @@ enum AppError {
 
 ### VS Code Setup
 
-1. Start the LSP server: `spite lsp`
-2. Configure your editor to use `spite lsp` as the language server for `.spite` files
+1. Start the LSP server: `wscript lsp`
+2. Configure your editor to use `wscript lsp` as the language server for `.ws` files
 
 For debugging:
 
-1. Start the DAP server: `spite dap --port 6009`
+1. Start the DAP server: `wscript dap --port 6009`
 2. Add a VS Code launch configuration:
 
 ```json
 {
-    "type": "spite",
+    "type": "wscript",
     "request": "launch",
-    "name": "Debug SpiteScript",
+    "name": "Debug Wscript",
     "program": "${file}",
     "debugServer": 6009
 }
@@ -220,13 +220,13 @@ Source text → Lexer → Parser → Type Checker → IR Lowering → WASM Codeg
 
 ```toml
 # Compiler only (no execution):
-spite-script = { version = "0.1", default-features = false }
+wscript = { version = "0.1", default-features = false }
 
 # With LSP support:
-spite-script = { version = "0.1", features = ["lsp"] }
+wscript = { version = "0.1", features = ["lsp"] }
 
 # Everything:
-spite-script = { version = "0.1", features = ["full"] }
+wscript = { version = "0.1", features = ["full"] }
 ```
 
 ## Building from Source

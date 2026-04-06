@@ -1,0 +1,101 @@
+/// Game logic scripted in Wscript.
+///
+/// This script is loaded and executed by the host application.
+/// It uses host-provided functions to interact with the game world.
+
+struct Player {
+    name_id: i32,
+    health: i32,
+    score: i32,
+    level: i32,
+}
+
+impl Player {
+    fn is_alive(&self) -> bool {
+        return self.health > 0;
+    }
+
+    fn level_up(&self) -> Player {
+        return Player {
+            name_id: self.name_id,
+            health: self.health + 20,
+            score: self.score,
+            level: self.level + 1,
+        };
+    }
+}
+
+fn calculate_damage(base_damage: i32, player_level: i32) -> i32 {
+    return base_damage + player_level * 2;
+}
+
+fn apply_damage(player: Player, damage: i32) -> Player {
+    let new_health = player.health - damage;
+    let hp = if new_health < 0 { 0 } else { new_health };
+    return Player {
+        name_id: player.name_id,
+        health: hp,
+        score: player.score,
+        level: player.level,
+    };
+}
+
+fn award_points(player: Player, points: i32) -> i32 {
+    let new_score = player.score + points;
+    // Notify the host about the score change
+    log_event(3); // 3 = score updated event
+    return new_score;
+}
+
+/// Called by the host to simulate a game turn.
+/// Returns the player's final score.
+@export
+fn game_turn(player_health: i32, player_level: i32, enemy_power: i32) -> i32 {
+    let mut player = Player {
+        name_id: 0,
+        health: player_health,
+        score: 0,
+        level: player_level,
+    };
+
+    // Log the start of the turn
+    log_event(1); // 1 = turn started
+
+    // Calculate and apply damage from enemy
+    let damage = calculate_damage(enemy_power, 1);
+    player = apply_damage(player, damage);
+
+    if player.is_alive() {
+        // Player survives — award points based on enemy power
+        let points = enemy_power * 10;
+        let score = award_points(player, points);
+
+        // Check for level up (every 50 points)
+        if score >= 50 {
+            player = player.level_up();
+            log_event(2); // 2 = level up
+        }
+
+        log_event(4); // 4 = turn ended
+        return score;
+    }
+
+    // Player died
+    log_event(5); // 5 = player died
+    return 0;
+}
+
+/// A simpler exported function for testing.
+@export
+fn add_scores(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+/// Compute factorial — demonstrates recursion works in the scripting engine.
+@export
+fn factorial(n: i32) -> i32 {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}

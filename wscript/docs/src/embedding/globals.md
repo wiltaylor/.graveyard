@@ -4,9 +4,9 @@ Globals are top-level `let`, `let mut`, or `const` declarations in a script. The
 
 ## Declaring Globals in a Script
 
-Top-level declarations live outside any function. Their initializers run once, inside a synthesized `__spite_init_globals` start function, when the `Vm` is instantiated:
+Top-level declarations live outside any function. Their initializers run once, inside a synthesized `__wscript_init_globals` start function, when the `Vm` is instantiated:
 
-```spite
+```wscript
 let mut tick_count: i32 = 0;
 let mut difficulty: i32 = 1;
 let mut greeting: str = "hello";
@@ -22,7 +22,7 @@ fn tick() -> i32 {
 
 Struct-typed globals are allowed as well; their non-constant initializers run in the same start function:
 
-```spite
+```wscript
 struct PlayerState {
     hp: i32,
     score: i32,
@@ -41,7 +41,7 @@ let mut world: PlayerState = PlayerState {
 Instantiate the compiled script into a long-lived `Vm`, then use `get_global` / `set_global` for primitive globals and `read_global_struct` / `write_global_struct` for struct-typed globals:
 
 ```rust
-use spite_script::{Engine, Value};
+use wscript::{Engine, Value};
 
 let mut engine = Engine::new();
 let result = engine.load_script(source)?;

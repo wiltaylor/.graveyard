@@ -1,13 +1,13 @@
 # LSP Server
 
-The SpiteScript LSP server provides IDE features for any editor that supports the Language Server Protocol. It is enabled by the `lsp` Cargo feature.
+The Wscript LSP server provides IDE features for any editor that supports the Language Server Protocol. It is enabled by the `lsp` Cargo feature.
 
 ## Starting the Server
 
 ### From the CLI
 
 ```bash
-spite lsp
+wscript lsp
 ```
 
 This starts the LSP server on stdio, which is the standard transport for most editors.
@@ -15,7 +15,7 @@ This starts the LSP server on stdio, which is the standard transport for most ed
 ### From a Rust Application
 
 ```rust
-use spite_script::Engine;
+use wscript::Engine;
 
 let engine = Engine::new();
 // Register host bindings first, so the LSP knows about them
@@ -59,8 +59,8 @@ Install the TextMate grammar from `editors/vscode/`, then configure the language
 
 ```json
 {
-    "spite.languageServer.path": "spite",
-    "spite.languageServer.args": ["lsp"]
+    "wscript.languageServer.path": "wscript",
+    "wscript.languageServer.args": ["lsp"]
 }
 ```
 
@@ -68,11 +68,11 @@ Install the TextMate grammar from `editors/vscode/`, then configure the language
 
 ```lua
 vim.api.nvim_create_autocmd("FileType", {
-    pattern = "spite",
+    pattern = "wscript",
     callback = function()
         vim.lsp.start({
-            name = "spite-lsp",
-            cmd = { "spite", "lsp" },
+            name = "wscript-lsp",
+            cmd = { "wscript", "lsp" },
         })
     end,
 })

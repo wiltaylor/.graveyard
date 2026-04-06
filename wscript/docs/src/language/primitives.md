@@ -1,10 +1,10 @@
 # Primitive Types
 
-Primitive types in SpiteScript are always copied on assignment. They live on the stack (in WASM locals) and are never heap-allocated or reference-counted.
+Primitive types in Wscript are always copied on assignment. They live on the stack (in WASM locals) and are never heap-allocated or reference-counted.
 
 ## Integer Types
 
-SpiteScript provides ten integer types, five signed and five unsigned:
+Wscript provides ten integer types, five signed and five unsigned:
 
 | Type | Width | Range |
 |------|-------|-------|
@@ -21,7 +21,7 @@ SpiteScript provides ten integer types, five signed and five unsigned:
 
 Integer literals without a type suffix default to `i32`:
 
-```spite
+```wscript
 let x = 42;        // i32
 let y: i64 = 42;   // i64 because of the annotation
 ```
@@ -30,7 +30,7 @@ let y: i64 = 42;   // i64 because of the annotation
 
 Standard arithmetic operators work on all integer types:
 
-```spite
+```wscript
 let a = 10;
 let b = 3;
 
@@ -45,7 +45,7 @@ let rem = a % b;        // 1
 
 Arithmetic overflow on integer types **panics in debug mode** and **wraps in release mode**. If you need intentional wrap-around arithmetic, use the explicit wrapping methods:
 
-```spite
+```wscript
 let x: u8 = 255;
 // x + 1 would panic in debug mode, wrap to 0 in release mode
 
@@ -61,14 +61,14 @@ let wrapped = x.wrapping_add(1);  // always 0, no panic
 
 Float literals without a type suffix default to `f64`:
 
-```spite
+```wscript
 let x = 3.14;        // f64
 let y: f32 = 3.14;   // f32 because of the annotation
 ```
 
 Floating-point operations follow IEEE 754. `NaN`, `+Inf`, and `-Inf` are valid values. Division by zero produces infinity, not a panic:
 
-```spite
+```wscript
 let inf = 1.0 / 0.0;     // +Inf
 let neg_inf = -1.0 / 0.0; // -Inf
 let nan = 0.0 / 0.0;      // NaN
@@ -76,7 +76,7 @@ let nan = 0.0 / 0.0;      // NaN
 
 ### Float Arithmetic
 
-```spite
+```wscript
 let a = 10.0;
 let b = 3.0;
 
@@ -93,9 +93,9 @@ The `bool` type has exactly two values: `true` and `false`.
 
 ### Logical Operators
 
-SpiteScript supports both symbolic and keyword-style logical operators:
+Wscript supports both symbolic and keyword-style logical operators:
 
-```spite
+```wscript
 let a = true;
 let b = false;
 
@@ -112,7 +112,7 @@ let not_result = not a;     // false
 
 Logical `&&` and `||` (and their keyword equivalents `and` and `or`) use **short-circuit evaluation**. The right-hand side is only evaluated if the left-hand side does not already determine the result:
 
-```spite
+```wscript
 // safe_check() is only called if items is not empty
 let ok = !items.is_empty() && safe_check(items[0]);
 
@@ -124,7 +124,7 @@ let result = primary() || default_value();
 
 The `char` type represents a single Unicode scalar value (U+0000 to U+D7FF, U+E000 to U+10FFFF). It is stored as a 32-bit value internally.
 
-```spite
+```wscript
 let letter = 'a';
 let emoji = '🦀';
 let newline = '\n';
@@ -147,7 +147,7 @@ Character literals support the following escape sequences:
 
 ### Char Methods
 
-```spite
+```wscript
 let ch = 'A';
 ch.is_alphabetic();   // true
 ch.is_numeric();      // false
@@ -159,11 +159,11 @@ ch.to_string();       // "A"
 
 ## Numeric Literals
 
-SpiteScript supports several numeric literal formats.
+Wscript supports several numeric literal formats.
 
 ### Decimal
 
-```spite
+```wscript
 let x = 42;
 let big = 1_000_000;    // underscores are ignored, used for readability
 let neg = -17;
@@ -173,7 +173,7 @@ let neg = -17;
 
 Prefixed with `0x` or `0X`:
 
-```spite
+```wscript
 let hex = 0xFF;          // 255
 let mask = 0x00FF_00FF;  // underscores allowed
 ```
@@ -182,7 +182,7 @@ let mask = 0x00FF_00FF;  // underscores allowed
 
 Prefixed with `0b` or `0B`:
 
-```spite
+```wscript
 let bits = 0b1010;       // 10
 let byte = 0b1111_0000;  // 240
 ```
@@ -191,7 +191,7 @@ let byte = 0b1111_0000;  // 240
 
 Prefixed with `0o` or `0O`:
 
-```spite
+```wscript
 let octal = 0o77;        // 63
 let perms = 0o755;       // 493
 ```
@@ -200,7 +200,7 @@ let perms = 0o755;       // 493
 
 Float literals require a decimal point or use scientific notation:
 
-```spite
+```wscript
 let pi = 3.14;
 let avogadro = 6.022e23;
 let tiny = 1.0e-10;
@@ -210,7 +210,7 @@ let tiny = 1.0e-10;
 
 You can append a type suffix directly to any numeric literal to specify its type without a separate annotation:
 
-```spite
+```wscript
 let a = 42i32;       // i32
 let b = 42u8;        // u8
 let c = 42i64;       // i64
@@ -232,23 +232,23 @@ When no suffix or annotation is present, numeric literals use these defaults:
 - Integer literals default to `i32`
 - Float literals default to `f64`
 
-```spite
+```wscript
 let x = 42;       // i32
 let y = 3.14;     // f64
 ```
 
 The default can be overridden by context:
 
-```spite
+```wscript
 fn takes_i64(n: i64) { }
 takes_i64(42);    // 42 is treated as i64 here due to the parameter type
 ```
 
 ## The `as` Cast
 
-SpiteScript does not perform implicit coercions between numeric types. All numeric conversions require an explicit `as` cast:
+Wscript does not perform implicit coercions between numeric types. All numeric conversions require an explicit `as` cast:
 
-```spite
+```wscript
 let x: i32 = 42;
 let y: i64 = x as i64;    // widen
 let z: f64 = x as f64;    // int to float
@@ -256,7 +256,7 @@ let z: f64 = x as f64;    // int to float
 
 The `as` cast performs value conversion, truncating or sign-extending as needed. It does not check for overflow:
 
-```spite
+```wscript
 let big: i64 = 1_000_000;
 let small: i32 = big as i32;   // truncates if out of i32 range
 
@@ -269,7 +269,7 @@ let unsigned: u32 = signed as u32;  // reinterprets bits: 4294967295
 
 For checked conversion that returns a `Result` instead of silently truncating, use the standard library:
 
-```spite
+```wscript
 let big: i64 = 1_000_000_000_000;
 let result = i32::try_from(big);   // Err -- value out of range
 ```
@@ -278,7 +278,7 @@ let result = i32::try_from(big);   // Err -- value out of range
 
 All primitive types support comparison:
 
-```spite
+```wscript
 let a = 10;
 let b = 20;
 
@@ -294,7 +294,7 @@ a >= b    // true
 
 Integer types support bitwise operations:
 
-```spite
+```wscript
 let a: u8 = 0b1100;
 let b: u8 = 0b1010;
 

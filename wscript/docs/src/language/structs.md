@@ -1,12 +1,12 @@
 # Structs
 
-Structs are SpiteScript's primary way to define custom data types with named fields. They are heap-allocated, reference-counted, and support methods through `impl` blocks.
+Structs are Wscript's primary way to define custom data types with named fields. They are heap-allocated, reference-counted, and support methods through `impl` blocks.
 
 ## Declaration
 
 A struct declaration defines a type with named, typed fields:
 
-```spite
+```wscript
 struct Point {
     x: f64,
     y: f64,
@@ -26,7 +26,7 @@ Each field must have an explicit type annotation. Fields are separated by commas
 
 Structs can be parameterized over one or more type variables:
 
-```spite
+```wscript
 struct Pair<A, B> {
     first:  A,
     second: B,
@@ -46,7 +46,7 @@ Type parameters are specified in angle brackets after the struct name. They can 
 
 When constructing or annotating a generic struct, provide concrete type arguments:
 
-```spite
+```wscript
 let p: Pair<i32, String> = Pair { first: 42, second: "hello" };
 let w = Wrapper { value: 3.14, label: "pi" };  // Wrapper<f64> inferred
 ```
@@ -57,7 +57,7 @@ let w = Wrapper { value: 3.14, label: "pi" };  // Wrapper<f64> inferred
 
 Specify all fields by name:
 
-```spite
+```wscript
 let p = Point { x: 3.0, y: 4.0 };
 
 let user = User {
@@ -74,13 +74,13 @@ Every field must be provided. Missing fields are a compile error.
 
 When a local variable has the same name as a field, you can omit the `: value` part:
 
-```spite
+```wscript
 let x = 3.0;
 let y = 4.0;
 let p = Point { x, y };    // equivalent to Point { x: x, y: y }
 ```
 
-```spite
+```wscript
 let name = "Alice";
 let email = "alice@example.com";
 let user = User {
@@ -95,7 +95,7 @@ let user = User {
 
 Create a new struct by copying fields from an existing one and overriding specific fields with `..`:
 
-```spite
+```wscript
 let p1 = Point { x: 1.0, y: 2.0 };
 let p2 = Point { x: 10.0, ..p1 };   // p2.x = 10.0, p2.y = 2.0
 
@@ -120,7 +120,7 @@ The `..source` must appear at the end of the field list. It fills in any fields 
 
 Access fields with dot notation:
 
-```spite
+```wscript
 let p = Point { x: 3.0, y: 4.0 };
 let x_val = p.x;     // 3.0
 let y_val = p.y;     // 4.0
@@ -130,7 +130,7 @@ let y_val = p.y;     // 4.0
 
 Assign directly to a struct field with `=`, `+=`, `-=`, etc. The receiver must be a `let mut` binding (or reached through another mutable path such as `self` inside a `&mut self` method, or a struct-typed top-level global):
 
-```spite
+```wscript
 let mut p = Point { x: 3.0, y: 4.0 };
 p.x = 10.0;
 p.y += 1.0;
@@ -138,7 +138,7 @@ p.y += 1.0;
 
 Field assignment also works on struct-typed top-level globals:
 
-```spite
+```wscript
 struct PlayerState { hp: i32, score: i32 }
 
 let mut world: PlayerState = PlayerState { hp: 50, score: 0 };
@@ -156,7 +156,7 @@ Assigning to a field of an immutable binding is a compile error.
 
 Methods are defined in `impl` blocks, separate from the struct declaration. You can have multiple `impl` blocks for the same type:
 
-```spite
+```wscript
 impl Point {
     fn new(x: f64, y: f64) -> Point {
         return Point { x, y };
@@ -181,7 +181,7 @@ impl Point {
 
 Methods without a `self` parameter are static. They are called on the type with `::`:
 
-```spite
+```wscript
 impl Point {
     fn new(x: f64, y: f64) -> Point {
         return Point { x, y };
@@ -202,7 +202,7 @@ Static methods are often used as constructors.
 
 Methods taking `&self` have read-only access to the struct. They are called with dot notation on any binding (mutable or immutable):
 
-```spite
+```wscript
 impl Point {
     fn distance_from_origin(&self) -> f64 {
         return (self.x * self.x + self.y * self.y).sqrt();
@@ -228,7 +228,7 @@ let s = p.to_string();                  // "(3.0, 4.0)"
 
 Methods taking `&mut self` can modify the struct's fields. The caller must have a `let mut` binding:
 
-```spite
+```wscript
 impl Point {
     fn translate(&mut self, dx: f64, dy: f64) {
         self.x += dx;
@@ -256,7 +256,7 @@ frozen.translate(1.0, 0.0); // ERROR: cannot call &mut self method on immutable 
 
 ## `self` Reference Rules
 
-SpiteScript uses reference counting rather than borrow checking. The `&self` and `&mut self` distinctions are enforced by the type checker as a contract, not as runtime exclusive borrows:
+Wscript uses reference counting rather than borrow checking. The `&self` and `&mut self` distinctions are enforced by the type checker as a contract, not as runtime exclusive borrows:
 
 - **`&self`** -- shared, read-only access. Works on any binding.
 - **`&mut self`** -- mutable access. Requires a `let mut` binding.
@@ -268,7 +268,7 @@ Because there is no borrow checker, two `&mut self` calls interleaved on the sam
 
 When implementing methods for a generic struct, include the type parameters:
 
-```spite
+```wscript
 struct Stack<T> {
     items: T[],
 }
@@ -312,7 +312,7 @@ let empty = s.is_empty(); // false
 
 Here is a complete example showing struct declaration, multiple `impl` blocks, and various method types:
 
-```spite
+```wscript
 struct Rectangle {
     width: f64,
     height: f64,

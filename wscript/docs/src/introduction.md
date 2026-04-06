@@ -1,10 +1,10 @@
 # Introduction
 
-SpiteScript is a statically-typed, expression-oriented scripting language designed to be embedded in Rust host applications. It compiles source code to WebAssembly (WASM) in memory at runtime and executes it via an embedded Wasmtime JIT compiler. The WASM binary is never written to disk -- SpiteScript uses WASM purely as an internal execution format to get high-performance native code generation without the complexity of building a custom bytecode VM.
+Wscript is a statically-typed, expression-oriented scripting language designed to be embedded in Rust host applications. It compiles source code to WebAssembly (WASM) in memory at runtime and executes it via an embedded Wasmtime JIT compiler. The WASM binary is never written to disk -- Wscript uses WASM purely as an internal execution format to get high-performance native code generation without the complexity of building a custom bytecode VM.
 
 ## Design Goals
 
-SpiteScript is built around six core principles:
+Wscript is built around six core principles:
 
 - **Embeddable**: The entire runtime, compiler, LSP server, and DAP server ship as a single Rust library crate. Your application takes only what it needs via Cargo feature flags.
 
@@ -20,18 +20,18 @@ SpiteScript is built around six core principles:
 
 ## Non-Goals
 
-SpiteScript intentionally does not pursue:
+Wscript intentionally does not pursue:
 
 - **Multi-threading within scripts.** Scripts execute single-threaded. Concurrency belongs in the host application.
 - **Interoperability with external WASM modules.** The WASM output is an internal detail, not a distribution format.
-- **A standalone binary distribution.** SpiteScript is a library, not a stand-alone language runtime.
+- **A standalone binary distribution.** Wscript is a library, not a stand-alone language runtime.
 - **A borrow checker or Rust-style ownership.** Memory safety comes from reference counting, not lifetime analysis.
 
-## A Taste of SpiteScript
+## A Taste of Wscript
 
 Here is a small program that demonstrates variables, structs, functions, pipelines, pattern matching, and error handling:
 
-```spite
+```wscript
 struct Task {
     title: String,
     priority: i32,
@@ -104,7 +104,7 @@ This example shows:
 
 This book is divided into several sections:
 
-- **[Getting Started](./getting-started/README.md)** covers installation, using SpiteScript as a Rust library, the CLI tool, and editor setup.
+- **[Getting Started](./getting-started/README.md)** covers installation, using Wscript as a Rust library, the CLI tool, and editor setup.
 
 - **[Language Guide](./language/README.md)** is a comprehensive reference for every language feature: variables, types, functions, structs, enums, pattern matching, closures, pipelines, error handling, macros, and attributes.
 
