@@ -59,6 +59,9 @@ pub struct IrGlobal {
     pub ty: IrType,
     pub init: Option<IrExpr>,
     pub mutable: bool,
+    /// For reflection: source type name. `Some("str")` for string globals,
+    /// `Some("StructName")` for struct globals, `None` for primitives.
+    pub type_name: Option<SmolStr>,
 }
 
 #[derive(Debug, Clone)]

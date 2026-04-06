@@ -2,7 +2,9 @@
 
 use crate::bindings::{BindingRegistry, ScriptType};
 use crate::compiler::source_map::SourceMap;
-use crate::reflect::{FieldType, FieldValue, StructTypeInfo, StructView, TypeLayouts};
+use crate::reflect::{
+    FieldType, FieldValue, GlobalInfo, GlobalKind, StructTypeInfo, StructView, TypeLayouts,
+};
 use crate::runtime::debug::*;
 use crate::runtime::value::Value;
 use std::collections::HashMap;
@@ -1052,18 +1054,56 @@ impl Vm {
         }
     }
 
-    /// Read a primitive WASM global exported as `g_<name>`.
+    /// Read a top-level script global exported as `g_<name>`.
+    ///
+    /// Uses reflection metadata to return a typed `Value`:
+    /// * `str` globals resolve the i32 handle through the host string table
+    ///   and return `Value::Str`.
+    /// * `bool` globals return `Value::Bool`.
+    /// * Struct globals return `Value::I32(ptr)` as a low-level escape hatch;
+    ///   prefer `read_global_struct` for a structured view.
+    /// * Other primitives pass through directly.
     pub fn get_global(&mut self, name: &str) -> Result<Value, String> {
         let export_name = format!("g_{name}");
         let g = self
             .instance
             .get_global(&mut self.store, &export_name)
             .ok_or_else(|| format!("global '{name}' not found"))?;
-        Ok(wasm_val_to_value(&g.get(&mut self.store)))
+        let raw = g.get(&mut self.store);
+        match self.layouts.global(name).map(|gi| gi.kind.clone()) {
+            Some(GlobalKind::Primitive(ScriptType::Str)) => {
+                let handle = match raw {
+                    wasmtime::Val::I32(v) => v,
+                    _ => return Err(format!("global '{name}' has non-i32 storage")),
+                };
+                let s = self
+                    .store
+                    .data()
+                    .strings
+                    .get(handle as usize)
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(Value::Str(s))
+            }
+            Some(GlobalKind::Primitive(ScriptType::Bool)) => match raw {
+                wasmtime::Val::I32(v) => Ok(Value::Bool(v != 0)),
+                _ => Err(format!("global '{name}' has non-i32 storage")),
+            },
+            _ => Ok(wasm_val_to_value(&raw)),
+        }
     }
 
-    /// Write a primitive WASM global exported as `g_<name>`.
+    /// Write a top-level script global. Accepts primitives (including `str`,
+    /// which is interned into the host string table). Writing a struct-typed
+    /// global is rejected — use `write_global_struct` for field-level
+    /// mutation instead.
     pub fn set_global(&mut self, name: &str, v: Value) -> Result<(), String> {
+        if let Some(GlobalInfo { kind: GlobalKind::Struct(_), .. }) = self.layouts.global(name) {
+            return Err(format!(
+                "cannot set_global on struct-typed global '{name}'; \
+                 use write_global_struct for field-level updates"
+            ));
+        }
         let export_name = format!("g_{name}");
         let g = self
             .instance
@@ -1074,9 +1114,62 @@ impl Vm {
                 let h = self.store.data_mut().intern_string(s);
                 wasmtime::Val::I32(h)
             }
+            Value::Bool(b) => wasmtime::Val::I32(if b { 1 } else { 0 }),
             other => value_to_wasm_val(&other),
         };
         g.set(&mut self.store, val).map_err(|e| e.to_string())
+    }
+
+    /// Iterate over reflection metadata for every declared top-level global.
+    pub fn globals(&self) -> impl Iterator<Item = &GlobalInfo> {
+        self.layouts.globals_iter()
+    }
+
+    /// Read a struct-typed global as a recursive `StructView`. The global's
+    /// backing WASM global holds an i32 pointer into linear memory; this
+    /// wrapper resolves that and delegates to `read_struct_at`.
+    pub fn read_global_struct(&mut self, name: &str) -> Result<StructView, String> {
+        let struct_name = match self.layouts.global(name).map(|gi| gi.kind.clone()) {
+            Some(GlobalKind::Struct(n)) => n,
+            Some(_) => return Err(format!("global '{name}' is not a struct")),
+            None => return Err(format!("global '{name}' not found")),
+        };
+        let export_name = format!("g_{name}");
+        let g = self
+            .instance
+            .get_global(&mut self.store, &export_name)
+            .ok_or_else(|| format!("global '{name}' not found"))?;
+        let ptr = match g.get(&mut self.store) {
+            wasmtime::Val::I32(p) => p,
+            _ => return Err(format!("global '{name}' has non-i32 storage")),
+        };
+        self.read_struct_at(ptr, &struct_name)
+    }
+
+    /// Update fields of a struct-typed global in place. Resolves the global's
+    /// pointer then calls `write_struct_at`. Field-level mutation avoids the
+    /// allocation leak that wholesale pointer replacement would cause in a
+    /// bump allocator.
+    pub fn write_global_struct(
+        &mut self,
+        name: &str,
+        fields: &[(&str, Value)],
+    ) -> Result<(), String> {
+        let struct_name = match self.layouts.global(name).map(|gi| gi.kind.clone()) {
+            Some(GlobalKind::Struct(n)) => n,
+            Some(_) => return Err(format!("global '{name}' is not a struct")),
+            None => return Err(format!("global '{name}' not found")),
+        };
+        let export_name = format!("g_{name}");
+        let g = self
+            .instance
+            .get_global(&mut self.store, &export_name)
+            .ok_or_else(|| format!("global '{name}' not found"))?;
+        let ptr = match g.get(&mut self.store) {
+            wasmtime::Val::I32(p) => p,
+            _ => return Err(format!("global '{name}' has non-i32 storage")),
+        };
+        self.write_struct_at(ptr, &struct_name, fields)
     }
 
     /// Look up reflection info for a type.

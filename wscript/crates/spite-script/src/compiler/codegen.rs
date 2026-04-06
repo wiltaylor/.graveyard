@@ -14,7 +14,7 @@ use walrus::{
 use super::ir::*;
 use super::source_map::{SourceMap, SourceMapEntry};
 use crate::bindings::ScriptType;
-use crate::reflect::{FieldInfo, FieldType, StructTypeInfo, TypeLayouts};
+use crate::reflect::{FieldInfo, FieldType, GlobalInfo, GlobalKind, StructTypeInfo, TypeLayouts};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -60,6 +60,28 @@ fn build_type_layouts(ir: &IrModule) -> TypeLayouts {
             name: layout.name.to_string(),
             size: layout.size,
             fields,
+        });
+    }
+
+    // Populate GlobalInfo from IR globals. Struct/str classification comes
+    // from the `type_name` field recorded by the lowerer.
+    for g in &ir.globals {
+        let kind = match g.type_name.as_deref() {
+            Some("str") => GlobalKind::Primitive(ScriptType::Str),
+            Some(name)
+                if ir
+                    .struct_layouts
+                    .iter()
+                    .any(|s| s.name.as_str() == name && !name.starts_with("__")) =>
+            {
+                GlobalKind::Struct(name.to_string())
+            }
+            _ => GlobalKind::Primitive(ir_to_script_type(g.ty)),
+        };
+        out.globals.push(GlobalInfo {
+            name: g.name.to_string(),
+            mutable: g.mutable,
+            kind,
         });
     }
     out
@@ -388,6 +410,7 @@ impl WasmCodegen {
         struct FuncReg {
             fid: FunctionId,
             all_locals: Vec<LocalId>,
+            scratch_locals: Vec<LocalId>,
             result_tys: Vec<ValType>,
         }
         let mut registrations: Vec<FuncReg> = Vec::new();
@@ -416,6 +439,17 @@ impl WasmCodegen {
                 all_locals.push(lid);
             }
 
+            // Preallocate a pool of i32 scratch locals used by StructNew to
+            // hold the allocation base pointer across field stores. One per
+            // nesting depth — StructNew can be emitted recursively when a
+            // field expression is itself a struct literal, and each depth
+            // must use its own slot so an inner emission doesn't clobber an
+            // outer's saved base.
+            const STRUCT_SCRATCH_DEPTH: usize = 8;
+            let scratch_locals: Vec<LocalId> = (0..STRUCT_SCRATCH_DEPTH)
+                .map(|_| self.module.locals.add(ValType::I32))
+                .collect();
+
             // Emit a minimal placeholder body so we can finish the builder.
             {
                 let mut body = builder.func_body();
@@ -425,7 +459,7 @@ impl WasmCodegen {
             }
             let fid = builder.finish(param_locals, &mut self.module.funcs);
             self.fn_ids.insert(func.name.clone(), fid);
-            registrations.push(FuncReg { fid, all_locals, result_tys });
+            registrations.push(FuncReg { fid, all_locals, scratch_locals, result_tys });
         }
 
         // Pass 2: Now that all FunctionIds are registered, replace each
@@ -445,6 +479,7 @@ impl WasmCodegen {
                 .iter()
                 .map(|f| (f.name.clone(), f.ret_type))
                 .collect();
+            let struct_depth = std::cell::Cell::new(0usize);
             let builder = local_fn.builder_mut();
             {
                 let mut body = builder.instr_seq(entry);
@@ -456,6 +491,8 @@ impl WasmCodegen {
                     user_globals: &user_globals,
                     string_offsets: &self.string_offsets,
                     struct_layouts: &ir.struct_layouts,
+                    struct_scratch: &reg.scratch_locals,
+                    struct_depth: &struct_depth,
                     memory: self.memory,
                     stack_ptr: self.stack_ptr,
                     heap_ptr: self.heap_ptr,
@@ -478,6 +515,12 @@ impl WasmCodegen {
                     local_names: HashMap::new(),
                 });
             }
+        }
+
+        // Wire the synthesized `__spite_init_globals` fn as the WASM start
+        // section so Wasmtime runs it automatically during instantiation.
+        if let Some(&fid) = self.fn_ids.get(crate::compiler::lower::INIT_GLOBALS_FN) {
+            self.module.start = Some(fid);
         }
 
         // Export functions marked for export.
@@ -508,6 +551,11 @@ struct EmitCtx<'a> {
     user_globals: &'a HashMap<SmolStr, GlobalId>,
     string_offsets: &'a [(u32, u32)],
     struct_layouts: &'a [StructLayout],
+    /// Pool of i32 scratch locals for StructNew allocation bookkeeping,
+    /// one per nesting depth.
+    struct_scratch: &'a [LocalId],
+    /// Current StructNew nesting depth — indexes into `struct_scratch`.
+    struct_depth: &'a std::cell::Cell<usize>,
     memory: MemoryId,
     #[allow(dead_code)]
     stack_ptr: GlobalId,
@@ -778,53 +826,35 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
                 let memory = ctx.memory;
                 let total_size = 4 + layout.size; // 4 bytes refcount header + struct data
 
-                // Bump allocate: base_addr = heap_ptr; heap_ptr += total_size
-                // Save current heap_ptr to a temp local
-                // We use a two-pass approach: first emit the allocation,
-                // then store fields, then push the data pointer.
+                // Acquire a scratch local for this nesting depth. Nested
+                // StructNew in a field expression gets the next slot so it
+                // can't clobber our saved alloc_addr.
+                let depth = ctx.struct_depth.get();
+                let scratch = ctx.struct_scratch.get(depth).copied().expect(
+                    "StructNew nested deeper than preallocated scratch pool",
+                );
+                ctx.struct_depth.set(depth + 1);
 
-                // alloc_addr = heap_ptr
+                // alloc_addr = heap_ptr; heap_ptr += total_size
                 body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
-                // Advance heap_ptr by total_size
-                body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
+                body.local_tee(scratch);               // [alloc_addr], scratch=alloc_addr
                 body.i32_const(total_size as i32);
                 body.binop(walrus::ir::BinaryOp::I32Add);
                 body.instr(walrus::ir::GlobalSet { global: ctx.heap_ptr });
-                // Stack: [alloc_addr]
 
-                // data_ptr = alloc_addr + 4 (skip refcount header)
-                // But we need alloc_addr for both storing refcount and computing data_ptr.
-                // Use a local to hold alloc_addr. We'll reuse local 0 pattern via
-                // duplicating the value on the stack using local.tee-like patterns.
-
-                // Actually, let's store alloc_addr in a temp, then do our work.
-                // We need to find an unused local. Use the first local as a temp.
-                // Better approach: emit alloc_addr, store refcount, then compute data_ptr.
-
-                // Stack has: [alloc_addr]
-                // Store refcount = 1 at alloc_addr
-                // We need alloc_addr twice (for store + for computing data_ptr + for field stores)
-                // Duplicate by re-reading global (it's already advanced, so subtract back)
-                // Actually simpler: re-get heap_ptr and subtract total_size
-                body.drop(); // drop alloc_addr, we'll recompute
-
-                // Recompute alloc_addr = heap_ptr - total_size
-                // Store refcount at alloc_addr
-                body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
-                body.i32_const(total_size as i32);
-                body.binop(walrus::ir::BinaryOp::I32Sub);
-                // Stack: [alloc_addr]
-                // Store refcount = 1
+                // Store refcount = 1 at alloc_addr.
+                body.local_get(scratch);               // [alloc_addr]
                 body.i32_const(1);
                 emit_store(body, memory, IrType::I32, 0);
 
-                // Store each field at (alloc_addr + 4 + field.offset)
+                // Store each field at (alloc_addr + 4 + field.offset).
+                // Field addr is pushed BEFORE the field expression runs, so
+                // even if the field expression recursively invokes StructNew
+                // (and advances heap_ptr or reuses deeper scratch slots),
+                // our addr is already on the WASM stack.
                 for (i, field_expr) in fields.iter().enumerate() {
                     if let Some(fl) = layout.fields.get(i) {
-                        // Compute data_ptr + field.offset
-                        body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
-                        body.i32_const(total_size as i32);
-                        body.binop(walrus::ir::BinaryOp::I32Sub);
+                        body.local_get(scratch);
                         body.i32_const(4 + fl.offset as i32);
                         body.binop(walrus::ir::BinaryOp::I32Add);
                         // Stack: [field_addr]
@@ -833,12 +863,12 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
                     }
                 }
 
-                // Push data_ptr (alloc_addr + 4) as result
-                body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
-                body.i32_const(total_size as i32);
-                body.binop(walrus::ir::BinaryOp::I32Sub);
+                // Push data_ptr = alloc_addr + 4 as the expression result.
+                body.local_get(scratch);
                 body.i32_const(4);
                 body.binop(walrus::ir::BinaryOp::I32Add);
+
+                ctx.struct_depth.set(depth);
             } else {
                 body.i32_const(0);
             }

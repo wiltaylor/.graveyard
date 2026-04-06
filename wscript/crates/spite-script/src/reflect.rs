@@ -51,14 +51,40 @@ impl StructView {
     }
 }
 
-/// Collection of all struct layouts known to a compiled script.
+/// Metadata about a top-level `let` / `let mut` global declared in the script.
+#[derive(Debug, Clone)]
+pub struct GlobalInfo {
+    pub name: String,
+    pub mutable: bool,
+    pub kind: GlobalKind,
+}
+
+/// What a top-level global's declared type is at the reflection boundary.
+#[derive(Debug, Clone)]
+pub enum GlobalKind {
+    Primitive(ScriptType),
+    /// A struct global — the payload is the struct type name, which can be
+    /// resolved against `TypeLayouts::get` to walk fields.
+    Struct(String),
+}
+
+/// Collection of all struct layouts and globals known to a compiled script.
 #[derive(Debug, Default)]
 pub struct TypeLayouts {
     pub structs: Vec<StructTypeInfo>,
+    pub globals: Vec<GlobalInfo>,
 }
 
 impl TypeLayouts {
     pub fn get(&self, name: &str) -> Option<&StructTypeInfo> {
         self.structs.iter().find(|s| s.name == name)
+    }
+
+    pub fn global(&self, name: &str) -> Option<&GlobalInfo> {
+        self.globals.iter().find(|g| g.name == name)
+    }
+
+    pub fn globals_iter(&self) -> impl Iterator<Item = &GlobalInfo> {
+        self.globals.iter()
     }
 }

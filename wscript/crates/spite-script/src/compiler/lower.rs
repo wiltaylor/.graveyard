@@ -55,6 +55,11 @@ struct Lowerer {
     /// Top-level `let` / `let mut` globals, keyed by name → (IR type, mutable).
     /// Used to resolve ident reads/writes in function bodies to GlobalGet/Set.
     global_names: HashMap<SmolStr, (IrType, bool)>,
+    /// Init statements for globals whose initializer is not a WASM ConstExpr
+    /// (struct globals, str globals, non-literal primitives). Collected and
+    /// emitted as a synthesized `__spite_init_globals` function wired as the
+    /// WASM `start` section.
+    deferred_global_inits: Vec<IrStmt>,
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +101,7 @@ pub fn lower(program: &ast::Program, debug_mode: bool, bindings: &BindingRegistr
         trait_sigs: HashMap::new(),
         user_host_fns,
         global_names: HashMap::new(),
+        deferred_global_inits: Vec::new(),
     };
 
     // Register built-in Option and Result struct layouts so that
@@ -106,7 +112,39 @@ pub fn lower(program: &ast::Program, debug_mode: bool, bindings: &BindingRegistr
         lowerer.lower_item(item);
     }
 
+    // If any globals had non-constant initializers, synthesize an
+    // `__spite_init_globals` function carrying the deferred inits. Codegen
+    // wires this as the WASM start section so Wasmtime runs it automatically
+    // at instantiate time (after imports are linked and after `heap_ptr`'s
+    // own const init has fired).
+    if !lowerer.deferred_global_inits.is_empty() {
+        let body = std::mem::take(&mut lowerer.deferred_global_inits);
+        lowerer.module.functions.push(IrFunction {
+            name: INIT_GLOBALS_FN.into(),
+            params: Vec::new(),
+            ret_type: IrType::Unit,
+            locals: Vec::new(),
+            body,
+            is_export: false,
+            source_span: None,
+        });
+    }
+
     lowerer.module
+}
+
+/// Name of the synthesized function carrying deferred global initializers.
+/// Codegen looks for this name and sets it as `module.start`.
+pub const INIT_GLOBALS_FN: &str = "__spite_init_globals";
+
+/// True if an IR expression can be emitted directly as a WASM `ConstExpr`
+/// for use as a global's initializer. Anything else must be deferred into
+/// the synthesized `__spite_init_globals` start function.
+fn is_wasm_const(e: &IrExpr) -> bool {
+    matches!(
+        e,
+        IrExpr::IntConst(_) | IrExpr::FloatConst(_) | IrExpr::BoolConst(_)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -298,15 +336,46 @@ impl Lowerer {
                 _ => IrType::I32,
             },
         };
+        // Source type name for reflection: "str" for string globals, the
+        // struct name for named-type globals, None for primitives.
+        let type_name: Option<SmolStr> = g.ty.as_ref().and_then(|te| match &te.kind {
+            ast::TypeExprKind::StringType => Some("str".into()),
+            ast::TypeExprKind::Named { name, .. }
+                if !self.enum_names.contains_key(name) =>
+            {
+                Some(name.clone())
+            }
+            _ => None,
+        });
+
         let mut ctx = FnCtx::new();
         let init = self.lower_expr(&g.value, &mut ctx);
         self.global_names.insert(g.name.clone(), (ty, g.mutable));
-        self.module.globals.push(IrGlobal {
-            name: g.name.clone(),
-            ty,
-            init: Some(init),
-            mutable: g.mutable,
-        });
+
+        if is_wasm_const(&init) {
+            self.module.globals.push(IrGlobal {
+                name: g.name.clone(),
+                ty,
+                init: Some(init),
+                mutable: g.mutable,
+                type_name,
+            });
+        } else {
+            // Non-constant initializer: declare the WASM global as mutable
+            // with a zero placeholder and schedule the real init for the
+            // synthesized `__spite_init_globals` function.
+            self.module.globals.push(IrGlobal {
+                name: g.name.clone(),
+                ty,
+                init: None,
+                mutable: true,
+                type_name,
+            });
+            self.deferred_global_inits.push(IrStmt::Assign {
+                target: IrLValue::Global(g.name.clone()),
+                value: init,
+            });
+        }
     }
 
     // ── Trait declarations ──────────────────────────────────────────────

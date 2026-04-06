@@ -197,6 +197,153 @@ fn test_struct_basic() {
 }
 
 #[test]
+fn test_top_level_let_non_literal_init() {
+    // Non-constant initializer — must go through the deferred start fn.
+    assert_eq!(run_i32(r#"
+        let answer: i32 = 6 * 7;
+        @export fn main() -> i32 {
+            return answer;
+        }
+    "#), 42);
+}
+
+#[test]
+fn test_top_level_struct_global_read() {
+    assert_eq!(run_i32(r#"
+        struct P { hp: i32, score: i32 }
+        let mut state: P = P { hp: 100, score: 0 };
+        @export fn main() -> i32 {
+            return state.hp;
+        }
+    "#), 100);
+}
+
+#[test]
+fn test_top_level_struct_global_field_mutation() {
+    assert_eq!(run_i32(r#"
+        struct P { hp: i32, score: i32 }
+        let mut state: P = P { hp: 100, score: 0 };
+        fn hit() {
+            state.hp = state.hp - 10;
+        }
+        @export fn main() -> i32 {
+            hit();
+            hit();
+            return state.hp;
+        }
+    "#), 80);
+}
+
+#[test]
+fn test_struct_inline_nested_literal() {
+    // Regression: nested struct literal as a field expression used to
+    // corrupt the outer StructNew's base pointer because the codegen
+    // recomputed alloc_addr from heap_ptr after nested allocations had
+    // advanced it. Now each depth uses its own scratch local.
+    assert_eq!(run_i32(r#"
+        struct Inner { flag: bool }
+        struct Outer { hp: i32, inner: Inner, score: i32 }
+        @export fn main() -> i32 {
+            let o = Outer { hp: 55, inner: Inner { flag: true }, score: 7 };
+            return o.hp + o.score;
+        }
+    "#), 62);
+}
+
+#[test]
+fn test_top_level_struct_global_with_nested_literal() {
+    // End-to-end exercise of the fix in the global-init (start fn) path.
+    assert_eq!(run_i32(r#"
+        struct Inner { flag: bool }
+        struct Outer { hp: i32, inner: Inner }
+        let mut world: Outer = Outer { hp: 99, inner: Inner { flag: true } };
+        @export fn main() -> i32 {
+            return world.hp;
+        }
+    "#), 99);
+}
+
+#[test]
+fn test_top_level_struct_global_host_reflection() {
+    use spite_script::{FieldValue, Value};
+    let src = r#"
+        struct P { hp: i32, score: i32 }
+        let mut state: P = P { hp: 100, score: 42 };
+        @export fn touch() -> i32 { return state.hp; }
+    "#;
+    let engine = Engine::new();
+    let load = engine.load_script(src).expect("load");
+    let script = load.script.expect("script");
+    let eng = engine.script_engine().expect("engine");
+    let mut vm = script.instantiate(eng).expect("instantiate");
+    // Must produce a real value before the host walks it — the start fn has
+    // already run by now, but calling an export exercises the full path.
+    assert_eq!(vm.call("touch", &[]).unwrap(), Some(Value::I32(100)));
+    let view = vm.read_global_struct("state").expect("read_global_struct");
+    match view.get("hp") {
+        Some(FieldValue::Primitive(Value::I32(v))) => assert_eq!(*v, 100),
+        other => panic!("hp: {other:?}"),
+    }
+    match view.get("score") {
+        Some(FieldValue::Primitive(Value::I32(v))) => assert_eq!(*v, 42),
+        other => panic!("score: {other:?}"),
+    }
+}
+
+#[test]
+fn test_top_level_struct_global_host_write() {
+    use spite_script::Value;
+    let src = r#"
+        struct P { hp: i32, score: i32 }
+        let mut state: P = P { hp: 100, score: 0 };
+        @export fn get_hp() -> i32 { return state.hp; }
+    "#;
+    let engine = Engine::new();
+    let load = engine.load_script(src).expect("load");
+    let script = load.script.expect("script");
+    let eng = engine.script_engine().expect("engine");
+    let mut vm = script.instantiate(eng).expect("instantiate");
+    vm.write_global_struct("state", &[("hp", Value::I32(55)), ("score", Value::I32(9))])
+        .expect("write");
+    assert_eq!(vm.call("get_hp", &[]).unwrap(), Some(Value::I32(55)));
+}
+
+#[test]
+fn test_top_level_str_global_roundtrip() {
+    use spite_script::Value;
+    let src = r#"
+        let mut greeting: str = "hello";
+        @export fn touch() {}
+    "#;
+    let engine = Engine::new();
+    let load = engine.load_script(src).expect("load");
+    let script = load.script.expect("script");
+    let eng = engine.script_engine().expect("engine");
+    let mut vm = script.instantiate(eng).expect("instantiate");
+    vm.call("touch", &[]).unwrap();
+    assert_eq!(vm.get_global("greeting").unwrap(), Value::Str("hello".into()));
+    vm.set_global("greeting", Value::Str("world!".into())).unwrap();
+    assert_eq!(vm.get_global("greeting").unwrap(), Value::Str("world!".into()));
+}
+
+#[test]
+fn test_set_global_struct_rejected() {
+    use spite_script::Value;
+    let src = r#"
+        struct P { hp: i32 }
+        let mut state: P = P { hp: 1 };
+        @export fn touch() {}
+    "#;
+    let engine = Engine::new();
+    let load = engine.load_script(src).expect("load");
+    let script = load.script.expect("script");
+    let eng = engine.script_engine().expect("engine");
+    let mut vm = script.instantiate(eng).expect("instantiate");
+    let err = vm.set_global("state", Value::I32(0)).unwrap_err();
+    assert!(err.contains("write_global_struct"), "err was: {err}");
+}
+
+#[test]
 fn test_void_fn_call_baseline() {
     assert_eq!(run_i32(r#"
         fn noop() {}

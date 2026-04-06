@@ -151,6 +151,54 @@ fn main() {
         assert_eq!(*s, 42, "first state score should survive a second allocation");
     }
 
+    // ── Struct-typed top-level global. ──────────────────────────────
+    // `world: PlayerState` initializer runs in __spite_init_globals at
+    // instantiation time; host reads/writes via read_global_struct /
+    // write_global_struct.
+    println!("  --- global structs ---");
+    for info in vm.globals() {
+        println!("    global {} : {:?} (mutable={})", info.name, info.kind, info.mutable);
+    }
+    let world_hp = vm.call("world_hp", &[]).expect("world_hp");
+    println!("  world_hp -> {world_hp:?}");
+    assert_eq!(world_hp, Some(Value::I32(50)));
+
+    let world_view = vm.read_global_struct("world").expect("read_global_struct");
+    print_view(&world_view, 1);
+    if let Some(FieldValue::Primitive(Value::Str(name))) = world_view.get("name") {
+        assert_eq!(name, "world");
+    }
+    if let Some(FieldValue::Nested(inner)) = world_view.get("inner") {
+        if let Some(FieldValue::Primitive(Value::Bool(flag))) = inner.get("flag") {
+            assert!(*flag, "nested init'd flag must be true");
+        }
+    }
+
+    vm.write_global_struct(
+        "world",
+        &[
+            ("hp", Value::I32(7)),
+            ("name", Value::Str("Flintpebble's realm".into())),
+        ],
+    )
+    .expect("write_global_struct");
+    let new_hp = vm.call("world_hp", &[]).expect("world_hp2");
+    assert_eq!(new_hp, Some(Value::I32(7)));
+    let bumped = vm.call("world_bump_score", &[]).expect("bump");
+    assert_eq!(bumped, Some(Value::I32(1)));
+    println!("  after host write, world_hp -> {new_hp:?}, score bump -> {bumped:?}");
+
+    // Str global roundtrip.
+    let greeting = vm.get_global("greeting").expect("greeting");
+    println!("  greeting global -> {greeting:?}");
+    assert_eq!(greeting, Value::Str("hello".into()));
+    vm.set_global("greeting", Value::Str("salutations".into()))
+        .expect("set greeting");
+    assert_eq!(
+        vm.get_global("greeting").unwrap(),
+        Value::Str("salutations".into())
+    );
+
     drop(vm);
 
     // ── Second Vm: fresh state. ─────────────────────────────────────
@@ -166,6 +214,12 @@ fn main() {
     let tc2 = vm2.get_global("tick_count").expect("tick_count global");
     assert_eq!(tc2, Value::I32(0), "fresh Vm must reset tick_count global");
     println!("  fresh Vm tick_count -> {tc2:?}");
+    // Struct/str globals are re-initialized by the start fn on the new Vm.
+    let hp2 = vm2.call("world_hp", &[]).expect("world_hp");
+    assert_eq!(hp2, Some(Value::I32(50)), "fresh Vm must reset world.hp");
+    let g2 = vm2.get_global("greeting").unwrap();
+    assert_eq!(g2, Value::Str("hello".into()), "fresh Vm must reset greeting");
+    println!("  fresh Vm world_hp -> {hp2:?}, greeting -> {g2:?}");
 
     println!("OK");
 }

@@ -6,6 +6,7 @@
 
 let mut tick_count: i32 = 0;
 let mut difficulty: i32 = 1;
+let mut greeting: str = "hello";
 
 @export
 fn tick() -> i32 {
@@ -51,4 +52,25 @@ fn announce(state: PlayerState) -> i32 {
 fn damage(state: PlayerState, amount: i32) -> i32 {
     state.hp = state.hp - amount;
     return state.hp;
+}
+
+// Struct-typed top-level global. Its initializer (StructNew + nested struct
+// + str field) is non-constant and runs inside the synthesized
+// __spite_init_globals start function.
+let mut world: PlayerState = PlayerState {
+    hp: 50,
+    score: 0,
+    name: "world",
+    inner: Inner { flag: true },
+};
+
+@export
+fn world_hp() -> i32 {
+    return world.hp;
+}
+
+@export
+fn world_bump_score() -> i32 {
+    world.score = world.score + 1;
+    return world.score;
 }
