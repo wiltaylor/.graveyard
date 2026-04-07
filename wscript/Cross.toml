@@ -1,0 +1,10 @@
+# Pin cross-rs images to `edge` tags so build scripts compiled against a
+# modern host glibc (2.34+) can still run inside the container. The default
+# `:main` images ship an older glibc and break crates like `winapi` whose
+# build scripts dynamically link against the host's libc when built.
+
+[target.x86_64-pc-windows-gnu]
+image = "ghcr.io/cross-rs/x86_64-pc-windows-gnu:edge"
+
+[target.x86_64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:edge"

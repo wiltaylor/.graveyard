@@ -13,7 +13,8 @@ default = ["runtime"]
 runtime = ["dep:wasmtime"]
 lsp = ["dep:tower-lsp", "dep:tokio"]
 dap = ["dep:dap", "dep:tokio"]
-full = ["runtime", "lsp", "dap"]
+com = ["runtime", "dep:windows"]
+full = ["runtime", "lsp", "dap", "com"]
 
 [dependencies]
 # Core (always needed — compiler)
@@ -28,7 +29,26 @@ rustc-hash = "2"
 log = "0.4"
 
 # Runtime (feature-gated)
-wasmtime = { version = "29", optional = true }
+wasmtime = { version = "29", optional = true, default-features = false, features = [
+    "async",
+    "cache",
+    "gc",
+    "gc-drc",
+    "gc-null",
+    "wat",
+    "parallel-compilation",
+    "cranelift",
+    "pooling-allocator",
+    "demangle",
+    "addr2line",
+    "coredump",
+    "debug-builtins",
+    "runtime",
+    "component-model",
+    "threads",
+    "std",
+    "signals-based-traps",
+] }
 
 # LSP (feature-gated)
 tower-lsp = { version = "0.20", optional = true }
@@ -36,6 +56,15 @@ tokio = { version = "1", features = ["full"], optional = true }
 
 # DAP (feature-gated)
 dap = { version = "0.4.1-alpha1", optional = true }
+
+# Windows COM support (only compiled on Windows targets; no-op stub otherwise).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+] }
 
 [dev-dependencies]
 pretty_assertions = "1"

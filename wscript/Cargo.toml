@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/wscript", "crates/wscript-cli", "example-hosted"]
+members = ["crates/wscript", "crates/wscript-cli", "crates/wscript-com-test", "example-hosted"]
 
 [workspace.package]
 version = "0.1.0"

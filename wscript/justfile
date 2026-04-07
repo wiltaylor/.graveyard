@@ -123,6 +123,53 @@ test-musl:
     "$BIN"
     echo "=== musl integration test OK ==="
 
+# Build the COM test driver as a Windows binary (via `cross` + Docker) and
+# run it under Wine. Mirrors the `test-musl` setup so no host-side
+# mingw-w64 install is needed — cross-rs's image ships the toolchain.
+# Requires: `cargo install cross --git https://github.com/cross-rs/cross`,
+# a running Docker daemon, and `wine` on the host PATH.
+test-com-wine:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v cross >/dev/null 2>&1; then
+        echo "error: 'cross' is not installed. Run: cargo install cross --git https://github.com/cross-rs/cross" >&2
+        exit 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        echo "error: docker daemon is not running (cross needs docker)" >&2
+        exit 1
+    fi
+    if ! command -v wine >/dev/null 2>&1; then
+        echo "error: 'wine' not found on PATH — install wine (e.g. 'sudo pacman -S wine' on Arch)" >&2
+        exit 1
+    fi
+    TARGET=x86_64-pc-windows-gnu
+    # Use a dedicated target dir so host-built build-script binaries (linked
+    # against host glibc) don't leak into the cross container.
+    export CARGO_TARGET_DIR="target-cross"
+    echo "=== building wscript-com-test for $TARGET via cross ==="
+    cross build --release --target "$TARGET" -p wscript-com-test
+    BIN="target-cross/$TARGET/release/wscript-com-test.exe"
+    echo "=== running under wine ==="
+    WINEDEBUG=-all wine "$BIN"
+
+# Build-only check for the COM Windows target via `cross` (no Wine needed).
+# Uses the same Docker-based toolchain as `test-com-wine`, so you don't
+# need a host-side mingw-w64 install.
+test-com-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v cross >/dev/null 2>&1; then
+        echo "error: 'cross' is not installed. Run: cargo install cross --git https://github.com/cross-rs/cross" >&2
+        exit 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        echo "error: docker daemon is not running (cross needs docker)" >&2
+        exit 1
+    fi
+    export CARGO_TARGET_DIR="target-cross"
+    cross build --release --target x86_64-pc-windows-gnu -p wscript-com-test
+
 # Build-only musl check (faster; does not execute the binary)
 test-musl-build:
     #!/usr/bin/env bash

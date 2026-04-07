@@ -16,6 +16,8 @@ pub(crate) struct StoreData {
     pub(crate) strings: Vec<String>,
     pub(crate) arrays: Vec<Vec<i32>>,
     pub(crate) maps: Vec<HashMap<i32, i32>>,
+    #[cfg(feature = "com")]
+    pub(crate) com: crate::runtime::com::ComTable,
 }
 
 impl StoreData {
@@ -165,6 +167,8 @@ impl CompiledScript {
                 strings: Vec::new(),
                 arrays: Vec::new(),
                 maps: Vec::new(),
+                #[cfg(feature = "com")]
+                com: crate::runtime::com::ComTable::new(),
             },
         );
 
@@ -804,6 +808,136 @@ impl CompiledScript {
                 message: format!("Failed to register __panic: {e}"),
                 trace: vec![],
             })?;
+
+        // ── COM host imports (feature = "com") ─────────────────────────
+        #[cfg(feature = "com")]
+        {
+            use crate::runtime::com::{self as com_mod, Arg as ComArg};
+
+            // __com_create(progid_handle: i32) -> i32 (1-based handle, 0 on error)
+            linker
+                .func_wrap("env", "__com_create", |mut caller: Caller<'_, StoreData>, progid: i32| -> i32 {
+                    let s = caller.data().strings.get(progid as usize).cloned().unwrap_or_default();
+                    caller.data_mut().com.create(&s)
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_create: {e}"), trace: vec![] })?;
+
+            // __com_release(handle: i32)
+            linker
+                .func_wrap("env", "__com_release", |mut caller: Caller<'_, StoreData>, h: i32| {
+                    caller.data_mut().com.release(h);
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_release: {e}"), trace: vec![] })?;
+
+            // __com_has(handle, name_handle) -> i32 (0/1)
+            linker
+                .func_wrap("env", "__com_has", |caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
+                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
+                    if caller.data().com.has_member(h, &n) { 1 } else { 0 }
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_has: {e}"), trace: vec![] })?;
+
+            // __com_call_i0(h, name) -> i32 (i32::MIN on error)
+            linker
+                .func_wrap("env", "__com_call_i0", |mut caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
+                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
+                    caller.data_mut().com.call_i(h, &n, &[])
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_call_i0: {e}"), trace: vec![] })?;
+
+            // __com_call_i1s(h, name, arg_str) -> i32
+            linker
+                .func_wrap("env", "__com_call_i1s", |mut caller: Caller<'_, StoreData>, h: i32, name: i32, a0: i32| -> i32 {
+                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
+                    let s = caller.data().strings.get(a0 as usize).cloned().unwrap_or_default();
+                    caller.data_mut().com.call_i(h, &n, &[ComArg::Str(&s)])
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_call_i1s: {e}"), trace: vec![] })?;
+
+            // __com_call_i1i(h, name, arg_i32) -> i32
+            linker
+                .func_wrap("env", "__com_call_i1i", |mut caller: Caller<'_, StoreData>, h: i32, name: i32, a0: i32| -> i32 {
+                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
+                    caller.data_mut().com.call_i(h, &n, &[ComArg::I32(a0)])
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_call_i1i: {e}"), trace: vec![] })?;
+
+            // __com_call_i2si(h, name, a0_str, a1_i32) -> i32  (e.g. Dictionary.Add(key, val))
+            linker
+                .func_wrap("env", "__com_call_i2si", |mut caller: Caller<'_, StoreData>, h: i32, name: i32, a0: i32, a1: i32| -> i32 {
+                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
+                    let s = caller.data().strings.get(a0 as usize).cloned().unwrap_or_default();
+                    caller.data_mut().com.call_i(h, &n, &[ComArg::Str(&s), ComArg::I32(a1)])
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_call_i2si: {e}"), trace: vec![] })?;
+
+            // __com_call_s0(h, name) -> str_handle (0 on error — check com_last_error)
+            linker
+                .func_wrap("env", "__com_call_s0", |mut caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
+                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
+                    match caller.data_mut().com.call_s(h, &n, &[]) {
+                        Some(s) => caller.data_mut().intern_string(s),
+                        None => caller.data_mut().intern_string(String::new()),
+                    }
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_call_s0: {e}"), trace: vec![] })?;
+
+            // __com_call_s1s(h, name, arg_str) -> str_handle
+            linker
+                .func_wrap("env", "__com_call_s1s", |mut caller: Caller<'_, StoreData>, h: i32, name: i32, a0: i32| -> i32 {
+                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
+                    let s = caller.data().strings.get(a0 as usize).cloned().unwrap_or_default();
+                    match caller.data_mut().com.call_s(h, &n, &[ComArg::Str(&s)]) {
+                        Some(s) => caller.data_mut().intern_string(s),
+                        None => caller.data_mut().intern_string(String::new()),
+                    }
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_call_s1s: {e}"), trace: vec![] })?;
+
+            // __com_get_i(h, name) -> i32
+            linker
+                .func_wrap("env", "__com_get_i", |mut caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
+                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
+                    caller.data_mut().com.get_i(h, &n)
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_get_i: {e}"), trace: vec![] })?;
+
+            // __com_get_s(h, name) -> str_handle
+            linker
+                .func_wrap("env", "__com_get_s", |mut caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
+                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
+                    match caller.data_mut().com.get_s(h, &n) {
+                        Some(s) => caller.data_mut().intern_string(s),
+                        None => caller.data_mut().intern_string(String::new()),
+                    }
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_get_s: {e}"), trace: vec![] })?;
+
+            // __com_set_i(h, name, val) -> i32 (0/1 success)
+            linker
+                .func_wrap("env", "__com_set_i", |mut caller: Caller<'_, StoreData>, h: i32, name: i32, v: i32| -> i32 {
+                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
+                    if caller.data_mut().com.set_i(h, &n, v) { 1 } else { 0 }
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_set_i: {e}"), trace: vec![] })?;
+
+            // __com_set_s(h, name, val_str) -> i32 (0/1)
+            linker
+                .func_wrap("env", "__com_set_s", |mut caller: Caller<'_, StoreData>, h: i32, name: i32, v: i32| -> i32 {
+                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
+                    let vs = caller.data().strings.get(v as usize).cloned().unwrap_or_default();
+                    if caller.data_mut().com.set_s(h, &n, &vs) { 1 } else { 0 }
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_set_s: {e}"), trace: vec![] })?;
+
+            // __com_last_error() -> str_handle
+            linker
+                .func_wrap("env", "__com_last_error", |mut caller: Caller<'_, StoreData>| -> i32 {
+                    let msg = com_mod::last_error_string();
+                    caller.data_mut().intern_string(msg)
+                })
+                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_last_error: {e}"), trace: vec![] })?;
+        }
 
         // ── User-registered host functions (module "host") ─────────────
         for (name, hf) in &self.bindings.functions {

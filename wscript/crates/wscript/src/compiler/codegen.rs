@@ -358,6 +358,35 @@ impl WasmCodegen {
         let (panic_fn, _) = self.module.add_import_func("env", "__panic", panic_ty);
         self.host_fn_ids.insert("__panic".into(), panic_fn);
 
+        // ── COM host imports (feature = "com"; frontend knows them
+        // unconditionally so scripts type-check everywhere, runtime gates
+        // the actual implementations). All signatures use i32 handles.
+        #[cfg(feature = "com")]
+        {
+            let i = ValType::I32;
+            let specs: &[(&str, &[ValType], &[ValType])] = &[
+                ("__com_create",     &[i],             &[i]),
+                ("__com_release",    &[i],             &[]),
+                ("__com_has",        &[i, i],          &[i]),
+                ("__com_call_i0",    &[i, i],          &[i]),
+                ("__com_call_i1s",   &[i, i, i],       &[i]),
+                ("__com_call_i1i",   &[i, i, i],       &[i]),
+                ("__com_call_i2si",  &[i, i, i, i],    &[i]),
+                ("__com_call_s0",    &[i, i],          &[i]),
+                ("__com_call_s1s",   &[i, i, i],       &[i]),
+                ("__com_get_i",      &[i, i],          &[i]),
+                ("__com_get_s",      &[i, i],          &[i]),
+                ("__com_set_i",      &[i, i, i],       &[i]),
+                ("__com_set_s",      &[i, i, i],       &[i]),
+                ("__com_last_error", &[],              &[i]),
+            ];
+            for (name, params, results) in specs {
+                let ty = self.module.types.add(params, results);
+                let (fid, _) = self.module.add_import_func("env", name, ty);
+                self.host_fn_ids.insert((*name).into(), fid);
+            }
+        }
+
         // User-registered host function imports (module: "host").
         for imp in &ir.user_host_imports {
             let params: Vec<ValType> = imp.params.iter().map(|t| ir_to_val(*t)).collect();

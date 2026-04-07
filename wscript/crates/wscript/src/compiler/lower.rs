@@ -13,6 +13,30 @@ use super::ir::*;
 use super::token::Span;
 use crate::bindings::{BindingRegistry, ScriptType};
 
+/// Map a `com_*` builtin call to its `__com_*` host import name and return
+/// type. Arity is validated upstream by the type checker; the `_argc` value
+/// is only used to disambiguate the variadic `com_call_*` family.
+fn map_com_builtin(name: &str, _argc: usize) -> Option<(SmolStr, IrType)> {
+    let (hn, ret) = match name {
+        "com_create"       => ("__com_create",     IrType::I32),
+        "com_release"      => ("__com_release",    IrType::Unit),
+        "com_has"          => ("__com_has",        IrType::I32),
+        "com_call_i0"      => ("__com_call_i0",    IrType::I32),
+        "com_call_i1s"     => ("__com_call_i1s",   IrType::I32),
+        "com_call_i1i"     => ("__com_call_i1i",   IrType::I32),
+        "com_call_i2si"    => ("__com_call_i2si",  IrType::I32),
+        "com_call_s0"      => ("__com_call_s0",    IrType::Ptr),
+        "com_call_s1s"     => ("__com_call_s1s",   IrType::Ptr),
+        "com_get_i"        => ("__com_get_i",      IrType::I32),
+        "com_get_s"        => ("__com_get_s",      IrType::Ptr),
+        "com_set_i"        => ("__com_set_i",      IrType::I32),
+        "com_set_s"        => ("__com_set_s",      IrType::I32),
+        "com_last_error"   => ("__com_last_error", IrType::Ptr),
+        _ => return None,
+    };
+    Some((SmolStr::new(hn), ret))
+}
+
 // ---------------------------------------------------------------------------
 // Lowerer state
 // ---------------------------------------------------------------------------
@@ -1319,6 +1343,16 @@ impl Lowerer {
 
                 let ir_args: Vec<IrExpr> =
                     args.iter().map(|a| self.lower_expr(&a.value, ctx)).collect();
+
+                // Built-in: com_* → __com_* host calls (Windows COM bridge).
+                if let Some((host_name, ret)) = map_com_builtin(func_name.as_str(), ir_args.len()) {
+                    return IrExpr::HostCall {
+                        module: "env".into(),
+                        name: host_name,
+                        args: ir_args,
+                        ret,
+                    };
+                }
 
                 // Built-in: print(expr)
                 if func_name == "print" && ir_args.len() == 1 {

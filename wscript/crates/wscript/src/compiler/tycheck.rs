@@ -768,6 +768,30 @@ impl<'a> TypeEnv<'a> {
                 )),
             },
         );
+
+        // ── Windows COM builtins (feature-gated in the runtime; frontend
+        // always knows about them so scripts using COM can still type-check
+        // on non-Windows hosts and simply fail at runtime). Handles are
+        // plain i32 values: 1-based on success, 0 on failure. Scripts can
+        // call `com_last_error()` after any fallible call to get details.
+        let i32t = || Type::Primitive(PrimitiveType::I32);
+        let strt = || Type::String;
+        let unitt = || Type::Unit;
+        let fnty = |params: Vec<Type>, ret: Type| Type::Fn { params, ret: Box::new(ret) };
+        self.fn_sigs.insert("com_create".into(), fnty(vec![strt()], i32t()));
+        self.fn_sigs.insert("com_release".into(), fnty(vec![i32t()], unitt()));
+        self.fn_sigs.insert("com_has".into(), fnty(vec![i32t(), strt()], Type::Primitive(PrimitiveType::Bool)));
+        self.fn_sigs.insert("com_call_i0".into(), fnty(vec![i32t(), strt()], i32t()));
+        self.fn_sigs.insert("com_call_i1s".into(), fnty(vec![i32t(), strt(), strt()], i32t()));
+        self.fn_sigs.insert("com_call_i1i".into(), fnty(vec![i32t(), strt(), i32t()], i32t()));
+        self.fn_sigs.insert("com_call_i2si".into(), fnty(vec![i32t(), strt(), strt(), i32t()], i32t()));
+        self.fn_sigs.insert("com_call_s0".into(), fnty(vec![i32t(), strt()], strt()));
+        self.fn_sigs.insert("com_call_s1s".into(), fnty(vec![i32t(), strt(), strt()], strt()));
+        self.fn_sigs.insert("com_get_i".into(), fnty(vec![i32t(), strt()], i32t()));
+        self.fn_sigs.insert("com_get_s".into(), fnty(vec![i32t(), strt()], strt()));
+        self.fn_sigs.insert("com_set_i".into(), fnty(vec![i32t(), strt(), i32t()], i32t()));
+        self.fn_sigs.insert("com_set_s".into(), fnty(vec![i32t(), strt(), strt()], i32t()));
+        self.fn_sigs.insert("com_last_error".into(), fnty(vec![], strt()));
     }
 
     // -- Convert TypeExpr (AST) to Type -------------------------------------
