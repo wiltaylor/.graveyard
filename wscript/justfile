@@ -181,6 +181,106 @@ test-musl-build:
     cross build --release --target x86_64-unknown-linux-musl -p wscript --features full
     cross build --release --target x86_64-unknown-linux-musl -p example-hosted
 
+# ── CI recipes ──────────────────────────────────────────────────────────
+# These wrap CI logic so it stays out of YAML and is reproducible locally.
+
+# Run the full check suite used by CI (fmt, clippy, tests).
+ci-check: fmt-check clippy test
+
+# Compute the next release version from git trailers + conventional commits.
+# Echoes KEY=VALUE lines on stdout. The workflow appends these to $GITHUB_OUTPUT.
+# Outputs: version, do_release.
+# Trailers on HEAD commit:
+#   release: true      → stable bump
+#   pre-release: true  → bump + "-alpha" suffix
+#   neither            → version=0.0.0-alpha, do_release=false
+ci-version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    IS_RELEASE=$(git log -1 --format='%(trailers:key=release,valueonly)')
+    IS_PRERELEASE=$(git log -1 --format='%(trailers:key=pre-release,valueonly)')
+
+    if [[ "$IS_RELEASE" != "true" && "$IS_PRERELEASE" != "true" ]]; then
+        echo "version=0.0.0-alpha"
+        echo "do_release=false"
+        exit 0
+    fi
+
+    LAST_TAG=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo "")
+    if [[ -z "$LAST_TAG" ]]; then
+        PREV_MAJOR=0; PREV_MINOR=1; PREV_PATCH=0
+        RANGE="HEAD"
+    else
+        VER="${LAST_TAG#v}"
+        VER="${VER%%-*}"
+        IFS='.' read -r PREV_MAJOR PREV_MINOR PREV_PATCH <<< "$VER"
+        RANGE="${LAST_TAG}..HEAD"
+    fi
+
+    BUMP="none"
+    while IFS= read -r HASH; do
+        SUBJECT=$(git log -1 --format='%s' "$HASH")
+        BODY=$(git log -1 --format='%b' "$HASH")
+        if echo "$SUBJECT" | grep -qE '^[a-z]+(\(.+\))?!:' || echo "$BODY" | grep -qiE '^BREAKING[ -]CHANGE:'; then
+            BUMP="major"
+        elif echo "$SUBJECT" | grep -qE '^feat(\(.+\))?:' && [[ "$BUMP" != "major" ]]; then
+            BUMP="minor"
+        elif echo "$SUBJECT" | grep -qE '^(fix|perf|refactor|build|ci|docs|style|test|chore|revert)(\(.+\))?:' && [[ "$BUMP" == "none" ]]; then
+            BUMP="patch"
+        fi
+    done < <(git log --format='%H' $RANGE)
+
+    [[ "$BUMP" == "none" ]] && BUMP="patch"
+
+    case "$BUMP" in
+        major)
+            if [[ "$PREV_MAJOR" -eq 0 ]]; then
+                MAJOR=0; MINOR=$((PREV_MINOR + 1)); PATCH=0
+            else
+                MAJOR=$((PREV_MAJOR + 1)); MINOR=0; PATCH=0
+            fi ;;
+        minor) MAJOR=$PREV_MAJOR; MINOR=$((PREV_MINOR + 1)); PATCH=0 ;;
+        patch) MAJOR=$PREV_MAJOR; MINOR=$PREV_MINOR; PATCH=$((PREV_PATCH + 1)) ;;
+    esac
+
+    VERSION="${MAJOR}.${MINOR}.${PATCH}"
+    [[ "$IS_PRERELEASE" == "true" ]] && VERSION="${VERSION}-alpha"
+
+    echo "version=$VERSION"
+    echo "do_release=true"
+
+# Rewrite the workspace version in the root Cargo.toml. Also patches the
+# inline `version = "..."` on the wscript path-dep in wscript-cli so the
+# crates.io upload sees consistent versions.
+ci-set-version VERSION:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sed -i -E 's/^version = "[^"]+"/version = "{{VERSION}}"/' Cargo.toml
+    sed -i -E 's|(wscript = \{ path = "\.\./wscript", version = ")[^"]+|\1{{VERSION}}|' crates/wscript-cli/Cargo.toml
+    echo "set workspace version to {{VERSION}}"
+
+# Publish wscript and wscript-cli to crates.io. Library first.
+# Requires CARGO_REGISTRY_TOKEN in the environment.
+ci-publish:
+    cargo publish -p wscript --no-verify --allow-dirty
+    cargo publish -p wscript-cli --no-verify --allow-dirty
+
+# Tag and create a GitHub release. IS_PRERELEASE must be "true" or "false".
+# Requires gh authenticated and GITHUB_TOKEN with contents:write.
+ci-release VERSION IS_PRERELEASE:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git config user.name "github-actions[bot]"
+    git config user.email "github-actions[bot]@users.noreply.github.com"
+    TAG="v{{VERSION}}"
+    git tag "$TAG"
+    git push origin "$TAG"
+    PRE_FLAG=""
+    if [[ "{{IS_PRERELEASE}}" == "true" ]]; then
+        PRE_FLAG="--prerelease"
+    fi
+    gh release create "$TAG" --title "$TAG" --generate-notes $PRE_FLAG
+
 # Run a quick smoke test
 smoke: build
     #!/usr/bin/env bash

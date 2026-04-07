@@ -6,3 +6,5 @@ members = ["crates/wscript", "crates/wscript-cli", "crates/wscript-com-test", "e
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/wiltaylor/wscript"
+homepage = "https://github.com/wiltaylor/wscript"
