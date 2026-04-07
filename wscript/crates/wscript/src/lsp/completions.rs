@@ -1,7 +1,7 @@
 //! Completion support for the LSP server.
 
-use tower_lsp::lsp_types::*;
 use crate::query_db::QueryDb;
+use tower_lsp::lsp_types::*;
 
 /// Generate completions for the given position in a file.
 pub fn completions(db: &QueryDb, _uri: &str, _position: Position) -> Vec<CompletionItem> {
@@ -9,9 +9,9 @@ pub fn completions(db: &QueryDb, _uri: &str, _position: Position) -> Vec<Complet
 
     // Keywords
     let keywords = [
-        "let", "mut", "const", "fn", "return", "if", "else", "match", "for", "in",
-        "while", "loop", "break", "continue", "struct", "impl", "trait", "enum",
-        "true", "false", "as", "pub", "self", "Self", "None", "Some", "Ok", "Err",
+        "let", "mut", "const", "fn", "return", "if", "else", "match", "for", "in", "while", "loop",
+        "break", "continue", "struct", "impl", "trait", "enum", "true", "false", "as", "pub",
+        "self", "Self", "None", "Some", "Ok", "Err",
     ];
     for kw in &keywords {
         items.push(CompletionItem {
@@ -23,8 +23,8 @@ pub fn completions(db: &QueryDb, _uri: &str, _position: Position) -> Vec<Complet
 
     // Built-in types
     let types = [
-        "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128",
-        "f32", "f64", "bool", "char", "String", "Map", "Option", "Result", "Ref",
+        "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128", "f32", "f64", "bool",
+        "char", "String", "Map", "Option", "Result", "Ref",
     ];
     for ty in &types {
         items.push(CompletionItem {

@@ -48,19 +48,25 @@ impl QueryDb {
         // Re-parse the file
         let tokens = crate::compiler::lexer::Lexer::new(&source).tokenize();
         let (ast, parse_diags) = crate::compiler::parser::Parser::new(&tokens).parse_program();
-        let diags: Vec<DiagnosticInfo> = parse_diags.into_iter().map(|d| DiagnosticInfo {
-            span: d.span,
-            message: d.message,
-            severity: Severity::Error,
-            code: d.code,
-            hint: d.hint,
-        }).collect();
+        let diags: Vec<DiagnosticInfo> = parse_diags
+            .into_iter()
+            .map(|d| DiagnosticInfo {
+                span: d.span,
+                message: d.message,
+                severity: Severity::Error,
+                code: d.code,
+                hint: d.hint,
+            })
+            .collect();
         self.asts.insert(uri.to_string(), ast);
         self.diagnostics.insert(uri.to_string(), diags);
     }
 
     pub fn get_diagnostics(&self, uri: &str) -> &[DiagnosticInfo] {
-        self.diagnostics.get(uri).map(|v| v.as_slice()).unwrap_or(&[])
+        self.diagnostics
+            .get(uri)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     pub fn get_ast(&self, uri: &str) -> Option<&Program> {

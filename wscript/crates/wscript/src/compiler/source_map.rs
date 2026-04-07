@@ -30,6 +30,9 @@ impl SourceMap {
     }
 
     pub fn lookup_by_source_line(&self, line: u32) -> Vec<&SourceMapEntry> {
-        self.entries.iter().filter(|e| e.span.line == line).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.span.line == line)
+            .collect()
     }
 }

@@ -22,7 +22,12 @@ pub struct Span {
 
 impl Span {
     pub fn new(start: u32, end: u32, line: u32, col: u32) -> Self {
-        Self { start, end, line, col }
+        Self {
+            start,
+            end,
+            line,
+            col,
+        }
     }
 
     pub fn dummy() -> Self {
@@ -38,7 +43,12 @@ impl Span {
         } else {
             (other.line, other.col)
         };
-        Span { start, end, line, col }
+        Span {
+            start,
+            end,
+            line,
+            col,
+        }
     }
 }
 

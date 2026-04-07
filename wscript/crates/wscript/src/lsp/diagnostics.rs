@@ -1,7 +1,7 @@
 //! Diagnostics conversion for the LSP server.
 
-use tower_lsp::lsp_types::*;
 use crate::query_db::{DiagnosticInfo, Severity};
+use tower_lsp::lsp_types::*;
 
 /// Convert internal diagnostics to LSP diagnostics.
 #[allow(dead_code)]

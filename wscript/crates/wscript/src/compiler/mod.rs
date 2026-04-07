@@ -1,14 +1,14 @@
 //! Wscript compiler pipeline.
 
-pub mod token;
 pub mod ast;
-pub mod lexer;
-pub mod parser;
-pub mod tycheck;
-pub mod lower;
-pub mod ir;
 pub mod codegen;
+pub mod ir;
+pub mod lexer;
+pub mod lower;
+pub mod parser;
 pub mod source_map;
+pub mod token;
+pub mod tycheck;
 
 use crate::bindings::BindingRegistry;
 use token::Span;
@@ -30,7 +30,11 @@ impl std::fmt::Display for Diagnostic {
             DiagnosticSeverity::Warning => "warning",
             DiagnosticSeverity::Info => "info",
         };
-        write!(f, "{}: {} (line {}, col {})", level, self.message, self.span.line, self.span.col)
+        write!(
+            f,
+            "{}: {} (line {}, col {})",
+            level, self.message, self.span.line, self.span.col
+        )
     }
 }
 
@@ -52,7 +56,9 @@ pub struct CompileResult {
 
 impl CompileResult {
     pub fn has_errors(&self) -> bool {
-        self.diagnostics.iter().any(|d| d.severity == DiagnosticSeverity::Error)
+        self.diagnostics
+            .iter()
+            .any(|d| d.severity == DiagnosticSeverity::Error)
     }
 }
 
@@ -79,7 +85,10 @@ pub fn compile(
         })
         .collect();
 
-    if diagnostics.iter().any(|d| d.severity == DiagnosticSeverity::Error) {
+    if diagnostics
+        .iter()
+        .any(|d| d.severity == DiagnosticSeverity::Error)
+    {
         return Err(diagnostics);
     }
 

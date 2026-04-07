@@ -10,8 +10,8 @@
 //! ships it out of the box — no external COM servers required.
 
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use wscript::{Engine, ParamInfo, ScriptType, Value};
 
@@ -46,21 +46,19 @@ fn run_case(case: &Case) -> Result<(), String> {
     let mut engine = Engine::new();
     {
         let pc = Arc::clone(&pass_count);
-        engine.register_fn_raw(
-            "test_pass",
-            vec![],
-            ScriptType::Unit,
-            move |_args| {
-                pc.fetch_add(1, Ordering::SeqCst);
-                Ok(None)
-            },
-        );
+        engine.register_fn_raw("test_pass", vec![], ScriptType::Unit, move |_args| {
+            pc.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        });
     }
     {
         let fc = Arc::clone(&fail_count);
         engine.register_fn_raw(
             "test_fail",
-            vec![ParamInfo { name: "msg".into(), ty: ScriptType::Str }],
+            vec![ParamInfo {
+                name: "msg".into(),
+                ty: ScriptType::Str,
+            }],
             ScriptType::Unit,
             move |args| {
                 if let Some(Value::Str(s)) = args.first().cloned() {

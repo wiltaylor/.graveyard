@@ -67,48 +67,94 @@ impl Value {
     }
 }
 
-impl From<i32> for Value { fn from(v: i32) -> Self { Value::I32(v) } }
-impl From<i64> for Value { fn from(v: i64) -> Self { Value::I64(v) } }
-impl From<f32> for Value { fn from(v: f32) -> Self { Value::F32(v) } }
-impl From<f64> for Value { fn from(v: f64) -> Self { Value::F64(v) } }
-impl From<bool> for Value { fn from(v: bool) -> Self { Value::Bool(v) } }
-impl From<String> for Value { fn from(v: String) -> Self { Value::Str(v) } }
-impl From<&str> for Value { fn from(v: &str) -> Self { Value::Str(v.to_owned()) } }
+impl From<i32> for Value {
+    fn from(v: i32) -> Self {
+        Value::I32(v)
+    }
+}
+impl From<i64> for Value {
+    fn from(v: i64) -> Self {
+        Value::I64(v)
+    }
+}
+impl From<f32> for Value {
+    fn from(v: f32) -> Self {
+        Value::F32(v)
+    }
+}
+impl From<f64> for Value {
+    fn from(v: f64) -> Self {
+        Value::F64(v)
+    }
+}
+impl From<bool> for Value {
+    fn from(v: bool) -> Self {
+        Value::Bool(v)
+    }
+}
+impl From<String> for Value {
+    fn from(v: String) -> Self {
+        Value::Str(v)
+    }
+}
+impl From<&str> for Value {
+    fn from(v: &str) -> Self {
+        Value::Str(v.to_owned())
+    }
+}
 
 impl TryFrom<Value> for i32 {
     type Error = String;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
-        match v { Value::I32(x) => Ok(x), other => Err(format!("expected i32, got {}", other.type_name())) }
+        match v {
+            Value::I32(x) => Ok(x),
+            other => Err(format!("expected i32, got {}", other.type_name())),
+        }
     }
 }
 impl TryFrom<Value> for i64 {
     type Error = String;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
-        match v { Value::I64(x) => Ok(x), other => Err(format!("expected i64, got {}", other.type_name())) }
+        match v {
+            Value::I64(x) => Ok(x),
+            other => Err(format!("expected i64, got {}", other.type_name())),
+        }
     }
 }
 impl TryFrom<Value> for f32 {
     type Error = String;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
-        match v { Value::F32(x) => Ok(x), other => Err(format!("expected f32, got {}", other.type_name())) }
+        match v {
+            Value::F32(x) => Ok(x),
+            other => Err(format!("expected f32, got {}", other.type_name())),
+        }
     }
 }
 impl TryFrom<Value> for f64 {
     type Error = String;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
-        match v { Value::F64(x) => Ok(x), other => Err(format!("expected f64, got {}", other.type_name())) }
+        match v {
+            Value::F64(x) => Ok(x),
+            other => Err(format!("expected f64, got {}", other.type_name())),
+        }
     }
 }
 impl TryFrom<Value> for bool {
     type Error = String;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
-        match v { Value::Bool(x) => Ok(x), other => Err(format!("expected bool, got {}", other.type_name())) }
+        match v {
+            Value::Bool(x) => Ok(x),
+            other => Err(format!("expected bool, got {}", other.type_name())),
+        }
     }
 }
 impl TryFrom<Value> for String {
     type Error = String;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
-        match v { Value::Str(x) => Ok(x), other => Err(format!("expected str, got {}", other.type_name())) }
+        match v {
+            Value::Str(x) => Ok(x),
+            other => Err(format!("expected str, got {}", other.type_name())),
+        }
     }
 }
 
@@ -143,7 +189,9 @@ impl fmt::Display for DebugValue {
             DebugValue::Array(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{item}")?;
                 }
                 write!(f, "]")
@@ -151,7 +199,9 @@ impl fmt::Display for DebugValue {
             DebugValue::Map(entries) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in entries.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{k}: {v}")?;
                 }
                 write!(f, "}}")
@@ -159,7 +209,9 @@ impl fmt::Display for DebugValue {
             DebugValue::Struct { type_name, fields } => {
                 write!(f, "{type_name} {{ ")?;
                 for (i, (name, val)) in fields.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{name}: {val}")?;
                 }
                 write!(f, " }}")

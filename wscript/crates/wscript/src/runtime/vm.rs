@@ -29,8 +29,7 @@ impl StoreData {
 }
 
 /// Configuration for the script engine.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct EngineConfig {
     /// Whether to enable debug instrumentation (breakpoints, stepping).
     pub debug_mode: bool,
@@ -39,7 +38,6 @@ pub struct EngineConfig {
     /// Whether to emit DWARF debug info in compiled Wasm.
     pub emit_dwarf: bool,
 }
-
 
 /// What to do when fuel runs out.
 #[derive(Debug, Clone)]
@@ -62,7 +60,9 @@ impl ScriptEngine {
         config.wasm_memory64(false);
         config.consume_fuel(false);
         let engine = WasmEngine::new(&config)?;
-        Ok(Self { wasm_engine: engine })
+        Ok(Self {
+            wasm_engine: engine,
+        })
     }
 
     /// Return a reference to the underlying Wasmtime engine.
@@ -176,20 +176,25 @@ impl CompiledScript {
 
         // Register __print(ptr: i32, len: i32) — reads a UTF-8 string from WASM memory and prints it.
         linker
-            .func_wrap("env", "__print", |mut caller: Caller<'_, StoreData>, ptr: i32, len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|ext| ext.into_memory());
-                if let Some(memory) = memory {
-                    let data = memory.data(&caller);
-                    let start = ptr as usize;
-                    let end = start + len as usize;
-                    if end <= data.len()
-                        && let Ok(s) = std::str::from_utf8(&data[start..end]) {
+            .func_wrap(
+                "env",
+                "__print",
+                |mut caller: Caller<'_, StoreData>, ptr: i32, len: i32| {
+                    let memory = caller
+                        .get_export("memory")
+                        .and_then(|ext| ext.into_memory());
+                    if let Some(memory) = memory {
+                        let data = memory.data(&caller);
+                        let start = ptr as usize;
+                        let end = start + len as usize;
+                        if end <= data.len()
+                            && let Ok(s) = std::str::from_utf8(&data[start..end])
+                        {
                             print!("{}", s);
                         }
-                }
-            })
+                    }
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __print: {e}"),
                 trace: vec![],
@@ -197,9 +202,13 @@ impl CompiledScript {
 
         // Register __print_i32(value: i32) — prints an integer to stdout.
         linker
-            .func_wrap("env", "__print_i32", |_caller: Caller<'_, StoreData>, value: i32| {
-                println!("{}", value);
-            })
+            .func_wrap(
+                "env",
+                "__print_i32",
+                |_caller: Caller<'_, StoreData>, value: i32| {
+                    println!("{}", value);
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __print_i32: {e}"),
                 trace: vec![],
@@ -208,12 +217,16 @@ impl CompiledScript {
         // Register __debug_probe(location_id: i32) — breakpoint check hook.
         let breakpoints = Arc::clone(&self.breakpoints);
         linker
-            .func_wrap("env", "__debug_probe", move |_caller: Caller<'_, StoreData>, location_id: i32| {
-                let table = breakpoints.lock().unwrap();
-                if table.is_active(location_id as u32) {
-                    log::debug!("Breakpoint hit at probe location {}", location_id);
-                }
-            })
+            .func_wrap(
+                "env",
+                "__debug_probe",
+                move |_caller: Caller<'_, StoreData>, location_id: i32| {
+                    let table = breakpoints.lock().unwrap();
+                    if table.is_active(location_id as u32) {
+                        log::debug!("Breakpoint hit at probe location {}", location_id);
+                    }
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __debug_probe: {e}"),
                 trace: vec![],
@@ -223,26 +236,30 @@ impl CompiledScript {
 
         // __str_new(ptr: i32, len: i32) -> i32: read bytes from WASM memory, create string handle.
         linker
-            .func_wrap("env", "__str_new", |mut caller: Caller<'_, StoreData>, ptr: i32, len: i32| -> i32 {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|ext| ext.into_memory());
-                let s = if let Some(memory) = memory {
-                    let data = memory.data(&caller);
-                    let start = ptr as usize;
-                    let end = start + len as usize;
-                    if end <= data.len() {
-                        String::from_utf8_lossy(&data[start..end]).into_owned()
+            .func_wrap(
+                "env",
+                "__str_new",
+                |mut caller: Caller<'_, StoreData>, ptr: i32, len: i32| -> i32 {
+                    let memory = caller
+                        .get_export("memory")
+                        .and_then(|ext| ext.into_memory());
+                    let s = if let Some(memory) = memory {
+                        let data = memory.data(&caller);
+                        let start = ptr as usize;
+                        let end = start + len as usize;
+                        if end <= data.len() {
+                            String::from_utf8_lossy(&data[start..end]).into_owned()
+                        } else {
+                            String::new()
+                        }
                     } else {
                         String::new()
-                    }
-                } else {
-                    String::new()
-                };
-                let idx = caller.data().strings.len() as i32;
-                caller.data_mut().strings.push(s);
-                idx
-            })
+                    };
+                    let idx = caller.data().strings.len() as i32;
+                    caller.data_mut().strings.push(s);
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_new: {e}"),
                 trace: vec![],
@@ -250,14 +267,18 @@ impl CompiledScript {
 
         // __str_len(handle: i32) -> i32: get string length.
         linker
-            .func_wrap("env", "__str_len", |caller: Caller<'_, StoreData>, handle: i32| -> i32 {
-                caller
-                    .data()
-                    .strings
-                    .get(handle as usize)
-                    .map(|s| s.len() as i32)
-                    .unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "__str_len",
+                |caller: Caller<'_, StoreData>, handle: i32| -> i32 {
+                    caller
+                        .data()
+                        .strings
+                        .get(handle as usize)
+                        .map(|s| s.len() as i32)
+                        .unwrap_or(0)
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_len: {e}"),
                 trace: vec![],
@@ -265,14 +286,28 @@ impl CompiledScript {
 
         // __str_concat(a: i32, b: i32) -> i32: concatenate two strings.
         linker
-            .func_wrap("env", "__str_concat", |mut caller: Caller<'_, StoreData>, a: i32, b: i32| -> i32 {
-                let sa = caller.data().strings.get(a as usize).cloned().unwrap_or_default();
-                let sb = caller.data().strings.get(b as usize).cloned().unwrap_or_default();
-                let combined = sa + &sb;
-                let idx = caller.data().strings.len() as i32;
-                caller.data_mut().strings.push(combined);
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__str_concat",
+                |mut caller: Caller<'_, StoreData>, a: i32, b: i32| -> i32 {
+                    let sa = caller
+                        .data()
+                        .strings
+                        .get(a as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let sb = caller
+                        .data()
+                        .strings
+                        .get(b as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let combined = sa + &sb;
+                    let idx = caller.data().strings.len() as i32;
+                    caller.data_mut().strings.push(combined);
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_concat: {e}"),
                 trace: vec![],
@@ -280,11 +315,15 @@ impl CompiledScript {
 
         // __str_print(handle: i32): print a string.
         linker
-            .func_wrap("env", "__str_print", |caller: Caller<'_, StoreData>, handle: i32| {
-                if let Some(s) = caller.data().strings.get(handle as usize) {
-                    println!("{}", s);
-                }
-            })
+            .func_wrap(
+                "env",
+                "__str_print",
+                |caller: Caller<'_, StoreData>, handle: i32| {
+                    if let Some(s) = caller.data().strings.get(handle as usize) {
+                        println!("{}", s);
+                    }
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_print: {e}"),
                 trace: vec![],
@@ -292,11 +331,25 @@ impl CompiledScript {
 
         // __str_eq(a: i32, b: i32) -> i32: compare two strings.
         linker
-            .func_wrap("env", "__str_eq", |caller: Caller<'_, StoreData>, a: i32, b: i32| -> i32 {
-                let sa = caller.data().strings.get(a as usize).cloned().unwrap_or_default();
-                let sb = caller.data().strings.get(b as usize).cloned().unwrap_or_default();
-                if sa == sb { 1 } else { 0 }
-            })
+            .func_wrap(
+                "env",
+                "__str_eq",
+                |caller: Caller<'_, StoreData>, a: i32, b: i32| -> i32 {
+                    let sa = caller
+                        .data()
+                        .strings
+                        .get(a as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let sb = caller
+                        .data()
+                        .strings
+                        .get(b as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    if sa == sb { 1 } else { 0 }
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_eq: {e}"),
                 trace: vec![],
@@ -306,11 +359,25 @@ impl CompiledScript {
 
         // __str_contains(s: i32, sub: i32) -> i32
         linker
-            .func_wrap("env", "__str_contains", |caller: Caller<'_, StoreData>, s: i32, sub: i32| -> i32 {
-                let sa = caller.data().strings.get(s as usize).cloned().unwrap_or_default();
-                let sb = caller.data().strings.get(sub as usize).cloned().unwrap_or_default();
-                if sa.contains(&*sb) { 1 } else { 0 }
-            })
+            .func_wrap(
+                "env",
+                "__str_contains",
+                |caller: Caller<'_, StoreData>, s: i32, sub: i32| -> i32 {
+                    let sa = caller
+                        .data()
+                        .strings
+                        .get(s as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let sb = caller
+                        .data()
+                        .strings
+                        .get(sub as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    if sa.contains(&*sb) { 1 } else { 0 }
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_contains: {e}"),
                 trace: vec![],
@@ -318,11 +385,25 @@ impl CompiledScript {
 
         // __str_starts_with(s: i32, prefix: i32) -> i32
         linker
-            .func_wrap("env", "__str_starts_with", |caller: Caller<'_, StoreData>, s: i32, prefix: i32| -> i32 {
-                let sa = caller.data().strings.get(s as usize).cloned().unwrap_or_default();
-                let sb = caller.data().strings.get(prefix as usize).cloned().unwrap_or_default();
-                if sa.starts_with(&*sb) { 1 } else { 0 }
-            })
+            .func_wrap(
+                "env",
+                "__str_starts_with",
+                |caller: Caller<'_, StoreData>, s: i32, prefix: i32| -> i32 {
+                    let sa = caller
+                        .data()
+                        .strings
+                        .get(s as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let sb = caller
+                        .data()
+                        .strings
+                        .get(prefix as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    if sa.starts_with(&*sb) { 1 } else { 0 }
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_starts_with: {e}"),
                 trace: vec![],
@@ -330,11 +411,25 @@ impl CompiledScript {
 
         // __str_ends_with(s: i32, suffix: i32) -> i32
         linker
-            .func_wrap("env", "__str_ends_with", |caller: Caller<'_, StoreData>, s: i32, suffix: i32| -> i32 {
-                let sa = caller.data().strings.get(s as usize).cloned().unwrap_or_default();
-                let sb = caller.data().strings.get(suffix as usize).cloned().unwrap_or_default();
-                if sa.ends_with(&*sb) { 1 } else { 0 }
-            })
+            .func_wrap(
+                "env",
+                "__str_ends_with",
+                |caller: Caller<'_, StoreData>, s: i32, suffix: i32| -> i32 {
+                    let sa = caller
+                        .data()
+                        .strings
+                        .get(s as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let sb = caller
+                        .data()
+                        .strings
+                        .get(suffix as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    if sa.ends_with(&*sb) { 1 } else { 0 }
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_ends_with: {e}"),
                 trace: vec![],
@@ -342,12 +437,21 @@ impl CompiledScript {
 
         // __str_trim(s: i32) -> i32
         linker
-            .func_wrap("env", "__str_trim", |mut caller: Caller<'_, StoreData>, s: i32| -> i32 {
-                let trimmed = caller.data().strings.get(s as usize).map(|v| v.trim().to_string()).unwrap_or_default();
-                let idx = caller.data().strings.len() as i32;
-                caller.data_mut().strings.push(trimmed);
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__str_trim",
+                |mut caller: Caller<'_, StoreData>, s: i32| -> i32 {
+                    let trimmed = caller
+                        .data()
+                        .strings
+                        .get(s as usize)
+                        .map(|v| v.trim().to_string())
+                        .unwrap_or_default();
+                    let idx = caller.data().strings.len() as i32;
+                    caller.data_mut().strings.push(trimmed);
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_trim: {e}"),
                 trace: vec![],
@@ -355,12 +459,21 @@ impl CompiledScript {
 
         // __str_to_upper(s: i32) -> i32
         linker
-            .func_wrap("env", "__str_to_upper", |mut caller: Caller<'_, StoreData>, s: i32| -> i32 {
-                let upper = caller.data().strings.get(s as usize).map(|v| v.to_uppercase()).unwrap_or_default();
-                let idx = caller.data().strings.len() as i32;
-                caller.data_mut().strings.push(upper);
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__str_to_upper",
+                |mut caller: Caller<'_, StoreData>, s: i32| -> i32 {
+                    let upper = caller
+                        .data()
+                        .strings
+                        .get(s as usize)
+                        .map(|v| v.to_uppercase())
+                        .unwrap_or_default();
+                    let idx = caller.data().strings.len() as i32;
+                    caller.data_mut().strings.push(upper);
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_to_upper: {e}"),
                 trace: vec![],
@@ -368,12 +481,21 @@ impl CompiledScript {
 
         // __str_to_lower(s: i32) -> i32
         linker
-            .func_wrap("env", "__str_to_lower", |mut caller: Caller<'_, StoreData>, s: i32| -> i32 {
-                let lower = caller.data().strings.get(s as usize).map(|v| v.to_lowercase()).unwrap_or_default();
-                let idx = caller.data().strings.len() as i32;
-                caller.data_mut().strings.push(lower);
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__str_to_lower",
+                |mut caller: Caller<'_, StoreData>, s: i32| -> i32 {
+                    let lower = caller
+                        .data()
+                        .strings
+                        .get(s as usize)
+                        .map(|v| v.to_lowercase())
+                        .unwrap_or_default();
+                    let idx = caller.data().strings.len() as i32;
+                    caller.data_mut().strings.push(lower);
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_to_lower: {e}"),
                 trace: vec![],
@@ -381,15 +503,34 @@ impl CompiledScript {
 
         // __str_replace(s: i32, from: i32, to: i32) -> i32
         linker
-            .func_wrap("env", "__str_replace", |mut caller: Caller<'_, StoreData>, s: i32, from: i32, to: i32| -> i32 {
-                let ss = caller.data().strings.get(s as usize).cloned().unwrap_or_default();
-                let sf = caller.data().strings.get(from as usize).cloned().unwrap_or_default();
-                let st = caller.data().strings.get(to as usize).cloned().unwrap_or_default();
-                let replaced = ss.replace(&*sf, &st);
-                let idx = caller.data().strings.len() as i32;
-                caller.data_mut().strings.push(replaced);
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__str_replace",
+                |mut caller: Caller<'_, StoreData>, s: i32, from: i32, to: i32| -> i32 {
+                    let ss = caller
+                        .data()
+                        .strings
+                        .get(s as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let sf = caller
+                        .data()
+                        .strings
+                        .get(from as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let st = caller
+                        .data()
+                        .strings
+                        .get(to as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let replaced = ss.replace(&*sf, &st);
+                    let idx = caller.data().strings.len() as i32;
+                    caller.data_mut().strings.push(replaced);
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_replace: {e}"),
                 trace: vec![],
@@ -397,20 +538,34 @@ impl CompiledScript {
 
         // __str_split(s: i32, sep: i32) -> i32: split string, return array of string handles
         linker
-            .func_wrap("env", "__str_split", |mut caller: Caller<'_, StoreData>, s: i32, sep: i32| -> i32 {
-                let ss = caller.data().strings.get(s as usize).cloned().unwrap_or_default();
-                let sf = caller.data().strings.get(sep as usize).cloned().unwrap_or_default();
-                let parts: Vec<String> = ss.split(&*sf).map(|p| p.to_string()).collect();
-                let mut handles = Vec::new();
-                for part in parts {
-                    let h = caller.data().strings.len() as i32;
-                    caller.data_mut().strings.push(part);
-                    handles.push(h);
-                }
-                let arr_idx = caller.data().arrays.len() as i32;
-                caller.data_mut().arrays.push(handles);
-                arr_idx
-            })
+            .func_wrap(
+                "env",
+                "__str_split",
+                |mut caller: Caller<'_, StoreData>, s: i32, sep: i32| -> i32 {
+                    let ss = caller
+                        .data()
+                        .strings
+                        .get(s as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let sf = caller
+                        .data()
+                        .strings
+                        .get(sep as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let parts: Vec<String> = ss.split(&*sf).map(|p| p.to_string()).collect();
+                    let mut handles = Vec::new();
+                    for part in parts {
+                        let h = caller.data().strings.len() as i32;
+                        caller.data_mut().strings.push(part);
+                        handles.push(h);
+                    }
+                    let arr_idx = caller.data().arrays.len() as i32;
+                    caller.data_mut().arrays.push(handles);
+                    arr_idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_split: {e}"),
                 trace: vec![],
@@ -418,9 +573,18 @@ impl CompiledScript {
 
         // __str_char_count(s: i32) -> i32
         linker
-            .func_wrap("env", "__str_char_count", |caller: Caller<'_, StoreData>, s: i32| -> i32 {
-                caller.data().strings.get(s as usize).map(|v| v.chars().count() as i32).unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "__str_char_count",
+                |caller: Caller<'_, StoreData>, s: i32| -> i32 {
+                    caller
+                        .data()
+                        .strings
+                        .get(s as usize)
+                        .map(|v| v.chars().count() as i32)
+                        .unwrap_or(0)
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_char_count: {e}"),
                 trace: vec![],
@@ -428,9 +592,18 @@ impl CompiledScript {
 
         // __str_is_empty(s: i32) -> i32
         linker
-            .func_wrap("env", "__str_is_empty", |caller: Caller<'_, StoreData>, s: i32| -> i32 {
-                caller.data().strings.get(s as usize).map(|v| if v.is_empty() { 1 } else { 0 }).unwrap_or(1)
-            })
+            .func_wrap(
+                "env",
+                "__str_is_empty",
+                |caller: Caller<'_, StoreData>, s: i32| -> i32 {
+                    caller
+                        .data()
+                        .strings
+                        .get(s as usize)
+                        .map(|v| if v.is_empty() { 1 } else { 0 })
+                        .unwrap_or(1)
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_is_empty: {e}"),
                 trace: vec![],
@@ -438,12 +611,21 @@ impl CompiledScript {
 
         // __str_repeat(s: i32, n: i32) -> i32
         linker
-            .func_wrap("env", "__str_repeat", |mut caller: Caller<'_, StoreData>, s: i32, n: i32| -> i32 {
-                let repeated = caller.data().strings.get(s as usize).map(|v| v.repeat(n.max(0) as usize)).unwrap_or_default();
-                let idx = caller.data().strings.len() as i32;
-                caller.data_mut().strings.push(repeated);
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__str_repeat",
+                |mut caller: Caller<'_, StoreData>, s: i32, n: i32| -> i32 {
+                    let repeated = caller
+                        .data()
+                        .strings
+                        .get(s as usize)
+                        .map(|v| v.repeat(n.max(0) as usize))
+                        .unwrap_or_default();
+                    let idx = caller.data().strings.len() as i32;
+                    caller.data_mut().strings.push(repeated);
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __str_repeat: {e}"),
                 trace: vec![],
@@ -451,10 +633,14 @@ impl CompiledScript {
 
         // __print_f64(value_bits: i64): print a float (passed as i64 bits)
         linker
-            .func_wrap("env", "__print_f64", |_caller: Caller<'_, StoreData>, value_bits: i64| {
-                let v = f64::from_bits(value_bits as u64);
-                println!("{}", v);
-            })
+            .func_wrap(
+                "env",
+                "__print_f64",
+                |_caller: Caller<'_, StoreData>, value_bits: i64| {
+                    let v = f64::from_bits(value_bits as u64);
+                    println!("{}", v);
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __print_f64: {e}"),
                 trace: vec![],
@@ -462,13 +648,17 @@ impl CompiledScript {
 
         // __print_bool(val: i32): print "true" or "false"
         linker
-            .func_wrap("env", "__print_bool", |_caller: Caller<'_, StoreData>, val: i32| {
-                if val != 0 {
-                    println!("true");
-                } else {
-                    println!("false");
-                }
-            })
+            .func_wrap(
+                "env",
+                "__print_bool",
+                |_caller: Caller<'_, StoreData>, val: i32| {
+                    if val != 0 {
+                        println!("true");
+                    } else {
+                        println!("false");
+                    }
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __print_bool: {e}"),
                 trace: vec![],
@@ -476,14 +666,23 @@ impl CompiledScript {
 
         // __arr_to_str(arr: i32) -> i32: create string representation of array
         linker
-            .func_wrap("env", "__arr_to_str", |mut caller: Caller<'_, StoreData>, arr: i32| -> i32 {
-                let elements = caller.data().arrays.get(arr as usize).cloned().unwrap_or_default();
-                let parts: Vec<String> = elements.iter().map(|v| v.to_string()).collect();
-                let s = format!("[{}]", parts.join(", "));
-                let idx = caller.data().strings.len() as i32;
-                caller.data_mut().strings.push(s);
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__arr_to_str",
+                |mut caller: Caller<'_, StoreData>, arr: i32| -> i32 {
+                    let elements = caller
+                        .data()
+                        .arrays
+                        .get(arr as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let parts: Vec<String> = elements.iter().map(|v| v.to_string()).collect();
+                    let s = format!("[{}]", parts.join(", "));
+                    let idx = caller.data().strings.len() as i32;
+                    caller.data_mut().strings.push(s);
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_to_str: {e}"),
                 trace: vec![],
@@ -493,11 +692,15 @@ impl CompiledScript {
 
         // __arr_new() -> i32: create an empty array handle.
         linker
-            .func_wrap("env", "__arr_new", |mut caller: Caller<'_, StoreData>| -> i32 {
-                let idx = caller.data().arrays.len() as i32;
-                caller.data_mut().arrays.push(Vec::new());
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__arr_new",
+                |mut caller: Caller<'_, StoreData>| -> i32 {
+                    let idx = caller.data().arrays.len() as i32;
+                    caller.data_mut().arrays.push(Vec::new());
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_new: {e}"),
                 trace: vec![],
@@ -505,11 +708,15 @@ impl CompiledScript {
 
         // __arr_push(arr: i32, val: i32): push i32 to array.
         linker
-            .func_wrap("env", "__arr_push", |mut caller: Caller<'_, StoreData>, arr: i32, val: i32| {
-                if let Some(a) = caller.data_mut().arrays.get_mut(arr as usize) {
-                    a.push(val);
-                }
-            })
+            .func_wrap(
+                "env",
+                "__arr_push",
+                |mut caller: Caller<'_, StoreData>, arr: i32, val: i32| {
+                    if let Some(a) = caller.data_mut().arrays.get_mut(arr as usize) {
+                        a.push(val);
+                    }
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_push: {e}"),
                 trace: vec![],
@@ -517,14 +724,18 @@ impl CompiledScript {
 
         // __arr_len(arr: i32) -> i32: get array length.
         linker
-            .func_wrap("env", "__arr_len", |caller: Caller<'_, StoreData>, arr: i32| -> i32 {
-                caller
-                    .data()
-                    .arrays
-                    .get(arr as usize)
-                    .map(|a| a.len() as i32)
-                    .unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "__arr_len",
+                |caller: Caller<'_, StoreData>, arr: i32| -> i32 {
+                    caller
+                        .data()
+                        .arrays
+                        .get(arr as usize)
+                        .map(|a| a.len() as i32)
+                        .unwrap_or(0)
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_len: {e}"),
                 trace: vec![],
@@ -532,15 +743,19 @@ impl CompiledScript {
 
         // __arr_get(arr: i32, idx: i32) -> i32: get element at index.
         linker
-            .func_wrap("env", "__arr_get", |caller: Caller<'_, StoreData>, arr: i32, idx: i32| -> i32 {
-                caller
-                    .data()
-                    .arrays
-                    .get(arr as usize)
-                    .and_then(|a| a.get(idx as usize))
-                    .copied()
-                    .unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "__arr_get",
+                |caller: Caller<'_, StoreData>, arr: i32, idx: i32| -> i32 {
+                    caller
+                        .data()
+                        .arrays
+                        .get(arr as usize)
+                        .and_then(|a| a.get(idx as usize))
+                        .copied()
+                        .unwrap_or(0)
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_get: {e}"),
                 trace: vec![],
@@ -548,12 +763,16 @@ impl CompiledScript {
 
         // __i32_to_str(value: i32) -> i32: convert integer to string handle.
         linker
-            .func_wrap("env", "__i32_to_str", |mut caller: Caller<'_, StoreData>, value: i32| -> i32 {
-                let s = value.to_string();
-                let idx = caller.data().strings.len() as i32;
-                caller.data_mut().strings.push(s);
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__i32_to_str",
+                |mut caller: Caller<'_, StoreData>, value: i32| -> i32 {
+                    let s = value.to_string();
+                    let idx = caller.data().strings.len() as i32;
+                    caller.data_mut().strings.push(s);
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __i32_to_str: {e}"),
                 trace: vec![],
@@ -561,14 +780,18 @@ impl CompiledScript {
 
         // __arr_sum(arr: i32) -> i32: sum all elements of an array.
         linker
-            .func_wrap("env", "__arr_sum", |caller: Caller<'_, StoreData>, arr: i32| -> i32 {
-                caller
-                    .data()
-                    .arrays
-                    .get(arr as usize)
-                    .map(|a| a.iter().sum())
-                    .unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "__arr_sum",
+                |caller: Caller<'_, StoreData>, arr: i32| -> i32 {
+                    caller
+                        .data()
+                        .arrays
+                        .get(arr as usize)
+                        .map(|a| a.iter().sum())
+                        .unwrap_or(0)
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_sum: {e}"),
                 trace: vec![],
@@ -576,14 +799,18 @@ impl CompiledScript {
 
         // __arr_contains(arr: i32, val: i32) -> i32: check if array contains value.
         linker
-            .func_wrap("env", "__arr_contains", |caller: Caller<'_, StoreData>, arr: i32, val: i32| -> i32 {
-                caller
-                    .data()
-                    .arrays
-                    .get(arr as usize)
-                    .map(|a| if a.contains(&val) { 1 } else { 0 })
-                    .unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "__arr_contains",
+                |caller: Caller<'_, StoreData>, arr: i32, val: i32| -> i32 {
+                    caller
+                        .data()
+                        .arrays
+                        .get(arr as usize)
+                        .map(|a| if a.contains(&val) { 1 } else { 0 })
+                        .unwrap_or(0)
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_contains: {e}"),
                 trace: vec![],
@@ -591,17 +818,21 @@ impl CompiledScript {
 
         // __arr_reverse(arr: i32) -> i32: reverse array and return new handle.
         linker
-            .func_wrap("env", "__arr_reverse", |mut caller: Caller<'_, StoreData>, arr: i32| -> i32 {
-                let reversed = caller
-                    .data()
-                    .arrays
-                    .get(arr as usize)
-                    .map(|a| a.iter().rev().copied().collect::<Vec<i32>>())
-                    .unwrap_or_default();
-                let idx = caller.data().arrays.len() as i32;
-                caller.data_mut().arrays.push(reversed);
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__arr_reverse",
+                |mut caller: Caller<'_, StoreData>, arr: i32| -> i32 {
+                    let reversed = caller
+                        .data()
+                        .arrays
+                        .get(arr as usize)
+                        .map(|a| a.iter().rev().copied().collect::<Vec<i32>>())
+                        .unwrap_or_default();
+                    let idx = caller.data().arrays.len() as i32;
+                    caller.data_mut().arrays.push(reversed);
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_reverse: {e}"),
                 trace: vec![],
@@ -609,15 +840,19 @@ impl CompiledScript {
 
         // __arr_first(arr: i32) -> i32: first element or 0.
         linker
-            .func_wrap("env", "__arr_first", |caller: Caller<'_, StoreData>, arr: i32| -> i32 {
-                caller
-                    .data()
-                    .arrays
-                    .get(arr as usize)
-                    .and_then(|a| a.first())
-                    .copied()
-                    .unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "__arr_first",
+                |caller: Caller<'_, StoreData>, arr: i32| -> i32 {
+                    caller
+                        .data()
+                        .arrays
+                        .get(arr as usize)
+                        .and_then(|a| a.first())
+                        .copied()
+                        .unwrap_or(0)
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_first: {e}"),
                 trace: vec![],
@@ -625,15 +860,19 @@ impl CompiledScript {
 
         // __arr_last(arr: i32) -> i32: last element or 0.
         linker
-            .func_wrap("env", "__arr_last", |caller: Caller<'_, StoreData>, arr: i32| -> i32 {
-                caller
-                    .data()
-                    .arrays
-                    .get(arr as usize)
-                    .and_then(|a| a.last())
-                    .copied()
-                    .unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "__arr_last",
+                |caller: Caller<'_, StoreData>, arr: i32| -> i32 {
+                    caller
+                        .data()
+                        .arrays
+                        .get(arr as usize)
+                        .and_then(|a| a.last())
+                        .copied()
+                        .unwrap_or(0)
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_last: {e}"),
                 trace: vec![],
@@ -641,14 +880,18 @@ impl CompiledScript {
 
         // __arr_min(arr: i32) -> i32: minimum element.
         linker
-            .func_wrap("env", "__arr_min", |caller: Caller<'_, StoreData>, arr: i32| -> i32 {
-                caller
-                    .data()
-                    .arrays
-                    .get(arr as usize)
-                    .and_then(|a| a.iter().copied().min())
-                    .unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "__arr_min",
+                |caller: Caller<'_, StoreData>, arr: i32| -> i32 {
+                    caller
+                        .data()
+                        .arrays
+                        .get(arr as usize)
+                        .and_then(|a| a.iter().copied().min())
+                        .unwrap_or(0)
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_min: {e}"),
                 trace: vec![],
@@ -656,14 +899,18 @@ impl CompiledScript {
 
         // __arr_max(arr: i32) -> i32: maximum element.
         linker
-            .func_wrap("env", "__arr_max", |caller: Caller<'_, StoreData>, arr: i32| -> i32 {
-                caller
-                    .data()
-                    .arrays
-                    .get(arr as usize)
-                    .and_then(|a| a.iter().copied().max())
-                    .unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "__arr_max",
+                |caller: Caller<'_, StoreData>, arr: i32| -> i32 {
+                    caller
+                        .data()
+                        .arrays
+                        .get(arr as usize)
+                        .and_then(|a| a.iter().copied().max())
+                        .unwrap_or(0)
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_max: {e}"),
                 trace: vec![],
@@ -671,18 +918,22 @@ impl CompiledScript {
 
         // __arr_sort(arr: i32) -> i32: return sorted copy.
         linker
-            .func_wrap("env", "__arr_sort", |mut caller: Caller<'_, StoreData>, arr: i32| -> i32 {
-                let mut sorted = caller
-                    .data()
-                    .arrays
-                    .get(arr as usize)
-                    .cloned()
-                    .unwrap_or_default();
-                sorted.sort();
-                let idx = caller.data().arrays.len() as i32;
-                caller.data_mut().arrays.push(sorted);
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__arr_sort",
+                |mut caller: Caller<'_, StoreData>, arr: i32| -> i32 {
+                    let mut sorted = caller
+                        .data()
+                        .arrays
+                        .get(arr as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    sorted.sort();
+                    let idx = caller.data().arrays.len() as i32;
+                    caller.data_mut().arrays.push(sorted);
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_sort: {e}"),
                 trace: vec![],
@@ -690,18 +941,22 @@ impl CompiledScript {
 
         // __arr_dedup(arr: i32) -> i32: remove consecutive duplicates, return new handle.
         linker
-            .func_wrap("env", "__arr_dedup", |mut caller: Caller<'_, StoreData>, arr: i32| -> i32 {
-                let mut deduped = caller
-                    .data()
-                    .arrays
-                    .get(arr as usize)
-                    .cloned()
-                    .unwrap_or_default();
-                deduped.dedup();
-                let idx = caller.data().arrays.len() as i32;
-                caller.data_mut().arrays.push(deduped);
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__arr_dedup",
+                |mut caller: Caller<'_, StoreData>, arr: i32| -> i32 {
+                    let mut deduped = caller
+                        .data()
+                        .arrays
+                        .get(arr as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    deduped.dedup();
+                    let idx = caller.data().arrays.len() as i32;
+                    caller.data_mut().arrays.push(deduped);
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_dedup: {e}"),
                 trace: vec![],
@@ -709,28 +964,32 @@ impl CompiledScript {
 
         // __arr_join_str(arr: i32, sep: i32) -> i32: join i32 array as string with separator.
         linker
-            .func_wrap("env", "__arr_join_str", |mut caller: Caller<'_, StoreData>, arr: i32, sep: i32| -> i32 {
-                let elements = caller
-                    .data()
-                    .arrays
-                    .get(arr as usize)
-                    .cloned()
-                    .unwrap_or_default();
-                let separator = caller
-                    .data()
-                    .strings
-                    .get(sep as usize)
-                    .cloned()
-                    .unwrap_or_default();
-                let joined = elements
-                    .iter()
-                    .map(|v| v.to_string())
-                    .collect::<Vec<_>>()
-                    .join(&separator);
-                let idx = caller.data().strings.len() as i32;
-                caller.data_mut().strings.push(joined);
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__arr_join_str",
+                |mut caller: Caller<'_, StoreData>, arr: i32, sep: i32| -> i32 {
+                    let elements = caller
+                        .data()
+                        .arrays
+                        .get(arr as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let separator = caller
+                        .data()
+                        .strings
+                        .get(sep as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let joined = elements
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join(&separator);
+                    let idx = caller.data().strings.len() as i32;
+                    caller.data_mut().strings.push(joined);
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __arr_join_str: {e}"),
                 trace: vec![],
@@ -740,11 +999,15 @@ impl CompiledScript {
 
         // __map_new() -> i32: create an empty map handle.
         linker
-            .func_wrap("env", "__map_new", |mut caller: Caller<'_, StoreData>| -> i32 {
-                let idx = caller.data().maps.len() as i32;
-                caller.data_mut().maps.push(HashMap::new());
-                idx
-            })
+            .func_wrap(
+                "env",
+                "__map_new",
+                |mut caller: Caller<'_, StoreData>| -> i32 {
+                    let idx = caller.data().maps.len() as i32;
+                    caller.data_mut().maps.push(HashMap::new());
+                    idx
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __map_new: {e}"),
                 trace: vec![],
@@ -752,11 +1015,15 @@ impl CompiledScript {
 
         // __map_set(map: i32, key: i32, val: i32): set key-value pair.
         linker
-            .func_wrap("env", "__map_set", |mut caller: Caller<'_, StoreData>, map: i32, key: i32, val: i32| {
-                if let Some(m) = caller.data_mut().maps.get_mut(map as usize) {
-                    m.insert(key, val);
-                }
-            })
+            .func_wrap(
+                "env",
+                "__map_set",
+                |mut caller: Caller<'_, StoreData>, map: i32, key: i32, val: i32| {
+                    if let Some(m) = caller.data_mut().maps.get_mut(map as usize) {
+                        m.insert(key, val);
+                    }
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __map_set: {e}"),
                 trace: vec![],
@@ -764,15 +1031,19 @@ impl CompiledScript {
 
         // __map_get(map: i32, key: i32) -> i32: get value by key.
         linker
-            .func_wrap("env", "__map_get", |caller: Caller<'_, StoreData>, map: i32, key: i32| -> i32 {
-                caller
-                    .data()
-                    .maps
-                    .get(map as usize)
-                    .and_then(|m| m.get(&key))
-                    .copied()
-                    .unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "__map_get",
+                |caller: Caller<'_, StoreData>, map: i32, key: i32| -> i32 {
+                    caller
+                        .data()
+                        .maps
+                        .get(map as usize)
+                        .and_then(|m| m.get(&key))
+                        .copied()
+                        .unwrap_or(0)
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __map_get: {e}"),
                 trace: vec![],
@@ -780,14 +1051,18 @@ impl CompiledScript {
 
         // __map_len(map: i32) -> i32: get number of entries.
         linker
-            .func_wrap("env", "__map_len", |caller: Caller<'_, StoreData>, map: i32| -> i32 {
-                caller
-                    .data()
-                    .maps
-                    .get(map as usize)
-                    .map(|m| m.len() as i32)
-                    .unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "__map_len",
+                |caller: Caller<'_, StoreData>, map: i32| -> i32 {
+                    caller
+                        .data()
+                        .maps
+                        .get(map as usize)
+                        .map(|m| m.len() as i32)
+                        .unwrap_or(0)
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __map_len: {e}"),
                 trace: vec![],
@@ -795,15 +1070,19 @@ impl CompiledScript {
 
         // __panic(msg_handle: i32) — trap the script with an error message.
         linker
-            .func_wrap("env", "__panic", |caller: Caller<'_, StoreData>, msg_handle: i32| -> wasmtime::Result<()> {
-                let msg = caller
-                    .data()
-                    .strings
-                    .get(msg_handle as usize)
-                    .cloned()
-                    .unwrap_or_else(|| "script panicked".to_string());
-                Err(wasmtime::Error::msg(format!("panic: {}", msg)))
-            })
+            .func_wrap(
+                "env",
+                "__panic",
+                |caller: Caller<'_, StoreData>, msg_handle: i32| -> wasmtime::Result<()> {
+                    let msg = caller
+                        .data()
+                        .strings
+                        .get(msg_handle as usize)
+                        .cloned()
+                        .unwrap_or_else(|| "script panicked".to_string());
+                    Err(wasmtime::Error::msg(format!("panic: {}", msg)))
+                },
+            )
             .map_err(|e| ScriptPanic {
                 message: format!("Failed to register __panic: {e}"),
                 trace: vec![],
@@ -816,127 +1095,325 @@ impl CompiledScript {
 
             // __com_create(progid_handle: i32) -> i32 (1-based handle, 0 on error)
             linker
-                .func_wrap("env", "__com_create", |mut caller: Caller<'_, StoreData>, progid: i32| -> i32 {
-                    let s = caller.data().strings.get(progid as usize).cloned().unwrap_or_default();
-                    caller.data_mut().com.create(&s)
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_create: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_create",
+                    |mut caller: Caller<'_, StoreData>, progid: i32| -> i32 {
+                        let s = caller
+                            .data()
+                            .strings
+                            .get(progid as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        caller.data_mut().com.create(&s)
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_create: {e}"),
+                    trace: vec![],
+                })?;
 
             // __com_release(handle: i32)
             linker
-                .func_wrap("env", "__com_release", |mut caller: Caller<'_, StoreData>, h: i32| {
-                    caller.data_mut().com.release(h);
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_release: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_release",
+                    |mut caller: Caller<'_, StoreData>, h: i32| {
+                        caller.data_mut().com.release(h);
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_release: {e}"),
+                    trace: vec![],
+                })?;
 
             // __com_has(handle, name_handle) -> i32 (0/1)
             linker
-                .func_wrap("env", "__com_has", |caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
-                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
-                    if caller.data().com.has_member(h, &n) { 1 } else { 0 }
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_has: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_has",
+                    |caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
+                        let n = caller
+                            .data()
+                            .strings
+                            .get(name as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        if caller.data().com.has_member(h, &n) {
+                            1
+                        } else {
+                            0
+                        }
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_has: {e}"),
+                    trace: vec![],
+                })?;
 
             // __com_call_i0(h, name) -> i32 (i32::MIN on error)
             linker
-                .func_wrap("env", "__com_call_i0", |mut caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
-                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
-                    caller.data_mut().com.call_i(h, &n, &[])
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_call_i0: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_call_i0",
+                    |mut caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
+                        let n = caller
+                            .data()
+                            .strings
+                            .get(name as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        caller.data_mut().com.call_i(h, &n, &[])
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_call_i0: {e}"),
+                    trace: vec![],
+                })?;
 
             // __com_call_i1s(h, name, arg_str) -> i32
             linker
-                .func_wrap("env", "__com_call_i1s", |mut caller: Caller<'_, StoreData>, h: i32, name: i32, a0: i32| -> i32 {
-                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
-                    let s = caller.data().strings.get(a0 as usize).cloned().unwrap_or_default();
-                    caller.data_mut().com.call_i(h, &n, &[ComArg::Str(&s)])
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_call_i1s: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_call_i1s",
+                    |mut caller: Caller<'_, StoreData>, h: i32, name: i32, a0: i32| -> i32 {
+                        let n = caller
+                            .data()
+                            .strings
+                            .get(name as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        let s = caller
+                            .data()
+                            .strings
+                            .get(a0 as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        caller.data_mut().com.call_i(h, &n, &[ComArg::Str(&s)])
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_call_i1s: {e}"),
+                    trace: vec![],
+                })?;
 
             // __com_call_i1i(h, name, arg_i32) -> i32
             linker
-                .func_wrap("env", "__com_call_i1i", |mut caller: Caller<'_, StoreData>, h: i32, name: i32, a0: i32| -> i32 {
-                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
-                    caller.data_mut().com.call_i(h, &n, &[ComArg::I32(a0)])
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_call_i1i: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_call_i1i",
+                    |mut caller: Caller<'_, StoreData>, h: i32, name: i32, a0: i32| -> i32 {
+                        let n = caller
+                            .data()
+                            .strings
+                            .get(name as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        caller.data_mut().com.call_i(h, &n, &[ComArg::I32(a0)])
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_call_i1i: {e}"),
+                    trace: vec![],
+                })?;
 
             // __com_call_i2si(h, name, a0_str, a1_i32) -> i32  (e.g. Dictionary.Add(key, val))
             linker
-                .func_wrap("env", "__com_call_i2si", |mut caller: Caller<'_, StoreData>, h: i32, name: i32, a0: i32, a1: i32| -> i32 {
-                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
-                    let s = caller.data().strings.get(a0 as usize).cloned().unwrap_or_default();
-                    caller.data_mut().com.call_i(h, &n, &[ComArg::Str(&s), ComArg::I32(a1)])
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_call_i2si: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_call_i2si",
+                    |mut caller: Caller<'_, StoreData>,
+                     h: i32,
+                     name: i32,
+                     a0: i32,
+                     a1: i32|
+                     -> i32 {
+                        let n = caller
+                            .data()
+                            .strings
+                            .get(name as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        let s = caller
+                            .data()
+                            .strings
+                            .get(a0 as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        caller
+                            .data_mut()
+                            .com
+                            .call_i(h, &n, &[ComArg::Str(&s), ComArg::I32(a1)])
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_call_i2si: {e}"),
+                    trace: vec![],
+                })?;
 
             // __com_call_s0(h, name) -> str_handle (0 on error — check com_last_error)
             linker
-                .func_wrap("env", "__com_call_s0", |mut caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
-                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
-                    match caller.data_mut().com.call_s(h, &n, &[]) {
-                        Some(s) => caller.data_mut().intern_string(s),
-                        None => caller.data_mut().intern_string(String::new()),
-                    }
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_call_s0: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_call_s0",
+                    |mut caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
+                        let n = caller
+                            .data()
+                            .strings
+                            .get(name as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        match caller.data_mut().com.call_s(h, &n, &[]) {
+                            Some(s) => caller.data_mut().intern_string(s),
+                            None => caller.data_mut().intern_string(String::new()),
+                        }
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_call_s0: {e}"),
+                    trace: vec![],
+                })?;
 
             // __com_call_s1s(h, name, arg_str) -> str_handle
             linker
-                .func_wrap("env", "__com_call_s1s", |mut caller: Caller<'_, StoreData>, h: i32, name: i32, a0: i32| -> i32 {
-                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
-                    let s = caller.data().strings.get(a0 as usize).cloned().unwrap_or_default();
-                    match caller.data_mut().com.call_s(h, &n, &[ComArg::Str(&s)]) {
-                        Some(s) => caller.data_mut().intern_string(s),
-                        None => caller.data_mut().intern_string(String::new()),
-                    }
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_call_s1s: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_call_s1s",
+                    |mut caller: Caller<'_, StoreData>, h: i32, name: i32, a0: i32| -> i32 {
+                        let n = caller
+                            .data()
+                            .strings
+                            .get(name as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        let s = caller
+                            .data()
+                            .strings
+                            .get(a0 as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        match caller.data_mut().com.call_s(h, &n, &[ComArg::Str(&s)]) {
+                            Some(s) => caller.data_mut().intern_string(s),
+                            None => caller.data_mut().intern_string(String::new()),
+                        }
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_call_s1s: {e}"),
+                    trace: vec![],
+                })?;
 
             // __com_get_i(h, name) -> i32
             linker
-                .func_wrap("env", "__com_get_i", |mut caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
-                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
-                    caller.data_mut().com.get_i(h, &n)
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_get_i: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_get_i",
+                    |mut caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
+                        let n = caller
+                            .data()
+                            .strings
+                            .get(name as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        caller.data_mut().com.get_i(h, &n)
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_get_i: {e}"),
+                    trace: vec![],
+                })?;
 
             // __com_get_s(h, name) -> str_handle
             linker
-                .func_wrap("env", "__com_get_s", |mut caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
-                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
-                    match caller.data_mut().com.get_s(h, &n) {
-                        Some(s) => caller.data_mut().intern_string(s),
-                        None => caller.data_mut().intern_string(String::new()),
-                    }
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_get_s: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_get_s",
+                    |mut caller: Caller<'_, StoreData>, h: i32, name: i32| -> i32 {
+                        let n = caller
+                            .data()
+                            .strings
+                            .get(name as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        match caller.data_mut().com.get_s(h, &n) {
+                            Some(s) => caller.data_mut().intern_string(s),
+                            None => caller.data_mut().intern_string(String::new()),
+                        }
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_get_s: {e}"),
+                    trace: vec![],
+                })?;
 
             // __com_set_i(h, name, val) -> i32 (0/1 success)
             linker
-                .func_wrap("env", "__com_set_i", |mut caller: Caller<'_, StoreData>, h: i32, name: i32, v: i32| -> i32 {
-                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
-                    if caller.data_mut().com.set_i(h, &n, v) { 1 } else { 0 }
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_set_i: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_set_i",
+                    |mut caller: Caller<'_, StoreData>, h: i32, name: i32, v: i32| -> i32 {
+                        let n = caller
+                            .data()
+                            .strings
+                            .get(name as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        if caller.data_mut().com.set_i(h, &n, v) {
+                            1
+                        } else {
+                            0
+                        }
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_set_i: {e}"),
+                    trace: vec![],
+                })?;
 
             // __com_set_s(h, name, val_str) -> i32 (0/1)
             linker
-                .func_wrap("env", "__com_set_s", |mut caller: Caller<'_, StoreData>, h: i32, name: i32, v: i32| -> i32 {
-                    let n = caller.data().strings.get(name as usize).cloned().unwrap_or_default();
-                    let vs = caller.data().strings.get(v as usize).cloned().unwrap_or_default();
-                    if caller.data_mut().com.set_s(h, &n, &vs) { 1 } else { 0 }
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_set_s: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_set_s",
+                    |mut caller: Caller<'_, StoreData>, h: i32, name: i32, v: i32| -> i32 {
+                        let n = caller
+                            .data()
+                            .strings
+                            .get(name as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        let vs = caller
+                            .data()
+                            .strings
+                            .get(v as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        if caller.data_mut().com.set_s(h, &n, &vs) {
+                            1
+                        } else {
+                            0
+                        }
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_set_s: {e}"),
+                    trace: vec![],
+                })?;
 
             // __com_last_error() -> str_handle
             linker
-                .func_wrap("env", "__com_last_error", |mut caller: Caller<'_, StoreData>| -> i32 {
-                    let msg = com_mod::last_error_string();
-                    caller.data_mut().intern_string(msg)
-                })
-                .map_err(|e| ScriptPanic { message: format!("Failed to register __com_last_error: {e}"), trace: vec![] })?;
+                .func_wrap(
+                    "env",
+                    "__com_last_error",
+                    |mut caller: Caller<'_, StoreData>| -> i32 {
+                        let msg = com_mod::last_error_string();
+                        caller.data_mut().intern_string(msg)
+                    },
+                )
+                .map_err(|e| ScriptPanic {
+                    message: format!("Failed to register __com_last_error: {e}"),
+                    trace: vec![],
+                })?;
         }
 
         // ── User-registered host functions (module "host") ─────────────
@@ -1170,7 +1647,10 @@ impl Vm {
         let mut results = vec![wasmtime::Val::I32(0); result_count];
 
         func.call(&mut self.store, &params, &mut results)
-            .map_err(|e| ScriptPanic { message: e.to_string(), trace: vec![] })?;
+            .map_err(|e| ScriptPanic {
+                message: e.to_string(),
+                trace: vec![],
+            })?;
 
         if results.is_empty() {
             Ok(None)
@@ -1223,7 +1703,11 @@ impl Vm {
     /// global is rejected — use `write_global_struct` for field-level
     /// mutation instead.
     pub fn set_global(&mut self, name: &str, v: Value) -> Result<(), String> {
-        if let Some(GlobalInfo { kind: GlobalKind::Struct(_), .. }) = self.layouts.global(name) {
+        if let Some(GlobalInfo {
+            kind: GlobalKind::Struct(_),
+            ..
+        }) = self.layouts.global(name)
+        {
             return Err(format!(
                 "cannot set_global on struct-typed global '{name}'; \
                  use write_global_struct for field-level updates"
@@ -1315,11 +1799,7 @@ impl Vm {
         self.read_struct_info(base, &info)
     }
 
-    fn read_struct_info(
-        &mut self,
-        base: i32,
-        info: &StructTypeInfo,
-    ) -> Result<StructView, String> {
+    fn read_struct_info(&mut self, base: i32, info: &StructTypeInfo) -> Result<StructView, String> {
         let memory = self
             .instance
             .get_memory(&mut self.store, "memory")
@@ -1332,18 +1812,18 @@ impl Vm {
                 FieldType::Primitive(ScriptType::I32) => {
                     FieldValue::Primitive(Value::I32(read_i32(data, addr)?))
                 }
-                FieldType::Primitive(ScriptType::Bool) => FieldValue::Primitive(Value::Bool(
-                    read_i32(data, addr)? != 0,
-                )),
+                FieldType::Primitive(ScriptType::Bool) => {
+                    FieldValue::Primitive(Value::Bool(read_i32(data, addr)? != 0))
+                }
                 FieldType::Primitive(ScriptType::I64) => {
                     FieldValue::Primitive(Value::I64(read_i64(data, addr)?))
                 }
-                FieldType::Primitive(ScriptType::F32) => FieldValue::Primitive(Value::F32(
-                    f32::from_bits(read_i32(data, addr)? as u32),
-                )),
-                FieldType::Primitive(ScriptType::F64) => FieldValue::Primitive(Value::F64(
-                    f64::from_bits(read_i64(data, addr)? as u64),
-                )),
+                FieldType::Primitive(ScriptType::F32) => {
+                    FieldValue::Primitive(Value::F32(f32::from_bits(read_i32(data, addr)? as u32)))
+                }
+                FieldType::Primitive(ScriptType::F64) => {
+                    FieldValue::Primitive(Value::F64(f64::from_bits(read_i64(data, addr)? as u64)))
+                }
                 FieldType::Primitive(ScriptType::Str) => {
                     let handle = read_i32(data, addr)?;
                     let s = self
@@ -1368,7 +1848,10 @@ impl Vm {
             };
             fields.push((field.name.clone(), value));
         }
-        Ok(StructView { type_name: info.name.clone(), fields })
+        Ok(StructView {
+            type_name: info.name.clone(),
+            fields,
+        })
     }
 
     /// Write a set of primitive/string fields into a struct at linear-memory
@@ -1415,14 +1898,14 @@ impl Vm {
                 (FieldType::Struct(_), _) => {
                     return Err(format!(
                         "write_struct_at: nested struct field '{name}' unsupported"
-                    ))
+                    ));
                 }
                 (ft, v) => {
                     return Err(format!(
                         "write_struct_at: type mismatch for '{name}': field {:?}, got {}",
                         ft,
                         v.type_name()
-                    ))
+                    ));
                 }
             }
         }

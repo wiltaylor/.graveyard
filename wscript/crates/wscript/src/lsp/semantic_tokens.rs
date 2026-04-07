@@ -1,7 +1,7 @@
 //! Semantic token support for the LSP server.
 
-use tower_lsp::lsp_types::*;
 use crate::compiler::token::TokenKind;
+use tower_lsp::lsp_types::*;
 
 /// Semantic token types used by our language.
 pub const TOKEN_TYPES: &[SemanticTokenType] = &[
@@ -49,34 +49,76 @@ pub fn semantic_tokens(source: &str) -> Vec<SemanticToken> {
     for token in &tokens {
         let token_type = match &token.kind {
             // Keywords
-            TokenKind::Let | TokenKind::Mut | TokenKind::Const | TokenKind::Fn |
-            TokenKind::Return | TokenKind::If | TokenKind::Else | TokenKind::Match |
-            TokenKind::For | TokenKind::In | TokenKind::While | TokenKind::Loop |
-            TokenKind::Break | TokenKind::Continue | TokenKind::Struct | TokenKind::Impl |
-            TokenKind::Trait | TokenKind::Enum | TokenKind::As | TokenKind::And |
-            TokenKind::Or | TokenKind::Not | TokenKind::Pub | TokenKind::SelfLower |
-            TokenKind::SelfUpper => Some(TT_KEYWORD),
+            TokenKind::Let
+            | TokenKind::Mut
+            | TokenKind::Const
+            | TokenKind::Fn
+            | TokenKind::Return
+            | TokenKind::If
+            | TokenKind::Else
+            | TokenKind::Match
+            | TokenKind::For
+            | TokenKind::In
+            | TokenKind::While
+            | TokenKind::Loop
+            | TokenKind::Break
+            | TokenKind::Continue
+            | TokenKind::Struct
+            | TokenKind::Impl
+            | TokenKind::Trait
+            | TokenKind::Enum
+            | TokenKind::As
+            | TokenKind::And
+            | TokenKind::Or
+            | TokenKind::Not
+            | TokenKind::Pub
+            | TokenKind::SelfLower
+            | TokenKind::SelfUpper => Some(TT_KEYWORD),
 
             TokenKind::True | TokenKind::False => Some(TT_KEYWORD),
-            TokenKind::KwNone | TokenKind::KwSome | TokenKind::KwOk | TokenKind::KwErr => Some(TT_KEYWORD),
+            TokenKind::KwNone | TokenKind::KwSome | TokenKind::KwOk | TokenKind::KwErr => {
+                Some(TT_KEYWORD)
+            }
 
             // Literals
             TokenKind::IntLit(_) | TokenKind::FloatLit(_) => Some(TT_NUMBER),
             TokenKind::StringLit(_) | TokenKind::CharLit(_) => Some(TT_STRING),
-            TokenKind::TemplateLitStart | TokenKind::TemplateLitEnd |
-            TokenKind::TemplateStringPart(_) => Some(TT_STRING),
+            TokenKind::TemplateLitStart
+            | TokenKind::TemplateLitEnd
+            | TokenKind::TemplateStringPart(_) => Some(TT_STRING),
 
             // Comments
             TokenKind::DocComment(_) => Some(TT_COMMENT),
 
             // Operators
-            TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash |
-            TokenKind::Percent | TokenKind::EqEq | TokenKind::BangEq | TokenKind::Lt |
-            TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq | TokenKind::AmpAmp |
-            TokenKind::PipePipe | TokenKind::Bang | TokenKind::Amp | TokenKind::Pipe |
-            TokenKind::Caret | TokenKind::Tilde | TokenKind::LtLt | TokenKind::GtGt |
-            TokenKind::Eq | TokenKind::PipeGt | TokenKind::Question | TokenKind::Spaceship |
-            TokenKind::DotDot | TokenKind::DotDotEq | TokenKind::Arrow | TokenKind::FatArrow => Some(TT_OPERATOR),
+            TokenKind::Plus
+            | TokenKind::Minus
+            | TokenKind::Star
+            | TokenKind::Slash
+            | TokenKind::Percent
+            | TokenKind::EqEq
+            | TokenKind::BangEq
+            | TokenKind::Lt
+            | TokenKind::Gt
+            | TokenKind::LtEq
+            | TokenKind::GtEq
+            | TokenKind::AmpAmp
+            | TokenKind::PipePipe
+            | TokenKind::Bang
+            | TokenKind::Amp
+            | TokenKind::Pipe
+            | TokenKind::Caret
+            | TokenKind::Tilde
+            | TokenKind::LtLt
+            | TokenKind::GtGt
+            | TokenKind::Eq
+            | TokenKind::PipeGt
+            | TokenKind::Question
+            | TokenKind::Spaceship
+            | TokenKind::DotDot
+            | TokenKind::DotDotEq
+            | TokenKind::Arrow
+            | TokenKind::FatArrow => Some(TT_OPERATOR),
 
             // Attributes
             TokenKind::At => Some(TT_MACRO),

@@ -9,9 +9,9 @@ use std::fmt;
 
 use smol_str::SmolStr;
 
-use crate::bindings::{BindingRegistry, ScriptType};
 use super::ast::*;
 use super::token::Span;
+use crate::bindings::{BindingRegistry, ScriptType};
 
 // ---------------------------------------------------------------------------
 // Type representation
@@ -31,7 +31,10 @@ pub enum Type {
         params: Vec<Type>,
         ret: Box<Type>,
     },
-    Ref { inner: Box<Type>, mutable: bool },
+    Ref {
+        inner: Box<Type>,
+        mutable: bool,
+    },
     Struct(usize),
     Enum(usize),
     /// Propagated error type — poisoned, suppresses further diagnostics.
@@ -93,7 +96,11 @@ impl fmt::Display for Type {
                 write!(f, ") -> {ret}")
             }
             Type::Ref { inner, mutable } => {
-                if *mutable { write!(f, "&mut {inner}") } else { write!(f, "&{inner}") }
+                if *mutable {
+                    write!(f, "&mut {inner}")
+                } else {
+                    write!(f, "&{inner}")
+                }
             }
             Type::Struct(id) => write!(f, "Struct#{id}"),
             Type::Enum(id) => write!(f, "Enum#{id}"),
@@ -309,34 +316,100 @@ struct MethodSig {
 
 fn string_methods(name: &str) -> Option<MethodSig> {
     match name {
-        "len" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::I32) }),
-        "is_empty" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::Bool) }),
-        "contains" => Some(MethodSig { params: vec![Type::String], ret: Type::Primitive(PrimitiveType::Bool) }),
-        "starts_with" => Some(MethodSig { params: vec![Type::String], ret: Type::Primitive(PrimitiveType::Bool) }),
-        "ends_with" => Some(MethodSig { params: vec![Type::String], ret: Type::Primitive(PrimitiveType::Bool) }),
-        "trim" => Some(MethodSig { params: vec![], ret: Type::String }),
-        "trim_start" => Some(MethodSig { params: vec![], ret: Type::String }),
-        "trim_end" => Some(MethodSig { params: vec![], ret: Type::String }),
-        "to_uppercase" => Some(MethodSig { params: vec![], ret: Type::String }),
-        "to_lowercase" => Some(MethodSig { params: vec![], ret: Type::String }),
-        "split" => Some(MethodSig { params: vec![Type::String], ret: Type::Array(Box::new(Type::String)) }),
-        "replace" => Some(MethodSig { params: vec![Type::String, Type::String], ret: Type::String }),
-        "chars" => Some(MethodSig { params: vec![], ret: Type::Array(Box::new(Type::Primitive(PrimitiveType::Char))) }),
-        "repeat" => Some(MethodSig { params: vec![Type::Primitive(PrimitiveType::I64)], ret: Type::String }),
+        "len" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Primitive(PrimitiveType::I32),
+        }),
+        "is_empty" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Primitive(PrimitiveType::Bool),
+        }),
+        "contains" => Some(MethodSig {
+            params: vec![Type::String],
+            ret: Type::Primitive(PrimitiveType::Bool),
+        }),
+        "starts_with" => Some(MethodSig {
+            params: vec![Type::String],
+            ret: Type::Primitive(PrimitiveType::Bool),
+        }),
+        "ends_with" => Some(MethodSig {
+            params: vec![Type::String],
+            ret: Type::Primitive(PrimitiveType::Bool),
+        }),
+        "trim" => Some(MethodSig {
+            params: vec![],
+            ret: Type::String,
+        }),
+        "trim_start" => Some(MethodSig {
+            params: vec![],
+            ret: Type::String,
+        }),
+        "trim_end" => Some(MethodSig {
+            params: vec![],
+            ret: Type::String,
+        }),
+        "to_uppercase" => Some(MethodSig {
+            params: vec![],
+            ret: Type::String,
+        }),
+        "to_lowercase" => Some(MethodSig {
+            params: vec![],
+            ret: Type::String,
+        }),
+        "split" => Some(MethodSig {
+            params: vec![Type::String],
+            ret: Type::Array(Box::new(Type::String)),
+        }),
+        "replace" => Some(MethodSig {
+            params: vec![Type::String, Type::String],
+            ret: Type::String,
+        }),
+        "chars" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Array(Box::new(Type::Primitive(PrimitiveType::Char))),
+        }),
+        "repeat" => Some(MethodSig {
+            params: vec![Type::Primitive(PrimitiveType::I64)],
+            ret: Type::String,
+        }),
         _ => None,
     }
 }
 
 fn array_methods(elem: &Type, name: &str) -> Option<MethodSig> {
     match name {
-        "len" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::I32) }),
-        "is_empty" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::Bool) }),
-        "push" => Some(MethodSig { params: vec![elem.clone()], ret: Type::Unit }),
-        "pop" => Some(MethodSig { params: vec![], ret: Type::Option(Box::new(elem.clone())) }),
-        "first" => Some(MethodSig { params: vec![], ret: Type::Option(Box::new(elem.clone())) }),
-        "last" => Some(MethodSig { params: vec![], ret: Type::Option(Box::new(elem.clone())) }),
-        "contains" => Some(MethodSig { params: vec![elem.clone()], ret: Type::Primitive(PrimitiveType::Bool) }),
-        "reverse" => Some(MethodSig { params: vec![], ret: Type::Array(Box::new(elem.clone())) }),
+        "len" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Primitive(PrimitiveType::I32),
+        }),
+        "is_empty" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Primitive(PrimitiveType::Bool),
+        }),
+        "push" => Some(MethodSig {
+            params: vec![elem.clone()],
+            ret: Type::Unit,
+        }),
+        "pop" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Option(Box::new(elem.clone())),
+        }),
+        "first" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Option(Box::new(elem.clone())),
+        }),
+        "last" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Option(Box::new(elem.clone())),
+        }),
+        "contains" => Some(MethodSig {
+            params: vec![elem.clone()],
+            ret: Type::Primitive(PrimitiveType::Bool),
+        }),
+        "reverse" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Array(Box::new(elem.clone())),
+        }),
         "filter" => {
             let cb = Type::Fn {
                 params: vec![elem.clone()],
@@ -361,9 +434,15 @@ fn array_methods(elem: &Type, name: &str) -> Option<MethodSig> {
         }
         "sum" => {
             // Only valid for numeric arrays — we return the element type.
-            Some(MethodSig { params: vec![], ret: elem.clone() })
+            Some(MethodSig {
+                params: vec![],
+                ret: elem.clone(),
+            })
         }
-        "collect" => Some(MethodSig { params: vec![], ret: Type::Array(Box::new(elem.clone())) }),
+        "collect" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Array(Box::new(elem.clone())),
+        }),
         "enumerate" => Some(MethodSig {
             params: vec![],
             ret: Type::Array(Box::new(Type::Tuple(vec![
@@ -371,44 +450,116 @@ fn array_methods(elem: &Type, name: &str) -> Option<MethodSig> {
                 elem.clone(),
             ]))),
         }),
-        "join" => Some(MethodSig { params: vec![Type::String], ret: Type::String }),
-        "sort" => Some(MethodSig { params: vec![], ret: Type::Array(Box::new(elem.clone())) }),
-        "min" => Some(MethodSig { params: vec![], ret: elem.clone() }),
-        "max" => Some(MethodSig { params: vec![], ret: elem.clone() }),
-        "count" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::I32) }),
-        "dedup" => Some(MethodSig { params: vec![], ret: Type::Array(Box::new(elem.clone())) }),
-        "take" => Some(MethodSig { params: vec![Type::Primitive(PrimitiveType::I32)], ret: Type::Array(Box::new(elem.clone())) }),
-        "skip" => Some(MethodSig { params: vec![Type::Primitive(PrimitiveType::I32)], ret: Type::Array(Box::new(elem.clone())) }),
+        "join" => Some(MethodSig {
+            params: vec![Type::String],
+            ret: Type::String,
+        }),
+        "sort" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Array(Box::new(elem.clone())),
+        }),
+        "min" => Some(MethodSig {
+            params: vec![],
+            ret: elem.clone(),
+        }),
+        "max" => Some(MethodSig {
+            params: vec![],
+            ret: elem.clone(),
+        }),
+        "count" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Primitive(PrimitiveType::I32),
+        }),
+        "dedup" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Array(Box::new(elem.clone())),
+        }),
+        "take" => Some(MethodSig {
+            params: vec![Type::Primitive(PrimitiveType::I32)],
+            ret: Type::Array(Box::new(elem.clone())),
+        }),
+        "skip" => Some(MethodSig {
+            params: vec![Type::Primitive(PrimitiveType::I32)],
+            ret: Type::Array(Box::new(elem.clone())),
+        }),
         "any" | "all" | "none" => {
-            let cb = Type::Fn { params: vec![elem.clone()], ret: Box::new(Type::Primitive(PrimitiveType::Bool)) };
-            Some(MethodSig { params: vec![cb], ret: Type::Primitive(PrimitiveType::Bool) })
+            let cb = Type::Fn {
+                params: vec![elem.clone()],
+                ret: Box::new(Type::Primitive(PrimitiveType::Bool)),
+            };
+            Some(MethodSig {
+                params: vec![cb],
+                ret: Type::Primitive(PrimitiveType::Bool),
+            })
         }
         "find" => {
-            let cb = Type::Fn { params: vec![elem.clone()], ret: Box::new(Type::Primitive(PrimitiveType::Bool)) };
-            Some(MethodSig { params: vec![cb], ret: Type::Option(Box::new(elem.clone())) })
+            let cb = Type::Fn {
+                params: vec![elem.clone()],
+                ret: Box::new(Type::Primitive(PrimitiveType::Bool)),
+            };
+            Some(MethodSig {
+                params: vec![cb],
+                ret: Type::Option(Box::new(elem.clone())),
+            })
         }
         "for_each" => {
-            let cb = Type::Fn { params: vec![elem.clone()], ret: Box::new(Type::Unit) };
-            Some(MethodSig { params: vec![cb], ret: Type::Unit })
+            let cb = Type::Fn {
+                params: vec![elem.clone()],
+                ret: Box::new(Type::Unit),
+            };
+            Some(MethodSig {
+                params: vec![cb],
+                ret: Type::Unit,
+            })
         }
-        "fold" => Some(MethodSig { params: vec![elem.clone(), Type::Unknown], ret: elem.clone() }),
+        "fold" => Some(MethodSig {
+            params: vec![elem.clone(), Type::Unknown],
+            ret: elem.clone(),
+        }),
         "reduce" => {
-            let cb = Type::Fn { params: vec![elem.clone(), elem.clone()], ret: Box::new(elem.clone()) };
-            Some(MethodSig { params: vec![cb], ret: elem.clone() })
+            let cb = Type::Fn {
+                params: vec![elem.clone(), elem.clone()],
+                ret: Box::new(elem.clone()),
+            };
+            Some(MethodSig {
+                params: vec![cb],
+                ret: elem.clone(),
+            })
         }
-        "get" => Some(MethodSig { params: vec![Type::Primitive(PrimitiveType::I64)], ret: Type::Option(Box::new(elem.clone())) }),
-        "clone" => Some(MethodSig { params: vec![], ret: Type::Array(Box::new(elem.clone())) }),
-        "extend" => Some(MethodSig { params: vec![Type::Array(Box::new(elem.clone()))], ret: Type::Unit }),
+        "get" => Some(MethodSig {
+            params: vec![Type::Primitive(PrimitiveType::I64)],
+            ret: Type::Option(Box::new(elem.clone())),
+        }),
+        "clone" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Array(Box::new(elem.clone())),
+        }),
+        "extend" => Some(MethodSig {
+            params: vec![Type::Array(Box::new(elem.clone()))],
+            ret: Type::Unit,
+        }),
         _ => None,
     }
 }
 
 fn option_methods(inner: &Type, name: &str) -> Option<MethodSig> {
     match name {
-        "is_some" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::Bool) }),
-        "is_none" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::Bool) }),
-        "unwrap" => Some(MethodSig { params: vec![], ret: inner.clone() }),
-        "unwrap_or" => Some(MethodSig { params: vec![inner.clone()], ret: inner.clone() }),
+        "is_some" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Primitive(PrimitiveType::Bool),
+        }),
+        "is_none" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Primitive(PrimitiveType::Bool),
+        }),
+        "unwrap" => Some(MethodSig {
+            params: vec![],
+            ret: inner.clone(),
+        }),
+        "unwrap_or" => Some(MethodSig {
+            params: vec![inner.clone()],
+            ret: inner.clone(),
+        }),
         "map" => {
             let cb = Type::Fn {
                 params: vec![inner.clone()],
@@ -425,10 +576,22 @@ fn option_methods(inner: &Type, name: &str) -> Option<MethodSig> {
 
 fn result_methods(ok: &Type, err: &Type, name: &str) -> Option<MethodSig> {
     match name {
-        "is_ok" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::Bool) }),
-        "is_err" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::Bool) }),
-        "unwrap" => Some(MethodSig { params: vec![], ret: ok.clone() }),
-        "unwrap_err" => Some(MethodSig { params: vec![], ret: err.clone() }),
+        "is_ok" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Primitive(PrimitiveType::Bool),
+        }),
+        "is_err" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Primitive(PrimitiveType::Bool),
+        }),
+        "unwrap" => Some(MethodSig {
+            params: vec![],
+            ret: ok.clone(),
+        }),
+        "unwrap_err" => Some(MethodSig {
+            params: vec![],
+            ret: err.clone(),
+        }),
         "map" => {
             let cb = Type::Fn {
                 params: vec![ok.clone()],
@@ -455,14 +618,38 @@ fn result_methods(ok: &Type, err: &Type, name: &str) -> Option<MethodSig> {
 
 fn map_methods(key: &Type, val: &Type, name: &str) -> Option<MethodSig> {
     match name {
-        "len" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::I32) }),
-        "is_empty" => Some(MethodSig { params: vec![], ret: Type::Primitive(PrimitiveType::Bool) }),
-        "contains_key" => Some(MethodSig { params: vec![key.clone()], ret: Type::Primitive(PrimitiveType::Bool) }),
-        "get" => Some(MethodSig { params: vec![key.clone()], ret: Type::Option(Box::new(val.clone())) }),
-        "insert" => Some(MethodSig { params: vec![key.clone(), val.clone()], ret: Type::Option(Box::new(val.clone())) }),
-        "remove" => Some(MethodSig { params: vec![key.clone()], ret: Type::Option(Box::new(val.clone())) }),
-        "keys" => Some(MethodSig { params: vec![], ret: Type::Array(Box::new(key.clone())) }),
-        "values" => Some(MethodSig { params: vec![], ret: Type::Array(Box::new(val.clone())) }),
+        "len" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Primitive(PrimitiveType::I32),
+        }),
+        "is_empty" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Primitive(PrimitiveType::Bool),
+        }),
+        "contains_key" => Some(MethodSig {
+            params: vec![key.clone()],
+            ret: Type::Primitive(PrimitiveType::Bool),
+        }),
+        "get" => Some(MethodSig {
+            params: vec![key.clone()],
+            ret: Type::Option(Box::new(val.clone())),
+        }),
+        "insert" => Some(MethodSig {
+            params: vec![key.clone(), val.clone()],
+            ret: Type::Option(Box::new(val.clone())),
+        }),
+        "remove" => Some(MethodSig {
+            params: vec![key.clone()],
+            ret: Type::Option(Box::new(val.clone())),
+        }),
+        "keys" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Array(Box::new(key.clone())),
+        }),
+        "values" => Some(MethodSig {
+            params: vec![],
+            ret: Type::Array(Box::new(val.clone())),
+        }),
         _ => None,
     }
 }
@@ -562,7 +749,6 @@ impl<'a> TypeEnv<'a> {
         match ty {
             Type::TypeVar(id) => {
                 if let Some(resolved) = self.uf.probe(*id) {
-                    
                     self.resolve(&resolved)
                 } else {
                     ty.clone()
@@ -570,19 +756,19 @@ impl<'a> TypeEnv<'a> {
             }
             Type::Array(inner) => Type::Array(Box::new(self.resolve(inner))),
             Type::Map(k, v) => Type::Map(Box::new(self.resolve(k)), Box::new(self.resolve(v))),
-            Type::Tuple(items) => {
-                Type::Tuple(items.iter().map(|t| self.resolve(t)).collect())
-            }
+            Type::Tuple(items) => Type::Tuple(items.iter().map(|t| self.resolve(t)).collect()),
             Type::Option(inner) => Type::Option(Box::new(self.resolve(inner))),
-            Type::Result(ok, err) => Type::Result(
-                Box::new(self.resolve(ok)),
-                Box::new(self.resolve(err)),
-            ),
+            Type::Result(ok, err) => {
+                Type::Result(Box::new(self.resolve(ok)), Box::new(self.resolve(err)))
+            }
             Type::Fn { params, ret } => Type::Fn {
                 params: params.iter().map(|t| self.resolve(t)).collect(),
                 ret: Box::new(self.resolve(ret)),
             },
-            Type::Ref { inner, mutable } => Type::Ref { inner: Box::new(self.resolve(inner)), mutable: *mutable },
+            Type::Ref { inner, mutable } => Type::Ref {
+                inner: Box::new(self.resolve(inner)),
+                mutable: *mutable,
+            },
             _ => ty.clone(),
         }
     }
@@ -647,8 +833,14 @@ impl<'a> TypeEnv<'a> {
                 Type::Result(Box::new(ok), Box::new(err))
             }
             (
-                Type::Fn { params: pa, ret: ra },
-                Type::Fn { params: pb, ret: rb },
+                Type::Fn {
+                    params: pa,
+                    ret: ra,
+                },
+                Type::Fn {
+                    params: pb,
+                    ret: rb,
+                },
             ) if pa.len() == pb.len() => {
                 let params: Vec<_> = pa
                     .iter()
@@ -661,17 +853,33 @@ impl<'a> TypeEnv<'a> {
                     ret: Box::new(ret),
                 }
             }
-            (Type::Ref { inner: ia, mutable: ma }, Type::Ref { inner: ib, mutable: mb }) => {
+            (
+                Type::Ref {
+                    inner: ia,
+                    mutable: ma,
+                },
+                Type::Ref {
+                    inner: ib,
+                    mutable: mb,
+                },
+            ) => {
                 let inner = self.unify(ia, ib, span);
                 // &mut T coerces to &T (mut && !mut = false, which is correct).
                 // &T does NOT coerce to &mut T — that would be caught below
                 // if someone tries to pass &T where &mut T is expected, because
                 // unification makes mutable = false, and the caller checks.
                 let mutable = *ma && *mb;
-                Type::Ref { inner: Box::new(inner), mutable }
+                Type::Ref {
+                    inner: Box::new(inner),
+                    mutable,
+                }
             }
             _ => {
-                self.error(span, "E001", format!("type mismatch: expected `{a}`, found `{b}`"));
+                self.error(
+                    span,
+                    "E001",
+                    format!("type mismatch: expected `{a}`, found `{b}`"),
+                );
                 Type::Error
             }
         }
@@ -777,21 +985,52 @@ impl<'a> TypeEnv<'a> {
         let i32t = || Type::Primitive(PrimitiveType::I32);
         let strt = || Type::String;
         let unitt = || Type::Unit;
-        let fnty = |params: Vec<Type>, ret: Type| Type::Fn { params, ret: Box::new(ret) };
-        self.fn_sigs.insert("com_create".into(), fnty(vec![strt()], i32t()));
-        self.fn_sigs.insert("com_release".into(), fnty(vec![i32t()], unitt()));
-        self.fn_sigs.insert("com_has".into(), fnty(vec![i32t(), strt()], Type::Primitive(PrimitiveType::Bool)));
-        self.fn_sigs.insert("com_call_i0".into(), fnty(vec![i32t(), strt()], i32t()));
-        self.fn_sigs.insert("com_call_i1s".into(), fnty(vec![i32t(), strt(), strt()], i32t()));
-        self.fn_sigs.insert("com_call_i1i".into(), fnty(vec![i32t(), strt(), i32t()], i32t()));
-        self.fn_sigs.insert("com_call_i2si".into(), fnty(vec![i32t(), strt(), strt(), i32t()], i32t()));
-        self.fn_sigs.insert("com_call_s0".into(), fnty(vec![i32t(), strt()], strt()));
-        self.fn_sigs.insert("com_call_s1s".into(), fnty(vec![i32t(), strt(), strt()], strt()));
-        self.fn_sigs.insert("com_get_i".into(), fnty(vec![i32t(), strt()], i32t()));
-        self.fn_sigs.insert("com_get_s".into(), fnty(vec![i32t(), strt()], strt()));
-        self.fn_sigs.insert("com_set_i".into(), fnty(vec![i32t(), strt(), i32t()], i32t()));
-        self.fn_sigs.insert("com_set_s".into(), fnty(vec![i32t(), strt(), strt()], i32t()));
-        self.fn_sigs.insert("com_last_error".into(), fnty(vec![], strt()));
+        let fnty = |params: Vec<Type>, ret: Type| Type::Fn {
+            params,
+            ret: Box::new(ret),
+        };
+        self.fn_sigs
+            .insert("com_create".into(), fnty(vec![strt()], i32t()));
+        self.fn_sigs
+            .insert("com_release".into(), fnty(vec![i32t()], unitt()));
+        self.fn_sigs.insert(
+            "com_has".into(),
+            fnty(vec![i32t(), strt()], Type::Primitive(PrimitiveType::Bool)),
+        );
+        self.fn_sigs
+            .insert("com_call_i0".into(), fnty(vec![i32t(), strt()], i32t()));
+        self.fn_sigs.insert(
+            "com_call_i1s".into(),
+            fnty(vec![i32t(), strt(), strt()], i32t()),
+        );
+        self.fn_sigs.insert(
+            "com_call_i1i".into(),
+            fnty(vec![i32t(), strt(), i32t()], i32t()),
+        );
+        self.fn_sigs.insert(
+            "com_call_i2si".into(),
+            fnty(vec![i32t(), strt(), strt(), i32t()], i32t()),
+        );
+        self.fn_sigs
+            .insert("com_call_s0".into(), fnty(vec![i32t(), strt()], strt()));
+        self.fn_sigs.insert(
+            "com_call_s1s".into(),
+            fnty(vec![i32t(), strt(), strt()], strt()),
+        );
+        self.fn_sigs
+            .insert("com_get_i".into(), fnty(vec![i32t(), strt()], i32t()));
+        self.fn_sigs
+            .insert("com_get_s".into(), fnty(vec![i32t(), strt()], strt()));
+        self.fn_sigs.insert(
+            "com_set_i".into(),
+            fnty(vec![i32t(), strt(), i32t()], i32t()),
+        );
+        self.fn_sigs.insert(
+            "com_set_s".into(),
+            fnty(vec![i32t(), strt(), strt()], i32t()),
+        );
+        self.fn_sigs
+            .insert("com_last_error".into(), fnty(vec![], strt()));
     }
 
     // -- Convert TypeExpr (AST) to Type -------------------------------------
@@ -800,9 +1039,7 @@ impl<'a> TypeEnv<'a> {
         match &te.kind {
             TypeExprKind::Primitive(p) => Type::Primitive(*p),
             TypeExprKind::StringType => Type::String,
-            TypeExprKind::Array(inner) => {
-                Type::Array(Box::new(self.resolve_type_expr(inner)))
-            }
+            TypeExprKind::Array(inner) => Type::Array(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::Map(k, v) => Type::Map(
                 Box::new(self.resolve_type_expr(k)),
                 Box::new(self.resolve_type_expr(v)),
@@ -826,9 +1063,10 @@ impl<'a> TypeEnv<'a> {
                     ret: Box::new(r),
                 }
             }
-            TypeExprKind::RefType { inner, mutable } => {
-                Type::Ref { inner: Box::new(self.resolve_type_expr(inner)), mutable: *mutable }
-            }
+            TypeExprKind::RefType { inner, mutable } => Type::Ref {
+                inner: Box::new(self.resolve_type_expr(inner)),
+                mutable: *mutable,
+            },
             TypeExprKind::Tuple(items) => {
                 Type::Tuple(items.iter().map(|t| self.resolve_type_expr(t)).collect())
             }
@@ -1055,15 +1293,24 @@ impl<'a> TypeEnv<'a> {
 
         for method in &ib.methods {
             // Register as TypeName__method_name for method resolution.
-            let mangled = SmolStr::from(format!("{}__{}",  type_name, method.name));
-            let params: Vec<Type> = method.params.iter().filter_map(|p| match &p.kind {
-                ParamKind::SelfRef { .. } => None,
-                ParamKind::Named { ty, .. } => Some(self.resolve_type_expr(ty)),
-            }).collect();
-            let ret = method.return_type.as_ref()
+            let mangled = SmolStr::from(format!("{}__{}", type_name, method.name));
+            let params: Vec<Type> = method
+                .params
+                .iter()
+                .filter_map(|p| match &p.kind {
+                    ParamKind::SelfRef { .. } => None,
+                    ParamKind::Named { ty, .. } => Some(self.resolve_type_expr(ty)),
+                })
+                .collect();
+            let ret = method
+                .return_type
+                .as_ref()
                 .map(|t| self.resolve_type_expr(t))
                 .unwrap_or(Type::Unit);
-            let fn_ty = Type::Fn { params, ret: Box::new(ret) };
+            let fn_ty = Type::Fn {
+                params,
+                ret: Box::new(ret),
+            };
             self.fn_sigs.insert(mangled, fn_ty);
         }
 
@@ -1084,7 +1331,9 @@ impl<'a> TypeEnv<'a> {
                 }
             }
 
-            let ret_ty = method.return_type.as_ref()
+            let ret_ty = method
+                .return_type
+                .as_ref()
                 .map(|t| self.resolve_type_expr(t))
                 .unwrap_or(Type::Unit);
             self.current_return_type = Some(ret_ty.clone());
@@ -1139,10 +1388,7 @@ impl<'a> TypeEnv<'a> {
             .map(|e| self.infer_expr(e))
             .unwrap_or_else(|| self.fresh_var());
 
-        let ann_ty = ls
-            .ty
-            .as_ref()
-            .map(|t| self.resolve_type_expr(t));
+        let ann_ty = ls.ty.as_ref().map(|t| self.resolve_type_expr(t));
 
         let final_ty = if let Some(ann) = ann_ty {
             self.unify(&init_ty, &ann, ls.span)
@@ -1156,7 +1402,11 @@ impl<'a> TypeEnv<'a> {
 
     fn bind_pattern(&mut self, pat: &Pattern, ty: &Type, mutable: bool) {
         match pat {
-            Pattern::Ident { name, mutable: pat_mut, .. } => {
+            Pattern::Ident {
+                name,
+                mutable: pat_mut,
+                ..
+            } => {
                 self.define(name.clone(), ty.clone(), mutable || *pat_mut);
             }
             Pattern::Tuple { elements, .. } => {
@@ -1182,7 +1432,9 @@ impl<'a> TypeEnv<'a> {
                     self.bind_pattern(fpat, &Type::Unknown, mutable);
                 }
             }
-            Pattern::Binding { name, subpattern, .. } => {
+            Pattern::Binding {
+                name, subpattern, ..
+            } => {
                 self.define(name.clone(), ty.clone(), mutable);
                 self.bind_pattern(subpattern, ty, mutable);
             }
@@ -1275,9 +1527,10 @@ impl<'a> TypeEnv<'a> {
             ExprKind::Path(segments) => {
                 // Check for enum variant: EnumName::Variant
                 if segments.len() == 2
-                    && let Some(&idx) = self.enum_names.get(segments[0].as_str()) {
-                        return Type::Enum(idx);
-                    }
+                    && let Some(&idx) = self.enum_names.get(segments[0].as_str())
+                {
+                    return Type::Enum(idx);
+                }
                 Type::Unknown
             }
 
@@ -1361,33 +1614,40 @@ impl<'a> TypeEnv<'a> {
                         }
                         ot
                     }
-                    UnaryOp::Ref => Type::Ref { inner: Box::new(ot), mutable: false },
+                    UnaryOp::Ref => Type::Ref {
+                        inner: Box::new(ot),
+                        mutable: false,
+                    },
                     UnaryOp::RefMut => {
                         // Check that the operand is a mutable binding
                         if let ExprKind::Ident(name) = &operand.kind
                             && let Some(binding) = self.lookup(name)
-                                && !binding.mutable {
-                                    self.error(
-                                        expr.span,
-                                        "E001",
-                                        format!("cannot create mutable reference to immutable binding `{name}`"),
-                                    );
-                                }
-                        Type::Ref { inner: Box::new(ot), mutable: true }
-                    }
-                    UnaryOp::Deref => {
-                        match ot {
-                            Type::Ref { inner, .. } => *inner,
-                            _ => {
-                                self.error(
-                                    expr.span,
-                                    "E001",
-                                    format!("cannot dereference non-reference type `{ot}`"),
-                                );
-                                Type::Error
-                            }
+                            && !binding.mutable
+                        {
+                            self.error(
+                                expr.span,
+                                "E001",
+                                format!(
+                                    "cannot create mutable reference to immutable binding `{name}`"
+                                ),
+                            );
+                        }
+                        Type::Ref {
+                            inner: Box::new(ot),
+                            mutable: true,
                         }
                     }
+                    UnaryOp::Deref => match ot {
+                        Type::Ref { inner, .. } => *inner,
+                        _ => {
+                            self.error(
+                                expr.span,
+                                "E001",
+                                format!("cannot dereference non-reference type `{ot}`"),
+                            );
+                            Type::Error
+                        }
+                    },
                 }
             }
 
@@ -1397,7 +1657,11 @@ impl<'a> TypeEnv<'a> {
                 let rhs_ty = self.infer_expr(value);
 
                 // Check mutability.
-                if let ExprKind::Unary { op: UnaryOp::Deref, operand } = &target.kind {
+                if let ExprKind::Unary {
+                    op: UnaryOp::Deref,
+                    operand,
+                } = &target.kind
+                {
                     // Assignment through dereference: *ref = value
                     // The reference must be &mut
                     let ref_ty = self.resolve(&lhs_ty);
@@ -1414,13 +1678,14 @@ impl<'a> TypeEnv<'a> {
                     let _ = ref_ty; // suppress unused warning
                 } else if let ExprKind::Ident(name) = &target.kind
                     && let Some(binding) = self.lookup(name.as_str())
-                        && !binding.mutable {
-                            self.error(
-                                expr.span,
-                                "E007",
-                                format!("cannot assign to immutable variable `{name}`"),
-                            );
-                        }
+                    && !binding.mutable
+                {
+                    self.error(
+                        expr.span,
+                        "E007",
+                        format!("cannot assign to immutable variable `{name}`"),
+                    );
+                }
 
                 match op {
                     AssignOp::Assign => {
@@ -1453,10 +1718,7 @@ impl<'a> TypeEnv<'a> {
                             self.error(
                                 expr.span,
                                 "E005",
-                                format!(
-                                    "no field `{field}` on struct `{}`",
-                                    sdef.name
-                                ),
+                                format!("no field `{field}` on struct `{}`", sdef.name),
                             );
                             Type::Error
                         }
@@ -1471,16 +1733,15 @@ impl<'a> TypeEnv<'a> {
                                 self.error(
                                     expr.span,
                                     "E005",
-                                    format!("tuple index {idx} out of bounds (length {})", items.len()),
+                                    format!(
+                                        "tuple index {idx} out of bounds (length {})",
+                                        items.len()
+                                    ),
                                 );
                                 Type::Error
                             }
                         } else {
-                            self.error(
-                                expr.span,
-                                "E005",
-                                format!("no field `{field}` on tuple"),
-                            );
+                            self.error(expr.span, "E005", format!("no field `{field}` on tuple"));
                             Type::Error
                         }
                     }
@@ -1594,7 +1855,9 @@ impl<'a> TypeEnv<'a> {
                         self.error(
                             expr.span,
                             "E001",
-                            format!("`?` operator requires `Option` or `Result`, found `{resolved}`"),
+                            format!(
+                                "`?` operator requires `Option` or `Result`, found `{resolved}`"
+                            ),
                         );
                         Type::Error
                     }
@@ -1667,16 +1930,38 @@ impl<'a> TypeEnv<'a> {
                 // Treat pipe as method call: lhs |> func(args) == lhs.func(args)
                 // Check if rhs is a Call to a known pipeline function.
                 if let ExprKind::Call { callee, args } = &rhs.kind
-                    && let ExprKind::Ident(name) = &callee.kind {
-                        let pipeline_ops = ["filter", "map", "collect", "take", "skip",
-                            "any", "all", "find", "for_each", "fold", "reduce",
-                            "sum", "min", "max", "count", "sort", "reverse", "dedup",
-                            "enumerate", "first", "last", "contains"];
-                        if pipeline_ops.contains(&name.as_str()) {
-                            let arg_types: Vec<Type> = args.iter().map(|a| self.infer_expr(&a.value)).collect();
-                            return self.check_method_call(&lhs_ty, name, &arg_types, expr.span);
-                        }
+                    && let ExprKind::Ident(name) = &callee.kind
+                {
+                    let pipeline_ops = [
+                        "filter",
+                        "map",
+                        "collect",
+                        "take",
+                        "skip",
+                        "any",
+                        "all",
+                        "find",
+                        "for_each",
+                        "fold",
+                        "reduce",
+                        "sum",
+                        "min",
+                        "max",
+                        "count",
+                        "sort",
+                        "reverse",
+                        "dedup",
+                        "enumerate",
+                        "first",
+                        "last",
+                        "contains",
+                    ];
+                    if pipeline_ops.contains(&name.as_str()) {
+                        let arg_types: Vec<Type> =
+                            args.iter().map(|a| self.infer_expr(&a.value)).collect();
+                        return self.check_method_call(&lhs_ty, name, &arg_types, expr.span);
                     }
+                }
                 let rhs_ty = self.infer_expr(rhs);
                 let resolved = self.resolve(&rhs_ty);
                 match &resolved {
@@ -1700,8 +1985,7 @@ impl<'a> TypeEnv<'a> {
                 else_block,
             } => {
                 let cond_ty = self.infer_expr(condition);
-                if cond_ty != Type::Primitive(PrimitiveType::Bool)
-                    && !cond_ty.is_error_or_unknown()
+                if cond_ty != Type::Primitive(PrimitiveType::Bool) && !cond_ty.is_error_or_unknown()
                 {
                     self.error(
                         condition.span,
@@ -1743,7 +2027,9 @@ impl<'a> TypeEnv<'a> {
                 let scr_ty = self.infer_expr(scrutinee);
 
                 // Check for at least a wildcard arm (basic exhaustiveness).
-                let has_wildcard = arms.iter().any(|a| matches!(&a.pattern, Pattern::Wildcard(_)));
+                let has_wildcard = arms
+                    .iter()
+                    .any(|a| matches!(&a.pattern, Pattern::Wildcard(_)));
                 if !has_wildcard && !arms.is_empty() {
                     // Not necessarily wrong, but emit an info-level hint via warning code.
                     // We don't report it as an error since non-wildcard matches can be exhaustive.
@@ -1755,9 +2041,7 @@ impl<'a> TypeEnv<'a> {
                     self.bind_pattern(&arm.pattern, &scr_ty, false);
                     if let Some(guard) = &arm.guard {
                         let gt = self.infer_expr(guard);
-                        if gt != Type::Primitive(PrimitiveType::Bool)
-                            && !gt.is_error_or_unknown()
-                        {
+                        if gt != Type::Primitive(PrimitiveType::Bool) && !gt.is_error_or_unknown() {
                             self.error(
                                 guard.span,
                                 "E001",
@@ -1883,9 +2167,7 @@ impl<'a> TypeEnv<'a> {
             }
 
             // ── Range ─────────────────────────────────────────────────
-            ExprKind::Range {
-                start, end, ..
-            } => {
+            ExprKind::Range { start, end, .. } => {
                 let start_ty = start
                     .as_ref()
                     .map(|e| self.infer_expr(e))
@@ -1938,35 +2220,38 @@ impl<'a> TypeEnv<'a> {
                 params: expected_params,
                 ret: expected_ret,
             } = expected
-            {
-                self.push_scope();
-                let mut param_types = Vec::new();
-                for (i, lp) in params.iter().enumerate() {
-                    let pty = lp
-                        .ty
-                        .as_ref()
-                        .map(|t| self.resolve_type_expr(t))
-                        .unwrap_or_else(|| {
-                            expected_params.get(i).cloned().unwrap_or_else(|| self.fresh_var())
-                        });
-                    self.define(lp.name.clone(), pty.clone(), false);
-                    param_types.push(pty);
-                }
-                let body_ty = self.infer_expr(body);
-                let ret = if let Some(ret_ann) = return_type {
-                    let ann = self.resolve_type_expr(ret_ann);
-                    self.unify(&body_ty, &ann, expr.span)
-                } else {
-                    self.unify(&body_ty, expected_ret, expr.span)
-                };
-                self.pop_scope();
-                let ty = Type::Fn {
-                    params: param_types,
-                    ret: Box::new(ret),
-                };
-                self.record(expr.span, &ty);
-                return ty;
+        {
+            self.push_scope();
+            let mut param_types = Vec::new();
+            for (i, lp) in params.iter().enumerate() {
+                let pty = lp
+                    .ty
+                    .as_ref()
+                    .map(|t| self.resolve_type_expr(t))
+                    .unwrap_or_else(|| {
+                        expected_params
+                            .get(i)
+                            .cloned()
+                            .unwrap_or_else(|| self.fresh_var())
+                    });
+                self.define(lp.name.clone(), pty.clone(), false);
+                param_types.push(pty);
             }
+            let body_ty = self.infer_expr(body);
+            let ret = if let Some(ret_ann) = return_type {
+                let ann = self.resolve_type_expr(ret_ann);
+                self.unify(&body_ty, &ann, expr.span)
+            } else {
+                self.unify(&body_ty, expected_ret, expr.span)
+            };
+            self.pop_scope();
+            let ty = Type::Fn {
+                params: param_types,
+                ret: Box::new(ret),
+            };
+            self.record(expr.span, &ty);
+            return ty;
+        }
 
         let inferred = self.infer_expr(expr);
         self.unify(&inferred, expected, expr.span)
@@ -2064,11 +2349,14 @@ impl<'a> TypeEnv<'a> {
             Type::Map(k, v) => map_methods(k, v, method.as_str()),
             Type::Struct(idx) => {
                 // Look up impl methods by checking fn_sigs for mangled names.
-                let type_name = self.structs.get(*idx)
+                let type_name = self
+                    .structs
+                    .get(*idx)
                     .map(|s| s.name.clone())
                     .unwrap_or_default();
-                let mangled = format!("{}__{}",  type_name, method);
-                if let Some(Type::Fn { params, ret }) = self.fn_sigs.get(mangled.as_str()).cloned() {
+                let mangled = format!("{}__{}", type_name, method);
+                if let Some(Type::Fn { params, ret }) = self.fn_sigs.get(mangled.as_str()).cloned()
+                {
                     Some(MethodSig { params, ret: *ret })
                 } else {
                     None
@@ -2080,21 +2368,22 @@ impl<'a> TypeEnv<'a> {
 
         // Also check host type methods.
         if method_sig.is_none()
-            && let Some(host_sig) = self.lookup_host_method(receiver, method.as_str()) {
-                // Check arity.
-                if host_sig.params.len() != arg_types.len() {
-                    self.error(
-                        span,
-                        "E006",
-                        format!(
-                            "method `{method}` expects {} argument(s), found {}",
-                            host_sig.params.len(),
-                            arg_types.len()
-                        ),
-                    );
-                }
-                return host_sig.ret;
+            && let Some(host_sig) = self.lookup_host_method(receiver, method.as_str())
+        {
+            // Check arity.
+            if host_sig.params.len() != arg_types.len() {
+                self.error(
+                    span,
+                    "E006",
+                    format!(
+                        "method `{method}` expects {} argument(s), found {}",
+                        host_sig.params.len(),
+                        arg_types.len()
+                    ),
+                );
             }
+            return host_sig.ret;
+        }
 
         if let Some(sig) = method_sig {
             // Check arity.
@@ -2237,7 +2526,10 @@ mod tests {
         let a = Type::Array(Box::new(env.fresh_var()));
         let b = Type::Array(Box::new(Type::Primitive(PrimitiveType::I64)));
         let result = env.unify(&a, &b, dummy_span());
-        assert_eq!(result, Type::Array(Box::new(Type::Primitive(PrimitiveType::I64))));
+        assert_eq!(
+            result,
+            Type::Array(Box::new(Type::Primitive(PrimitiveType::I64)))
+        );
     }
 
     #[test]

@@ -10,13 +10,11 @@ pub struct Engine {
     script_engine: Option<crate::runtime::vm::ScriptEngine>,
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct EngineConfig {
     pub debug_mode: bool,
     pub max_fuel: Option<u64>,
 }
-
 
 impl Engine {
     pub fn new() -> Self {
@@ -78,7 +76,10 @@ impl Engine {
     }
 
     /// Compile source text into a CompileResult.
-    pub fn load(&self, source: &str) -> Result<crate::compiler::CompileResult, Vec<crate::compiler::Diagnostic>> {
+    pub fn load(
+        &self,
+        source: &str,
+    ) -> Result<crate::compiler::CompileResult, Vec<crate::compiler::Diagnostic>> {
         crate::compiler::compile(source, &self.bindings, self.config.debug_mode)
     }
 
@@ -88,7 +89,8 @@ impl Engine {
         &self,
         source: &str,
     ) -> Result<LoadResult, Vec<crate::compiler::Diagnostic>> {
-        let compile_result = crate::compiler::compile(source, &self.bindings, self.config.debug_mode)?;
+        let compile_result =
+            crate::compiler::compile(source, &self.bindings, self.config.debug_mode)?;
 
         if compile_result.has_errors() {
             return Ok(LoadResult {
@@ -137,12 +139,10 @@ impl Engine {
         fn_name: &str,
         args: &[Value],
     ) -> Result<Option<Value>, Box<dyn std::error::Error>> {
-        let load_result = self
-            .load_script(source)
-            .map_err(|diags| {
-                let msgs: Vec<String> = diags.iter().map(|d| d.to_string()).collect();
-                format!("Compilation failed:\n{}", msgs.join("\n"))
-            })?;
+        let load_result = self.load_script(source).map_err(|diags| {
+            let msgs: Vec<String> = diags.iter().map(|d| d.to_string()).collect();
+            format!("Compilation failed:\n{}", msgs.join("\n"))
+        })?;
 
         let script = load_result
             .script
@@ -178,7 +178,9 @@ impl Engine {
 }
 
 impl Default for Engine {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Result of loading a script (compilation + optional WASM module).
@@ -191,7 +193,9 @@ pub struct LoadResult {
 #[cfg(feature = "runtime")]
 impl LoadResult {
     pub fn has_errors(&self) -> bool {
-        self.diagnostics.iter().any(|d| d.severity == crate::compiler::DiagnosticSeverity::Error)
+        self.diagnostics
+            .iter()
+            .any(|d| d.severity == crate::compiler::DiagnosticSeverity::Error)
     }
 }
 
@@ -205,10 +209,14 @@ fn clone_bindings(src: &BindingRegistry) -> BindingRegistry {
             name.clone(),
             HostFnBinding {
                 name: hf.name.clone(),
-                params: hf.params.iter().map(|p| crate::bindings::ParamInfo {
-                    name: p.name.clone(),
-                    ty: p.ty.clone(),
-                }).collect(),
+                params: hf
+                    .params
+                    .iter()
+                    .map(|p| crate::bindings::ParamInfo {
+                        name: p.name.clone(),
+                        ty: p.ty.clone(),
+                    })
+                    .collect(),
                 return_type: hf.return_type.clone(),
                 doc: hf.doc.clone(),
                 param_docs: hf.param_docs.clone(),

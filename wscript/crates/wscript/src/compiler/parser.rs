@@ -1,8 +1,8 @@
 //! Recursive-descent parser for Wscript token streams.
 
-use smol_str::SmolStr;
-use super::token::{Token, TokenKind, Span};
 use super::ast::*;
+use super::token::{Span, Token, TokenKind};
+use smol_str::SmolStr;
 
 // ---------------------------------------------------------------------------
 // Diagnostics
@@ -19,7 +19,12 @@ pub struct ParseDiagnostic {
 
 impl ParseDiagnostic {
     fn new(span: Span, message: impl Into<String>) -> Self {
-        Self { span, message: message.into(), code: None, hint: None }
+        Self {
+            span,
+            message: message.into(),
+            code: None,
+            hint: None,
+        }
     }
 
     #[allow(dead_code)]
@@ -44,19 +49,32 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token]) -> Self {
-        Self { tokens, pos: 0, diagnostics: Vec::new() }
+        Self {
+            tokens,
+            pos: 0,
+            diagnostics: Vec::new(),
+        }
     }
 
     fn peek(&self) -> &TokenKind {
-        self.tokens.get(self.pos).map(|t| &t.kind).unwrap_or(&TokenKind::Eof)
+        self.tokens
+            .get(self.pos)
+            .map(|t| &t.kind)
+            .unwrap_or(&TokenKind::Eof)
     }
 
     fn peek_span(&self) -> Span {
-        self.tokens.get(self.pos).map(|t| t.span).unwrap_or(Span::dummy())
+        self.tokens
+            .get(self.pos)
+            .map(|t| t.span)
+            .unwrap_or(Span::dummy())
     }
 
     fn peek_second(&self) -> &TokenKind {
-        self.tokens.get(self.pos + 1).map(|t| &t.kind).unwrap_or(&TokenKind::Eof)
+        self.tokens
+            .get(self.pos + 1)
+            .map(|t| &t.kind)
+            .unwrap_or(&TokenKind::Eof)
     }
 
     fn at_eof(&self) -> bool {
@@ -111,7 +129,10 @@ impl<'a> Parser<'a> {
             s
         } else {
             let span = self.peek_span();
-            self.error(span, format!("expected identifier, found `{}`", self.peek()));
+            self.error(
+                span,
+                format!("expected identifier, found `{}`", self.peek()),
+            );
             SmolStr::new("<error>")
         }
     }
@@ -122,7 +143,8 @@ impl<'a> Parser<'a> {
 
     #[allow(dead_code)]
     fn error_with_hint(&mut self, span: Span, message: impl Into<String>, hint: impl Into<String>) {
-        self.diagnostics.push(ParseDiagnostic::new(span, message).with_hint(hint));
+        self.diagnostics
+            .push(ParseDiagnostic::new(span, message).with_hint(hint));
     }
 
     /// Synchronize after an error by skipping to a recovery point.
@@ -139,7 +161,9 @@ impl<'a> Parser<'a> {
                 | TokenKind::Impl
                 | TokenKind::Const
                 | TokenKind::Let => return,
-                _ => { self.advance(); }
+                _ => {
+                    self.advance();
+                }
             }
         }
     }
@@ -175,7 +199,11 @@ impl<'a> Parser<'a> {
         }
 
         let end = self.peek_span();
-        let span = if items.is_empty() { start } else { start.merge(end) };
+        let span = if items.is_empty() {
+            start
+        } else {
+            start.merge(end)
+        };
         let diags = std::mem::take(&mut self.diagnostics);
         (Program { items, span }, diags)
     }
@@ -228,7 +256,15 @@ impl<'a> Parser<'a> {
         };
         let body = self.parse_block();
         let span = start.merge(body.span);
-        FnDecl { span, attrs, name, generic_params, params, return_type, body }
+        FnDecl {
+            span,
+            attrs,
+            name,
+            generic_params,
+            params,
+            return_type,
+            body,
+        }
     }
 
     fn parse_fn_params(&mut self) -> Vec<Param> {
@@ -250,14 +286,20 @@ impl<'a> Parser<'a> {
         // self / &self / &mut self
         if self.check(&TokenKind::SelfLower) {
             self.advance();
-            return Param { span: start, kind: ParamKind::SelfRef { mutable: false } };
+            return Param {
+                span: start,
+                kind: ParamKind::SelfRef { mutable: false },
+            };
         }
         if self.check(&TokenKind::Amp) {
             let amp_span = self.advance().span;
             let mutable = self.eat(&TokenKind::Mut).is_some();
             self.expect(&TokenKind::SelfLower);
             let span = amp_span.merge(self.tokens[self.pos - 1].span);
-            return Param { span, kind: ParamKind::SelfRef { mutable } };
+            return Param {
+                span,
+                kind: ParamKind::SelfRef { mutable },
+            };
         }
 
         let name = self.expect_ident();
@@ -269,7 +311,10 @@ impl<'a> Parser<'a> {
             None
         };
         let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-        Param { span, kind: ParamKind::Named { name, ty, default } }
+        Param {
+            span,
+            kind: ParamKind::Named { name, ty, default },
+        }
     }
 
     // ── struct ───────────────────────────────────────────────────────
@@ -286,13 +331,23 @@ impl<'a> Parser<'a> {
             self.expect(&TokenKind::Colon);
             let ty = self.parse_type();
             let fspan = fstart.merge(self.tokens[self.pos.saturating_sub(1)].span);
-            fields.push(StructField { span: fspan, name: fname, ty });
+            fields.push(StructField {
+                span: fspan,
+                name: fname,
+                ty,
+            });
             if self.eat(&TokenKind::Comma).is_none() {
                 break;
             }
         }
         let end = self.expect(&TokenKind::RBrace);
-        StructDecl { span: start.merge(end), attrs, name, generic_params, fields }
+        StructDecl {
+            span: start.merge(end),
+            attrs,
+            name,
+            generic_params,
+            fields,
+        }
     }
 
     // ── enum ─────────────────────────────────────────────────────────
@@ -310,7 +365,13 @@ impl<'a> Parser<'a> {
             }
         }
         let end = self.expect(&TokenKind::RBrace);
-        EnumDecl { span: start.merge(end), attrs, name, generic_params, variants }
+        EnumDecl {
+            span: start.merge(end),
+            attrs,
+            name,
+            generic_params,
+            variants,
+        }
     }
 
     fn parse_enum_variant(&mut self) -> EnumVariant {
@@ -337,7 +398,11 @@ impl<'a> Parser<'a> {
                 self.expect(&TokenKind::Colon);
                 let ty = self.parse_type();
                 let fspan = fstart.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                fields.push(StructField { span: fspan, name: fname, ty });
+                fields.push(StructField {
+                    span: fspan,
+                    name: fname,
+                    ty,
+                });
                 if self.eat(&TokenKind::Comma).is_none() {
                     break;
                 }
@@ -348,7 +413,12 @@ impl<'a> Parser<'a> {
             VariantKind::Unit
         };
         let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-        EnumVariant { span, attrs: variant_attrs, name: vname, kind }
+        EnumVariant {
+            span,
+            attrs: variant_attrs,
+            name: vname,
+            kind,
+        }
     }
 
     // ── trait ────────────────────────────────────────────────────────
@@ -379,18 +449,34 @@ impl<'a> Parser<'a> {
                 let body = self.parse_block();
                 let span = fn_start.merge(body.span);
                 items.push(TraitItem::FnDecl(FnDecl {
-                    span, attrs: method_attrs, name: fn_name, generic_params, params, return_type, body,
+                    span,
+                    attrs: method_attrs,
+                    name: fn_name,
+                    generic_params,
+                    params,
+                    return_type,
+                    body,
                 }));
             } else {
                 self.eat(&TokenKind::Semicolon);
                 let span = fn_start.merge(self.tokens[self.pos.saturating_sub(1)].span);
                 items.push(TraitItem::FnSig(FnSig {
-                    span, attrs: method_attrs, name: fn_name, generic_params, params, return_type,
+                    span,
+                    attrs: method_attrs,
+                    name: fn_name,
+                    generic_params,
+                    params,
+                    return_type,
                 }));
             }
         }
         let end = self.expect(&TokenKind::RBrace);
-        TraitDecl { span: start.merge(end), attrs, name, items }
+        TraitDecl {
+            span: start.merge(end),
+            attrs,
+            name,
+            items,
+        }
     }
 
     // ── impl ─────────────────────────────────────────────────────────
@@ -401,7 +487,9 @@ impl<'a> Parser<'a> {
         let first_type = self.parse_type();
 
         // impl Trait for Type { ... }
-        let (self_type, trait_type) = if self.eat_exact(&TokenKind::Ident(SmolStr::new("for"))).is_some()
+        let (self_type, trait_type) = if self
+            .eat_exact(&TokenKind::Ident(SmolStr::new("for")))
+            .is_some()
             || self.eat(&TokenKind::For).is_some()
         {
             let st = self.parse_type();
@@ -423,7 +511,13 @@ impl<'a> Parser<'a> {
             }
         }
         let end = self.expect(&TokenKind::RBrace);
-        ImplBlock { span: start.merge(end), generic_params, self_type, trait_type, methods }
+        ImplBlock {
+            span: start.merge(end),
+            generic_params,
+            self_type,
+            trait_type,
+            methods,
+        }
     }
 
     // ── const ────────────────────────────────────────────────────────
@@ -440,7 +534,12 @@ impl<'a> Parser<'a> {
         let value = self.parse_expr();
         self.expect(&TokenKind::Semicolon);
         let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-        ConstDecl { span, name, ty, value }
+        ConstDecl {
+            span,
+            name,
+            ty,
+            value,
+        }
     }
 }
 
@@ -478,17 +577,22 @@ impl<'a> Parser<'a> {
     fn parse_attr_arg(&mut self) -> AttrArg {
         // key = value | literal | ident
         if let TokenKind::Ident(ref s) = self.peek().clone()
-            && self.peek_second() == &TokenKind::Eq {
-                let key = s.clone();
-                self.advance(); // ident
-                self.advance(); // =
-                let val = self.parse_expr();
-                return AttrArg::KeyValue(key, val);
-            }
+            && self.peek_second() == &TokenKind::Eq
+        {
+            let key = s.clone();
+            self.advance(); // ident
+            self.advance(); // =
+            let val = self.parse_expr();
+            return AttrArg::KeyValue(key, val);
+        }
         // try literal
         match self.peek() {
-            TokenKind::IntLit(_) | TokenKind::FloatLit(_) | TokenKind::StringLit(_)
-            | TokenKind::CharLit(_) | TokenKind::True | TokenKind::False => {
+            TokenKind::IntLit(_)
+            | TokenKind::FloatLit(_)
+            | TokenKind::StringLit(_)
+            | TokenKind::CharLit(_)
+            | TokenKind::True
+            | TokenKind::False => {
                 let expr = self.parse_expr();
                 AttrArg::Literal(expr)
             }
@@ -571,12 +675,17 @@ impl<'a> Parser<'a> {
                 self.advance();
                 if self.eat(&TokenKind::RParen).is_some() {
                     let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                    return TypeExpr { span, kind: TypeExprKind::Unit };
+                    return TypeExpr {
+                        span,
+                        kind: TypeExprKind::Unit,
+                    };
                 }
                 // Tuple type (T, U, ...)
                 let mut types = vec![self.parse_type()];
                 while self.eat(&TokenKind::Comma).is_some() {
-                    if self.check(&TokenKind::RParen) { break; }
+                    if self.check(&TokenKind::RParen) {
+                        break;
+                    }
                     types.push(self.parse_type());
                 }
                 self.expect(&TokenKind::RParen);
@@ -585,7 +694,10 @@ impl<'a> Parser<'a> {
                     // parenthesized type — just unwrap
                     return types.into_iter().next().unwrap();
                 }
-                TypeExpr { span, kind: TypeExprKind::Tuple(types) }
+                TypeExpr {
+                    span,
+                    kind: TypeExprKind::Tuple(types),
+                }
             }
 
             // Reference type &T or &mut T
@@ -594,7 +706,13 @@ impl<'a> Parser<'a> {
                 let mutable = self.eat(&TokenKind::Mut).is_some();
                 let inner = self.parse_type();
                 let span = start.merge(inner.span);
-                TypeExpr { span, kind: TypeExprKind::RefType { inner: Box::new(inner), mutable } }
+                TypeExpr {
+                    span,
+                    kind: TypeExprKind::RefType {
+                        inner: Box::new(inner),
+                        mutable,
+                    },
+                }
             }
 
             // Fn(A, B) -> R
@@ -612,7 +730,13 @@ impl<'a> Parser<'a> {
                 self.expect(&TokenKind::Arrow);
                 let ret = self.parse_type();
                 let span = start.merge(ret.span);
-                TypeExpr { span, kind: TypeExprKind::FnType { params, ret: Box::new(ret) } }
+                TypeExpr {
+                    span,
+                    kind: TypeExprKind::FnType {
+                        params,
+                        ret: Box::new(ret),
+                    },
+                }
             }
 
             TokenKind::Ident(ref name) => {
@@ -625,18 +749,27 @@ impl<'a> Parser<'a> {
                     self.advance(); // [
                     let end = self.expect(&TokenKind::RBracket);
                     let span = start.merge(end);
-                    return TypeExpr { span, kind: TypeExprKind::Array(Box::new(inner_type)) };
+                    return TypeExpr {
+                        span,
+                        kind: TypeExprKind::Array(Box::new(inner_type)),
+                    };
                 }
 
                 // Primitive types
                 if let Some(prim) = self.str_to_primitive(&name) {
                     let span = start;
-                    return TypeExpr { span, kind: TypeExprKind::Primitive(prim) };
+                    return TypeExpr {
+                        span,
+                        kind: TypeExprKind::Primitive(prim),
+                    };
                 }
 
                 // String type
                 if name.as_str() == "String" || name.as_str() == "str" {
-                    return TypeExpr { span: start, kind: TypeExprKind::StringType };
+                    return TypeExpr {
+                        span: start,
+                        kind: TypeExprKind::StringType,
+                    };
                 }
 
                 // Generic built-in types with <...>
@@ -651,13 +784,22 @@ impl<'a> Parser<'a> {
 
             TokenKind::SelfUpper => {
                 self.advance();
-                TypeExpr { span: start, kind: TypeExprKind::Named { name: SmolStr::new("Self"), args: None } }
+                TypeExpr {
+                    span: start,
+                    kind: TypeExprKind::Named {
+                        name: SmolStr::new("Self"),
+                        args: None,
+                    },
+                }
             }
 
             _ => {
                 self.error(start, format!("expected type, found `{}`", self.peek()));
                 self.advance();
-                TypeExpr { span: start, kind: TypeExprKind::Error }
+                TypeExpr {
+                    span: start,
+                    kind: TypeExprKind::Error,
+                }
             }
         }
     }
@@ -667,28 +809,63 @@ impl<'a> Parser<'a> {
         let span = start.merge(last_span);
         match name {
             "Option" => match args {
-                Some(mut a) if a.len() == 1 => {
-                    TypeExpr { span, kind: TypeExprKind::OptionType(Box::new(a.remove(0))) }
-                }
-                other => TypeExpr { span, kind: TypeExprKind::Named { name: SmolStr::new(name), args: other } },
+                Some(mut a) if a.len() == 1 => TypeExpr {
+                    span,
+                    kind: TypeExprKind::OptionType(Box::new(a.remove(0))),
+                },
+                other => TypeExpr {
+                    span,
+                    kind: TypeExprKind::Named {
+                        name: SmolStr::new(name),
+                        args: other,
+                    },
+                },
             },
             "Result" => match args {
                 Some(mut a) if !a.is_empty() => {
                     let ok = a.remove(0);
-                    let err = if !a.is_empty() { Some(Box::new(a.remove(0))) } else { None };
-                    TypeExpr { span, kind: TypeExprKind::ResultType(Box::new(ok), err) }
+                    let err = if !a.is_empty() {
+                        Some(Box::new(a.remove(0)))
+                    } else {
+                        None
+                    };
+                    TypeExpr {
+                        span,
+                        kind: TypeExprKind::ResultType(Box::new(ok), err),
+                    }
                 }
-                other => TypeExpr { span, kind: TypeExprKind::Named { name: SmolStr::new(name), args: other } },
+                other => TypeExpr {
+                    span,
+                    kind: TypeExprKind::Named {
+                        name: SmolStr::new(name),
+                        args: other,
+                    },
+                },
             },
             "Map" => match args {
                 Some(mut a) if a.len() == 2 => {
                     let v = a.remove(1);
                     let k = a.remove(0);
-                    TypeExpr { span, kind: TypeExprKind::Map(Box::new(k), Box::new(v)) }
+                    TypeExpr {
+                        span,
+                        kind: TypeExprKind::Map(Box::new(k), Box::new(v)),
+                    }
                 }
-                other => TypeExpr { span, kind: TypeExprKind::Named { name: SmolStr::new(name), args: other } },
+                other => TypeExpr {
+                    span,
+                    kind: TypeExprKind::Named {
+                        name: SmolStr::new(name),
+                        args: other,
+                    },
+                },
             },
-            _ => TypeExpr { span, kind: TypeExprKind::Named { name: SmolStr::new(name), args } },
+            _ => TypeExpr {
+                span,
+                kind: TypeExprKind::Named {
+                    name: SmolStr::new(name),
+                    args,
+                },
+            },
         }
     }
 
@@ -745,22 +922,31 @@ impl<'a> Parser<'a> {
             }
         }
         let end = self.expect(&TokenKind::RBrace);
-        Block { span: start.merge(end), stmts }
+        Block {
+            span: start.merge(end),
+            stmts,
+        }
     }
 
     fn parse_stmt(&mut self) -> Option<Stmt> {
         match self.peek() {
             TokenKind::Let => Some(self.parse_let_stmt()),
             // Item-level statements inside blocks
-            TokenKind::Fn | TokenKind::Struct | TokenKind::Enum
-            | TokenKind::Trait | TokenKind::Impl | TokenKind::Const => {
+            TokenKind::Fn
+            | TokenKind::Struct
+            | TokenKind::Enum
+            | TokenKind::Trait
+            | TokenKind::Impl
+            | TokenKind::Const => {
                 let attrs = self.parse_attrs();
-                self.parse_item_with_attrs(attrs).map(|item| Stmt::Item(Box::new(item)))
+                self.parse_item_with_attrs(attrs)
+                    .map(|item| Stmt::Item(Box::new(item)))
             }
             TokenKind::At => {
                 let attrs = self.parse_attrs();
                 // After attributes, expect an item
-                self.parse_item_with_attrs(attrs).map(|item| Stmt::Item(Box::new(item)))
+                self.parse_item_with_attrs(attrs)
+                    .map(|item| Stmt::Item(Box::new(item)))
             }
             TokenKind::RBrace | TokenKind::Eof => None,
             _ => Some(self.parse_expr_stmt()),
@@ -797,7 +983,13 @@ impl<'a> Parser<'a> {
         let value = self.parse_expr();
         self.expect(&TokenKind::Semicolon);
         let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-        GlobalDecl { span, name, mutable, ty, value }
+        GlobalDecl {
+            span,
+            name,
+            mutable,
+            ty,
+            value,
+        }
     }
 
     fn parse_let_stmt(&mut self) -> Stmt {
@@ -816,7 +1008,13 @@ impl<'a> Parser<'a> {
         };
         self.expect(&TokenKind::Semicolon);
         let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-        Stmt::Let(LetStmt { span, mutable, pattern, ty, init })
+        Stmt::Let(LetStmt {
+            span,
+            mutable,
+            pattern,
+            ty,
+            init,
+        })
     }
 
     fn parse_expr_stmt(&mut self) -> Stmt {
@@ -824,7 +1022,11 @@ impl<'a> Parser<'a> {
         let expr = self.parse_expr();
         let has_semicolon = self.eat(&TokenKind::Semicolon).is_some();
         let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-        Stmt::Expr(ExprStmt { span, expr, has_semicolon })
+        Stmt::Expr(ExprStmt {
+            span,
+            expr,
+            has_semicolon,
+        })
     }
 }
 
@@ -859,7 +1061,14 @@ impl<'a> Parser<'a> {
             self.advance();
             let rhs = self.parse_assignment(); // right-associative
             let span = expr.span.merge(rhs.span);
-            Expr { span, kind: ExprKind::Assign { op, target: Box::new(expr), value: Box::new(rhs) } }
+            Expr {
+                span,
+                kind: ExprKind::Assign {
+                    op,
+                    target: Box::new(expr),
+                    value: Box::new(rhs),
+                },
+            }
         } else {
             expr
         }
@@ -889,7 +1098,13 @@ impl<'a> Parser<'a> {
         while self.eat(&TokenKind::PipeGt).is_some() {
             let rhs = self.parse_or();
             let span = expr.span.merge(rhs.span);
-            expr = Expr { span, kind: ExprKind::Pipe { lhs: Box::new(expr), rhs: Box::new(rhs) } };
+            expr = Expr {
+                span,
+                kind: ExprKind::Pipe {
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                },
+            };
         }
         expr
     }
@@ -902,7 +1117,14 @@ impl<'a> Parser<'a> {
             self.advance();
             let rhs = self.parse_and();
             let span = expr.span.merge(rhs.span);
-            expr = Expr { span, kind: ExprKind::Binary { op: BinOp::Or, lhs: Box::new(expr), rhs: Box::new(rhs) } };
+            expr = Expr {
+                span,
+                kind: ExprKind::Binary {
+                    op: BinOp::Or,
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                },
+            };
         }
         expr
     }
@@ -915,7 +1137,14 @@ impl<'a> Parser<'a> {
             self.advance();
             let rhs = self.parse_equality();
             let span = expr.span.merge(rhs.span);
-            expr = Expr { span, kind: ExprKind::Binary { op: BinOp::And, lhs: Box::new(expr), rhs: Box::new(rhs) } };
+            expr = Expr {
+                span,
+                kind: ExprKind::Binary {
+                    op: BinOp::And,
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                },
+            };
         }
         expr
     }
@@ -933,7 +1162,14 @@ impl<'a> Parser<'a> {
             self.advance();
             let rhs = self.parse_comparison();
             let span = expr.span.merge(rhs.span);
-            expr = Expr { span, kind: ExprKind::Binary { op, lhs: Box::new(expr), rhs: Box::new(rhs) } };
+            expr = Expr {
+                span,
+                kind: ExprKind::Binary {
+                    op,
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                },
+            };
         }
         expr
     }
@@ -954,7 +1190,14 @@ impl<'a> Parser<'a> {
             self.advance();
             let rhs = self.parse_bitwise_or();
             let span = expr.span.merge(rhs.span);
-            expr = Expr { span, kind: ExprKind::Binary { op, lhs: Box::new(expr), rhs: Box::new(rhs) } };
+            expr = Expr {
+                span,
+                kind: ExprKind::Binary {
+                    op,
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                },
+            };
         }
         expr
     }
@@ -967,7 +1210,14 @@ impl<'a> Parser<'a> {
             self.advance();
             let rhs = self.parse_bitwise_xor();
             let span = expr.span.merge(rhs.span);
-            expr = Expr { span, kind: ExprKind::Binary { op: BinOp::BitOr, lhs: Box::new(expr), rhs: Box::new(rhs) } };
+            expr = Expr {
+                span,
+                kind: ExprKind::Binary {
+                    op: BinOp::BitOr,
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                },
+            };
         }
         expr
     }
@@ -980,7 +1230,14 @@ impl<'a> Parser<'a> {
             self.advance();
             let rhs = self.parse_bitwise_and();
             let span = expr.span.merge(rhs.span);
-            expr = Expr { span, kind: ExprKind::Binary { op: BinOp::BitXor, lhs: Box::new(expr), rhs: Box::new(rhs) } };
+            expr = Expr {
+                span,
+                kind: ExprKind::Binary {
+                    op: BinOp::BitXor,
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                },
+            };
         }
         expr
     }
@@ -993,7 +1250,14 @@ impl<'a> Parser<'a> {
             self.advance();
             let rhs = self.parse_shift();
             let span = expr.span.merge(rhs.span);
-            expr = Expr { span, kind: ExprKind::Binary { op: BinOp::BitAnd, lhs: Box::new(expr), rhs: Box::new(rhs) } };
+            expr = Expr {
+                span,
+                kind: ExprKind::Binary {
+                    op: BinOp::BitAnd,
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                },
+            };
         }
         expr
     }
@@ -1011,7 +1275,14 @@ impl<'a> Parser<'a> {
             self.advance();
             let rhs = self.parse_additive();
             let span = expr.span.merge(rhs.span);
-            expr = Expr { span, kind: ExprKind::Binary { op, lhs: Box::new(expr), rhs: Box::new(rhs) } };
+            expr = Expr {
+                span,
+                kind: ExprKind::Binary {
+                    op,
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                },
+            };
         }
         expr
     }
@@ -1029,7 +1300,14 @@ impl<'a> Parser<'a> {
             self.advance();
             let rhs = self.parse_multiplicative();
             let span = expr.span.merge(rhs.span);
-            expr = Expr { span, kind: ExprKind::Binary { op, lhs: Box::new(expr), rhs: Box::new(rhs) } };
+            expr = Expr {
+                span,
+                kind: ExprKind::Binary {
+                    op,
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                },
+            };
         }
         expr
     }
@@ -1048,7 +1326,14 @@ impl<'a> Parser<'a> {
             self.advance();
             let rhs = self.parse_unary();
             let span = expr.span.merge(rhs.span);
-            expr = Expr { span, kind: ExprKind::Binary { op, lhs: Box::new(expr), rhs: Box::new(rhs) } };
+            expr = Expr {
+                span,
+                kind: ExprKind::Binary {
+                    op,
+                    lhs: Box::new(expr),
+                    rhs: Box::new(rhs),
+                },
+            };
         }
         expr
     }
@@ -1062,19 +1347,37 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let operand = self.parse_unary();
                 let span = start.merge(operand.span);
-                Expr { span, kind: ExprKind::Unary { op: UnaryOp::Neg, operand: Box::new(operand) } }
+                Expr {
+                    span,
+                    kind: ExprKind::Unary {
+                        op: UnaryOp::Neg,
+                        operand: Box::new(operand),
+                    },
+                }
             }
             TokenKind::Bang | TokenKind::Not => {
                 self.advance();
                 let operand = self.parse_unary();
                 let span = start.merge(operand.span);
-                Expr { span, kind: ExprKind::Unary { op: UnaryOp::Not, operand: Box::new(operand) } }
+                Expr {
+                    span,
+                    kind: ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        operand: Box::new(operand),
+                    },
+                }
             }
             TokenKind::Tilde => {
                 self.advance();
                 let operand = self.parse_unary();
                 let span = start.merge(operand.span);
-                Expr { span, kind: ExprKind::Unary { op: UnaryOp::BitNot, operand: Box::new(operand) } }
+                Expr {
+                    span,
+                    kind: ExprKind::Unary {
+                        op: UnaryOp::BitNot,
+                        operand: Box::new(operand),
+                    },
+                }
             }
             TokenKind::Amp => {
                 self.advance();
@@ -1084,13 +1387,25 @@ impl<'a> Parser<'a> {
                     (UnaryOp::Ref, self.parse_unary())
                 };
                 let span = start.merge(operand.span);
-                Expr { span, kind: ExprKind::Unary { op, operand: Box::new(operand) } }
+                Expr {
+                    span,
+                    kind: ExprKind::Unary {
+                        op,
+                        operand: Box::new(operand),
+                    },
+                }
             }
             TokenKind::Star => {
                 self.advance();
                 let operand = self.parse_unary();
                 let span = start.merge(operand.span);
-                Expr { span, kind: ExprKind::Unary { op: UnaryOp::Deref, operand: Box::new(operand) } }
+                Expr {
+                    span,
+                    kind: ExprKind::Unary {
+                        op: UnaryOp::Deref,
+                        operand: Box::new(operand),
+                    },
+                }
             }
             _ => self.parse_postfix(),
         }
@@ -1111,17 +1426,42 @@ impl<'a> Parser<'a> {
                             if self.check(&TokenKind::LParen) {
                                 // method call
                                 let args = self.parse_call_args();
-                                let span = expr.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                                expr = Expr { span, kind: ExprKind::MethodCall { object: Box::new(expr), method: field, args } };
+                                let span = expr
+                                    .span
+                                    .merge(self.tokens[self.pos.saturating_sub(1)].span);
+                                expr = Expr {
+                                    span,
+                                    kind: ExprKind::MethodCall {
+                                        object: Box::new(expr),
+                                        method: field,
+                                        args,
+                                    },
+                                };
                             } else {
-                                let span = expr.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                                expr = Expr { span, kind: ExprKind::FieldAccess { object: Box::new(expr), field } };
+                                let span = expr
+                                    .span
+                                    .merge(self.tokens[self.pos.saturating_sub(1)].span);
+                                expr = Expr {
+                                    span,
+                                    kind: ExprKind::FieldAccess {
+                                        object: Box::new(expr),
+                                        field,
+                                    },
+                                };
                             }
                         }
                         TokenKind::IntLit(idx) => {
                             self.advance();
-                            let span = expr.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                            expr = Expr { span, kind: ExprKind::TupleIndex { object: Box::new(expr), index: idx as u32 } };
+                            let span = expr
+                                .span
+                                .merge(self.tokens[self.pos.saturating_sub(1)].span);
+                            expr = Expr {
+                                span,
+                                kind: ExprKind::TupleIndex {
+                                    object: Box::new(expr),
+                                    index: idx as u32,
+                                },
+                            };
                         }
                         _ => {
                             let span = self.peek_span();
@@ -1133,29 +1473,56 @@ impl<'a> Parser<'a> {
                 // function call: expr(args)
                 TokenKind::LParen => {
                     let args = self.parse_call_args();
-                    let span = expr.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                    expr = Expr { span, kind: ExprKind::Call { callee: Box::new(expr), args } };
+                    let span = expr
+                        .span
+                        .merge(self.tokens[self.pos.saturating_sub(1)].span);
+                    expr = Expr {
+                        span,
+                        kind: ExprKind::Call {
+                            callee: Box::new(expr),
+                            args,
+                        },
+                    };
                 }
                 // index: expr[idx]
                 TokenKind::LBracket => {
                     self.advance();
                     let index = self.parse_expr();
                     self.expect(&TokenKind::RBracket);
-                    let span = expr.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                    expr = Expr { span, kind: ExprKind::Index { object: Box::new(expr), index: Box::new(index) } };
+                    let span = expr
+                        .span
+                        .merge(self.tokens[self.pos.saturating_sub(1)].span);
+                    expr = Expr {
+                        span,
+                        kind: ExprKind::Index {
+                            object: Box::new(expr),
+                            index: Box::new(index),
+                        },
+                    };
                 }
                 // error propagation: expr?
                 TokenKind::Question => {
                     self.advance();
-                    let span = expr.span.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                    expr = Expr { span, kind: ExprKind::ErrorPropagate(Box::new(expr)) };
+                    let span = expr
+                        .span
+                        .merge(self.tokens[self.pos.saturating_sub(1)].span);
+                    expr = Expr {
+                        span,
+                        kind: ExprKind::ErrorPropagate(Box::new(expr)),
+                    };
                 }
                 // cast: expr as Type
                 TokenKind::As => {
                     self.advance();
                     let ty = self.parse_type();
                     let span = expr.span.merge(ty.span);
-                    expr = Expr { span, kind: ExprKind::Cast { expr: Box::new(expr), ty } };
+                    expr = Expr {
+                        span,
+                        kind: ExprKind::Cast {
+                            expr: Box::new(expr),
+                            ty,
+                        },
+                    };
                 }
                 _ => break,
             }
@@ -1179,13 +1546,17 @@ impl<'a> Parser<'a> {
     fn parse_call_arg(&mut self) -> CallArg {
         // Check for named argument: name: value
         if let TokenKind::Ident(ref name) = self.peek().clone()
-            && self.peek_second() == &TokenKind::Colon {
-                let name = name.clone();
-                self.advance(); // ident
-                self.advance(); // :
-                let value = self.parse_expr();
-                return CallArg { name: Some(name), value };
-            }
+            && self.peek_second() == &TokenKind::Colon
+        {
+            let name = name.clone();
+            self.advance(); // ident
+            self.advance(); // :
+            let value = self.parse_expr();
+            return CallArg {
+                name: Some(name),
+                value,
+            };
+        }
         let value = self.parse_expr();
         CallArg { name: None, value }
     }
@@ -1200,33 +1571,57 @@ impl<'a> Parser<'a> {
                 self.advance();
                 // Check for range: ..
                 if self.check(&TokenKind::DotDot) || self.check(&TokenKind::DotDotEq) {
-                    return self.parse_range_from(Some(Expr { span: start, kind: ExprKind::IntLit(v) }));
+                    return self.parse_range_from(Some(Expr {
+                        span: start,
+                        kind: ExprKind::IntLit(v),
+                    }));
                 }
-                Expr { span: start, kind: ExprKind::IntLit(v) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::IntLit(v),
+                }
             }
             TokenKind::FloatLit(v) => {
                 self.advance();
-                Expr { span: start, kind: ExprKind::FloatLit(v) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::FloatLit(v),
+                }
             }
             TokenKind::True => {
                 self.advance();
-                Expr { span: start, kind: ExprKind::BoolLit(true) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::BoolLit(true),
+                }
             }
             TokenKind::False => {
                 self.advance();
-                Expr { span: start, kind: ExprKind::BoolLit(false) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::BoolLit(false),
+                }
             }
             TokenKind::BoolLit(v) => {
                 self.advance();
-                Expr { span: start, kind: ExprKind::BoolLit(v) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::BoolLit(v),
+                }
             }
             TokenKind::CharLit(v) => {
                 self.advance();
-                Expr { span: start, kind: ExprKind::CharLit(v) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::CharLit(v),
+                }
             }
             TokenKind::StringLit(v) => {
                 self.advance();
-                Expr { span: start, kind: ExprKind::StringLit(v) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::StringLit(v),
+                }
             }
 
             // Template literal
@@ -1259,28 +1654,43 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(&TokenKind::RParen);
                     let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                    return Expr { span, kind: ExprKind::MacroCall { name, args } };
+                    return Expr {
+                        span,
+                        kind: ExprKind::MacroCall { name, args },
+                    };
                 }
 
-                Expr { span: start, kind: ExprKind::Ident(name) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::Ident(name),
+                }
             }
 
             TokenKind::SelfLower => {
                 self.advance();
-                Expr { span: start, kind: ExprKind::Ident(SmolStr::new("self")) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::Ident(SmolStr::new("self")),
+                }
             }
             TokenKind::SelfUpper => {
                 self.advance();
                 if self.check(&TokenKind::ColonColon) {
                     return self.parse_path_or_call(start, SmolStr::new("Self"));
                 }
-                Expr { span: start, kind: ExprKind::Ident(SmolStr::new("Self")) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::Ident(SmolStr::new("Self")),
+                }
             }
 
             // Keywords that start expressions: KwNone, KwSome, KwOk, KwErr
             TokenKind::KwNone => {
                 self.advance();
-                Expr { span: start, kind: ExprKind::Ident(SmolStr::new("None")) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::Ident(SmolStr::new("None")),
+                }
             }
             TokenKind::KwSome => {
                 self.advance();
@@ -1290,12 +1700,18 @@ impl<'a> Parser<'a> {
                     return Expr {
                         span,
                         kind: ExprKind::Call {
-                            callee: Box::new(Expr { span: start, kind: ExprKind::Ident(SmolStr::new("Some")) }),
+                            callee: Box::new(Expr {
+                                span: start,
+                                kind: ExprKind::Ident(SmolStr::new("Some")),
+                            }),
                             args,
                         },
                     };
                 }
-                Expr { span: start, kind: ExprKind::Ident(SmolStr::new("Some")) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::Ident(SmolStr::new("Some")),
+                }
             }
             TokenKind::KwOk => {
                 self.advance();
@@ -1305,12 +1721,18 @@ impl<'a> Parser<'a> {
                     return Expr {
                         span,
                         kind: ExprKind::Call {
-                            callee: Box::new(Expr { span: start, kind: ExprKind::Ident(SmolStr::new("Ok")) }),
+                            callee: Box::new(Expr {
+                                span: start,
+                                kind: ExprKind::Ident(SmolStr::new("Ok")),
+                            }),
                             args,
                         },
                     };
                 }
-                Expr { span: start, kind: ExprKind::Ident(SmolStr::new("Ok")) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::Ident(SmolStr::new("Ok")),
+                }
             }
             TokenKind::KwErr => {
                 self.advance();
@@ -1320,12 +1742,18 @@ impl<'a> Parser<'a> {
                     return Expr {
                         span,
                         kind: ExprKind::Call {
-                            callee: Box::new(Expr { span: start, kind: ExprKind::Ident(SmolStr::new("Err")) }),
+                            callee: Box::new(Expr {
+                                span: start,
+                                kind: ExprKind::Ident(SmolStr::new("Err")),
+                            }),
                             args,
                         },
                     };
                 }
-                Expr { span: start, kind: ExprKind::Ident(SmolStr::new("Err")) }
+                Expr {
+                    span: start,
+                    kind: ExprKind::Ident(SmolStr::new("Err")),
+                }
             }
 
             // Parenthesized expression or tuple: (expr) or (a, b, ...)
@@ -1334,7 +1762,10 @@ impl<'a> Parser<'a> {
                 // Unit literal: ()
                 if self.eat(&TokenKind::RParen).is_some() {
                     let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                    return Expr { span, kind: ExprKind::UnitLit };
+                    return Expr {
+                        span,
+                        kind: ExprKind::UnitLit,
+                    };
                 }
                 let first = self.parse_expr();
                 if self.eat(&TokenKind::Comma).is_some() {
@@ -1348,7 +1779,10 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(&TokenKind::RParen);
                     let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                    Expr { span, kind: ExprKind::TupleLit(elems) }
+                    Expr {
+                        span,
+                        kind: ExprKind::TupleLit(elems),
+                    }
                 } else {
                     // Parenthesized expression
                     self.expect(&TokenKind::RParen);
@@ -1368,7 +1802,10 @@ impl<'a> Parser<'a> {
                 }
                 self.expect(&TokenKind::RBracket);
                 let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                Expr { span, kind: ExprKind::ArrayLit(elems) }
+                Expr {
+                    span,
+                    kind: ExprKind::ArrayLit(elems),
+                }
             }
 
             // Map literal: { key: val, ... } — but only if it looks like one
@@ -1379,7 +1816,10 @@ impl<'a> Parser<'a> {
                 } else {
                     let block = self.parse_block();
                     let span = block.span;
-                    Expr { span, kind: ExprKind::Block(block) }
+                    Expr {
+                        span,
+                        kind: ExprKind::Block(block),
+                    }
                 }
             }
 
@@ -1400,7 +1840,10 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let body = self.parse_block();
                 let span = start.merge(body.span);
-                Expr { span, kind: ExprKind::Loop { body } }
+                Expr {
+                    span,
+                    kind: ExprKind::Loop { body },
+                }
             }
 
             // Return expression
@@ -1415,7 +1858,10 @@ impl<'a> Parser<'a> {
                     None
                 };
                 let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                Expr { span, kind: ExprKind::Return(value) }
+                Expr {
+                    span,
+                    kind: ExprKind::Return(value),
+                }
             }
 
             // Break expression
@@ -1430,13 +1876,19 @@ impl<'a> Parser<'a> {
                     None
                 };
                 let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                Expr { span, kind: ExprKind::Break(value) }
+                Expr {
+                    span,
+                    kind: ExprKind::Break(value),
+                }
             }
 
             // Continue expression
             TokenKind::Continue => {
                 self.advance();
-                Expr { span: start, kind: ExprKind::Continue }
+                Expr {
+                    span: start,
+                    kind: ExprKind::Continue,
+                }
             }
 
             // Lambda: |params| body  or  |params| -> Type body
@@ -1451,19 +1903,30 @@ impl<'a> Parser<'a> {
                 };
                 let body = self.parse_expr();
                 let span = start.merge(body.span);
-                Expr { span, kind: ExprKind::Lambda { params: Vec::new(), return_type, body: Box::new(body) } }
+                Expr {
+                    span,
+                    kind: ExprKind::Lambda {
+                        params: Vec::new(),
+                        return_type,
+                        body: Box::new(body),
+                    },
+                }
             }
 
             // Range without start: ..end or ..=end
-            TokenKind::DotDot | TokenKind::DotDotEq => {
-                self.parse_range_from(None)
-            }
+            TokenKind::DotDot | TokenKind::DotDotEq => self.parse_range_from(None),
 
             _ => {
                 let span = self.peek_span();
-                self.error(span, format!("expected expression, found `{}`", self.peek()));
+                self.error(
+                    span,
+                    format!("expected expression, found `{}`", self.peek()),
+                );
                 self.advance();
-                Expr { span, kind: ExprKind::Error }
+                Expr {
+                    span,
+                    kind: ExprKind::Error,
+                }
             }
         }
     }
@@ -1485,9 +1948,15 @@ impl<'a> Parser<'a> {
         }
 
         if segments.len() == 1 {
-            Expr { span, kind: ExprKind::Ident(segments.into_iter().next().unwrap()) }
+            Expr {
+                span,
+                kind: ExprKind::Ident(segments.into_iter().next().unwrap()),
+            }
         } else {
-            Expr { span, kind: ExprKind::Path(segments) }
+            Expr {
+                span,
+                kind: ExprKind::Path(segments),
+            }
         }
     }
 
@@ -1527,7 +1996,10 @@ impl<'a> Parser<'a> {
         }
         self.expect(&TokenKind::RBrace);
         let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-        Expr { span, kind: ExprKind::StructInit { name, fields } }
+        Expr {
+            span,
+            kind: ExprKind::StructInit { name, fields },
+        }
     }
 
     // ── map literal ─────────────────────────────────────────────────
@@ -1562,7 +2034,10 @@ impl<'a> Parser<'a> {
             }
         }
         let end = self.expect(&TokenKind::RBrace);
-        Expr { span: start.merge(end), kind: ExprKind::MapLit(entries) }
+        Expr {
+            span: start.merge(end),
+            kind: ExprKind::MapLit(entries),
+        }
     }
 
     // ── template literal ────────────────────────────────────────────
@@ -1598,13 +2073,19 @@ impl<'a> Parser<'a> {
             }
         }
         let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-        Expr { span, kind: ExprKind::TemplateLit(segments) }
+        Expr {
+            span,
+            kind: ExprKind::TemplateLit(segments),
+        }
     }
 
     // ── range ───────────────────────────────────────────────────────
 
     fn parse_range_from(&mut self, start_expr: Option<Expr>) -> Expr {
-        let range_start = start_expr.as_ref().map(|e| e.span).unwrap_or(self.peek_span());
+        let range_start = start_expr
+            .as_ref()
+            .map(|e| e.span)
+            .unwrap_or(self.peek_span());
         let inclusive = self.check(&TokenKind::DotDotEq);
         self.advance(); // consume .. or ..=
 
@@ -1656,7 +2137,14 @@ impl<'a> Parser<'a> {
         };
         let body = self.parse_expr();
         let span = start.merge(body.span);
-        Expr { span, kind: ExprKind::Lambda { params, return_type, body: Box::new(body) } }
+        Expr {
+            span,
+            kind: ExprKind::Lambda {
+                params,
+                return_type,
+                body: Box::new(body),
+            },
+        }
     }
 
     // ── if ──────────────────────────────────────────────────────────
@@ -1677,13 +2165,24 @@ impl<'a> Parser<'a> {
                 } else {
                     let block = self.parse_block();
                     let span = block.span;
-                    Expr { span, kind: ExprKind::Block(block) }
+                    Expr {
+                        span,
+                        kind: ExprKind::Block(block),
+                    }
                 }))
             } else {
                 None
             };
             let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-            return Expr { span, kind: ExprKind::IfLet { pattern, expr: Box::new(scrutinee), then_block, else_block } };
+            return Expr {
+                span,
+                kind: ExprKind::IfLet {
+                    pattern,
+                    expr: Box::new(scrutinee),
+                    then_block,
+                    else_block,
+                },
+            };
         }
 
         let condition = self.parse_expr_no_struct_init();
@@ -1694,13 +2193,23 @@ impl<'a> Parser<'a> {
             } else {
                 let block = self.parse_block();
                 let span = block.span;
-                Expr { span, kind: ExprKind::Block(block) }
+                Expr {
+                    span,
+                    kind: ExprKind::Block(block),
+                }
             }))
         } else {
             None
         };
         let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-        Expr { span, kind: ExprKind::If { condition: Box::new(condition), then_block, else_block } }
+        Expr {
+            span,
+            kind: ExprKind::If {
+                condition: Box::new(condition),
+                then_block,
+                else_block,
+            },
+        }
     }
 
     /// Parse an expression but disallow struct init at top level (to avoid
@@ -1731,7 +2240,13 @@ impl<'a> Parser<'a> {
             self.eat(&TokenKind::Comma);
         }
         let end = self.expect(&TokenKind::RBrace);
-        Expr { span: start.merge(end), kind: ExprKind::Match { scrutinee: Box::new(scrutinee), arms } }
+        Expr {
+            span: start.merge(end),
+            kind: ExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+        }
     }
 
     fn parse_match_arm(&mut self) -> MatchArm {
@@ -1746,7 +2261,12 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::FatArrow);
         let body = self.parse_expr();
         let span = start.merge(body.span);
-        MatchArm { span, pattern, guard, body }
+        MatchArm {
+            span,
+            pattern,
+            guard,
+            body,
+        }
     }
 
     // ── for ─────────────────────────────────────────────────────────
@@ -1758,7 +2278,14 @@ impl<'a> Parser<'a> {
         let iterable = self.parse_expr_no_struct_init();
         let body = self.parse_block();
         let span = start.merge(body.span);
-        Expr { span, kind: ExprKind::For { pattern, iterable: Box::new(iterable), body } }
+        Expr {
+            span,
+            kind: ExprKind::For {
+                pattern,
+                iterable: Box::new(iterable),
+                body,
+            },
+        }
     }
 
     // ── while ───────────────────────────────────────────────────────
@@ -1774,13 +2301,26 @@ impl<'a> Parser<'a> {
             let scrutinee = self.parse_expr_no_struct_init();
             let body = self.parse_block();
             let span = start.merge(body.span);
-            return Expr { span, kind: ExprKind::WhileLet { pattern, expr: Box::new(scrutinee), body } };
+            return Expr {
+                span,
+                kind: ExprKind::WhileLet {
+                    pattern,
+                    expr: Box::new(scrutinee),
+                    body,
+                },
+            };
         }
 
         let condition = self.parse_expr_no_struct_init();
         let body = self.parse_block();
         let span = start.merge(body.span);
-        Expr { span, kind: ExprKind::While { condition: Box::new(condition), body } }
+        Expr {
+            span,
+            kind: ExprKind::While {
+                condition: Box::new(condition),
+                body,
+            },
+        }
     }
 }
 
@@ -1799,33 +2339,69 @@ impl<'a> Parser<'a> {
             // Literal patterns
             TokenKind::IntLit(v) => {
                 self.advance();
-                let expr = Expr { span: start, kind: ExprKind::IntLit(v) };
-                Pattern::Literal { span: start, expr: Box::new(expr) }
+                let expr = Expr {
+                    span: start,
+                    kind: ExprKind::IntLit(v),
+                };
+                Pattern::Literal {
+                    span: start,
+                    expr: Box::new(expr),
+                }
             }
             TokenKind::FloatLit(v) => {
                 self.advance();
-                let expr = Expr { span: start, kind: ExprKind::FloatLit(v) };
-                Pattern::Literal { span: start, expr: Box::new(expr) }
+                let expr = Expr {
+                    span: start,
+                    kind: ExprKind::FloatLit(v),
+                };
+                Pattern::Literal {
+                    span: start,
+                    expr: Box::new(expr),
+                }
             }
             TokenKind::StringLit(v) => {
                 self.advance();
-                let expr = Expr { span: start, kind: ExprKind::StringLit(v) };
-                Pattern::Literal { span: start, expr: Box::new(expr) }
+                let expr = Expr {
+                    span: start,
+                    kind: ExprKind::StringLit(v),
+                };
+                Pattern::Literal {
+                    span: start,
+                    expr: Box::new(expr),
+                }
             }
             TokenKind::CharLit(v) => {
                 self.advance();
-                let expr = Expr { span: start, kind: ExprKind::CharLit(v) };
-                Pattern::Literal { span: start, expr: Box::new(expr) }
+                let expr = Expr {
+                    span: start,
+                    kind: ExprKind::CharLit(v),
+                };
+                Pattern::Literal {
+                    span: start,
+                    expr: Box::new(expr),
+                }
             }
             TokenKind::True => {
                 self.advance();
-                let expr = Expr { span: start, kind: ExprKind::BoolLit(true) };
-                Pattern::Literal { span: start, expr: Box::new(expr) }
+                let expr = Expr {
+                    span: start,
+                    kind: ExprKind::BoolLit(true),
+                };
+                Pattern::Literal {
+                    span: start,
+                    expr: Box::new(expr),
+                }
             }
             TokenKind::False => {
                 self.advance();
-                let expr = Expr { span: start, kind: ExprKind::BoolLit(false) };
-                Pattern::Literal { span: start, expr: Box::new(expr) }
+                let expr = Expr {
+                    span: start,
+                    kind: ExprKind::BoolLit(false),
+                };
+                Pattern::Literal {
+                    span: start,
+                    expr: Box::new(expr),
+                }
             }
             TokenKind::Minus => {
                 // Negative literal pattern
@@ -1834,17 +2410,32 @@ impl<'a> Parser<'a> {
                     TokenKind::IntLit(v) => {
                         let lit_span = self.advance().span;
                         let span = start.merge(lit_span);
-                        let expr = Expr { span, kind: ExprKind::IntLit(-v) };
-                        Pattern::Literal { span, expr: Box::new(expr) }
+                        let expr = Expr {
+                            span,
+                            kind: ExprKind::IntLit(-v),
+                        };
+                        Pattern::Literal {
+                            span,
+                            expr: Box::new(expr),
+                        }
                     }
                     TokenKind::FloatLit(v) => {
                         let lit_span = self.advance().span;
                         let span = start.merge(lit_span);
-                        let expr = Expr { span, kind: ExprKind::FloatLit(-v) };
-                        Pattern::Literal { span, expr: Box::new(expr) }
+                        let expr = Expr {
+                            span,
+                            kind: ExprKind::FloatLit(-v),
+                        };
+                        Pattern::Literal {
+                            span,
+                            expr: Box::new(expr),
+                        }
                     }
                     _ => {
-                        self.error(self.peek_span(), "expected numeric literal after `-` in pattern");
+                        self.error(
+                            self.peek_span(),
+                            "expected numeric literal after `-` in pattern",
+                        );
                         Pattern::Error(start)
                     }
                 }
@@ -1891,7 +2482,11 @@ impl<'a> Parser<'a> {
                     } else {
                         // Unit enum variant
                         let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                        Pattern::EnumVariant { span, path, fields: Vec::new() }
+                        Pattern::EnumVariant {
+                            span,
+                            path,
+                            fields: Vec::new(),
+                        }
                     }
                 }
                 // Struct pattern: Name { field: pat, ... }
@@ -1910,7 +2505,11 @@ impl<'a> Parser<'a> {
                             self.parse_pattern()
                         } else {
                             // Shorthand: Name { x } == Name { x: x }
-                            Pattern::Ident { span: self.tokens[self.pos.saturating_sub(1)].span, name: fname.clone(), mutable: false }
+                            Pattern::Ident {
+                                span: self.tokens[self.pos.saturating_sub(1)].span,
+                                name: fname.clone(),
+                                mutable: false,
+                            }
                         };
                         fields.push((fname, pat));
                         if self.eat(&TokenKind::Comma).is_none() {
@@ -1919,14 +2518,23 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(&TokenKind::RBrace);
                     let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                    Pattern::Struct { span, name, fields, rest }
+                    Pattern::Struct {
+                        span,
+                        name,
+                        fields,
+                        rest,
+                    }
                 }
                 // Binding: name @ pattern
                 else if self.check(&TokenKind::At) {
                     self.advance();
                     let subpattern = self.parse_pattern();
                     let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                    Pattern::Binding { span, name, subpattern: Box::new(subpattern) }
+                    Pattern::Binding {
+                        span,
+                        name,
+                        subpattern: Box::new(subpattern),
+                    }
                 }
                 // Enum variant with tuple destructuring (no path separator)
                 else if self.check(&TokenKind::LParen) {
@@ -1940,12 +2548,19 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(&TokenKind::RParen);
                     let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                    Pattern::EnumVariant { span, path: vec![name], fields }
-                }
-                else {
+                    Pattern::EnumVariant {
+                        span,
+                        path: vec![name],
+                        fields,
+                    }
+                } else {
                     // Check for `mut name` pattern — we already consumed name, but
                     // if it was preceded by `mut` we need to handle that at the call site.
-                    Pattern::Ident { span: start, name, mutable: false }
+                    Pattern::Ident {
+                        span: start,
+                        name,
+                        mutable: false,
+                    }
                 }
             }
 
@@ -1954,13 +2569,21 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let name = self.expect_ident();
                 let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                Pattern::Ident { span, name, mutable: true }
+                Pattern::Ident {
+                    span,
+                    name,
+                    mutable: true,
+                }
             }
 
             // KwNone, KwSome, KwOk, KwErr as patterns
             TokenKind::KwNone => {
                 self.advance();
-                Pattern::EnumVariant { span: start, path: vec![SmolStr::new("None")], fields: Vec::new() }
+                Pattern::EnumVariant {
+                    span: start,
+                    path: vec![SmolStr::new("None")],
+                    fields: Vec::new(),
+                }
             }
             TokenKind::KwSome => {
                 self.advance();
@@ -1975,9 +2598,17 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(&TokenKind::RParen);
                     let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                    Pattern::EnumVariant { span, path: vec![SmolStr::new("Some")], fields }
+                    Pattern::EnumVariant {
+                        span,
+                        path: vec![SmolStr::new("Some")],
+                        fields,
+                    }
                 } else {
-                    Pattern::EnumVariant { span: start, path: vec![SmolStr::new("Some")], fields: Vec::new() }
+                    Pattern::EnumVariant {
+                        span: start,
+                        path: vec![SmolStr::new("Some")],
+                        fields: Vec::new(),
+                    }
                 }
             }
             TokenKind::KwOk => {
@@ -1993,9 +2624,17 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(&TokenKind::RParen);
                     let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                    Pattern::EnumVariant { span, path: vec![SmolStr::new("Ok")], fields }
+                    Pattern::EnumVariant {
+                        span,
+                        path: vec![SmolStr::new("Ok")],
+                        fields,
+                    }
                 } else {
-                    Pattern::EnumVariant { span: start, path: vec![SmolStr::new("Ok")], fields: Vec::new() }
+                    Pattern::EnumVariant {
+                        span: start,
+                        path: vec![SmolStr::new("Ok")],
+                        fields: Vec::new(),
+                    }
                 }
             }
             TokenKind::KwErr => {
@@ -2011,9 +2650,17 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(&TokenKind::RParen);
                     let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                    Pattern::EnumVariant { span, path: vec![SmolStr::new("Err")], fields }
+                    Pattern::EnumVariant {
+                        span,
+                        path: vec![SmolStr::new("Err")],
+                        fields,
+                    }
                 } else {
-                    Pattern::EnumVariant { span: start, path: vec![SmolStr::new("Err")], fields: Vec::new() }
+                    Pattern::EnumVariant {
+                        span: start,
+                        path: vec![SmolStr::new("Err")],
+                        fields: Vec::new(),
+                    }
                 }
             }
 
@@ -2032,7 +2679,12 @@ impl<'a> Parser<'a> {
                     None
                 };
                 let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-                Pattern::Range { span, start: None, end, inclusive }
+                Pattern::Range {
+                    span,
+                    start: None,
+                    end,
+                    inclusive,
+                }
             }
 
             _ => {
@@ -2058,7 +2710,12 @@ impl<'a> Parser<'a> {
                 None
             };
             let span = start.merge(self.tokens[self.pos.saturating_sub(1)].span);
-            pat = Pattern::Range { span, start: start_expr.map(Box::new), end, inclusive };
+            pat = Pattern::Range {
+                span,
+                start: start_expr.map(Box::new),
+                end,
+                inclusive,
+            };
         }
 
         pat
@@ -2068,7 +2725,10 @@ impl<'a> Parser<'a> {
     fn pattern_to_expr(&self, pat: &Pattern) -> Option<Expr> {
         match pat {
             Pattern::Literal { expr, .. } => Some((**expr).clone()),
-            Pattern::Ident { span, name, .. } => Some(Expr { span: *span, kind: ExprKind::Ident(name.clone()) }),
+            Pattern::Ident { span, name, .. } => Some(Expr {
+                span: *span,
+                kind: ExprKind::Ident(name.clone()),
+            }),
             _ => None,
         }
     }
@@ -2081,7 +2741,10 @@ mod tests {
     use super::*;
 
     fn make_token(kind: TokenKind) -> Token {
-        Token { kind, span: Span::dummy() }
+        Token {
+            kind,
+            span: Span::dummy(),
+        }
     }
 
     fn make_tokens(kinds: Vec<TokenKind>) -> Vec<Token> {

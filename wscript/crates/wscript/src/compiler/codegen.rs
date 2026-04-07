@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use smol_str::SmolStr;
 use walrus::{
-    ConstExpr, DataKind, FunctionBuilder, FunctionId, GlobalId, InstrSeqBuilder, LocalId,
-    MemoryId, Module, ValType,
+    ConstExpr, DataKind, FunctionBuilder, FunctionId, GlobalId, InstrSeqBuilder, LocalId, MemoryId,
+    Module, ValType,
 };
 
 use super::ir::*;
@@ -53,7 +53,11 @@ fn build_type_layouts(ir: &IrModule) -> TypeLayouts {
                     }
                     _ => FieldType::Primitive(ir_to_script_type(f.ty)),
                 };
-                FieldInfo { name: f.name.to_string(), ty, offset: f.offset }
+                FieldInfo {
+                    name: f.name.to_string(),
+                    ty,
+                    offset: f.offset,
+                }
             })
             .collect();
         out.structs.push(StructTypeInfo {
@@ -164,11 +168,16 @@ impl WasmCodegen {
     fn emit_module(&mut self, ir: &IrModule) {
         // Register host imports.
         let print_i32_ty = self.module.types.add(&[ValType::I32], &[]);
-        let (print_i32_fn, _) = self.module.add_import_func("env", "__print_i32", print_i32_ty);
+        let (print_i32_fn, _) = self
+            .module
+            .add_import_func("env", "__print_i32", print_i32_ty);
         self.host_fn_ids.insert("__print_i32".into(), print_i32_fn);
 
         // String host imports.
-        let str_new_ty = self.module.types.add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let str_new_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
         let (str_new_fn, _) = self.module.add_import_func("env", "__str_new", str_new_ty);
         self.host_fn_ids.insert("__str_new".into(), str_new_fn);
 
@@ -176,15 +185,26 @@ impl WasmCodegen {
         let (str_len_fn, _) = self.module.add_import_func("env", "__str_len", str_len_ty);
         self.host_fn_ids.insert("__str_len".into(), str_len_fn);
 
-        let str_concat_ty = self.module.types.add(&[ValType::I32, ValType::I32], &[ValType::I32]);
-        let (str_concat_fn, _) = self.module.add_import_func("env", "__str_concat", str_concat_ty);
-        self.host_fn_ids.insert("__str_concat".into(), str_concat_fn);
+        let str_concat_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let (str_concat_fn, _) = self
+            .module
+            .add_import_func("env", "__str_concat", str_concat_ty);
+        self.host_fn_ids
+            .insert("__str_concat".into(), str_concat_fn);
 
         let str_print_ty = self.module.types.add(&[ValType::I32], &[]);
-        let (str_print_fn, _) = self.module.add_import_func("env", "__str_print", str_print_ty);
+        let (str_print_fn, _) = self
+            .module
+            .add_import_func("env", "__str_print", str_print_ty);
         self.host_fn_ids.insert("__str_print".into(), str_print_fn);
 
-        let str_eq_ty = self.module.types.add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let str_eq_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
         let (str_eq_fn, _) = self.module.add_import_func("env", "__str_eq", str_eq_ty);
         self.host_fn_ids.insert("__str_eq".into(), str_eq_fn);
 
@@ -194,21 +214,29 @@ impl WasmCodegen {
         self.host_fn_ids.insert("__arr_new".into(), arr_new_fn);
 
         let arr_push_ty = self.module.types.add(&[ValType::I32, ValType::I32], &[]);
-        let (arr_push_fn, _) = self.module.add_import_func("env", "__arr_push", arr_push_ty);
+        let (arr_push_fn, _) = self
+            .module
+            .add_import_func("env", "__arr_push", arr_push_ty);
         self.host_fn_ids.insert("__arr_push".into(), arr_push_fn);
 
         let arr_len_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
         let (arr_len_fn, _) = self.module.add_import_func("env", "__arr_len", arr_len_ty);
         self.host_fn_ids.insert("__arr_len".into(), arr_len_fn);
 
-        let arr_get_ty = self.module.types.add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let arr_get_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
         let (arr_get_fn, _) = self.module.add_import_func("env", "__arr_get", arr_get_ty);
         self.host_fn_ids.insert("__arr_get".into(), arr_get_fn);
 
         // __i32_to_str(value: i32) -> i32
         let i32_to_str_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
-        let (i32_to_str_fn, _) = self.module.add_import_func("env", "__i32_to_str", i32_to_str_ty);
-        self.host_fn_ids.insert("__i32_to_str".into(), i32_to_str_fn);
+        let (i32_to_str_fn, _) = self
+            .module
+            .add_import_func("env", "__i32_to_str", i32_to_str_ty);
+        self.host_fn_ids
+            .insert("__i32_to_str".into(), i32_to_str_fn);
 
         // __arr_sum(arr: i32) -> i32
         let arr_sum_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
@@ -216,23 +244,36 @@ impl WasmCodegen {
         self.host_fn_ids.insert("__arr_sum".into(), arr_sum_fn);
 
         // __arr_contains(arr: i32, val: i32) -> i32
-        let arr_contains_ty = self.module.types.add(&[ValType::I32, ValType::I32], &[ValType::I32]);
-        let (arr_contains_fn, _) = self.module.add_import_func("env", "__arr_contains", arr_contains_ty);
-        self.host_fn_ids.insert("__arr_contains".into(), arr_contains_fn);
+        let arr_contains_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let (arr_contains_fn, _) =
+            self.module
+                .add_import_func("env", "__arr_contains", arr_contains_ty);
+        self.host_fn_ids
+            .insert("__arr_contains".into(), arr_contains_fn);
 
         // __arr_reverse(arr: i32) -> i32
         let arr_reverse_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
-        let (arr_reverse_fn, _) = self.module.add_import_func("env", "__arr_reverse", arr_reverse_ty);
-        self.host_fn_ids.insert("__arr_reverse".into(), arr_reverse_fn);
+        let (arr_reverse_fn, _) =
+            self.module
+                .add_import_func("env", "__arr_reverse", arr_reverse_ty);
+        self.host_fn_ids
+            .insert("__arr_reverse".into(), arr_reverse_fn);
 
         // __arr_first(arr: i32) -> i32
         let arr_first_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
-        let (arr_first_fn, _) = self.module.add_import_func("env", "__arr_first", arr_first_ty);
+        let (arr_first_fn, _) = self
+            .module
+            .add_import_func("env", "__arr_first", arr_first_ty);
         self.host_fn_ids.insert("__arr_first".into(), arr_first_fn);
 
         // __arr_last(arr: i32) -> i32
         let arr_last_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
-        let (arr_last_fn, _) = self.module.add_import_func("env", "__arr_last", arr_last_ty);
+        let (arr_last_fn, _) = self
+            .module
+            .add_import_func("env", "__arr_last", arr_last_ty);
         self.host_fn_ids.insert("__arr_last".into(), arr_last_fn);
 
         // __arr_min(arr: i32) -> i32
@@ -247,90 +288,157 @@ impl WasmCodegen {
 
         // __arr_sort(arr: i32) -> i32
         let arr_sort_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
-        let (arr_sort_fn, _) = self.module.add_import_func("env", "__arr_sort", arr_sort_ty);
+        let (arr_sort_fn, _) = self
+            .module
+            .add_import_func("env", "__arr_sort", arr_sort_ty);
         self.host_fn_ids.insert("__arr_sort".into(), arr_sort_fn);
 
         // __arr_dedup(arr: i32) -> i32
         let arr_dedup_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
-        let (arr_dedup_fn, _) = self.module.add_import_func("env", "__arr_dedup", arr_dedup_ty);
+        let (arr_dedup_fn, _) = self
+            .module
+            .add_import_func("env", "__arr_dedup", arr_dedup_ty);
         self.host_fn_ids.insert("__arr_dedup".into(), arr_dedup_fn);
 
         // __arr_join_str(arr: i32, sep: i32) -> i32
-        let arr_join_str_ty = self.module.types.add(&[ValType::I32, ValType::I32], &[ValType::I32]);
-        let (arr_join_str_fn, _) = self.module.add_import_func("env", "__arr_join_str", arr_join_str_ty);
-        self.host_fn_ids.insert("__arr_join_str".into(), arr_join_str_fn);
+        let arr_join_str_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let (arr_join_str_fn, _) =
+            self.module
+                .add_import_func("env", "__arr_join_str", arr_join_str_ty);
+        self.host_fn_ids
+            .insert("__arr_join_str".into(), arr_join_str_fn);
 
         // ── New string host imports ──────────────────────────────────
 
         // __str_contains(s: i32, sub: i32) -> i32
-        let str_contains_ty = self.module.types.add(&[ValType::I32, ValType::I32], &[ValType::I32]);
-        let (str_contains_fn, _) = self.module.add_import_func("env", "__str_contains", str_contains_ty);
-        self.host_fn_ids.insert("__str_contains".into(), str_contains_fn);
+        let str_contains_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let (str_contains_fn, _) =
+            self.module
+                .add_import_func("env", "__str_contains", str_contains_ty);
+        self.host_fn_ids
+            .insert("__str_contains".into(), str_contains_fn);
 
         // __str_starts_with(s: i32, prefix: i32) -> i32
-        let str_starts_with_ty = self.module.types.add(&[ValType::I32, ValType::I32], &[ValType::I32]);
-        let (str_starts_with_fn, _) = self.module.add_import_func("env", "__str_starts_with", str_starts_with_ty);
-        self.host_fn_ids.insert("__str_starts_with".into(), str_starts_with_fn);
+        let str_starts_with_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let (str_starts_with_fn, _) =
+            self.module
+                .add_import_func("env", "__str_starts_with", str_starts_with_ty);
+        self.host_fn_ids
+            .insert("__str_starts_with".into(), str_starts_with_fn);
 
         // __str_ends_with(s: i32, suffix: i32) -> i32
-        let str_ends_with_ty = self.module.types.add(&[ValType::I32, ValType::I32], &[ValType::I32]);
-        let (str_ends_with_fn, _) = self.module.add_import_func("env", "__str_ends_with", str_ends_with_ty);
-        self.host_fn_ids.insert("__str_ends_with".into(), str_ends_with_fn);
+        let str_ends_with_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let (str_ends_with_fn, _) =
+            self.module
+                .add_import_func("env", "__str_ends_with", str_ends_with_ty);
+        self.host_fn_ids
+            .insert("__str_ends_with".into(), str_ends_with_fn);
 
         // __str_trim(s: i32) -> i32
         let str_trim_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
-        let (str_trim_fn, _) = self.module.add_import_func("env", "__str_trim", str_trim_ty);
+        let (str_trim_fn, _) = self
+            .module
+            .add_import_func("env", "__str_trim", str_trim_ty);
         self.host_fn_ids.insert("__str_trim".into(), str_trim_fn);
 
         // __str_to_upper(s: i32) -> i32
         let str_to_upper_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
-        let (str_to_upper_fn, _) = self.module.add_import_func("env", "__str_to_upper", str_to_upper_ty);
-        self.host_fn_ids.insert("__str_to_upper".into(), str_to_upper_fn);
+        let (str_to_upper_fn, _) =
+            self.module
+                .add_import_func("env", "__str_to_upper", str_to_upper_ty);
+        self.host_fn_ids
+            .insert("__str_to_upper".into(), str_to_upper_fn);
 
         // __str_to_lower(s: i32) -> i32
         let str_to_lower_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
-        let (str_to_lower_fn, _) = self.module.add_import_func("env", "__str_to_lower", str_to_lower_ty);
-        self.host_fn_ids.insert("__str_to_lower".into(), str_to_lower_fn);
+        let (str_to_lower_fn, _) =
+            self.module
+                .add_import_func("env", "__str_to_lower", str_to_lower_ty);
+        self.host_fn_ids
+            .insert("__str_to_lower".into(), str_to_lower_fn);
 
         // __str_replace(s: i32, from: i32, to: i32) -> i32
-        let str_replace_ty = self.module.types.add(&[ValType::I32, ValType::I32, ValType::I32], &[ValType::I32]);
-        let (str_replace_fn, _) = self.module.add_import_func("env", "__str_replace", str_replace_ty);
-        self.host_fn_ids.insert("__str_replace".into(), str_replace_fn);
+        let str_replace_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32, ValType::I32], &[ValType::I32]);
+        let (str_replace_fn, _) =
+            self.module
+                .add_import_func("env", "__str_replace", str_replace_ty);
+        self.host_fn_ids
+            .insert("__str_replace".into(), str_replace_fn);
 
         // __str_split(s: i32, sep: i32) -> i32
-        let str_split_ty = self.module.types.add(&[ValType::I32, ValType::I32], &[ValType::I32]);
-        let (str_split_fn, _) = self.module.add_import_func("env", "__str_split", str_split_ty);
+        let str_split_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let (str_split_fn, _) = self
+            .module
+            .add_import_func("env", "__str_split", str_split_ty);
         self.host_fn_ids.insert("__str_split".into(), str_split_fn);
 
         // __str_char_count(s: i32) -> i32
         let str_char_count_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
-        let (str_char_count_fn, _) = self.module.add_import_func("env", "__str_char_count", str_char_count_ty);
-        self.host_fn_ids.insert("__str_char_count".into(), str_char_count_fn);
+        let (str_char_count_fn, _) =
+            self.module
+                .add_import_func("env", "__str_char_count", str_char_count_ty);
+        self.host_fn_ids
+            .insert("__str_char_count".into(), str_char_count_fn);
 
         // __str_is_empty(s: i32) -> i32
         let str_is_empty_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
-        let (str_is_empty_fn, _) = self.module.add_import_func("env", "__str_is_empty", str_is_empty_ty);
-        self.host_fn_ids.insert("__str_is_empty".into(), str_is_empty_fn);
+        let (str_is_empty_fn, _) =
+            self.module
+                .add_import_func("env", "__str_is_empty", str_is_empty_ty);
+        self.host_fn_ids
+            .insert("__str_is_empty".into(), str_is_empty_fn);
 
         // __str_repeat(s: i32, n: i32) -> i32
-        let str_repeat_ty = self.module.types.add(&[ValType::I32, ValType::I32], &[ValType::I32]);
-        let (str_repeat_fn, _) = self.module.add_import_func("env", "__str_repeat", str_repeat_ty);
-        self.host_fn_ids.insert("__str_repeat".into(), str_repeat_fn);
+        let str_repeat_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let (str_repeat_fn, _) = self
+            .module
+            .add_import_func("env", "__str_repeat", str_repeat_ty);
+        self.host_fn_ids
+            .insert("__str_repeat".into(), str_repeat_fn);
 
         // __print_f64(value_bits: i64)
         let print_f64_ty = self.module.types.add(&[ValType::I64], &[]);
-        let (print_f64_fn, _) = self.module.add_import_func("env", "__print_f64", print_f64_ty);
+        let (print_f64_fn, _) = self
+            .module
+            .add_import_func("env", "__print_f64", print_f64_ty);
         self.host_fn_ids.insert("__print_f64".into(), print_f64_fn);
 
         // __print_bool(val: i32)
         let print_bool_ty = self.module.types.add(&[ValType::I32], &[]);
-        let (print_bool_fn, _) = self.module.add_import_func("env", "__print_bool", print_bool_ty);
-        self.host_fn_ids.insert("__print_bool".into(), print_bool_fn);
+        let (print_bool_fn, _) = self
+            .module
+            .add_import_func("env", "__print_bool", print_bool_ty);
+        self.host_fn_ids
+            .insert("__print_bool".into(), print_bool_fn);
 
         // __arr_to_str(arr: i32) -> i32
         let arr_to_str_ty = self.module.types.add(&[ValType::I32], &[ValType::I32]);
-        let (arr_to_str_fn, _) = self.module.add_import_func("env", "__arr_to_str", arr_to_str_ty);
-        self.host_fn_ids.insert("__arr_to_str".into(), arr_to_str_fn);
+        let (arr_to_str_fn, _) = self
+            .module
+            .add_import_func("env", "__arr_to_str", arr_to_str_ty);
+        self.host_fn_ids
+            .insert("__arr_to_str".into(), arr_to_str_fn);
 
         // Map host imports.
         // __map_new() -> i32
@@ -339,12 +447,18 @@ impl WasmCodegen {
         self.host_fn_ids.insert("__map_new".into(), map_new_fn);
 
         // __map_set(map: i32, key: i32, val: i32)
-        let map_set_ty = self.module.types.add(&[ValType::I32, ValType::I32, ValType::I32], &[]);
+        let map_set_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32, ValType::I32], &[]);
         let (map_set_fn, _) = self.module.add_import_func("env", "__map_set", map_set_ty);
         self.host_fn_ids.insert("__map_set".into(), map_set_fn);
 
         // __map_get(map: i32, key: i32) -> i32
-        let map_get_ty = self.module.types.add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let map_get_ty = self
+            .module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
         let (map_get_fn, _) = self.module.add_import_func("env", "__map_get", map_get_ty);
         self.host_fn_ids.insert("__map_get".into(), map_get_fn);
 
@@ -365,20 +479,20 @@ impl WasmCodegen {
         {
             let i = ValType::I32;
             let specs: &[(&str, &[ValType], &[ValType])] = &[
-                ("__com_create",     &[i],             &[i]),
-                ("__com_release",    &[i],             &[]),
-                ("__com_has",        &[i, i],          &[i]),
-                ("__com_call_i0",    &[i, i],          &[i]),
-                ("__com_call_i1s",   &[i, i, i],       &[i]),
-                ("__com_call_i1i",   &[i, i, i],       &[i]),
-                ("__com_call_i2si",  &[i, i, i, i],    &[i]),
-                ("__com_call_s0",    &[i, i],          &[i]),
-                ("__com_call_s1s",   &[i, i, i],       &[i]),
-                ("__com_get_i",      &[i, i],          &[i]),
-                ("__com_get_s",      &[i, i],          &[i]),
-                ("__com_set_i",      &[i, i, i],       &[i]),
-                ("__com_set_s",      &[i, i, i],       &[i]),
-                ("__com_last_error", &[],              &[i]),
+                ("__com_create", &[i], &[i]),
+                ("__com_release", &[i], &[]),
+                ("__com_has", &[i, i], &[i]),
+                ("__com_call_i0", &[i, i], &[i]),
+                ("__com_call_i1s", &[i, i, i], &[i]),
+                ("__com_call_i1i", &[i, i, i], &[i]),
+                ("__com_call_i2si", &[i, i, i, i], &[i]),
+                ("__com_call_s0", &[i, i], &[i]),
+                ("__com_call_s1s", &[i, i, i], &[i]),
+                ("__com_get_i", &[i, i], &[i]),
+                ("__com_get_s", &[i, i], &[i]),
+                ("__com_set_i", &[i, i, i], &[i]),
+                ("__com_set_s", &[i, i, i], &[i]),
+                ("__com_last_error", &[], &[i]),
             ];
             for (name, params, results) in specs {
                 let ty = self.module.types.add(params, results);
@@ -451,8 +565,7 @@ impl WasmCodegen {
                 other => vec![ir_to_val(other)],
             };
 
-            let mut builder =
-                FunctionBuilder::new(&mut self.module.types, &param_tys, &result_tys);
+            let mut builder = FunctionBuilder::new(&mut self.module.types, &param_tys, &result_tys);
             builder.name(func.name.to_string());
 
             // Allocate param locals.
@@ -488,7 +601,12 @@ impl WasmCodegen {
             }
             let fid = builder.finish(param_locals, &mut self.module.funcs);
             self.fn_ids.insert(func.name.clone(), fid);
-            registrations.push(FuncReg { fid, all_locals, scratch_locals, result_tys });
+            registrations.push(FuncReg {
+                fid,
+                all_locals,
+                scratch_locals,
+                result_tys,
+            });
         }
 
         // Pass 2: Now that all FunctionIds are registered, replace each
@@ -648,7 +766,11 @@ fn emit_stmt(stmt: &IrStmt, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
             }
             body.return_();
         }
-        IrStmt::If { condition, then_body, else_body } => {
+        IrStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
             emit_expr(condition, body, ctx);
             body.if_else(
                 None, // no result type for statement if
@@ -705,7 +827,11 @@ fn emit_stmt_with_labels(
         IrStmt::Continue => {
             body.br(continue_target);
         }
-        IrStmt::If { condition, then_body, else_body } => {
+        IrStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
             emit_expr(condition, body, ctx);
             body.if_else(
                 None,
@@ -799,7 +925,9 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
                 body.i32_const(0);
             }
         }
-        IrExpr::HostCall { name, args, ret, .. } => {
+        IrExpr::HostCall {
+            name, args, ret, ..
+        } => {
             for arg in args {
                 emit_expr(arg, body, ctx);
             }
@@ -818,7 +946,11 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
                 body.i32_const(0);
             }
         }
-        IrExpr::IfExpr { condition, then_expr, else_expr } => {
+        IrExpr::IfExpr {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
             emit_expr(condition, body, ctx);
             body.if_else(
                 Some(ValType::I32),
@@ -850,7 +982,10 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
         }
 
         // ── Struct operations ─────────────────────────────────────────
-        IrExpr::StructNew { layout_index, fields } => {
+        IrExpr::StructNew {
+            layout_index,
+            fields,
+        } => {
             if let Some(layout) = ctx.struct_layouts.get(*layout_index as usize) {
                 let memory = ctx.memory;
                 let total_size = 4 + layout.size; // 4 bytes refcount header + struct data
@@ -859,20 +994,26 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
                 // StructNew in a field expression gets the next slot so it
                 // can't clobber our saved alloc_addr.
                 let depth = ctx.struct_depth.get();
-                let scratch = ctx.struct_scratch.get(depth).copied().expect(
-                    "StructNew nested deeper than preallocated scratch pool",
-                );
+                let scratch = ctx
+                    .struct_scratch
+                    .get(depth)
+                    .copied()
+                    .expect("StructNew nested deeper than preallocated scratch pool");
                 ctx.struct_depth.set(depth + 1);
 
                 // alloc_addr = heap_ptr; heap_ptr += total_size
-                body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
-                body.local_tee(scratch);               // [alloc_addr], scratch=alloc_addr
+                body.instr(walrus::ir::GlobalGet {
+                    global: ctx.heap_ptr,
+                });
+                body.local_tee(scratch); // [alloc_addr], scratch=alloc_addr
                 body.i32_const(total_size as i32);
                 body.binop(walrus::ir::BinaryOp::I32Add);
-                body.instr(walrus::ir::GlobalSet { global: ctx.heap_ptr });
+                body.instr(walrus::ir::GlobalSet {
+                    global: ctx.heap_ptr,
+                });
 
                 // Store refcount = 1 at alloc_addr.
-                body.local_get(scratch);               // [alloc_addr]
+                body.local_get(scratch); // [alloc_addr]
                 body.i32_const(1);
                 emit_store(body, memory, IrType::I32, 0);
 
@@ -902,7 +1043,11 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
                 body.i32_const(0);
             }
         }
-        IrExpr::FieldGet { object, layout_index, field_index } => {
+        IrExpr::FieldGet {
+            object,
+            layout_index,
+            field_index,
+        } => {
             emit_expr(object, body, ctx); // struct ptr on stack
             if let Some(layout) = ctx.struct_layouts.get(*layout_index as usize) {
                 if let Some(fl) = layout.fields.get(*field_index as usize) {
@@ -919,7 +1064,12 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
                 body.i32_const(0);
             }
         }
-        IrExpr::FieldSet { object, layout_index, field_index, value } => {
+        IrExpr::FieldSet {
+            object,
+            layout_index,
+            field_index,
+            value,
+        } => {
             emit_expr(object, body, ctx); // struct ptr
             if let Some(layout) = ctx.struct_layouts.get(*layout_index as usize) {
                 if let Some(fl) = layout.fields.get(*field_index as usize) {
@@ -940,12 +1090,18 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
         // ── Heap allocation (bump allocator) ─────────────────────────
         IrExpr::HeapAlloc { size } => {
             // result = heap_ptr; heap_ptr += size
-            body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
+            body.instr(walrus::ir::GlobalGet {
+                global: ctx.heap_ptr,
+            });
             // Advance heap_ptr
-            body.instr(walrus::ir::GlobalGet { global: ctx.heap_ptr });
+            body.instr(walrus::ir::GlobalGet {
+                global: ctx.heap_ptr,
+            });
             body.i32_const(*size as i32);
             body.binop(walrus::ir::BinaryOp::I32Add);
-            body.instr(walrus::ir::GlobalSet { global: ctx.heap_ptr });
+            body.instr(walrus::ir::GlobalSet {
+                global: ctx.heap_ptr,
+            });
             // Stack: [old heap_ptr] = allocated address
         }
 
@@ -960,7 +1116,12 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
         }
 
         // ── Heap store ───────────────────────────────────────────────
-        IrExpr::HeapStore { addr, offset, value, ty } => {
+        IrExpr::HeapStore {
+            addr,
+            offset,
+            value,
+            ty,
+        } => {
             emit_expr(addr, body, ctx);
             if *offset > 0 {
                 body.i32_const(*offset as i32);
@@ -1012,9 +1173,7 @@ fn emit_expr(expr: &IrExpr, body: &mut InstrSeqBuilder, ctx: &EmitCtx) {
         }
 
         // Enum/indirect call — placeholder: push 0
-        IrExpr::EnumTag(_)
-        | IrExpr::EnumPayload { .. }
-        | IrExpr::CallIndirect { .. } => {
+        IrExpr::EnumTag(_) | IrExpr::EnumPayload { .. } | IrExpr::CallIndirect { .. } => {
             body.i32_const(0);
         }
     }
@@ -1138,11 +1297,21 @@ fn emit_unop(op: IrUnaryOp, body: &mut InstrSeqBuilder) {
 
 fn emit_default_val(body: &mut InstrSeqBuilder, vt: ValType) {
     match vt {
-        ValType::I32 => { body.i32_const(0); }
-        ValType::I64 => { body.i64_const(0); }
-        ValType::F32 => { body.f32_const(0.0); }
-        ValType::F64 => { body.f64_const(0.0); }
-        _ => { body.i32_const(0); }
+        ValType::I32 => {
+            body.i32_const(0);
+        }
+        ValType::I64 => {
+            body.i64_const(0);
+        }
+        ValType::F32 => {
+            body.f32_const(0.0);
+        }
+        ValType::F64 => {
+            body.f64_const(0.0);
+        }
+        _ => {
+            body.i32_const(0);
+        }
     }
 }
 
@@ -1183,10 +1352,18 @@ fn emit_store(body: &mut InstrSeqBuilder, memory: MemoryId, ty: IrType, offset: 
             body.store(memory, StoreKind::F32, MemArg { align: 4, offset });
         }
         IrType::I64 => {
-            body.store(memory, StoreKind::I64 { atomic: false }, MemArg { align: 8, offset });
+            body.store(
+                memory,
+                StoreKind::I64 { atomic: false },
+                MemArg { align: 8, offset },
+            );
         }
         _ => {
-            body.store(memory, StoreKind::I32 { atomic: false }, MemArg { align: 4, offset });
+            body.store(
+                memory,
+                StoreKind::I32 { atomic: false },
+                MemArg { align: 4, offset },
+            );
         }
     }
 }
@@ -1203,10 +1380,18 @@ fn emit_load(body: &mut InstrSeqBuilder, memory: MemoryId, ty: IrType, offset: u
             body.load(memory, LoadKind::F32, MemArg { align: 4, offset });
         }
         IrType::I64 => {
-            body.load(memory, LoadKind::I64 { atomic: false }, MemArg { align: 8, offset });
+            body.load(
+                memory,
+                LoadKind::I64 { atomic: false },
+                MemArg { align: 8, offset },
+            );
         }
         _ => {
-            body.load(memory, LoadKind::I32 { atomic: false }, MemArg { align: 4, offset });
+            body.load(
+                memory,
+                LoadKind::I32 { atomic: false },
+                MemArg { align: 4, offset },
+            );
         }
     }
 }

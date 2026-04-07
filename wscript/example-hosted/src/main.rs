@@ -17,7 +17,10 @@ fn main() {
     // Register a user host function that scripts call by name.
     engine.register_fn_raw(
         "log_event",
-        vec![ParamInfo { name: "msg".into(), ty: ScriptType::Str }],
+        vec![ParamInfo {
+            name: "msg".into(),
+            ty: ScriptType::Str,
+        }],
         ScriptType::Unit,
         |args| {
             if let Some(Value::Str(s)) = args.first().cloned() {
@@ -66,17 +69,23 @@ fn main() {
     .expect("write name/score");
 
     // Script reads what the host wrote — linear memory persists.
-    let score = vm.call("read_score", &[Value::I32(state_ptr)]).expect("read_score");
+    let score = vm
+        .call("read_score", &[Value::I32(state_ptr)])
+        .expect("read_score");
     println!("  script read_score -> {score:?}");
     assert_eq!(score, Some(Value::I32(42)));
 
     // Call a script fn that invokes the user host fn log_event.
-    let hp = vm.call("announce", &[Value::I32(state_ptr)]).expect("announce");
+    let hp = vm
+        .call("announce", &[Value::I32(state_ptr)])
+        .expect("announce");
     println!("  announce -> {hp:?}");
     assert_eq!(hp, Some(Value::I32(100)));
 
     // Full recursive read via reflection.
-    let view = vm.read_struct_at(state_ptr, "PlayerState").expect("read_struct");
+    let view = vm
+        .read_struct_at(state_ptr, "PlayerState")
+        .expect("read_struct");
     print_view(&view, 1);
 
     // Validate every primitive field.
@@ -111,7 +120,8 @@ fn main() {
     // Script declares `let mut tick_count: i32 = 0;` and
     // `let mut difficulty: i32 = 1;`. Host pokes `difficulty` before each
     // tick, script updates `tick_count`, host reads it back.
-    vm.set_global("difficulty", Value::I32(3)).expect("set difficulty");
+    vm.set_global("difficulty", Value::I32(3))
+        .expect("set difficulty");
     assert_eq!(
         vm.get_global("difficulty").unwrap(),
         Value::I32(3),
@@ -132,7 +142,9 @@ fn main() {
         .expect("damage");
     println!("  damage(25) -> hp {hp_after:?}");
     assert_eq!(hp_after, Some(Value::I32(75)));
-    let view_dmg = vm.read_struct_at(state_ptr, "PlayerState").expect("re-read");
+    let view_dmg = vm
+        .read_struct_at(state_ptr, "PlayerState")
+        .expect("re-read");
     if let Some(FieldValue::Primitive(Value::I32(h))) = view_dmg.get("hp") {
         assert_eq!(*h, 75, "script-side field mutation must survive in memory");
     }
@@ -146,9 +158,14 @@ fn main() {
     println!("  second init_state -> ptr {state2} (distinct)");
 
     // Original state must still be intact because the Vm kept memory alive.
-    let view_again = vm.read_struct_at(state_ptr, "PlayerState").expect("re-read");
+    let view_again = vm
+        .read_struct_at(state_ptr, "PlayerState")
+        .expect("re-read");
     if let Some(FieldValue::Primitive(Value::I32(s))) = view_again.get("score") {
-        assert_eq!(*s, 42, "first state score should survive a second allocation");
+        assert_eq!(
+            *s, 42,
+            "first state score should survive a second allocation"
+        );
     }
 
     // ── Struct-typed top-level global. ──────────────────────────────
@@ -157,7 +174,10 @@ fn main() {
     // write_global_struct.
     println!("  --- global structs ---");
     for info in vm.globals() {
-        println!("    global {} : {:?} (mutable={})", info.name, info.kind, info.mutable);
+        println!(
+            "    global {} : {:?} (mutable={})",
+            info.name, info.kind, info.mutable
+        );
     }
     let world_hp = vm.call("world_hp", &[]).expect("world_hp");
     println!("  world_hp -> {world_hp:?}");
@@ -169,9 +189,10 @@ fn main() {
         assert_eq!(name, "world");
     }
     if let Some(FieldValue::Nested(inner)) = world_view.get("inner")
-        && let Some(FieldValue::Primitive(Value::Bool(flag))) = inner.get("flag") {
-            assert!(*flag, "nested init'd flag must be true");
-        }
+        && let Some(FieldValue::Primitive(Value::Bool(flag))) = inner.get("flag")
+    {
+        assert!(*flag, "nested init'd flag must be true");
+    }
 
     vm.write_global_struct(
         "world",
@@ -208,7 +229,11 @@ fn main() {
         _ => panic!(),
     };
     let score2 = vm2.call("read_score", &[Value::I32(ptr2)]).expect("read");
-    assert_eq!(score2, Some(Value::I32(0)), "fresh Vm must start with score=0");
+    assert_eq!(
+        score2,
+        Some(Value::I32(0)),
+        "fresh Vm must start with score=0"
+    );
     println!("  fresh Vm read_score -> {score2:?}");
     let tc2 = vm2.get_global("tick_count").expect("tick_count global");
     assert_eq!(tc2, Value::I32(0), "fresh Vm must reset tick_count global");
@@ -217,7 +242,11 @@ fn main() {
     let hp2 = vm2.call("world_hp", &[]).expect("world_hp");
     assert_eq!(hp2, Some(Value::I32(50)), "fresh Vm must reset world.hp");
     let g2 = vm2.get_global("greeting").unwrap();
-    assert_eq!(g2, Value::Str("hello".into()), "fresh Vm must reset greeting");
+    assert_eq!(
+        g2,
+        Value::Str("hello".into()),
+        "fresh Vm must reset greeting"
+    );
     println!("  fresh Vm world_hp -> {hp2:?}, greeting -> {g2:?}");
 
     println!("OK");

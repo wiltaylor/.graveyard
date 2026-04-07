@@ -59,40 +59,41 @@ impl WscriptDapServer {
 
             // Parse Content-Length header and JSON body
             if let Some(json_str) = extract_dap_body(&data)
-                && let Ok(msg) = serde_json::from_str::<serde_json::Value>(json_str) {
-                    let command = msg["command"].as_str().unwrap_or("");
-                    let request_seq = msg["seq"].as_i64().unwrap_or(0);
+                && let Ok(msg) = serde_json::from_str::<serde_json::Value>(json_str)
+            {
+                let command = msg["command"].as_str().unwrap_or("");
+                let request_seq = msg["seq"].as_i64().unwrap_or(0);
 
-                    log::debug!("DAP request: {} (seq={})", command, request_seq);
+                log::debug!("DAP request: {} (seq={})", command, request_seq);
 
-                    let response = match command {
-                        "initialize" => self.handle_initialize(request_seq),
-                        "launch" => self.handle_launch(request_seq, &msg),
-                        "setBreakpoints" => self.handle_set_breakpoints(request_seq, &msg),
-                        "configurationDone" => self.handle_configuration_done(request_seq),
-                        "threads" => self.handle_threads(request_seq),
-                        "stackTrace" => self.handle_stack_trace(request_seq),
-                        "scopes" => self.handle_scopes(request_seq),
-                        "variables" => self.handle_variables(request_seq),
-                        "continue" => self.handle_continue(request_seq),
-                        "next" => self.handle_next(request_seq),
-                        "stepIn" => self.handle_step_in(request_seq),
-                        "stepOut" => self.handle_step_out(request_seq),
-                        "disconnect" => {
-                            let resp = self.make_response(request_seq, command, serde_json::json!({}));
-                            let encoded = encode_dap_message(&resp);
-                            stream.write_all(encoded.as_bytes()).await?;
-                            break;
-                        }
-                        _ => {
-                            log::warn!("Unhandled DAP command: {}", command);
-                            self.make_response(request_seq, command, serde_json::json!({}))
-                        }
-                    };
+                let response = match command {
+                    "initialize" => self.handle_initialize(request_seq),
+                    "launch" => self.handle_launch(request_seq, &msg),
+                    "setBreakpoints" => self.handle_set_breakpoints(request_seq, &msg),
+                    "configurationDone" => self.handle_configuration_done(request_seq),
+                    "threads" => self.handle_threads(request_seq),
+                    "stackTrace" => self.handle_stack_trace(request_seq),
+                    "scopes" => self.handle_scopes(request_seq),
+                    "variables" => self.handle_variables(request_seq),
+                    "continue" => self.handle_continue(request_seq),
+                    "next" => self.handle_next(request_seq),
+                    "stepIn" => self.handle_step_in(request_seq),
+                    "stepOut" => self.handle_step_out(request_seq),
+                    "disconnect" => {
+                        let resp = self.make_response(request_seq, command, serde_json::json!({}));
+                        let encoded = encode_dap_message(&resp);
+                        stream.write_all(encoded.as_bytes()).await?;
+                        break;
+                    }
+                    _ => {
+                        log::warn!("Unhandled DAP command: {}", command);
+                        self.make_response(request_seq, command, serde_json::json!({}))
+                    }
+                };
 
-                    let encoded = encode_dap_message(&response);
-                    stream.write_all(encoded.as_bytes()).await?;
-                }
+                let encoded = encode_dap_message(&response);
+                stream.write_all(encoded.as_bytes()).await?;
+            }
         }
 
         Ok(())
@@ -132,9 +133,13 @@ impl WscriptDapServer {
                 }
             }
         }
-        self.make_response(seq, "setBreakpoints", serde_json::json!({
-            "breakpoints": verified_breakpoints,
-        }))
+        self.make_response(
+            seq,
+            "setBreakpoints",
+            serde_json::json!({
+                "breakpoints": verified_breakpoints,
+            }),
+        )
     }
 
     fn handle_configuration_done(&mut self, seq: i64) -> String {
@@ -142,12 +147,16 @@ impl WscriptDapServer {
     }
 
     fn handle_threads(&self, seq: i64) -> String {
-        self.make_response(seq, "threads", serde_json::json!({
-            "threads": [{
-                "id": 1,
-                "name": "main"
-            }]
-        }))
+        self.make_response(
+            seq,
+            "threads",
+            serde_json::json!({
+                "threads": [{
+                    "id": 1,
+                    "name": "main"
+                }]
+            }),
+        )
     }
 
     fn handle_stack_trace(&self, seq: i64) -> String {
@@ -161,33 +170,49 @@ impl WscriptDapServer {
                 "path": self.source_path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
             }
         })];
-        self.make_response(seq, "stackTrace", serde_json::json!({
-            "stackFrames": frames,
-            "totalFrames": frames.len(),
-        }))
+        self.make_response(
+            seq,
+            "stackTrace",
+            serde_json::json!({
+                "stackFrames": frames,
+                "totalFrames": frames.len(),
+            }),
+        )
     }
 
     fn handle_scopes(&self, seq: i64) -> String {
-        self.make_response(seq, "scopes", serde_json::json!({
-            "scopes": [{
-                "name": "Locals",
-                "variablesReference": 1,
-                "expensive": false,
-            }]
-        }))
+        self.make_response(
+            seq,
+            "scopes",
+            serde_json::json!({
+                "scopes": [{
+                    "name": "Locals",
+                    "variablesReference": 1,
+                    "expensive": false,
+                }]
+            }),
+        )
     }
 
     fn handle_variables(&self, seq: i64) -> String {
         // Return empty variables for now
-        self.make_response(seq, "variables", serde_json::json!({
-            "variables": []
-        }))
+        self.make_response(
+            seq,
+            "variables",
+            serde_json::json!({
+                "variables": []
+            }),
+        )
     }
 
     fn handle_continue(&self, seq: i64) -> String {
-        self.make_response(seq, "continue", serde_json::json!({
-            "allThreadsContinued": true,
-        }))
+        self.make_response(
+            seq,
+            "continue",
+            serde_json::json!({
+                "allThreadsContinued": true,
+            }),
+        )
     }
 
     fn handle_next(&self, seq: i64) -> String {
@@ -211,7 +236,8 @@ impl WscriptDapServer {
             "success": true,
             "command": command,
             "body": body,
-        }).to_string()
+        })
+        .to_string()
     }
 }
 

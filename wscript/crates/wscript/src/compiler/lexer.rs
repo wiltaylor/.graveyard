@@ -2,7 +2,7 @@
 
 use smol_str::SmolStr;
 
-use super::token::{Token, TokenKind, Span};
+use super::token::{Span, Token, TokenKind};
 
 // ---------------------------------------------------------------------------
 // Lexer mode stack (for template string interpolation)
@@ -222,55 +222,90 @@ impl<'a> Lexer<'a> {
     // Operators & punctuation
     // ------------------------------------------------------------------
 
-    fn lex_operator_or_punct(
-        &mut self,
-        start: usize,
-        start_line: u32,
-        start_col: u32,
-    ) -> Token {
+    fn lex_operator_or_punct(&mut self, start: usize, start_line: u32, start_col: u32) -> Token {
         let ch = self.advance_char();
         let kind = match ch {
             '+' => {
-                if self.current() == '=' { self.advance(); TokenKind::PlusEq }
-                else { TokenKind::Plus }
+                if self.current() == '=' {
+                    self.advance();
+                    TokenKind::PlusEq
+                } else {
+                    TokenKind::Plus
+                }
             }
             '-' => {
-                if self.current() == '>' { self.advance(); TokenKind::Arrow }
-                else if self.current() == '=' { self.advance(); TokenKind::MinusEq }
-                else { TokenKind::Minus }
+                if self.current() == '>' {
+                    self.advance();
+                    TokenKind::Arrow
+                } else if self.current() == '=' {
+                    self.advance();
+                    TokenKind::MinusEq
+                } else {
+                    TokenKind::Minus
+                }
             }
             '*' => {
-                if self.current() == '=' { self.advance(); TokenKind::StarEq }
-                else { TokenKind::Star }
+                if self.current() == '=' {
+                    self.advance();
+                    TokenKind::StarEq
+                } else {
+                    TokenKind::Star
+                }
             }
             '/' => {
                 // Comments are handled before we get here.
-                if self.current() == '=' { self.advance(); TokenKind::SlashEq }
-                else { TokenKind::Slash }
+                if self.current() == '=' {
+                    self.advance();
+                    TokenKind::SlashEq
+                } else {
+                    TokenKind::Slash
+                }
             }
             '%' => {
-                if self.current() == '=' { self.advance(); TokenKind::PercentEq }
-                else { TokenKind::Percent }
+                if self.current() == '=' {
+                    self.advance();
+                    TokenKind::PercentEq
+                } else {
+                    TokenKind::Percent
+                }
             }
             '=' => {
-                if self.current() == '=' { self.advance(); TokenKind::EqEq }
-                else if self.current() == '>' { self.advance(); TokenKind::FatArrow }
-                else { TokenKind::Eq }
+                if self.current() == '=' {
+                    self.advance();
+                    TokenKind::EqEq
+                } else if self.current() == '>' {
+                    self.advance();
+                    TokenKind::FatArrow
+                } else {
+                    TokenKind::Eq
+                }
             }
             '!' => {
-                if self.current() == '=' { self.advance(); TokenKind::BangEq }
-                else { TokenKind::Bang }
+                if self.current() == '=' {
+                    self.advance();
+                    TokenKind::BangEq
+                } else {
+                    TokenKind::Bang
+                }
             }
             '<' => {
                 // <<=  <=>  <<  <=  <
                 if self.current() == '<' {
                     self.advance();
-                    if self.current() == '=' { self.advance(); TokenKind::LtLtEq }
-                    else { TokenKind::LtLt }
+                    if self.current() == '=' {
+                        self.advance();
+                        TokenKind::LtLtEq
+                    } else {
+                        TokenKind::LtLt
+                    }
                 } else if self.current() == '=' {
                     self.advance();
-                    if self.current() == '>' { self.advance(); TokenKind::Spaceship }
-                    else { TokenKind::LtEq }
+                    if self.current() == '>' {
+                        self.advance();
+                        TokenKind::Spaceship
+                    } else {
+                        TokenKind::LtEq
+                    }
                 } else {
                     TokenKind::Lt
                 }
@@ -279,8 +314,12 @@ impl<'a> Lexer<'a> {
                 // >>=  >>  >=  >
                 if self.current() == '>' {
                     self.advance();
-                    if self.current() == '=' { self.advance(); TokenKind::GtGtEq }
-                    else { TokenKind::GtGt }
+                    if self.current() == '=' {
+                        self.advance();
+                        TokenKind::GtGtEq
+                    } else {
+                        TokenKind::GtGt
+                    }
                 } else if self.current() == '=' {
                     self.advance();
                     TokenKind::GtEq
@@ -289,33 +328,59 @@ impl<'a> Lexer<'a> {
                 }
             }
             '&' => {
-                if self.current() == '&' { self.advance(); TokenKind::AmpAmp }
-                else if self.current() == '=' { self.advance(); TokenKind::AmpEq }
-                else { TokenKind::Amp }
+                if self.current() == '&' {
+                    self.advance();
+                    TokenKind::AmpAmp
+                } else if self.current() == '=' {
+                    self.advance();
+                    TokenKind::AmpEq
+                } else {
+                    TokenKind::Amp
+                }
             }
             '|' => {
-                if self.current() == '|' { self.advance(); TokenKind::PipePipe }
-                else if self.current() == '>' { self.advance(); TokenKind::PipeGt }
-                else if self.current() == '=' { self.advance(); TokenKind::PipeEq }
-                else { TokenKind::Pipe }
+                if self.current() == '|' {
+                    self.advance();
+                    TokenKind::PipePipe
+                } else if self.current() == '>' {
+                    self.advance();
+                    TokenKind::PipeGt
+                } else if self.current() == '=' {
+                    self.advance();
+                    TokenKind::PipeEq
+                } else {
+                    TokenKind::Pipe
+                }
             }
             '^' => {
-                if self.current() == '=' { self.advance(); TokenKind::CaretEq }
-                else { TokenKind::Caret }
+                if self.current() == '=' {
+                    self.advance();
+                    TokenKind::CaretEq
+                } else {
+                    TokenKind::Caret
+                }
             }
             '~' => TokenKind::Tilde,
             '.' => {
                 if self.current() == '.' {
                     self.advance();
-                    if self.current() == '=' { self.advance(); TokenKind::DotDotEq }
-                    else { TokenKind::DotDot }
+                    if self.current() == '=' {
+                        self.advance();
+                        TokenKind::DotDotEq
+                    } else {
+                        TokenKind::DotDot
+                    }
                 } else {
                     TokenKind::Dot
                 }
             }
             ':' => {
-                if self.current() == ':' { self.advance(); TokenKind::ColonColon }
-                else { TokenKind::Colon }
+                if self.current() == ':' {
+                    self.advance();
+                    TokenKind::ColonColon
+                } else {
+                    TokenKind::Colon
+                }
             }
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
@@ -323,7 +388,9 @@ impl<'a> Lexer<'a> {
                 // Track brace depth when inside a template expression.
                 if let LexerMode::TemplateExpr { brace_depth } = self.current_mode() {
                     self.pop_mode();
-                    self.push_mode(LexerMode::TemplateExpr { brace_depth: brace_depth + 1 });
+                    self.push_mode(LexerMode::TemplateExpr {
+                        brace_depth: brace_depth + 1,
+                    });
                 }
                 TokenKind::LBrace
             }
@@ -334,10 +401,17 @@ impl<'a> Lexer<'a> {
                         self.pop_mode(); // pop TemplateExpr
                         // We should now be back in Template mode (pushed when we
                         // started the interpolation).  Emit TemplateExprEnd.
-                        return self.make_token(TokenKind::TemplateExprEnd, start, start_line, start_col);
+                        return self.make_token(
+                            TokenKind::TemplateExprEnd,
+                            start,
+                            start_line,
+                            start_col,
+                        );
                     } else {
                         self.pop_mode();
-                        self.push_mode(LexerMode::TemplateExpr { brace_depth: brace_depth - 1 });
+                        self.push_mode(LexerMode::TemplateExpr {
+                            brace_depth: brace_depth - 1,
+                        });
                     }
                 }
                 TokenKind::RBrace
@@ -359,12 +433,7 @@ impl<'a> Lexer<'a> {
     // Line comments  (// ... and /// ...)
     // ------------------------------------------------------------------
 
-    fn lex_line_comment(
-        &mut self,
-        start: usize,
-        start_line: u32,
-        start_col: u32,
-    ) -> Token {
+    fn lex_line_comment(&mut self, start: usize, start_line: u32, start_col: u32) -> Token {
         // We are positioned at '/'.  Peek is '/'.
         self.advance(); // consume first '/'
         self.advance(); // consume second '/'
@@ -396,12 +465,7 @@ impl<'a> Lexer<'a> {
     // Block comments  (/* ... */ and /** ... */)
     // ------------------------------------------------------------------
 
-    fn lex_block_comment(
-        &mut self,
-        start: usize,
-        start_line: u32,
-        start_col: u32,
-    ) -> Token {
+    fn lex_block_comment(&mut self, start: usize, start_line: u32, start_col: u32) -> Token {
         self.advance(); // consume '/'
         self.advance(); // consume '*'
 
@@ -438,7 +502,11 @@ impl<'a> Lexer<'a> {
 
         if is_doc {
             // content_start .. (self.pos - 2) (before closing */)
-            let end_content = if self.pos >= 2 { self.pos - 2 } else { self.pos };
+            let end_content = if self.pos >= 2 {
+                self.pos - 2
+            } else {
+                self.pos
+            };
             let raw = &self.source[content_start..end_content];
             let content = raw.trim().to_string();
             return self.make_token(TokenKind::DocComment(content), start, start_line, start_col);
@@ -452,12 +520,7 @@ impl<'a> Lexer<'a> {
     // String literals
     // ------------------------------------------------------------------
 
-    fn lex_string(
-        &mut self,
-        start: usize,
-        start_line: u32,
-        start_col: u32,
-    ) -> Token {
+    fn lex_string(&mut self, start: usize, start_line: u32, start_col: u32) -> Token {
         self.advance(); // consume opening '"'
         let mut content = String::new();
 
@@ -473,12 +536,30 @@ impl<'a> Lexer<'a> {
                     );
                 }
                 match self.current() {
-                    'n' => { content.push('\n'); self.advance(); }
-                    't' => { content.push('\t'); self.advance(); }
-                    'r' => { content.push('\r'); self.advance(); }
-                    '\\' => { content.push('\\'); self.advance(); }
-                    '"' => { content.push('"'); self.advance(); }
-                    '0' => { content.push('\0'); self.advance(); }
+                    'n' => {
+                        content.push('\n');
+                        self.advance();
+                    }
+                    't' => {
+                        content.push('\t');
+                        self.advance();
+                    }
+                    'r' => {
+                        content.push('\r');
+                        self.advance();
+                    }
+                    '\\' => {
+                        content.push('\\');
+                        self.advance();
+                    }
+                    '"' => {
+                        content.push('"');
+                        self.advance();
+                    }
+                    '0' => {
+                        content.push('\0');
+                        self.advance();
+                    }
                     'x' => {
                         self.advance(); // skip 'x'
                         match self.lex_hex_escape(2) {
@@ -535,12 +616,7 @@ impl<'a> Lexer<'a> {
     // Character literals
     // ------------------------------------------------------------------
 
-    fn lex_char(
-        &mut self,
-        start: usize,
-        start_line: u32,
-        start_col: u32,
-    ) -> Token {
+    fn lex_char(&mut self, start: usize, start_line: u32, start_col: u32) -> Token {
         self.advance(); // consume opening '\''
 
         if self.at_end() || self.current() == '\'' {
@@ -563,12 +639,30 @@ impl<'a> Lexer<'a> {
                 );
             }
             match self.current() {
-                'n' => { self.advance(); '\n' }
-                't' => { self.advance(); '\t' }
-                'r' => { self.advance(); '\r' }
-                '\\' => { self.advance(); '\\' }
-                '\'' => { self.advance(); '\'' }
-                '0' => { self.advance(); '\0' }
+                'n' => {
+                    self.advance();
+                    '\n'
+                }
+                't' => {
+                    self.advance();
+                    '\t'
+                }
+                'r' => {
+                    self.advance();
+                    '\r'
+                }
+                '\\' => {
+                    self.advance();
+                    '\\'
+                }
+                '\'' => {
+                    self.advance();
+                    '\''
+                }
+                '0' => {
+                    self.advance();
+                    '\0'
+                }
                 'x' => {
                     self.advance(); // skip 'x'
                     match self.lex_hex_escape(2) {
@@ -597,7 +691,10 @@ impl<'a> Lexer<'a> {
                         }
                     }
                 }
-                c => { self.advance(); c }
+                c => {
+                    self.advance();
+                    c
+                }
             }
         } else {
             let c = self.current();
@@ -684,12 +781,7 @@ impl<'a> Lexer<'a> {
     // Number literals
     // ------------------------------------------------------------------
 
-    fn lex_number(
-        &mut self,
-        start: usize,
-        start_line: u32,
-        start_col: u32,
-    ) -> Token {
+    fn lex_number(&mut self, start: usize, start_line: u32, start_col: u32) -> Token {
         // Check for prefix: 0x, 0b, 0o
         if self.current() == '0' {
             match self.peek() {
@@ -762,12 +854,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_hex_int(
-        &mut self,
-        start: usize,
-        start_line: u32,
-        start_col: u32,
-    ) -> Token {
+    fn lex_hex_int(&mut self, start: usize, start_line: u32, start_col: u32) -> Token {
         self.advance(); // '0'
         self.advance(); // 'x'
         if self.at_end() || !self.current().is_ascii_hexdigit() {
@@ -794,12 +881,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_bin_int(
-        &mut self,
-        start: usize,
-        start_line: u32,
-        start_col: u32,
-    ) -> Token {
+    fn lex_bin_int(&mut self, start: usize, start_line: u32, start_col: u32) -> Token {
         self.advance(); // '0'
         self.advance(); // 'b'
         if self.at_end() || !matches!(self.current(), '0' | '1') {
@@ -826,12 +908,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_oct_int(
-        &mut self,
-        start: usize,
-        start_line: u32,
-        start_col: u32,
-    ) -> Token {
+    fn lex_oct_int(&mut self, start: usize, start_line: u32, start_col: u32) -> Token {
         self.advance(); // '0'
         self.advance(); // 'o'
         if self.at_end() || !matches!(self.current(), '0'..='7') {
@@ -862,12 +939,7 @@ impl<'a> Lexer<'a> {
     // Identifiers & keywords
     // ------------------------------------------------------------------
 
-    fn lex_ident(
-        &mut self,
-        start: usize,
-        start_line: u32,
-        start_col: u32,
-    ) -> Token {
+    fn lex_ident(&mut self, start: usize, start_line: u32, start_col: u32) -> Token {
         while !self.at_end() && is_ident_continue(self.current()) {
             self.advance();
         }
@@ -897,12 +969,7 @@ impl<'a> Lexer<'a> {
     // ------------------------------------------------------------------
 
     /// Called when we see a backtick in Normal or TemplateExpr mode.
-    fn lex_template_start(
-        &mut self,
-        start: usize,
-        start_line: u32,
-        start_col: u32,
-    ) -> Token {
+    fn lex_template_start(&mut self, start: usize, start_line: u32, start_col: u32) -> Token {
         self.advance(); // consume '`'
         self.push_mode(LexerMode::Template);
         self.make_token(TokenKind::TemplateLitStart, start, start_line, start_col)
@@ -958,13 +1025,34 @@ impl<'a> Lexer<'a> {
                     break;
                 }
                 match self.current() {
-                    'n' => { content.push('\n'); self.advance(); }
-                    't' => { content.push('\t'); self.advance(); }
-                    'r' => { content.push('\r'); self.advance(); }
-                    '\\' => { content.push('\\'); self.advance(); }
-                    '`' => { content.push('`'); self.advance(); }
-                    '$' => { content.push('$'); self.advance(); }
-                    '0' => { content.push('\0'); self.advance(); }
+                    'n' => {
+                        content.push('\n');
+                        self.advance();
+                    }
+                    't' => {
+                        content.push('\t');
+                        self.advance();
+                    }
+                    'r' => {
+                        content.push('\r');
+                        self.advance();
+                    }
+                    '\\' => {
+                        content.push('\\');
+                        self.advance();
+                    }
+                    '`' => {
+                        content.push('`');
+                        self.advance();
+                    }
+                    '$' => {
+                        content.push('$');
+                        self.advance();
+                    }
+                    '0' => {
+                        content.push('\0');
+                        self.advance();
+                    }
                     c => {
                         content.push('\\');
                         content.push(c);
@@ -976,7 +1064,12 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        self.make_token(TokenKind::TemplateStringPart(content), start, start_line, start_col)
+        self.make_token(
+            TokenKind::TemplateStringPart(content),
+            start,
+            start_line,
+            start_col,
+        )
     }
 }
 
@@ -1010,47 +1103,84 @@ mod tests {
     #[test]
     fn test_basic_operators() {
         let toks = kinds("+ - * / %");
-        assert_eq!(toks, vec![
-            TokenKind::Plus, TokenKind::Minus, TokenKind::Star,
-            TokenKind::Slash, TokenKind::Percent, TokenKind::Eof,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                TokenKind::Plus,
+                TokenKind::Minus,
+                TokenKind::Star,
+                TokenKind::Slash,
+                TokenKind::Percent,
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_compound_assignments() {
         let toks = kinds("+= -= *= /= %= &= |= ^= <<= >>=");
-        assert_eq!(toks, vec![
-            TokenKind::PlusEq, TokenKind::MinusEq, TokenKind::StarEq,
-            TokenKind::SlashEq, TokenKind::PercentEq, TokenKind::AmpEq,
-            TokenKind::PipeEq, TokenKind::CaretEq, TokenKind::LtLtEq,
-            TokenKind::GtGtEq, TokenKind::Eof,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                TokenKind::PlusEq,
+                TokenKind::MinusEq,
+                TokenKind::StarEq,
+                TokenKind::SlashEq,
+                TokenKind::PercentEq,
+                TokenKind::AmpEq,
+                TokenKind::PipeEq,
+                TokenKind::CaretEq,
+                TokenKind::LtLtEq,
+                TokenKind::GtGtEq,
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_comparison_and_shift() {
         let toks = kinds("== != < > <= >= << >> <=> |>");
-        assert_eq!(toks, vec![
-            TokenKind::EqEq, TokenKind::BangEq, TokenKind::Lt,
-            TokenKind::Gt, TokenKind::LtEq, TokenKind::GtEq,
-            TokenKind::LtLt, TokenKind::GtGt, TokenKind::Spaceship,
-            TokenKind::PipeGt, TokenKind::Eof,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                TokenKind::EqEq,
+                TokenKind::BangEq,
+                TokenKind::Lt,
+                TokenKind::Gt,
+                TokenKind::LtEq,
+                TokenKind::GtEq,
+                TokenKind::LtLt,
+                TokenKind::GtGt,
+                TokenKind::Spaceship,
+                TokenKind::PipeGt,
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_dots_and_arrows() {
         let toks = kinds(". .. ..= -> => :: @");
-        assert_eq!(toks, vec![
-            TokenKind::Dot, TokenKind::DotDot, TokenKind::DotDotEq,
-            TokenKind::Arrow, TokenKind::FatArrow, TokenKind::ColonColon,
-            TokenKind::At, TokenKind::Eof,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                TokenKind::Dot,
+                TokenKind::DotDot,
+                TokenKind::DotDotEq,
+                TokenKind::Arrow,
+                TokenKind::FatArrow,
+                TokenKind::ColonColon,
+                TokenKind::At,
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_keywords() {
-        let toks = kinds("let mut const fn return if else match for in while loop break continue struct impl trait enum as and or not pub self Self None Some Ok Err");
+        let toks = kinds(
+            "let mut const fn return if else match for in while loop break continue struct impl trait enum as and or not pub self Self None Some Ok Err",
+        );
         // Just check a few
         assert_eq!(toks[0], TokenKind::Let);
         assert_eq!(toks[1], TokenKind::Mut);
@@ -1065,59 +1195,86 @@ mod tests {
         assert_eq!(kinds("0xff"), vec![TokenKind::IntLit(255), TokenKind::Eof]);
         assert_eq!(kinds("0b1010"), vec![TokenKind::IntLit(10), TokenKind::Eof]);
         assert_eq!(kinds("0o77"), vec![TokenKind::IntLit(63), TokenKind::Eof]);
-        assert_eq!(kinds("1_000_000"), vec![TokenKind::IntLit(1_000_000), TokenKind::Eof]);
+        assert_eq!(
+            kinds("1_000_000"),
+            vec![TokenKind::IntLit(1_000_000), TokenKind::Eof]
+        );
     }
 
     #[test]
     fn test_float_literals() {
-        assert_eq!(kinds("3.25"), vec![TokenKind::FloatLit(3.25), TokenKind::Eof]);
-        assert_eq!(kinds("1e10"), vec![TokenKind::FloatLit(1e10), TokenKind::Eof]);
-        assert_eq!(kinds("2.5e-3"), vec![TokenKind::FloatLit(2.5e-3), TokenKind::Eof]);
+        assert_eq!(
+            kinds("3.25"),
+            vec![TokenKind::FloatLit(3.25), TokenKind::Eof]
+        );
+        assert_eq!(
+            kinds("1e10"),
+            vec![TokenKind::FloatLit(1e10), TokenKind::Eof]
+        );
+        assert_eq!(
+            kinds("2.5e-3"),
+            vec![TokenKind::FloatLit(2.5e-3), TokenKind::Eof]
+        );
     }
 
     #[test]
     fn test_string_literal() {
         let toks = kinds(r#""hello\nworld""#);
-        assert_eq!(toks, vec![
-            TokenKind::StringLit("hello\nworld".to_string()),
-            TokenKind::Eof,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                TokenKind::StringLit("hello\nworld".to_string()),
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_char_literal() {
         let toks = kinds("'a' '\\n'");
-        assert_eq!(toks, vec![
-            TokenKind::CharLit('a'),
-            TokenKind::CharLit('\n'),
-            TokenKind::Eof,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                TokenKind::CharLit('a'),
+                TokenKind::CharLit('\n'),
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_line_comment() {
         let toks = kinds("x // comment\ny");
-        assert_eq!(toks, vec![
-            TokenKind::Ident(SmolStr::new("x")),
-            TokenKind::Ident(SmolStr::new("y")),
-            TokenKind::Eof,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                TokenKind::Ident(SmolStr::new("x")),
+                TokenKind::Ident(SmolStr::new("y")),
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_doc_comment() {
         let toks = kinds("/// this is a doc comment");
-        assert_eq!(toks[0], TokenKind::DocComment("this is a doc comment".to_string()));
+        assert_eq!(
+            toks[0],
+            TokenKind::DocComment("this is a doc comment".to_string())
+        );
     }
 
     #[test]
     fn test_block_comment() {
         let toks = kinds("x /* block */ y");
-        assert_eq!(toks, vec![
-            TokenKind::Ident(SmolStr::new("x")),
-            TokenKind::Ident(SmolStr::new("y")),
-            TokenKind::Eof,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                TokenKind::Ident(SmolStr::new("x")),
+                TokenKind::Ident(SmolStr::new("y")),
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]
@@ -1129,27 +1286,33 @@ mod tests {
     #[test]
     fn test_template_string_simple() {
         let toks = kinds("`hello`");
-        assert_eq!(toks, vec![
-            TokenKind::TemplateLitStart,
-            TokenKind::TemplateStringPart("hello".to_string()),
-            TokenKind::TemplateLitEnd,
-            TokenKind::Eof,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                TokenKind::TemplateLitStart,
+                TokenKind::TemplateStringPart("hello".to_string()),
+                TokenKind::TemplateLitEnd,
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_template_string_interpolation() {
         let toks = kinds("`hi ${name}!`");
-        assert_eq!(toks, vec![
-            TokenKind::TemplateLitStart,
-            TokenKind::TemplateStringPart("hi ".to_string()),
-            TokenKind::TemplateExprStart,
-            TokenKind::Ident(SmolStr::new("name")),
-            TokenKind::TemplateExprEnd,
-            TokenKind::TemplateStringPart("!".to_string()),
-            TokenKind::TemplateLitEnd,
-            TokenKind::Eof,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                TokenKind::TemplateLitStart,
+                TokenKind::TemplateStringPart("hi ".to_string()),
+                TokenKind::TemplateExprStart,
+                TokenKind::Ident(SmolStr::new("name")),
+                TokenKind::TemplateExprEnd,
+                TokenKind::TemplateStringPart("!".to_string()),
+                TokenKind::TemplateLitEnd,
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]
@@ -1162,25 +1325,40 @@ mod tests {
     #[test]
     fn test_logical_and_bitwise() {
         let toks = kinds("&& || & | ^ ~");
-        assert_eq!(toks, vec![
-            TokenKind::AmpAmp, TokenKind::PipePipe,
-            TokenKind::Amp, TokenKind::Pipe,
-            TokenKind::Caret, TokenKind::Tilde,
-            TokenKind::Eof,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                TokenKind::AmpAmp,
+                TokenKind::PipePipe,
+                TokenKind::Amp,
+                TokenKind::Pipe,
+                TokenKind::Caret,
+                TokenKind::Tilde,
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_delimiters() {
         let toks = kinds("( ) { } [ ] # , ; : ?");
-        assert_eq!(toks, vec![
-            TokenKind::LParen, TokenKind::RParen,
-            TokenKind::LBrace, TokenKind::RBrace,
-            TokenKind::LBracket, TokenKind::RBracket,
-            TokenKind::Hash, TokenKind::Comma,
-            TokenKind::Semicolon, TokenKind::Colon,
-            TokenKind::Question, TokenKind::Eof,
-        ]);
+        assert_eq!(
+            toks,
+            vec![
+                TokenKind::LParen,
+                TokenKind::RParen,
+                TokenKind::LBrace,
+                TokenKind::RBrace,
+                TokenKind::LBracket,
+                TokenKind::RBracket,
+                TokenKind::Hash,
+                TokenKind::Comma,
+                TokenKind::Semicolon,
+                TokenKind::Colon,
+                TokenKind::Question,
+                TokenKind::Eof,
+            ]
+        );
     }
 
     #[test]

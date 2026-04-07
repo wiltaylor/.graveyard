@@ -66,8 +66,14 @@ pub struct Param {
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum ParamKind {
-    SelfRef { mutable: bool },
-    Named { name: SmolStr, ty: TypeExpr, default: Option<Expr> },
+    SelfRef {
+        mutable: bool,
+    },
+    Named {
+        name: SmolStr,
+        ty: TypeExpr,
+        default: Option<Expr>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -189,11 +195,20 @@ pub enum TypeExprKind {
     Map(Box<TypeExpr>, Box<TypeExpr>),
     OptionType(Box<TypeExpr>),
     ResultType(Box<TypeExpr>, Option<Box<TypeExpr>>),
-    FnType { params: Vec<TypeExpr>, ret: Box<TypeExpr> },
-    RefType { inner: Box<TypeExpr>, mutable: bool },
+    FnType {
+        params: Vec<TypeExpr>,
+        ret: Box<TypeExpr>,
+    },
+    RefType {
+        inner: Box<TypeExpr>,
+        mutable: bool,
+    },
     Tuple(Vec<TypeExpr>),
     Unit,
-    Named { name: SmolStr, args: Option<Vec<TypeExpr>> },
+    Named {
+        name: SmolStr,
+        args: Option<Vec<TypeExpr>>,
+    },
     Error,
 }
 

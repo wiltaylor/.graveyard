@@ -18,20 +18,20 @@ use crate::bindings::{BindingRegistry, ScriptType};
 /// is only used to disambiguate the variadic `com_call_*` family.
 fn map_com_builtin(name: &str, _argc: usize) -> Option<(SmolStr, IrType)> {
     let (hn, ret) = match name {
-        "com_create"       => ("__com_create",     IrType::I32),
-        "com_release"      => ("__com_release",    IrType::Unit),
-        "com_has"          => ("__com_has",        IrType::I32),
-        "com_call_i0"      => ("__com_call_i0",    IrType::I32),
-        "com_call_i1s"     => ("__com_call_i1s",   IrType::I32),
-        "com_call_i1i"     => ("__com_call_i1i",   IrType::I32),
-        "com_call_i2si"    => ("__com_call_i2si",  IrType::I32),
-        "com_call_s0"      => ("__com_call_s0",    IrType::Ptr),
-        "com_call_s1s"     => ("__com_call_s1s",   IrType::Ptr),
-        "com_get_i"        => ("__com_get_i",      IrType::I32),
-        "com_get_s"        => ("__com_get_s",      IrType::Ptr),
-        "com_set_i"        => ("__com_set_i",      IrType::I32),
-        "com_set_s"        => ("__com_set_s",      IrType::I32),
-        "com_last_error"   => ("__com_last_error", IrType::Ptr),
+        "com_create" => ("__com_create", IrType::I32),
+        "com_release" => ("__com_release", IrType::Unit),
+        "com_has" => ("__com_has", IrType::I32),
+        "com_call_i0" => ("__com_call_i0", IrType::I32),
+        "com_call_i1s" => ("__com_call_i1s", IrType::I32),
+        "com_call_i1i" => ("__com_call_i1i", IrType::I32),
+        "com_call_i2si" => ("__com_call_i2si", IrType::I32),
+        "com_call_s0" => ("__com_call_s0", IrType::Ptr),
+        "com_call_s1s" => ("__com_call_s1s", IrType::Ptr),
+        "com_get_i" => ("__com_get_i", IrType::I32),
+        "com_get_s" => ("__com_get_s", IrType::Ptr),
+        "com_set_i" => ("__com_set_i", IrType::I32),
+        "com_set_s" => ("__com_set_s", IrType::I32),
+        "com_last_error" => ("__com_last_error", IrType::Ptr),
         _ => return None,
     };
     Some((SmolStr::new(hn), ret))
@@ -99,7 +99,11 @@ pub fn lower(program: &ast::Program, debug_mode: bool, bindings: &BindingRegistr
         let ret = script_type_to_ir(&hf.return_type);
         let nm = SmolStr::new(name);
         user_host_fns.insert(nm.clone(), (params.clone(), ret));
-        user_host_imports.push(IrHostImport { name: nm, params, ret });
+        user_host_imports.push(IrHostImport {
+            name: nm,
+            params,
+            ret,
+        });
     }
 
     let mut lowerer = Lowerer {
@@ -184,8 +188,18 @@ impl Lowerer {
         self.module.struct_layouts.push(StructLayout {
             name: "__Option".into(),
             fields: vec![
-                StructFieldLayout { name: "tag".into(), ty: IrType::I32, offset: 0, type_name: None },
-                StructFieldLayout { name: "value".into(), ty: IrType::I32, offset: 4, type_name: None },
+                StructFieldLayout {
+                    name: "tag".into(),
+                    ty: IrType::I32,
+                    offset: 0,
+                    type_name: None,
+                },
+                StructFieldLayout {
+                    name: "value".into(),
+                    ty: IrType::I32,
+                    offset: 4,
+                    type_name: None,
+                },
             ],
             size: 8,
             field_offsets: vec![0, 4],
@@ -197,8 +211,18 @@ impl Lowerer {
         self.module.struct_layouts.push(StructLayout {
             name: "__Result".into(),
             fields: vec![
-                StructFieldLayout { name: "tag".into(), ty: IrType::I32, offset: 0, type_name: None },
-                StructFieldLayout { name: "value".into(), ty: IrType::I32, offset: 4, type_name: None },
+                StructFieldLayout {
+                    name: "tag".into(),
+                    ty: IrType::I32,
+                    offset: 0,
+                    type_name: None,
+                },
+                StructFieldLayout {
+                    name: "value".into(),
+                    ty: IrType::I32,
+                    offset: 4,
+                    type_name: None,
+                },
             ],
             size: 8,
             field_offsets: vec![0, 4],
@@ -236,16 +260,26 @@ impl Lowerer {
         let mut params = Vec::new();
         for p in &f.params {
             match &p.kind {
-                ast::ParamKind::Named { name, ty, default: _ } => {
+                ast::ParamKind::Named {
+                    name,
+                    ty,
+                    default: _,
+                } => {
                     let ir_ty = self.lower_type_expr(ty);
                     let idx = ctx.new_local(name.clone(), ir_ty);
-                    params.push(IrParam { name: name.clone(), ty: ir_ty });
+                    params.push(IrParam {
+                        name: name.clone(),
+                        ty: ir_ty,
+                    });
                     let _ = idx; // local is already tracked
                 }
                 ast::ParamKind::SelfRef { .. } => {
                     // `self` becomes local 0 with Ptr type
                     let idx = ctx.new_local("self".into(), IrType::Ptr);
-                    params.push(IrParam { name: "self".into(), ty: IrType::Ptr });
+                    params.push(IrParam {
+                        name: "self".into(),
+                        ty: IrType::Ptr,
+                    });
                     let _ = idx;
                 }
             }
@@ -255,8 +289,7 @@ impl Lowerer {
         let body = self.lower_block_stmts(&f.body, &mut ctx);
 
         // Determine whether the function should be exported.
-        let is_export = f.attrs.iter().any(|a| a.name == "export")
-            || f.name.as_str() == "main";
+        let is_export = f.attrs.iter().any(|a| a.name == "export") || f.name.as_str() == "main";
 
         let ret_type = f
             .return_type
@@ -289,22 +322,27 @@ impl Lowerer {
         };
 
         for method in &ib.methods {
-            let mangled: SmolStr =
-                SmolStr::new(format!("{}__{}", type_name, method.name));
+            let mangled: SmolStr = SmolStr::new(format!("{}__{}", type_name, method.name));
 
             // Register in the method map so method calls can resolve.
-            self.method_map
-                .insert(method.name.clone(), mangled.clone());
+            self.method_map.insert(method.name.clone(), mangled.clone());
 
             // Lower as a regular function with the mangled name.
             let mut ctx = FnCtx::new();
             let mut params = Vec::new();
             for p in &method.params {
                 match &p.kind {
-                    ast::ParamKind::Named { name, ty, default: _ } => {
+                    ast::ParamKind::Named {
+                        name,
+                        ty,
+                        default: _,
+                    } => {
                         let ir_ty = self.lower_type_expr(ty);
                         let _idx = ctx.new_local(name.clone(), ir_ty);
-                        params.push(IrParam { name: name.clone(), ty: ir_ty });
+                        params.push(IrParam {
+                            name: name.clone(),
+                            ty: ir_ty,
+                        });
                     }
                     ast::ParamKind::SelfRef { .. } => {
                         let _idx = ctx.new_local("self".into(), IrType::Ptr);
@@ -364,9 +402,7 @@ impl Lowerer {
         // struct name for named-type globals, None for primitives.
         let type_name: Option<SmolStr> = g.ty.as_ref().and_then(|te| match &te.kind {
             ast::TypeExprKind::StringType => Some("str".into()),
-            ast::TypeExprKind::Named { name, .. }
-                if !self.enum_names.contains_key(name) =>
-            {
+            ast::TypeExprKind::Named { name, .. } if !self.enum_names.contains_key(name) => {
                 Some(name.clone())
             }
             _ => None,
@@ -409,11 +445,17 @@ impl Lowerer {
         for item in &t.items {
             match item {
                 ast::TraitItem::FnSig(sig) => {
-                    let params: Vec<IrType> = sig.params.iter().map(|p| match &p.kind {
-                        ast::ParamKind::Named { ty, .. } => self.lower_type_expr(ty),
-                        ast::ParamKind::SelfRef { .. } => IrType::Ptr,
-                    }).collect();
-                    let ret = sig.return_type.as_ref()
+                    let params: Vec<IrType> = sig
+                        .params
+                        .iter()
+                        .map(|p| match &p.kind {
+                            ast::ParamKind::Named { ty, .. } => self.lower_type_expr(ty),
+                            ast::ParamKind::SelfRef { .. } => IrType::Ptr,
+                        })
+                        .collect();
+                    let ret = sig
+                        .return_type
+                        .as_ref()
                         .map(|t| self.lower_type_expr(t))
                         .unwrap_or(IrType::Unit);
                     sigs.push(IrFnSig {
@@ -423,11 +465,17 @@ impl Lowerer {
                     });
                 }
                 ast::TraitItem::FnDecl(f) => {
-                    let params: Vec<IrType> = f.params.iter().map(|p| match &p.kind {
-                        ast::ParamKind::Named { ty, .. } => self.lower_type_expr(ty),
-                        ast::ParamKind::SelfRef { .. } => IrType::Ptr,
-                    }).collect();
-                    let ret = f.return_type.as_ref()
+                    let params: Vec<IrType> = f
+                        .params
+                        .iter()
+                        .map(|p| match &p.kind {
+                            ast::ParamKind::Named { ty, .. } => self.lower_type_expr(ty),
+                            ast::ParamKind::SelfRef { .. } => IrType::Ptr,
+                        })
+                        .collect();
+                    let ret = f
+                        .return_type
+                        .as_ref()
                         .map(|t| self.lower_type_expr(t))
                         .unwrap_or(IrType::Unit);
                     sigs.push(IrFnSig {
@@ -527,16 +575,24 @@ impl Lowerer {
             self.module.struct_layouts.push(StructLayout {
                 name: SmolStr::new(format!("__enum_{}", e.name)),
                 fields: vec![
-                    StructFieldLayout { name: "tag".into(), ty: IrType::I32, offset: 0, type_name: None },
-                    StructFieldLayout { name: "value".into(), ty: IrType::I32, offset: 4, type_name: None },
+                    StructFieldLayout {
+                        name: "tag".into(),
+                        ty: IrType::I32,
+                        offset: 0,
+                        type_name: None,
+                    },
+                    StructFieldLayout {
+                        name: "value".into(),
+                        ty: IrType::I32,
+                        offset: 4,
+                        type_name: None,
+                    },
                 ],
                 size: 8,
                 field_offsets: vec![0, 4],
             });
-            self.struct_name_map.insert(
-                SmolStr::new(format!("__enum_{}", e.name)),
-                layout_idx,
-            );
+            self.struct_name_map
+                .insert(SmolStr::new(format!("__enum_{}", e.name)), layout_idx);
         }
     }
 
@@ -562,8 +618,7 @@ impl Lowerer {
             },
             ast::TypeExprKind::StringType => IrType::Ptr,
             ast::TypeExprKind::Unit => IrType::Unit,
-            ast::TypeExprKind::OptionType(_)
-            | ast::TypeExprKind::ResultType(_, _) => IrType::Ptr, // struct-based tagged union
+            ast::TypeExprKind::OptionType(_) | ast::TypeExprKind::ResultType(_, _) => IrType::Ptr, // struct-based tagged union
             ast::TypeExprKind::Array(_)
             | ast::TypeExprKind::Map(_, _)
             | ast::TypeExprKind::FnType { .. }
@@ -689,7 +744,11 @@ impl Lowerer {
             if let Some(init) = &l.init {
                 let tuple_expr = self.lower_expr(init, ctx);
                 let tmp = ctx.new_local(SmolStr::new("__tuple_tmp"), IrType::Ptr);
-                out.push(IrStmt::Let { local: tmp, ty: IrType::Ptr, value: Some(tuple_expr) });
+                out.push(IrStmt::Let {
+                    local: tmp,
+                    ty: IrType::Ptr,
+                    value: Some(tuple_expr),
+                });
                 let n = elements.len();
                 let tuple_name: SmolStr = SmolStr::new(format!("__Tuple{}_i32", n));
                 if !self.struct_name_map.contains_key(&tuple_name) {
@@ -698,17 +757,35 @@ impl Lowerer {
                     for i in 0..n {
                         let offset = (i as u32) * 4;
                         field_offsets.push(offset);
-                        fields.push(StructFieldLayout { name: SmolStr::new(format!("_{}", i)), ty: IrType::I32, offset, type_name: None });
+                        fields.push(StructFieldLayout {
+                            name: SmolStr::new(format!("_{}", i)),
+                            ty: IrType::I32,
+                            offset,
+                            type_name: None,
+                        });
                     }
                     let layout_idx = self.module.struct_layouts.len() as u32;
-                    self.module.struct_layouts.push(StructLayout { name: tuple_name.clone(), fields, size: (n as u32) * 4, field_offsets });
+                    self.module.struct_layouts.push(StructLayout {
+                        name: tuple_name.clone(),
+                        fields,
+                        size: (n as u32) * 4,
+                        field_offsets,
+                    });
                     self.struct_name_map.insert(tuple_name.clone(), layout_idx);
                 }
                 let layout_idx = *self.struct_name_map.get(&tuple_name).unwrap();
                 for (i, pat) in elements.iter().enumerate() {
                     if let Pattern::Ident { name, .. } = pat {
                         let local_idx = ctx.new_local(name.clone(), IrType::I32);
-                        out.push(IrStmt::Let { local: local_idx, ty: IrType::I32, value: Some(IrExpr::FieldGet { object: Box::new(IrExpr::LocalGet(tmp)), layout_index: layout_idx, field_index: i as u32 }) });
+                        out.push(IrStmt::Let {
+                            local: local_idx,
+                            ty: IrType::I32,
+                            value: Some(IrExpr::FieldGet {
+                                object: Box::new(IrExpr::LocalGet(tmp)),
+                                layout_index: layout_idx,
+                                field_index: i as u32,
+                            }),
+                        });
                     }
                 }
             }
@@ -742,10 +819,12 @@ impl Lowerer {
         let value = l.init.as_ref().map(|e| self.lower_expr(e, ctx));
 
         // If a lambda was created during lowering, register the alias.
-        if is_lambda_init && self.lambda_counter > lambda_counter_before
-            && let Some(lambda_fn_name) = self.last_lambda_name() {
-                self.lambda_aliases.insert(name, lambda_fn_name);
-            }
+        if is_lambda_init
+            && self.lambda_counter > lambda_counter_before
+            && let Some(lambda_fn_name) = self.last_lambda_name()
+        {
+            self.lambda_aliases.insert(name, lambda_fn_name);
+        }
 
         out.push(IrStmt::Let {
             local: local_idx,
@@ -754,12 +833,7 @@ impl Lowerer {
         });
     }
 
-    fn lower_expr_stmt(
-        &mut self,
-        e: &ast::ExprStmt,
-        ctx: &mut FnCtx,
-        out: &mut Vec<IrStmt>,
-    ) {
+    fn lower_expr_stmt(&mut self, e: &ast::ExprStmt, ctx: &mut FnCtx, out: &mut Vec<IrStmt>) {
         match &e.expr.kind {
             // Assignments are lowered as IrStmt::Assign rather than expressions.
             ExprKind::Assign { op, target, value } => {
@@ -821,7 +895,11 @@ impl Lowerer {
                 };
 
                 match &iterable.kind {
-                    ExprKind::Range { start, end, inclusive } => {
+                    ExprKind::Range {
+                        start,
+                        end,
+                        inclusive,
+                    } => {
                         // Desugar: for i in start..end { body }
                         //   =>  let i = start;
                         //       loop { if i >= end { break }; body; i = i + 1; }
@@ -924,7 +1002,11 @@ impl Lowerer {
         let rhs = self.lower_expr(value, ctx);
 
         // Handle deref assignment: *ref = value → HeapStore
-        if let ExprKind::Unary { op: UnaryOp::Deref, operand } = &target.kind {
+        if let ExprKind::Unary {
+            op: UnaryOp::Deref,
+            operand,
+        } = &target.kind
+        {
             let addr = self.lower_expr(operand, ctx);
             // Store as I32 (default for all ref cell values).
             // TODO: track actual inner type for f64/i64 refs.
@@ -1029,10 +1111,42 @@ impl Lowerer {
         // Compound assignment: target = target <op> value
         let final_rhs = match op {
             AssignOp::Assign => rhs,
-            AssignOp::AddAssign => self.make_compound(&lvalue, if target_is_f64 { IrBinOp::AddF64 } else { IrBinOp::AddI32 }, rhs),
-            AssignOp::SubAssign => self.make_compound(&lvalue, if target_is_f64 { IrBinOp::SubF64 } else { IrBinOp::SubI32 }, rhs),
-            AssignOp::MulAssign => self.make_compound(&lvalue, if target_is_f64 { IrBinOp::MulF64 } else { IrBinOp::MulI32 }, rhs),
-            AssignOp::DivAssign => self.make_compound(&lvalue, if target_is_f64 { IrBinOp::DivF64 } else { IrBinOp::DivI32S }, rhs),
+            AssignOp::AddAssign => self.make_compound(
+                &lvalue,
+                if target_is_f64 {
+                    IrBinOp::AddF64
+                } else {
+                    IrBinOp::AddI32
+                },
+                rhs,
+            ),
+            AssignOp::SubAssign => self.make_compound(
+                &lvalue,
+                if target_is_f64 {
+                    IrBinOp::SubF64
+                } else {
+                    IrBinOp::SubI32
+                },
+                rhs,
+            ),
+            AssignOp::MulAssign => self.make_compound(
+                &lvalue,
+                if target_is_f64 {
+                    IrBinOp::MulF64
+                } else {
+                    IrBinOp::MulI32
+                },
+                rhs,
+            ),
+            AssignOp::DivAssign => self.make_compound(
+                &lvalue,
+                if target_is_f64 {
+                    IrBinOp::DivF64
+                } else {
+                    IrBinOp::DivI32S
+                },
+                rhs,
+            ),
             AssignOp::RemAssign => self.make_compound(&lvalue, IrBinOp::RemI32S, rhs),
             AssignOp::BitAndAssign => self.make_compound(&lvalue, IrBinOp::AndI32, rhs),
             AssignOp::BitOrAssign => self.make_compound(&lvalue, IrBinOp::OrI32, rhs),
@@ -1083,12 +1197,13 @@ impl Lowerer {
             ExprKind::Ident(name) => {
                 // Built-in: `None` → __Option { tag: 0, value: 0 }
                 if name.as_str() == "None"
-                    && let Some(&layout_idx) = self.struct_name_map.get("__Option") {
-                        return IrExpr::StructNew {
-                            layout_index: layout_idx,
-                            fields: vec![IrExpr::IntConst(0), IrExpr::IntConst(0)],
-                        };
-                    }
+                    && let Some(&layout_idx) = self.struct_name_map.get("__Option")
+                {
+                    return IrExpr::StructNew {
+                        layout_index: layout_idx,
+                        fields: vec![IrExpr::IntConst(0), IrExpr::IntConst(0)],
+                    };
+                }
                 // Constant folding: substitute compile-time const values.
                 if let Some(val) = self.const_values.get(name).cloned() {
                     return val;
@@ -1168,7 +1283,11 @@ impl Lowerer {
                 let l = self.lower_expr(lhs, ctx);
                 let r = self.lower_expr(rhs, ctx);
                 IrExpr::BinOp {
-                    op: if use_f64 { lower_binop_f64(*op) } else { lower_binop(*op) },
+                    op: if use_f64 {
+                        lower_binop_f64(*op)
+                    } else {
+                        lower_binop(*op)
+                    },
                     lhs: Box::new(l),
                     rhs: Box::new(r),
                 }
@@ -1240,13 +1359,11 @@ impl Lowerer {
                         let inner = self.lower_expr(operand, ctx);
                         match op {
                             // Integer negation: lower as `0 - x` since WASM has no i32.neg.
-                            UnaryOp::Neg if !use_f64 => {
-                                IrExpr::BinOp {
-                                    op: IrBinOp::SubI32,
-                                    lhs: Box::new(IrExpr::IntConst(0)),
-                                    rhs: Box::new(inner),
-                                }
-                            }
+                            UnaryOp::Neg if !use_f64 => IrExpr::BinOp {
+                                op: IrBinOp::SubI32,
+                                lhs: Box::new(IrExpr::IntConst(0)),
+                                rhs: Box::new(inner),
+                            },
                             _ => {
                                 let ir_op = if use_f64 && *op == UnaryOp::Neg {
                                     IrUnaryOp::NegF64
@@ -1272,7 +1389,10 @@ impl Lowerer {
                         IrExpr::LocalSet(idx, Box::new(rhs))
                     }
                     // *ref = value → HeapStore into the ref cell
-                    ExprKind::Unary { op: UnaryOp::Deref, operand } => {
+                    ExprKind::Unary {
+                        op: UnaryOp::Deref,
+                        operand,
+                    } => {
                         let addr = self.lower_expr(operand, ctx);
                         IrExpr::HeapStore {
                             addr: Box::new(addr),
@@ -1341,8 +1461,10 @@ impl Lowerer {
                     }
                 }
 
-                let ir_args: Vec<IrExpr> =
-                    args.iter().map(|a| self.lower_expr(&a.value, ctx)).collect();
+                let ir_args: Vec<IrExpr> = args
+                    .iter()
+                    .map(|a| self.lower_expr(&a.value, ctx))
+                    .collect();
 
                 // Built-in: com_* → __com_* host calls (Windows COM bridge).
                 if let Some((host_name, ret)) = map_com_builtin(func_name.as_str(), ir_args.len()) {
@@ -1625,7 +1747,10 @@ impl Lowerer {
             }
 
             // ── Cast ────────────────────────────────────────────────────
-            ExprKind::Cast { expr: cast_expr, ty } => {
+            ExprKind::Cast {
+                expr: cast_expr,
+                ty,
+            } => {
                 let from = infer_expr_type(cast_expr, ctx);
                 let to = self.lower_type_expr(ty);
                 let inner = self.lower_expr(cast_expr, ctx);
@@ -1678,9 +1803,7 @@ impl Lowerer {
                             "for_each" if args.len() == 1 => {
                                 self.lower_pipeline_for_each(lhs, &args[0].value, ctx)
                             }
-                            "collect" if args.is_empty() => {
-                                self.lower_expr(lhs, ctx)
-                            }
+                            "collect" if args.is_empty() => self.lower_expr(lhs, ctx),
                             "any" if args.len() == 1 => {
                                 self.lower_pipeline_any(lhs, &args[0].value, ctx)
                             }
@@ -1726,9 +1849,11 @@ impl Lowerer {
             }
 
             // ── Lambda ─────────────────────────────────────────────────────
-            ExprKind::Lambda { params, return_type, body } => {
-                self.lower_lambda(params, return_type.as_deref(), body, ctx)
-            }
+            ExprKind::Lambda {
+                params,
+                return_type,
+                body,
+            } => self.lower_lambda(params, return_type.as_deref(), body, ctx),
 
             // ── Template literal with interpolation ──────────────────────
             ExprKind::TemplateLit(segments) => {
@@ -1864,7 +1989,8 @@ impl Lowerer {
                     self.struct_name_map.insert(tuple_name.clone(), layout_idx);
                 }
                 let layout_idx = *self.struct_name_map.get(&tuple_name).unwrap();
-                let ir_fields: Vec<IrExpr> = elements.iter().map(|e| self.lower_expr(e, ctx)).collect();
+                let ir_fields: Vec<IrExpr> =
+                    elements.iter().map(|e| self.lower_expr(e, ctx)).collect();
                 IrExpr::StructNew {
                     layout_index: layout_idx,
                     fields: ir_fields,
@@ -1904,9 +2030,7 @@ impl Lowerer {
             }
 
             // ── Match expression ───────────────────────────────────────────
-            ExprKind::Match { scrutinee, arms } => {
-                self.lower_match(scrutinee, arms, ctx)
-            }
+            ExprKind::Match { scrutinee, arms } => self.lower_match(scrutinee, arms, ctx),
 
             // ── Error propagation (?  operator) ──────────────────────────
             // Lower `expr?` on a Result<T,E>:
@@ -1966,10 +2090,22 @@ impl Lowerer {
                         // assert!(condition) → if !condition { __panic() }
                         if let Some(cond_expr) = args.first() {
                             let cond = self.lower_expr(cond_expr, ctx);
-                            let not_cond = IrExpr::UnaryOp { op: IrUnaryOp::EqzI32, operand: Box::new(cond) };
-                            let panic_call = IrExpr::HostCall { module: "env".into(), name: "__panic".into(), args: vec![IrExpr::IntConst(0)], ret: IrType::Unit };
+                            let not_cond = IrExpr::UnaryOp {
+                                op: IrUnaryOp::EqzI32,
+                                operand: Box::new(cond),
+                            };
+                            let panic_call = IrExpr::HostCall {
+                                module: "env".into(),
+                                name: "__panic".into(),
+                                args: vec![IrExpr::IntConst(0)],
+                                ret: IrType::Unit,
+                            };
                             IrExpr::Block {
-                                stmts: vec![IrStmt::If { condition: not_cond, then_body: vec![IrStmt::Expr(panic_call)], else_body: Vec::new() }],
+                                stmts: vec![IrStmt::If {
+                                    condition: not_cond,
+                                    then_body: vec![IrStmt::Expr(panic_call)],
+                                    else_body: Vec::new(),
+                                }],
                                 result: Box::new(IrExpr::IntConst(0)),
                             }
                         } else {
@@ -1981,10 +2117,23 @@ impl Lowerer {
                         if args.len() >= 2 {
                             let a = self.lower_expr(&args[0], ctx);
                             let b = self.lower_expr(&args[1], ctx);
-                            let ne = IrExpr::BinOp { op: IrBinOp::NeI32, lhs: Box::new(a), rhs: Box::new(b) };
-                            let panic_call = IrExpr::HostCall { module: "env".into(), name: "__panic".into(), args: vec![IrExpr::IntConst(0)], ret: IrType::Unit };
+                            let ne = IrExpr::BinOp {
+                                op: IrBinOp::NeI32,
+                                lhs: Box::new(a),
+                                rhs: Box::new(b),
+                            };
+                            let panic_call = IrExpr::HostCall {
+                                module: "env".into(),
+                                name: "__panic".into(),
+                                args: vec![IrExpr::IntConst(0)],
+                                ret: IrType::Unit,
+                            };
                             IrExpr::Block {
-                                stmts: vec![IrStmt::If { condition: ne, then_body: vec![IrStmt::Expr(panic_call)], else_body: Vec::new() }],
+                                stmts: vec![IrStmt::If {
+                                    condition: ne,
+                                    then_body: vec![IrStmt::Expr(panic_call)],
+                                    else_body: Vec::new(),
+                                }],
                                 result: Box::new(IrExpr::IntConst(0)),
                             }
                         } else {
@@ -1996,10 +2145,19 @@ impl Lowerer {
                         if let Some(arg_expr) = args.first() {
                             let val = self.lower_expr(arg_expr, ctx);
                             let tmp = ctx.new_local(SmolStr::new("__dbg_tmp"), IrType::I32);
-                            let print_call = IrExpr::HostCall { module: "env".into(), name: "__print_i32".into(), args: vec![IrExpr::LocalGet(tmp)], ret: IrType::Unit };
+                            let print_call = IrExpr::HostCall {
+                                module: "env".into(),
+                                name: "__print_i32".into(),
+                                args: vec![IrExpr::LocalGet(tmp)],
+                                ret: IrType::Unit,
+                            };
                             IrExpr::Block {
                                 stmts: vec![
-                                    IrStmt::Let { local: tmp, ty: IrType::I32, value: Some(val) },
+                                    IrStmt::Let {
+                                        local: tmp,
+                                        ty: IrType::I32,
+                                        value: Some(val),
+                                    },
                                     IrStmt::Expr(print_call),
                                 ],
                                 result: Box::new(IrExpr::LocalGet(tmp)),
@@ -2011,38 +2169,73 @@ impl Lowerer {
                     "todo" => {
                         // todo!() → __panic("not yet implemented")
                         let msg_idx = self.intern_string("not yet implemented".to_string());
-                        IrExpr::HostCall { module: "env".into(), name: "__panic".into(), args: vec![IrExpr::StringConst(msg_idx)], ret: IrType::Unit }
+                        IrExpr::HostCall {
+                            module: "env".into(),
+                            name: "__panic".into(),
+                            args: vec![IrExpr::StringConst(msg_idx)],
+                            ret: IrType::Unit,
+                        }
                     }
                     "unreachable" => {
                         // unreachable!() → __panic("unreachable")
                         let msg_idx = self.intern_string("unreachable".to_string());
-                        IrExpr::HostCall { module: "env".into(), name: "__panic".into(), args: vec![IrExpr::StringConst(msg_idx)], ret: IrType::Unit }
+                        IrExpr::HostCall {
+                            module: "env".into(),
+                            name: "__panic".into(),
+                            args: vec![IrExpr::StringConst(msg_idx)],
+                            ret: IrType::Unit,
+                        }
                     }
                     _ => IrExpr::IntConst(0),
                 }
             }
 
             // ── IfLet / WhileLet ────────────────────────────────────────
-            ExprKind::IfLet { pattern, expr, then_block, else_block } => {
+            ExprKind::IfLet {
+                pattern,
+                expr,
+                then_block,
+                else_block,
+            } => {
                 // if let Some(v) = expr { then } else { else }
                 // → let tmp = expr; if tmp.tag == 1 { let v = tmp.value; then } else { else }
                 let scrutinee = self.lower_expr(expr, ctx);
                 let tmp = ctx.new_local(SmolStr::new("__iflet_tmp"), IrType::Ptr);
-                let mut stmts = vec![IrStmt::Let { local: tmp, ty: IrType::Ptr, value: Some(scrutinee) }];
+                let mut stmts = vec![IrStmt::Let {
+                    local: tmp,
+                    ty: IrType::Ptr,
+                    value: Some(scrutinee),
+                }];
 
                 // Determine the layout (Option by default for Some/None patterns).
                 let layout_idx = self.struct_name_map.get("__Option").copied().unwrap_or(0);
-                let tag_get = IrExpr::FieldGet { object: Box::new(IrExpr::LocalGet(tmp)), layout_index: layout_idx, field_index: 0 };
-                let is_some = IrExpr::BinOp { op: IrBinOp::EqI32, lhs: Box::new(tag_get), rhs: Box::new(IrExpr::IntConst(1)) };
+                let tag_get = IrExpr::FieldGet {
+                    object: Box::new(IrExpr::LocalGet(tmp)),
+                    layout_index: layout_idx,
+                    field_index: 0,
+                };
+                let is_some = IrExpr::BinOp {
+                    op: IrBinOp::EqI32,
+                    lhs: Box::new(tag_get),
+                    rhs: Box::new(IrExpr::IntConst(1)),
+                };
 
                 // Bind the payload variable in the then branch.
                 let mut then_stmts = Vec::new();
                 if let Pattern::EnumVariant { fields, .. } = pattern {
                     for (fi, field_pat) in fields.iter().enumerate() {
                         if let Pattern::Ident { name, .. } = field_pat {
-                            let payload = IrExpr::FieldGet { object: Box::new(IrExpr::LocalGet(tmp)), layout_index: layout_idx, field_index: 1 + fi as u32 };
+                            let payload = IrExpr::FieldGet {
+                                object: Box::new(IrExpr::LocalGet(tmp)),
+                                layout_index: layout_idx,
+                                field_index: 1 + fi as u32,
+                            };
                             let local_idx = ctx.new_local(name.clone(), IrType::I32);
-                            then_stmts.push(IrStmt::Let { local: local_idx, ty: IrType::I32, value: Some(payload) });
+                            then_stmts.push(IrStmt::Let {
+                                local: local_idx,
+                                ty: IrType::I32,
+                                value: Some(payload),
+                            });
                         }
                     }
                 }
@@ -2053,10 +2246,21 @@ impl Lowerer {
                     None => Vec::new(),
                 };
 
-                stmts.push(IrStmt::If { condition: is_some, then_body: then_stmts, else_body: else_stmts });
-                IrExpr::Block { stmts, result: Box::new(IrExpr::IntConst(0)) }
+                stmts.push(IrStmt::If {
+                    condition: is_some,
+                    then_body: then_stmts,
+                    else_body: else_stmts,
+                });
+                IrExpr::Block {
+                    stmts,
+                    result: Box::new(IrExpr::IntConst(0)),
+                }
             }
-            ExprKind::WhileLet { pattern, expr, body } => {
+            ExprKind::WhileLet {
+                pattern,
+                expr,
+                body,
+            } => {
                 // while let Some(v) = expr { body }
                 // → loop { let tmp = expr; if tmp.tag != 1 { break }; let v = tmp.value; body }
                 let layout_idx = self.struct_name_map.get("__Option").copied().unwrap_or(0);
@@ -2064,21 +2268,45 @@ impl Lowerer {
                 let scrutinee = self.lower_expr(expr, ctx);
                 let tmp = ctx.new_local(SmolStr::new("__whilelet_tmp"), IrType::Ptr);
 
-                let tag_get = IrExpr::FieldGet { object: Box::new(IrExpr::LocalGet(tmp)), layout_index: layout_idx, field_index: 0 };
-                let is_none = IrExpr::BinOp { op: IrBinOp::NeI32, lhs: Box::new(tag_get), rhs: Box::new(IrExpr::IntConst(1)) };
+                let tag_get = IrExpr::FieldGet {
+                    object: Box::new(IrExpr::LocalGet(tmp)),
+                    layout_index: layout_idx,
+                    field_index: 0,
+                };
+                let is_none = IrExpr::BinOp {
+                    op: IrBinOp::NeI32,
+                    lhs: Box::new(tag_get),
+                    rhs: Box::new(IrExpr::IntConst(1)),
+                };
 
                 let mut loop_body = vec![
-                    IrStmt::Let { local: tmp, ty: IrType::Ptr, value: Some(scrutinee) },
-                    IrStmt::If { condition: is_none, then_body: vec![IrStmt::Break], else_body: Vec::new() },
+                    IrStmt::Let {
+                        local: tmp,
+                        ty: IrType::Ptr,
+                        value: Some(scrutinee),
+                    },
+                    IrStmt::If {
+                        condition: is_none,
+                        then_body: vec![IrStmt::Break],
+                        else_body: Vec::new(),
+                    },
                 ];
 
                 // Bind payload variables.
                 if let Pattern::EnumVariant { fields, .. } = pattern {
                     for (fi, field_pat) in fields.iter().enumerate() {
                         if let Pattern::Ident { name, .. } = field_pat {
-                            let payload = IrExpr::FieldGet { object: Box::new(IrExpr::LocalGet(tmp)), layout_index: layout_idx, field_index: 1 + fi as u32 };
+                            let payload = IrExpr::FieldGet {
+                                object: Box::new(IrExpr::LocalGet(tmp)),
+                                layout_index: layout_idx,
+                                field_index: 1 + fi as u32,
+                            };
                             let local_idx = ctx.new_local(name.clone(), IrType::I32);
-                            loop_body.push(IrStmt::Let { local: local_idx, ty: IrType::I32, value: Some(payload) });
+                            loop_body.push(IrStmt::Let {
+                                local: local_idx,
+                                ty: IrType::I32,
+                                value: Some(payload),
+                            });
                         }
                     }
                 }
@@ -2116,7 +2344,11 @@ impl Lowerer {
         // and tag comparisons use FieldGet instead of direct i32 comparison.
         let struct_layout_idx = self.detect_struct_enum_match(arms);
 
-        let scrut_ty = if struct_layout_idx.is_some() { IrType::Ptr } else { IrType::I32 };
+        let scrut_ty = if struct_layout_idx.is_some() {
+            IrType::Ptr
+        } else {
+            IrType::I32
+        };
         let tmp_local = ctx.new_local(SmolStr::new("__match_scrut"), scrut_ty);
         let set_tmp = IrStmt::Let {
             local: tmp_local,
@@ -2273,8 +2505,7 @@ impl Lowerer {
         body: &ast::Expr,
         enclosing_ctx: &FnCtx,
     ) -> IrExpr {
-        let lambda_name: SmolStr =
-            SmolStr::new(format!("__lambda_{}", self.lambda_counter));
+        let lambda_name: SmolStr = SmolStr::new(format!("__lambda_{}", self.lambda_counter));
         self.lambda_counter += 1;
 
         // Collect the set of lambda parameter names so we can identify
@@ -2293,11 +2524,10 @@ impl Lowerer {
         // Register lambda parameters as locals.
         let mut ir_params = Vec::new();
         for p in params {
-            let ir_ty = p
-                .ty
-                .as_ref()
-                .map(|t| self.lower_type_expr(t))
-                .unwrap_or(IrType::I32);
+            let ir_ty =
+                p.ty.as_ref()
+                    .map(|t| self.lower_type_expr(t))
+                    .unwrap_or(IrType::I32);
             let _idx = lambda_ctx.new_local(p.name.clone(), ir_ty);
             ir_params.push(IrParam {
                 name: p.name.clone(),
@@ -2313,8 +2543,7 @@ impl Lowerer {
         for var_name in &free_vars {
             if let Some(outer_idx) = enclosing_ctx.lookup(var_name) {
                 let ty = enclosing_ctx.local_type(outer_idx);
-                let capture_param_name: SmolStr =
-                    SmolStr::new(format!("__capture_{}", var_name));
+                let capture_param_name: SmolStr = SmolStr::new(format!("__capture_{}", var_name));
                 // Register under the original name so body lowering resolves it.
                 let _idx = lambda_ctx.new_local(var_name.clone(), ty);
                 ir_params.push(IrParam {
@@ -2386,14 +2615,22 @@ impl Lowerer {
     /// name.  If it is an identifier that aliases a lambda, return the alias.
     fn resolve_lambda_fn(&mut self, closure_expr: &ast::Expr, ctx: &mut FnCtx) -> SmolStr {
         match &closure_expr.kind {
-            ExprKind::Lambda { params, return_type, body } => {
+            ExprKind::Lambda {
+                params,
+                return_type,
+                body,
+            } => {
                 // Lower the lambda — this creates __lambda_N and bumps the counter.
                 let _placeholder = self.lower_lambda(params, return_type.as_deref(), body, ctx);
-                self.last_lambda_name().unwrap_or_else(|| SmolStr::new("__unknown"))
+                self.last_lambda_name()
+                    .unwrap_or_else(|| SmolStr::new("__unknown"))
             }
             ExprKind::Ident(name) => {
                 // Variable that might alias a lambda.
-                self.lambda_aliases.get(name).cloned().unwrap_or_else(|| name.clone())
+                self.lambda_aliases
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.clone())
             }
             _ => {
                 // Not a recognized lambda form — lower as expression and
@@ -2439,32 +2676,47 @@ impl Lowerer {
 
         let mut stmts = Vec::new();
 
-        stmts.push(IrStmt::Let { local: arr_local, ty: IrType::I32, value: Some(arr) });
+        stmts.push(IrStmt::Let {
+            local: arr_local,
+            ty: IrType::I32,
+            value: Some(arr),
+        });
         stmts.push(IrStmt::Let {
             local: result_local,
             ty: IrType::I32,
             value: Some(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_new".into(), args: vec![], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_new".into(),
+                args: vec![],
+                ret: IrType::I32,
             }),
         });
-        stmts.push(IrStmt::Let { local: i_local, ty: IrType::I32, value: Some(IrExpr::IntConst(0)) });
+        stmts.push(IrStmt::Let {
+            local: i_local,
+            ty: IrType::I32,
+            value: Some(IrExpr::IntConst(0)),
+        });
 
         let break_cond = IrExpr::BinOp {
             op: IrBinOp::GeI32S,
             lhs: Box::new(IrExpr::LocalGet(i_local)),
             rhs: Box::new(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_len".into(),
-                args: vec![IrExpr::LocalGet(arr_local)], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_len".into(),
+                args: vec![IrExpr::LocalGet(arr_local)],
+                ret: IrType::I32,
             }),
         };
         let get_elem = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_get".into(),
+            module: "env".into(),
+            name: "__arr_get".into(),
             args: vec![IrExpr::LocalGet(arr_local), IrExpr::LocalGet(i_local)],
             ret: IrType::I32,
         };
         let predicate_call = self.make_lambda_call(&lambda_fn, elem_local, ctx);
         let push_call = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_push".into(),
+            module: "env".into(),
+            name: "__arr_push".into(),
             args: vec![IrExpr::LocalGet(result_local), IrExpr::LocalGet(elem_local)],
             ret: IrType::Unit,
         };
@@ -2475,7 +2727,11 @@ impl Lowerer {
                 then_body: vec![IrStmt::Break],
                 else_body: Vec::new(),
             },
-            IrStmt::Let { local: elem_local, ty: IrType::I32, value: Some(get_elem) },
+            IrStmt::Let {
+                local: elem_local,
+                ty: IrType::I32,
+                value: Some(get_elem),
+            },
             IrStmt::If {
                 condition: predicate_call,
                 then_body: vec![IrStmt::Expr(push_call)],
@@ -2517,33 +2773,51 @@ impl Lowerer {
 
         let mut stmts = Vec::new();
 
-        stmts.push(IrStmt::Let { local: arr_local, ty: IrType::I32, value: Some(arr) });
+        stmts.push(IrStmt::Let {
+            local: arr_local,
+            ty: IrType::I32,
+            value: Some(arr),
+        });
         stmts.push(IrStmt::Let {
             local: result_local,
             ty: IrType::I32,
             value: Some(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_new".into(), args: vec![], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_new".into(),
+                args: vec![],
+                ret: IrType::I32,
             }),
         });
-        stmts.push(IrStmt::Let { local: i_local, ty: IrType::I32, value: Some(IrExpr::IntConst(0)) });
+        stmts.push(IrStmt::Let {
+            local: i_local,
+            ty: IrType::I32,
+            value: Some(IrExpr::IntConst(0)),
+        });
 
         let break_cond = IrExpr::BinOp {
             op: IrBinOp::GeI32S,
             lhs: Box::new(IrExpr::LocalGet(i_local)),
             rhs: Box::new(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_len".into(),
-                args: vec![IrExpr::LocalGet(arr_local)], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_len".into(),
+                args: vec![IrExpr::LocalGet(arr_local)],
+                ret: IrType::I32,
             }),
         };
         let get_elem = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_get".into(),
+            module: "env".into(),
+            name: "__arr_get".into(),
             args: vec![IrExpr::LocalGet(arr_local), IrExpr::LocalGet(i_local)],
             ret: IrType::I32,
         };
         let map_call = self.make_lambda_call(&lambda_fn, elem_local, ctx);
         let push_call = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_push".into(),
-            args: vec![IrExpr::LocalGet(result_local), IrExpr::LocalGet(mapped_local)],
+            module: "env".into(),
+            name: "__arr_push".into(),
+            args: vec![
+                IrExpr::LocalGet(result_local),
+                IrExpr::LocalGet(mapped_local),
+            ],
             ret: IrType::Unit,
         };
 
@@ -2553,8 +2827,16 @@ impl Lowerer {
                 then_body: vec![IrStmt::Break],
                 else_body: Vec::new(),
             },
-            IrStmt::Let { local: elem_local, ty: IrType::I32, value: Some(get_elem) },
-            IrStmt::Let { local: mapped_local, ty: IrType::I32, value: Some(map_call) },
+            IrStmt::Let {
+                local: elem_local,
+                ty: IrType::I32,
+                value: Some(get_elem),
+            },
+            IrStmt::Let {
+                local: mapped_local,
+                ty: IrType::I32,
+                value: Some(map_call),
+            },
             IrStmt::Expr(push_call),
             IrStmt::Assign {
                 target: IrLValue::Local(i_local),
@@ -2590,19 +2872,30 @@ impl Lowerer {
 
         let mut stmts = Vec::new();
 
-        stmts.push(IrStmt::Let { local: arr_local, ty: IrType::I32, value: Some(arr) });
-        stmts.push(IrStmt::Let { local: i_local, ty: IrType::I32, value: Some(IrExpr::IntConst(0)) });
+        stmts.push(IrStmt::Let {
+            local: arr_local,
+            ty: IrType::I32,
+            value: Some(arr),
+        });
+        stmts.push(IrStmt::Let {
+            local: i_local,
+            ty: IrType::I32,
+            value: Some(IrExpr::IntConst(0)),
+        });
 
         let break_cond = IrExpr::BinOp {
             op: IrBinOp::GeI32S,
             lhs: Box::new(IrExpr::LocalGet(i_local)),
             rhs: Box::new(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_len".into(),
-                args: vec![IrExpr::LocalGet(arr_local)], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_len".into(),
+                args: vec![IrExpr::LocalGet(arr_local)],
+                ret: IrType::I32,
             }),
         };
         let get_elem = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_get".into(),
+            module: "env".into(),
+            name: "__arr_get".into(),
             args: vec![IrExpr::LocalGet(arr_local), IrExpr::LocalGet(i_local)],
             ret: IrType::I32,
         };
@@ -2614,7 +2907,11 @@ impl Lowerer {
                 then_body: vec![IrStmt::Break],
                 else_body: Vec::new(),
             },
-            IrStmt::Let { local: elem_local, ty: IrType::I32, value: Some(get_elem) },
+            IrStmt::Let {
+                local: elem_local,
+                ty: IrType::I32,
+                value: Some(get_elem),
+            },
             IrStmt::Expr(action_call),
             IrStmt::Assign {
                 target: IrLValue::Local(i_local),
@@ -2649,17 +2946,32 @@ impl Lowerer {
         let i_local = ctx.new_local(SmolStr::new("__pipe_i"), IrType::I32);
 
         let mut stmts = vec![
-            IrStmt::Let { local: arr_local, ty: IrType::I32, value: Some(arr) },
-            IrStmt::Let { local: n_local, ty: IrType::I32, value: Some(n) },
+            IrStmt::Let {
+                local: arr_local,
+                ty: IrType::I32,
+                value: Some(arr),
+            },
+            IrStmt::Let {
+                local: n_local,
+                ty: IrType::I32,
+                value: Some(n),
+            },
         ];
         stmts.push(IrStmt::Let {
             local: result_local,
             ty: IrType::I32,
             value: Some(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_new".into(), args: vec![], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_new".into(),
+                args: vec![],
+                ret: IrType::I32,
             }),
         });
-        stmts.push(IrStmt::Let { local: i_local, ty: IrType::I32, value: Some(IrExpr::IntConst(0)) });
+        stmts.push(IrStmt::Let {
+            local: i_local,
+            ty: IrType::I32,
+            value: Some(IrExpr::IntConst(0)),
+        });
 
         // Break when i >= n or i >= arr.len()
         let break_cond_n = IrExpr::BinOp {
@@ -2671,8 +2983,10 @@ impl Lowerer {
             op: IrBinOp::GeI32S,
             lhs: Box::new(IrExpr::LocalGet(i_local)),
             rhs: Box::new(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_len".into(),
-                args: vec![IrExpr::LocalGet(arr_local)], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_len".into(),
+                args: vec![IrExpr::LocalGet(arr_local)],
+                ret: IrType::I32,
             }),
         };
         let break_cond = IrExpr::BinOp {
@@ -2682,12 +2996,14 @@ impl Lowerer {
         };
 
         let get_elem = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_get".into(),
+            module: "env".into(),
+            name: "__arr_get".into(),
             args: vec![IrExpr::LocalGet(arr_local), IrExpr::LocalGet(i_local)],
             ret: IrType::I32,
         };
         let push_call = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_push".into(),
+            module: "env".into(),
+            name: "__arr_push".into(),
             args: vec![IrExpr::LocalGet(result_local), get_elem],
             ret: IrType::Unit,
         };
@@ -2732,35 +3048,54 @@ impl Lowerer {
         let i_local = ctx.new_local(SmolStr::new("__pipe_i"), IrType::I32);
 
         let mut stmts = vec![
-            IrStmt::Let { local: arr_local, ty: IrType::I32, value: Some(arr) },
-            IrStmt::Let { local: n_local, ty: IrType::I32, value: Some(n) },
+            IrStmt::Let {
+                local: arr_local,
+                ty: IrType::I32,
+                value: Some(arr),
+            },
+            IrStmt::Let {
+                local: n_local,
+                ty: IrType::I32,
+                value: Some(n),
+            },
         ];
         stmts.push(IrStmt::Let {
             local: result_local,
             ty: IrType::I32,
             value: Some(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_new".into(), args: vec![], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_new".into(),
+                args: vec![],
+                ret: IrType::I32,
             }),
         });
         // Start i at n
-        stmts.push(IrStmt::Let { local: i_local, ty: IrType::I32, value: Some(IrExpr::LocalGet(n_local)) });
+        stmts.push(IrStmt::Let {
+            local: i_local,
+            ty: IrType::I32,
+            value: Some(IrExpr::LocalGet(n_local)),
+        });
 
         let break_cond = IrExpr::BinOp {
             op: IrBinOp::GeI32S,
             lhs: Box::new(IrExpr::LocalGet(i_local)),
             rhs: Box::new(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_len".into(),
-                args: vec![IrExpr::LocalGet(arr_local)], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_len".into(),
+                args: vec![IrExpr::LocalGet(arr_local)],
+                ret: IrType::I32,
             }),
         };
 
         let get_elem = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_get".into(),
+            module: "env".into(),
+            name: "__arr_get".into(),
             args: vec![IrExpr::LocalGet(arr_local), IrExpr::LocalGet(i_local)],
             ret: IrType::I32,
         };
         let push_call = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_push".into(),
+            module: "env".into(),
+            name: "__arr_push".into(),
             args: vec![IrExpr::LocalGet(result_local), get_elem],
             ret: IrType::Unit,
         };
@@ -2805,20 +3140,35 @@ impl Lowerer {
         let elem_local = ctx.new_local(SmolStr::new("__pipe_elem"), IrType::I32);
 
         let mut stmts = Vec::new();
-        stmts.push(IrStmt::Let { local: arr_local, ty: IrType::I32, value: Some(arr) });
-        stmts.push(IrStmt::Let { local: result_local, ty: IrType::I32, value: Some(IrExpr::IntConst(0)) });
-        stmts.push(IrStmt::Let { local: i_local, ty: IrType::I32, value: Some(IrExpr::IntConst(0)) });
+        stmts.push(IrStmt::Let {
+            local: arr_local,
+            ty: IrType::I32,
+            value: Some(arr),
+        });
+        stmts.push(IrStmt::Let {
+            local: result_local,
+            ty: IrType::I32,
+            value: Some(IrExpr::IntConst(0)),
+        });
+        stmts.push(IrStmt::Let {
+            local: i_local,
+            ty: IrType::I32,
+            value: Some(IrExpr::IntConst(0)),
+        });
 
         let break_cond = IrExpr::BinOp {
             op: IrBinOp::GeI32S,
             lhs: Box::new(IrExpr::LocalGet(i_local)),
             rhs: Box::new(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_len".into(),
-                args: vec![IrExpr::LocalGet(arr_local)], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_len".into(),
+                args: vec![IrExpr::LocalGet(arr_local)],
+                ret: IrType::I32,
             }),
         };
         let get_elem = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_get".into(),
+            module: "env".into(),
+            name: "__arr_get".into(),
             args: vec![IrExpr::LocalGet(arr_local), IrExpr::LocalGet(i_local)],
             ret: IrType::I32,
         };
@@ -2830,7 +3180,11 @@ impl Lowerer {
                 then_body: vec![IrStmt::Break],
                 else_body: Vec::new(),
             },
-            IrStmt::Let { local: elem_local, ty: IrType::I32, value: Some(get_elem) },
+            IrStmt::Let {
+                local: elem_local,
+                ty: IrType::I32,
+                value: Some(get_elem),
+            },
             IrStmt::If {
                 condition: predicate_call,
                 then_body: vec![
@@ -2875,20 +3229,35 @@ impl Lowerer {
         let elem_local = ctx.new_local(SmolStr::new("__pipe_elem"), IrType::I32);
 
         let mut stmts = Vec::new();
-        stmts.push(IrStmt::Let { local: arr_local, ty: IrType::I32, value: Some(arr) });
-        stmts.push(IrStmt::Let { local: result_local, ty: IrType::I32, value: Some(IrExpr::IntConst(1)) });
-        stmts.push(IrStmt::Let { local: i_local, ty: IrType::I32, value: Some(IrExpr::IntConst(0)) });
+        stmts.push(IrStmt::Let {
+            local: arr_local,
+            ty: IrType::I32,
+            value: Some(arr),
+        });
+        stmts.push(IrStmt::Let {
+            local: result_local,
+            ty: IrType::I32,
+            value: Some(IrExpr::IntConst(1)),
+        });
+        stmts.push(IrStmt::Let {
+            local: i_local,
+            ty: IrType::I32,
+            value: Some(IrExpr::IntConst(0)),
+        });
 
         let break_cond = IrExpr::BinOp {
             op: IrBinOp::GeI32S,
             lhs: Box::new(IrExpr::LocalGet(i_local)),
             rhs: Box::new(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_len".into(),
-                args: vec![IrExpr::LocalGet(arr_local)], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_len".into(),
+                args: vec![IrExpr::LocalGet(arr_local)],
+                ret: IrType::I32,
             }),
         };
         let get_elem = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_get".into(),
+            module: "env".into(),
+            name: "__arr_get".into(),
             args: vec![IrExpr::LocalGet(arr_local), IrExpr::LocalGet(i_local)],
             ret: IrType::I32,
         };
@@ -2906,7 +3275,11 @@ impl Lowerer {
                 then_body: vec![IrStmt::Break],
                 else_body: Vec::new(),
             },
-            IrStmt::Let { local: elem_local, ty: IrType::I32, value: Some(get_elem) },
+            IrStmt::Let {
+                local: elem_local,
+                ty: IrType::I32,
+                value: Some(get_elem),
+            },
             IrStmt::If {
                 condition: not_pred,
                 then_body: vec![
@@ -2951,20 +3324,35 @@ impl Lowerer {
         let elem_local = ctx.new_local(SmolStr::new("__pipe_elem"), IrType::I32);
 
         let mut stmts = Vec::new();
-        stmts.push(IrStmt::Let { local: arr_local, ty: IrType::I32, value: Some(arr) });
-        stmts.push(IrStmt::Let { local: result_local, ty: IrType::I32, value: Some(IrExpr::IntConst(0)) });
-        stmts.push(IrStmt::Let { local: i_local, ty: IrType::I32, value: Some(IrExpr::IntConst(0)) });
+        stmts.push(IrStmt::Let {
+            local: arr_local,
+            ty: IrType::I32,
+            value: Some(arr),
+        });
+        stmts.push(IrStmt::Let {
+            local: result_local,
+            ty: IrType::I32,
+            value: Some(IrExpr::IntConst(0)),
+        });
+        stmts.push(IrStmt::Let {
+            local: i_local,
+            ty: IrType::I32,
+            value: Some(IrExpr::IntConst(0)),
+        });
 
         let break_cond = IrExpr::BinOp {
             op: IrBinOp::GeI32S,
             lhs: Box::new(IrExpr::LocalGet(i_local)),
             rhs: Box::new(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_len".into(),
-                args: vec![IrExpr::LocalGet(arr_local)], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_len".into(),
+                args: vec![IrExpr::LocalGet(arr_local)],
+                ret: IrType::I32,
             }),
         };
         let get_elem = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_get".into(),
+            module: "env".into(),
+            name: "__arr_get".into(),
             args: vec![IrExpr::LocalGet(arr_local), IrExpr::LocalGet(i_local)],
             ret: IrType::I32,
         };
@@ -2976,7 +3364,11 @@ impl Lowerer {
                 then_body: vec![IrStmt::Break],
                 else_body: Vec::new(),
             },
-            IrStmt::Let { local: elem_local, ty: IrType::I32, value: Some(get_elem) },
+            IrStmt::Let {
+                local: elem_local,
+                ty: IrType::I32,
+                value: Some(get_elem),
+            },
             IrStmt::If {
                 condition: predicate_call,
                 then_body: vec![
@@ -3021,32 +3413,44 @@ impl Lowerer {
         let i_local = ctx.new_local(SmolStr::new("__pipe_i"), IrType::I32);
 
         let mut stmts = Vec::new();
-        stmts.push(IrStmt::Let { local: arr_local, ty: IrType::I32, value: Some(arr) });
+        stmts.push(IrStmt::Let {
+            local: arr_local,
+            ty: IrType::I32,
+            value: Some(arr),
+        });
         // acc = arr[0]
         stmts.push(IrStmt::Let {
             local: acc_local,
             ty: IrType::I32,
             value: Some(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_get".into(),
+                module: "env".into(),
+                name: "__arr_get".into(),
                 args: vec![IrExpr::LocalGet(arr_local), IrExpr::IntConst(0)],
                 ret: IrType::I32,
             }),
         });
         // i = 1
-        stmts.push(IrStmt::Let { local: i_local, ty: IrType::I32, value: Some(IrExpr::IntConst(1)) });
+        stmts.push(IrStmt::Let {
+            local: i_local,
+            ty: IrType::I32,
+            value: Some(IrExpr::IntConst(1)),
+        });
 
         let break_cond = IrExpr::BinOp {
             op: IrBinOp::GeI32S,
             lhs: Box::new(IrExpr::LocalGet(i_local)),
             rhs: Box::new(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_len".into(),
-                args: vec![IrExpr::LocalGet(arr_local)], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_len".into(),
+                args: vec![IrExpr::LocalGet(arr_local)],
+                ret: IrType::I32,
             }),
         };
 
         // Call lambda with two args: acc and current element
         let get_elem = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_get".into(),
+            module: "env".into(),
+            name: "__arr_get".into(),
             args: vec![IrExpr::LocalGet(arr_local), IrExpr::LocalGet(i_local)],
             ret: IrType::I32,
         };
@@ -3109,21 +3513,36 @@ impl Lowerer {
         let i_local = ctx.new_local(SmolStr::new("__pipe_i"), IrType::I32);
 
         let mut stmts = Vec::new();
-        stmts.push(IrStmt::Let { local: arr_local, ty: IrType::I32, value: Some(arr) });
-        stmts.push(IrStmt::Let { local: acc_local, ty: IrType::I32, value: Some(init) });
-        stmts.push(IrStmt::Let { local: i_local, ty: IrType::I32, value: Some(IrExpr::IntConst(0)) });
+        stmts.push(IrStmt::Let {
+            local: arr_local,
+            ty: IrType::I32,
+            value: Some(arr),
+        });
+        stmts.push(IrStmt::Let {
+            local: acc_local,
+            ty: IrType::I32,
+            value: Some(init),
+        });
+        stmts.push(IrStmt::Let {
+            local: i_local,
+            ty: IrType::I32,
+            value: Some(IrExpr::IntConst(0)),
+        });
 
         let break_cond = IrExpr::BinOp {
             op: IrBinOp::GeI32S,
             lhs: Box::new(IrExpr::LocalGet(i_local)),
             rhs: Box::new(IrExpr::HostCall {
-                module: "env".into(), name: "__arr_len".into(),
-                args: vec![IrExpr::LocalGet(arr_local)], ret: IrType::I32,
+                module: "env".into(),
+                name: "__arr_len".into(),
+                args: vec![IrExpr::LocalGet(arr_local)],
+                ret: IrType::I32,
             }),
         };
 
         let get_elem = IrExpr::HostCall {
-            module: "env".into(), name: "__arr_get".into(),
+            module: "env".into(),
+            name: "__arr_get".into(),
             args: vec![IrExpr::LocalGet(arr_local), IrExpr::LocalGet(i_local)],
             ret: IrType::I32,
         };
@@ -3259,7 +3678,6 @@ impl Lowerer {
         self.string_table.insert(s, idx);
         idx
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -3387,7 +3805,10 @@ fn collect_free_vars(
 ) {
     match &expr.kind {
         ExprKind::Ident(name) => {
-            if !bound.contains(name) && enclosing.lookup(name).is_some() && seen.insert(name.clone()) {
+            if !bound.contains(name)
+                && enclosing.lookup(name).is_some()
+                && seen.insert(name.clone())
+            {
                 out.push(name.clone());
             }
         }
@@ -3412,7 +3833,11 @@ fn collect_free_vars(
         ExprKind::Return(Some(inner)) => {
             collect_free_vars(inner, bound, enclosing, out, seen);
         }
-        ExprKind::If { condition, then_block, else_block } => {
+        ExprKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
             collect_free_vars(condition, bound, enclosing, out, seen);
             for stmt in &then_block.stmts {
                 collect_free_vars_stmt(stmt, bound, enclosing, out, seen);

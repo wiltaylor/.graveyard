@@ -48,7 +48,10 @@ pub struct ParamInfo {
 
 impl fmt::Debug for ParamInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ParamInfo").field("name", &self.name).field("ty", &self.ty).finish()
+        f.debug_struct("ParamInfo")
+            .field("name", &self.name)
+            .field("ty", &self.ty)
+            .finish()
     }
 }
 
@@ -100,7 +103,9 @@ pub struct HostTypeBinding {
 
 impl fmt::Debug for HostTypeBinding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HostTypeBinding").field("name", &self.name).finish_non_exhaustive()
+        f.debug_struct("HostTypeBinding")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
     }
 }
 
@@ -162,14 +167,46 @@ pub trait IntoScriptType {
     fn script_type() -> ScriptType;
 }
 
-impl IntoScriptType for i32 { fn script_type() -> ScriptType { ScriptType::I32 } }
-impl IntoScriptType for i64 { fn script_type() -> ScriptType { ScriptType::I64 } }
-impl IntoScriptType for f32 { fn script_type() -> ScriptType { ScriptType::F32 } }
-impl IntoScriptType for f64 { fn script_type() -> ScriptType { ScriptType::F64 } }
-impl IntoScriptType for bool { fn script_type() -> ScriptType { ScriptType::Bool } }
-impl IntoScriptType for String { fn script_type() -> ScriptType { ScriptType::Str } }
-impl IntoScriptType for &str { fn script_type() -> ScriptType { ScriptType::Str } }
-impl IntoScriptType for () { fn script_type() -> ScriptType { ScriptType::Unit } }
+impl IntoScriptType for i32 {
+    fn script_type() -> ScriptType {
+        ScriptType::I32
+    }
+}
+impl IntoScriptType for i64 {
+    fn script_type() -> ScriptType {
+        ScriptType::I64
+    }
+}
+impl IntoScriptType for f32 {
+    fn script_type() -> ScriptType {
+        ScriptType::F32
+    }
+}
+impl IntoScriptType for f64 {
+    fn script_type() -> ScriptType {
+        ScriptType::F64
+    }
+}
+impl IntoScriptType for bool {
+    fn script_type() -> ScriptType {
+        ScriptType::Bool
+    }
+}
+impl IntoScriptType for String {
+    fn script_type() -> ScriptType {
+        ScriptType::Str
+    }
+}
+impl IntoScriptType for &str {
+    fn script_type() -> ScriptType {
+        ScriptType::Str
+    }
+}
+impl IntoScriptType for () {
+    fn script_type() -> ScriptType {
+        ScriptType::Unit
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -195,8 +232,14 @@ mod tests {
         reg.register_function(HostFnBinding {
             name: "add".into(),
             params: vec![
-                ParamInfo { name: "a".into(), ty: ScriptType::I32 },
-                ParamInfo { name: "b".into(), ty: ScriptType::I32 },
+                ParamInfo {
+                    name: "a".into(),
+                    ty: ScriptType::I32,
+                },
+                ParamInfo {
+                    name: "b".into(),
+                    ty: ScriptType::I32,
+                },
             ],
             return_type: ScriptType::I32,
             doc: Some("Add two integers.".into()),

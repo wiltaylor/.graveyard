@@ -80,7 +80,11 @@ pub struct SourceFrame {
 
 impl fmt::Display for SourceFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "  at {} ({}:{}:{})", self.fn_name, self.file, self.line, self.col)
+        write!(
+            f,
+            "  at {} ({}:{}:{})",
+            self.fn_name, self.file, self.line, self.col
+        )
     }
 }
 
@@ -96,8 +100,7 @@ pub enum DebugAction {
 }
 
 /// Internal stepping mode used by the VM.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum StepMode {
     /// Normal execution -- no stepping.
     #[default]
@@ -109,7 +112,6 @@ pub enum StepMode {
     /// Step out -- pause when we leave the given call depth.
     StepOut(u32),
 }
-
 
 /// A script panic with a source-level stack trace.
 #[derive(Debug, Clone)]

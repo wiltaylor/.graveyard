@@ -1,10 +1,10 @@
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::*;
-use tower_lsp::{Client, LanguageServer};
 use crate::query_db::QueryDb;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::Url;
+use tower_lsp::lsp_types::*;
+use tower_lsp::{Client, LanguageServer};
 
 pub struct WscriptLspServer {
     client: Client,
@@ -22,7 +22,9 @@ impl LanguageServer for WscriptLspServer {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+                text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                    TextDocumentSyncKind::FULL,
+                )),
                 completion_provider: Some(CompletionOptions::default()),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
@@ -30,15 +32,17 @@ impl LanguageServer for WscriptLspServer {
                 document_formatting_provider: Some(OneOf::Left(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(
-                    SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
-                        legend: SemanticTokensLegend {
-                            token_types: super::semantic_tokens::TOKEN_TYPES.to_vec(),
-                            token_modifiers: super::semantic_tokens::TOKEN_MODIFIERS.to_vec(),
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: SemanticTokensLegend {
+                                token_types: super::semantic_tokens::TOKEN_TYPES.to_vec(),
+                                token_modifiers: super::semantic_tokens::TOKEN_MODIFIERS.to_vec(),
+                            },
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            range: None,
+                            ..Default::default()
                         },
-                        full: Some(SemanticTokensFullOptions::Bool(true)),
-                        range: None,
-                        ..Default::default()
-                    })
+                    ),
                 ),
                 ..Default::default()
             },
@@ -46,7 +50,9 @@ impl LanguageServer for WscriptLspServer {
         })
     }
 
-    async fn shutdown(&self) -> Result<()> { Ok(()) }
+    async fn shutdown(&self) -> Result<()> {
+        Ok(())
+    }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
@@ -76,13 +82,20 @@ impl LanguageServer for WscriptLspServer {
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        let uri = params.text_document_position_params.text_document.uri.to_string();
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .to_string();
         let position = params.text_document_position_params.position;
         let db = self.db.read().await;
         Ok(super::hover::hover(&db, &uri, position))
     }
 
-    async fn document_symbol(&self, params: DocumentSymbolParams) -> Result<Option<DocumentSymbolResponse>> {
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri.to_string();
         let db = self.db.read().await;
         if let Some(ast) = db.get_ast(&uri) {
@@ -120,7 +133,10 @@ impl LanguageServer for WscriptLspServer {
         }
     }
 
-    async fn semantic_tokens_full(&self, params: SemanticTokensParams) -> Result<Option<SemanticTokensResult>> {
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
         let uri = params.text_document.uri.to_string();
         let db = self.db.read().await;
         if let Some(source) = db.get_source(&uri) {
@@ -137,8 +153,14 @@ impl LanguageServer for WscriptLspServer {
 
 fn span_to_range(span: &crate::compiler::token::Span) -> Range {
     Range {
-        start: Position { line: span.line.saturating_sub(1), character: span.col.saturating_sub(1) },
-        end: Position { line: span.line.saturating_sub(1), character: span.col.saturating_sub(1) + (span.end - span.start) },
+        start: Position {
+            line: span.line.saturating_sub(1),
+            character: span.col.saturating_sub(1),
+        },
+        end: Position {
+            line: span.line.saturating_sub(1),
+            character: span.col.saturating_sub(1) + (span.end - span.start),
+        },
     }
 }
 
@@ -151,7 +173,10 @@ fn item_to_symbol(item: &crate::compiler::ast::Item) -> Option<SymbolInformation
             kind: SymbolKind::FUNCTION,
             tags: None,
             deprecated: None,
-            location: Location { uri: Url::parse("file:///").unwrap(), range: span_to_range(&f.span) },
+            location: Location {
+                uri: Url::parse("file:///").unwrap(),
+                range: span_to_range(&f.span),
+            },
             container_name: None,
         }),
         Item::StructDecl(s) => Some(SymbolInformation {
@@ -159,7 +184,10 @@ fn item_to_symbol(item: &crate::compiler::ast::Item) -> Option<SymbolInformation
             kind: SymbolKind::STRUCT,
             tags: None,
             deprecated: None,
-            location: Location { uri: Url::parse("file:///").unwrap(), range: span_to_range(&s.span) },
+            location: Location {
+                uri: Url::parse("file:///").unwrap(),
+                range: span_to_range(&s.span),
+            },
             container_name: None,
         }),
         Item::EnumDecl(e) => Some(SymbolInformation {
@@ -167,7 +195,10 @@ fn item_to_symbol(item: &crate::compiler::ast::Item) -> Option<SymbolInformation
             kind: SymbolKind::ENUM,
             tags: None,
             deprecated: None,
-            location: Location { uri: Url::parse("file:///").unwrap(), range: span_to_range(&e.span) },
+            location: Location {
+                uri: Url::parse("file:///").unwrap(),
+                range: span_to_range(&e.span),
+            },
             container_name: None,
         }),
         Item::TraitDecl(t) => Some(SymbolInformation {
@@ -175,7 +206,10 @@ fn item_to_symbol(item: &crate::compiler::ast::Item) -> Option<SymbolInformation
             kind: SymbolKind::INTERFACE,
             tags: None,
             deprecated: None,
-            location: Location { uri: Url::parse("file:///").unwrap(), range: span_to_range(&t.span) },
+            location: Location {
+                uri: Url::parse("file:///").unwrap(),
+                range: span_to_range(&t.span),
+            },
             container_name: None,
         }),
         Item::ConstDecl(c) => Some(SymbolInformation {
@@ -183,7 +217,10 @@ fn item_to_symbol(item: &crate::compiler::ast::Item) -> Option<SymbolInformation
             kind: SymbolKind::CONSTANT,
             tags: None,
             deprecated: None,
-            location: Location { uri: Url::parse("file:///").unwrap(), range: span_to_range(&c.span) },
+            location: Location {
+                uri: Url::parse("file:///").unwrap(),
+                range: span_to_range(&c.span),
+            },
             container_name: None,
         }),
         _ => None,
@@ -194,28 +231,42 @@ impl WscriptLspServer {
     async fn publish_diagnostics(&self, uri: &str) {
         let db: tokio::sync::RwLockReadGuard<'_, QueryDb> = self.db.read().await;
         let diags = db.get_diagnostics(uri);
-        let lsp_diags: Vec<Diagnostic> = diags.iter().map(|d| {
-            let severity = match d.severity {
-                crate::query_db::Severity::Error => DiagnosticSeverity::ERROR,
-                crate::query_db::Severity::Warning => DiagnosticSeverity::WARNING,
-                crate::query_db::Severity::Info => DiagnosticSeverity::INFORMATION,
-                crate::query_db::Severity::Hint => DiagnosticSeverity::HINT,
-            };
-            let code: Option<NumberOrString> = d.code.as_ref().map(|c: &String| NumberOrString::String(c.clone()));
-            Diagnostic {
-                range: Range {
-                    start: Position { line: d.span.line.saturating_sub(1), character: d.span.col.saturating_sub(1) },
-                    end: Position { line: d.span.line.saturating_sub(1), character: d.span.col.saturating_sub(1) + (d.span.end - d.span.start) },
-                },
-                severity: Some(severity),
-                code,
-                message: d.message.clone(),
-                ..Default::default()
-            }
-        }).collect();
+        let lsp_diags: Vec<Diagnostic> = diags
+            .iter()
+            .map(|d| {
+                let severity = match d.severity {
+                    crate::query_db::Severity::Error => DiagnosticSeverity::ERROR,
+                    crate::query_db::Severity::Warning => DiagnosticSeverity::WARNING,
+                    crate::query_db::Severity::Info => DiagnosticSeverity::INFORMATION,
+                    crate::query_db::Severity::Hint => DiagnosticSeverity::HINT,
+                };
+                let code: Option<NumberOrString> = d
+                    .code
+                    .as_ref()
+                    .map(|c: &String| NumberOrString::String(c.clone()));
+                Diagnostic {
+                    range: Range {
+                        start: Position {
+                            line: d.span.line.saturating_sub(1),
+                            character: d.span.col.saturating_sub(1),
+                        },
+                        end: Position {
+                            line: d.span.line.saturating_sub(1),
+                            character: d.span.col.saturating_sub(1) + (d.span.end - d.span.start),
+                        },
+                    },
+                    severity: Some(severity),
+                    code,
+                    message: d.message.clone(),
+                    ..Default::default()
+                }
+            })
+            .collect();
         // parse the URI back
         if let Ok(parsed_uri) = uri.parse() {
-            self.client.publish_diagnostics(parsed_uri, lsp_diags, None).await;
+            self.client
+                .publish_diagnostics(parsed_uri, lsp_diags, None)
+                .await;
         }
     }
 }

@@ -49,7 +49,12 @@ async fn main() -> miette::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Run { file, function, debug, fuel }) => {
+        Some(Command::Run {
+            file,
+            function,
+            debug,
+            fuel,
+        }) => {
             cmd_run(file, &function, debug, fuel)?;
         }
         Some(Command::Lsp) => {
@@ -79,8 +84,12 @@ fn cmd_run(file: PathBuf, function: &str, debug: bool, fuel: Option<u64>) -> mie
         .map_err(|e| miette::miette!("Failed to read {}: {}", file.display(), e))?;
 
     let mut engine = wscript::Engine::new();
-    if debug { engine = engine.debug_mode(true); }
-    if let Some(f) = fuel { engine = engine.max_fuel(f); }
+    if debug {
+        engine = engine.debug_mode(true);
+    }
+    if let Some(f) = fuel {
+        engine = engine.max_fuel(f);
+    }
 
     match engine.load_script(&source) {
         Ok(load_result) => {
@@ -94,9 +103,9 @@ fn cmd_run(file: PathBuf, function: &str, debug: bool, fuel: Option<u64>) -> mie
 
             // If we have a compiled script, execute it.
             if let Some(script) = &load_result.script {
-                let script_engine = engine.script_engine().ok_or_else(|| {
-                    miette::miette!("Runtime engine not available")
-                })?;
+                let script_engine = engine
+                    .script_engine()
+                    .ok_or_else(|| miette::miette!("Runtime engine not available"))?;
 
                 match script.call(script_engine, function, &[]) {
                     Ok(Some(value)) => {
@@ -112,7 +121,9 @@ fn cmd_run(file: PathBuf, function: &str, debug: bool, fuel: Option<u64>) -> mie
                     }
                 }
             } else {
-                println!("Compiled successfully (no WASM bytes produced; codegen may not be implemented yet).");
+                println!(
+                    "Compiled successfully (no WASM bytes produced; codegen may not be implemented yet)."
+                );
             }
 
             Ok(())
@@ -121,7 +132,10 @@ fn cmd_run(file: PathBuf, function: &str, debug: bool, fuel: Option<u64>) -> mie
             for diag in &diags {
                 eprintln!("{}", diag);
             }
-            Err(miette::miette!("Compilation failed with {} error(s)", diags.len()))
+            Err(miette::miette!(
+                "Compilation failed with {} error(s)",
+                diags.len()
+            ))
         }
     }
 }
@@ -147,7 +161,10 @@ fn cmd_check(file: PathBuf) -> miette::Result<()> {
             for diag in &diags {
                 eprintln!("{}", diag);
             }
-            Err(miette::miette!("Check failed with {} error(s)", diags.len()))
+            Err(miette::miette!(
+                "Check failed with {} error(s)",
+                diags.len()
+            ))
         }
     }
 }
@@ -155,11 +172,11 @@ fn cmd_check(file: PathBuf) -> miette::Result<()> {
 async fn cmd_lsp() -> miette::Result<()> {
     #[cfg(feature = "lsp")]
     {
-        use tower_lsp::{LspService, Server};
-        use wscript::query_db::QueryDb;
-        use wscript::lsp::WscriptLspServer;
         use std::sync::Arc;
         use tokio::sync::RwLock;
+        use tower_lsp::{LspService, Server};
+        use wscript::lsp::WscriptLspServer;
+        use wscript::query_db::QueryDb;
 
         let bindings = Arc::new(wscript::BindingRegistry::new());
         let db = Arc::new(RwLock::new(QueryDb::new(bindings)));
@@ -172,7 +189,9 @@ async fn cmd_lsp() -> miette::Result<()> {
     }
     #[cfg(not(feature = "lsp"))]
     {
-        Err(miette::miette!("LSP support not compiled in. Build with --features lsp"))
+        Err(miette::miette!(
+            "LSP support not compiled in. Build with --features lsp"
+        ))
     }
 }
 
@@ -181,11 +200,16 @@ async fn cmd_dap(_port: u16) -> miette::Result<()> {
     {
         let engine = wscript::Engine::new().debug_mode(true);
         let mut server = wscript::dap::WscriptDapServer::new(engine, _port);
-        server.serve().await.map_err(|e| miette::miette!("DAP server error: {}", e))?;
+        server
+            .serve()
+            .await
+            .map_err(|e| miette::miette!("DAP server error: {}", e))?;
         Ok(())
     }
     #[cfg(not(feature = "dap"))]
     {
-        Err(miette::miette!("DAP support not compiled in. Build with --features dap"))
+        Err(miette::miette!(
+            "DAP support not compiled in. Build with --features dap"
+        ))
     }
 }

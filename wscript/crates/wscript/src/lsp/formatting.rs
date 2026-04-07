@@ -16,7 +16,10 @@ pub fn format_document(source: &str) -> Vec<TextEdit> {
     let line_count = source.lines().count();
     vec![TextEdit {
         range: Range {
-            start: Position { line: 0, character: 0 },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
             end: Position {
                 line: line_count as u32,
                 character: 0,

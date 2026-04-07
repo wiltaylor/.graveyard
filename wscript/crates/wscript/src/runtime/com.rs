@@ -50,7 +50,9 @@ pub(crate) mod imp {
     pub(crate) struct ComTable;
 
     impl ComTable {
-        pub(crate) fn new() -> Self { Self }
+        pub(crate) fn new() -> Self {
+            Self
+        }
         pub(crate) fn create(&mut self, _progid: &str) -> i32 {
             set_last_error("COM is not supported on this target");
             0
@@ -97,13 +99,13 @@ pub(crate) mod imp {
 #[cfg(windows)]
 pub(crate) mod imp {
     use super::*;
-    use windows::core::{BSTR, GUID, HSTRING, PCWSTR, VARIANT};
     use windows::Win32::System::Com::{
-        CLSCTX_INPROC_SERVER, CLSCTX_LOCAL_SERVER, CLSIDFromProgID, CoCreateInstance,
-        CoInitializeEx, CoUninitialize, IDispatch, COINIT_APARTMENTTHREADED, DISPATCH_METHOD,
-        DISPATCH_PROPERTYGET, DISPATCH_PROPERTYPUT, DISPPARAMS, EXCEPINFO,
+        CLSCTX_INPROC_SERVER, CLSCTX_LOCAL_SERVER, CLSIDFromProgID, COINIT_APARTMENTTHREADED,
+        CoCreateInstance, CoInitializeEx, CoUninitialize, DISPATCH_METHOD, DISPATCH_PROPERTYGET,
+        DISPATCH_PROPERTYPUT, DISPPARAMS, EXCEPINFO, IDispatch,
     };
     use windows::Win32::System::Ole::DISPID_PROPERTYPUT;
+    use windows::core::{BSTR, GUID, HSTRING, PCWSTR, VARIANT};
 
     pub(crate) enum Arg<'a> {
         I32(i32),
@@ -127,7 +129,10 @@ pub(crate) mod imp {
 
     impl ComTable {
         pub(crate) fn new() -> Self {
-            Self { slots: Vec::new(), initialized: false }
+            Self {
+                slots: Vec::new(),
+                initialized: false,
+            }
         }
 
         fn ensure_init(&mut self) -> Result<(), String> {
@@ -201,8 +206,7 @@ pub(crate) mod imp {
         }
 
         fn get_dispid(disp: &IDispatch, name: &str) -> Result<i32, String> {
-            let wide: Vec<u16> =
-                name.encode_utf16().chain(std::iter::once(0)).collect();
+            let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
             let name_ptr = PCWSTR::from_raw(wide.as_ptr());
             let names = [name_ptr];
             let mut dispid: i32 = 0;
@@ -429,8 +433,7 @@ pub(crate) mod imp {
         }
         unsafe {
             // BSTR length (in bytes) sits immediately before the data.
-            let len_bytes =
-                core::ptr::read_unaligned((ptr as *const u8).sub(4) as *const u32);
+            let len_bytes = core::ptr::read_unaligned((ptr as *const u8).sub(4) as *const u32);
             let len_u16 = (len_bytes / 2) as usize;
             let slice = core::slice::from_raw_parts(ptr, len_u16);
             String::from_utf16_lossy(slice)

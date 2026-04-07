@@ -1,5 +1,5 @@
-pub mod compiler;
 pub mod bindings;
+pub mod compiler;
 pub mod engine;
 pub mod reflect;
 pub mod runtime;
