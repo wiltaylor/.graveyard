@@ -25,7 +25,9 @@ use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
 use crate::ai::{AICore, AIEvent, ClaudeCodeCore};
 use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::AciddogConfig;
-use crate::tasks::{TaskFilter, TaskPatch, TaskStatus, TaskStore};
+use crate::tasks::{Task, TaskFilter, TaskPatch, TaskStatus, TaskStore};
+
+use super::tasks_view::{TaskForm, TasksPrompt, TasksScreen, OPERATOR};
 
 use super::blocks::{BlockAction, ChatBlock, ChatButton, ScrollAnchor};
 use super::clipboard;
@@ -39,13 +41,37 @@ const COPIED_TOAST_MS: u64 = 1500;
 pub enum Focus {
     Agents,
     Chat,
+    /// The right-column "Views" list (above the agents list) that
+    /// switches the main area between chat and alternate views.
+    Views,
+    /// The main area while `active_view == Tasks` — keyboard input
+    /// goes to the tasks screen handler instead of the chat.
+    Tasks,
 }
+
+/// Which content the main (left) area is currently showing. Chat
+/// is the default per-agent view; Tasks is the in-TUI task board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActiveView {
+    #[default]
+    Chat,
+    Tasks,
+}
+
+/// Entries in the right-column Views list. Currently a single
+/// entry; adding more is just extending this array and wiring a new
+/// activation arm in `handle_key_views`.
+pub const VIEW_ENTRIES: &[&str] = &["Tasks"];
 
 #[derive(Debug, Default, Clone)]
 pub struct LayoutRects {
     pub agent_list_inner: Option<Rect>,
     pub chat_history_inner: Option<Rect>,
     pub chat_input_inner: Option<Rect>,
+    /// Inner rect of the "views" panel on the right column. Populated
+    /// by `render()` so mouse clicks on a view entry can hit-test
+    /// against the same geometry the UI drew.
+    pub views_list_inner: Option<Rect>,
     pub chat_buttons: Vec<ChatButton>,
 }
 
@@ -136,6 +162,12 @@ pub struct App {
     /// store rooted at `.aciddog/tasks.json` in the cwd so tasks
     /// survive restarts.
     pub tasks: TaskStore,
+    /// Which content is rendered in the main (left) area.
+    pub active_view: ActiveView,
+    /// Which row of the right-column Views list is highlighted.
+    pub selected_view: usize,
+    /// UI-local state for the Tasks screen: cursor, modals, prompts.
+    pub tasks_screen: TasksScreen,
 }
 
 impl App {
@@ -173,6 +205,9 @@ impl App {
             socket_path: String::new(),
             ai_tx: None,
             tasks: TaskStore::new(),
+            active_view: ActiveView::default(),
+            selected_view: 0,
+            tasks_screen: TasksScreen::default(),
         }
     }
 
@@ -1115,81 +1150,11 @@ impl App {
             let _ = reply.send(Response::err(format!("task {id} not found")));
             return;
         };
-
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-
-        let mut out = String::new();
-        out.push_str(&format!("Task: {}\n", t.id));
-        out.push_str(&format!("Title: {}\n", t.title));
-        out.push_str(&format!("Status: {}\n", t.status.as_str()));
-        out.push_str(&format!(
-            "Assignee: {}\n",
-            t.assignee.as_deref().unwrap_or("-")
-        ));
-        out.push_str(&format!("Created by: {}\n", t.created_by));
-        out.push_str(&format!(
-            "Created: {} (unix {})\n",
-            format_age(now, t.created_at_secs),
-            t.created_at_secs
-        ));
-        out.push_str(&format!(
-            "Updated: {} (unix {})\n",
-            format_age(now, t.updated_at_secs),
-            t.updated_at_secs
-        ));
-
-        out.push_str("\nDescription:\n");
-        match &t.description {
-            Some(d) if !d.is_empty() => {
-                for line in d.lines() {
-                    out.push_str("  ");
-                    out.push_str(line);
-                    out.push('\n');
-                }
-            }
-            _ => out.push_str("  (none)\n"),
-        }
-
-        out.push_str("\nDependencies:\n");
-        if t.blocked_by.is_empty() {
-            out.push_str("  (none)\n");
-        } else {
-            for dep in &t.blocked_by {
-                match self.tasks.get(*dep) {
-                    Some(d) => out.push_str(&format!(
-                        "  {}  {:<12}  {}\n",
-                        d.id,
-                        d.status.as_str(),
-                        d.title
-                    )),
-                    None => out.push_str(&format!("  {dep}  (missing)\n")),
-                }
-            }
-            if self.tasks.is_blocked(t) {
-                out.push_str("  -> blocked: some deps not yet done\n");
-            } else {
-                out.push_str("  -> ready: all deps done\n");
-            }
-        }
-
-        out.push_str("\nNotes:\n");
-        if t.notes.is_empty() {
-            out.push_str("  (none)\n");
-        } else {
-            for n in &t.notes {
-                out.push_str(&format!(
-                    "  [{} · {}] {}\n",
-                    format_age(now, n.timestamp_secs),
-                    n.author,
-                    n.body
-                ));
-            }
-        }
-
-        let _ = reply.send(Response::ok(out.trim_end().to_string()));
+        let _ = reply.send(Response::ok(format_task_detail(t, &self.tasks, now)));
     }
 
     /// Push a passive `system_info` block into the assignee's chat so
@@ -1247,10 +1212,28 @@ impl App {
             return;
         }
 
-        if matches!(code, KeyCode::Tab) {
+        // Tab cycles the three visible panels — UNLESS a Tasks-view
+        // modal (form / detail / prompt) is open, in which case Tab
+        // belongs to that modal's field navigation and must reach
+        // `handle_key_tasks`.
+        let tasks_modal_open = self.active_view == ActiveView::Tasks
+            && self.focus == Focus::Tasks
+            && (self.tasks_screen.form.is_some()
+                || self.tasks_screen.detail.is_some()
+                || self.tasks_screen.prompt.is_some());
+        if matches!(code, KeyCode::Tab) && !tasks_modal_open {
+            let main = match self.active_view {
+                ActiveView::Chat => Focus::Chat,
+                ActiveView::Tasks => Focus::Tasks,
+            };
             self.focus = match self.focus {
-                Focus::Agents => Focus::Chat,
-                Focus::Chat => Focus::Agents,
+                f if f == main => Focus::Agents,
+                Focus::Agents => Focus::Views,
+                Focus::Views => main,
+                // If focus is on a main-area variant that doesn't
+                // match the current active_view (e.g. after a view
+                // switch), snap back to the right one.
+                _ => main,
             };
             return;
         }
@@ -1258,6 +1241,8 @@ impl App {
         match self.focus {
             Focus::Agents => self.handle_key_agents(code, mods),
             Focus::Chat => self.handle_key_chat(code, mods),
+            Focus::Views => self.handle_key_views(code, mods),
+            Focus::Tasks => self.handle_key_tasks(code, mods),
         }
     }
 
@@ -1267,9 +1252,277 @@ impl App {
                 info!("quit requested");
                 self.should_quit = true;
             }
-            KeyCode::Char('j') | KeyCode::Down => self.select_next(),
-            KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.select_next();
+                self.return_to_chat_if_viewing_tasks();
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.select_prev();
+                self.return_to_chat_if_viewing_tasks();
+            }
+            KeyCode::Enter => {
+                // Explicit "activate this agent" — useful when the
+                // user Tab'd to the agents list from the Tasks view
+                // and wants to jump back without moving selection.
+                self.return_to_chat_if_viewing_tasks();
+                self.focus = Focus::Chat;
+            }
             _ => {}
+        }
+    }
+
+    /// If the user is in the Tasks view and interacts with the
+    /// agents list, swap the main area back to chat. The operator
+    /// is clearly asking for an agent, so stop showing the task
+    /// board.
+    fn return_to_chat_if_viewing_tasks(&mut self) {
+        if self.active_view == ActiveView::Tasks {
+            self.active_view = ActiveView::Chat;
+            // Close any open Tasks modals so they don't get stranded
+            // off-screen.
+            self.tasks_screen.close_modal();
+        }
+    }
+
+    fn handle_key_views(&mut self, code: KeyCode, _mods: KeyModifiers) {
+        match code {
+            KeyCode::Char('q') => {
+                self.should_quit = true;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.selected_view + 1 < VIEW_ENTRIES.len() {
+                    self.selected_view += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.selected_view > 0 {
+                    self.selected_view -= 1;
+                }
+            }
+            KeyCode::Enter => {
+                // Only "Tasks" today. Hard-coded dispatch for now
+                // since there's exactly one entry; extending means
+                // matching on `VIEW_ENTRIES[self.selected_view]`.
+                if VIEW_ENTRIES.get(self.selected_view).copied() == Some("Tasks") {
+                    self.active_view = ActiveView::Tasks;
+                    self.focus = Focus::Tasks;
+                    // Snap the tasks-screen cursor to the first
+                    // selectable row (in case the store state
+                    // changed since it was last opened).
+                    let rows = TasksScreen::rows(&self.tasks);
+                    self.tasks_screen.reclamp(&rows);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_tasks(&mut self, code: KeyCode, _mods: KeyModifiers) {
+        // Clear transient status messages the moment the user types.
+        self.tasks_screen.status_msg = None;
+
+        // Modal form takes all input.
+        if self.tasks_screen.form.is_some() {
+            self.handle_task_form_key(code);
+            return;
+        }
+        // Detail modal: any key closes it.
+        if self.tasks_screen.detail.is_some() {
+            if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+                self.tasks_screen.close_modal();
+            }
+            return;
+        }
+        // One-line prompt (note / delete-confirm) takes all input.
+        if self.tasks_screen.prompt.is_some() {
+            self.handle_task_prompt_key(code);
+            return;
+        }
+
+        let rows = TasksScreen::rows(&self.tasks);
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => self.tasks_screen.move_down(&rows),
+            KeyCode::Char('k') | KeyCode::Up => self.tasks_screen.move_up(&rows),
+            KeyCode::Char('a') => {
+                self.tasks_screen.open_add();
+                self.inject_assignee_options();
+            }
+            KeyCode::Char('e') => {
+                if let Some(id) = self.tasks_screen.selected_task_id(&rows) {
+                    if let Some(t) = self.tasks.get(id) {
+                        self.tasks_screen.open_edit(t);
+                        self.inject_assignee_options();
+                    }
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(id) = self.tasks_screen.selected_task_id(&rows) {
+                    self.tasks_screen.prompt = Some(TasksPrompt::ConfirmDelete {
+                        task_id: id,
+                        buffer: String::new(),
+                    });
+                }
+            }
+            KeyCode::Char('t') => {
+                match self.tasks.take(OPERATOR) {
+                    Ok(t) => {
+                        self.tasks_screen.status_msg = Some(format!("took: {}", t.title));
+                    }
+                    Err(e) => {
+                        self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                    }
+                }
+                let rows = TasksScreen::rows(&self.tasks);
+                self.tasks_screen.reclamp(&rows);
+            }
+            KeyCode::Char('n') => {
+                if let Some(id) = self.tasks_screen.selected_task_id(&rows) {
+                    self.tasks_screen.prompt = Some(TasksPrompt::Note {
+                        task_id: id,
+                        body: String::new(),
+                    });
+                }
+            }
+            KeyCode::Char('s') => {
+                if let Some(id) = self.tasks_screen.selected_task_id(&rows) {
+                    if let Err(e) = self.tasks_screen.cycle_status(&mut self.tasks, id) {
+                        self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                    }
+                    let rows = TasksScreen::rows(&self.tasks);
+                    self.tasks_screen.reclamp(&rows);
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(id) = self.tasks_screen.selected_task_id(&rows) {
+                    self.tasks_screen.open_detail(id);
+                }
+            }
+            KeyCode::Esc => {
+                // Nothing open — treat Esc as "go back to chat".
+                self.active_view = ActiveView::Chat;
+                self.focus = Focus::Chat;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_task_form_key(&mut self, code: KeyCode) {
+        let Some(form) = self.tasks_screen.form.as_mut() else {
+            return;
+        };
+
+        // Picker popup takes all keyboard input while open.
+        if form.picker.is_some() {
+            match code {
+                KeyCode::Esc => form.close_picker(),
+                KeyCode::Down | KeyCode::Char('j') => form.picker_move(1),
+                KeyCode::Up | KeyCode::Char('k') => form.picker_move(-1),
+                KeyCode::Enter => form.commit_picker(),
+                _ => {}
+            }
+            return;
+        }
+
+        let on_dropdown = TaskForm::is_dropdown(form.focused_field);
+        match code {
+            KeyCode::Esc => self.tasks_screen.close_modal(),
+            // Tab/Down → next field; Shift-Tab/Up → previous.
+            KeyCode::Tab | KeyCode::Down => form.focus_next(),
+            KeyCode::BackTab | KeyCode::Up => form.focus_prev(),
+            // Enter on a dropdown opens the picker; on text fields
+            // it submits the form (preserving the "hit enter to
+            // save" muscle memory).
+            KeyCode::Enter => {
+                if on_dropdown {
+                    form.open_picker();
+                } else {
+                    match self.tasks_screen.submit_form(&mut self.tasks) {
+                        Ok(()) => {
+                            let rows = TasksScreen::rows(&self.tasks);
+                            self.tasks_screen.reclamp(&rows);
+                        }
+                        Err(_e) => { /* error is surfaced on form.error */ }
+                    }
+                }
+            }
+            // Character input is ignored on dropdown fields so
+            // stray keystrokes can't corrupt the selection.
+            KeyCode::Backspace if !on_dropdown => {
+                form.field_mut(form.focused_field).pop();
+            }
+            KeyCode::Char(c) if !on_dropdown => {
+                form.field_mut(form.focused_field).push(c);
+            }
+            _ => {}
+        }
+    }
+
+    /// Populate the assignee-dropdown options on the currently-open
+    /// form from the team's visible chats. Called immediately after
+    /// `open_add` / `open_edit`.
+    fn inject_assignee_options(&mut self) {
+        let mut options: Vec<String> = vec![String::new()];
+        for c in &self.chats {
+            // Hibernated workers are hidden from the agent list, but
+            // they can still be valid task assignees — include them
+            // so a hand-off mid-hibernation stays possible.
+            options.push(c.display_name.clone());
+        }
+        if let Some(form) = self.tasks_screen.form.as_mut() {
+            form.set_assignee_options(options);
+        }
+    }
+
+    fn handle_task_prompt_key(&mut self, code: KeyCode) {
+        let prompt = self.tasks_screen.prompt.as_mut();
+        let Some(prompt) = prompt else { return };
+        match prompt {
+            TasksPrompt::Note { task_id, body } => match code {
+                KeyCode::Esc => self.tasks_screen.close_modal(),
+                KeyCode::Enter => {
+                    if !body.trim().is_empty() {
+                        let id = *task_id;
+                        let body = std::mem::take(body);
+                        if let Err(e) = self.tasks.add_note(id, OPERATOR.to_string(), body) {
+                            self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                        } else {
+                            self.tasks_screen.status_msg = Some("note added".into());
+                        }
+                    }
+                    self.tasks_screen.close_modal();
+                }
+                KeyCode::Backspace => {
+                    body.pop();
+                }
+                KeyCode::Char(c) => body.push(c),
+                _ => {}
+            },
+            TasksPrompt::ConfirmDelete { task_id, buffer } => match code {
+                KeyCode::Esc => self.tasks_screen.close_modal(),
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    let id = *task_id;
+                    match self.tasks.remove(id) {
+                        Ok(t) => {
+                            self.tasks_screen.status_msg = Some(format!("removed: {}", t.title));
+                            self.tasks_screen.close_modal();
+                            let rows = TasksScreen::rows(&self.tasks);
+                            self.tasks_screen.reclamp(&rows);
+                        }
+                        Err(e) => {
+                            self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                            self.tasks_screen.close_modal();
+                        }
+                    }
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') => {
+                    self.tasks_screen.close_modal();
+                }
+                KeyCode::Char(c) => buffer.push(c),
+                KeyCode::Backspace => {
+                    buffer.pop();
+                }
+                _ => {}
+            },
         }
     }
 
@@ -1378,12 +1631,43 @@ impl App {
                     return;
                 }
 
+                // 2. Views list: clicking any entry both focuses
+                //    the panel and activates that view (same as
+                //    Enter on the keyboard).
+                if let Some(rect) = self.layout.views_list_inner {
+                    if rect_contains(rect, pos) {
+                        let row_in_list = ev.row.saturating_sub(rect.y) as usize;
+                        if row_in_list < VIEW_ENTRIES.len() {
+                            self.selected_view = row_in_list;
+                            // Dispatch the selected view.
+                            match VIEW_ENTRIES[row_in_list] {
+                                "Tasks" => {
+                                    self.active_view = ActiveView::Tasks;
+                                    self.focus = Focus::Tasks;
+                                    let rows = TasksScreen::rows(&self.tasks);
+                                    self.tasks_screen.reclamp(&rows);
+                                }
+                                _ => {
+                                    self.focus = Focus::Views;
+                                }
+                            }
+                        } else {
+                            self.focus = Focus::Views;
+                        }
+                        return;
+                    }
+                }
+
                 if let Some(rect) = self.layout.agent_list_inner {
                     if rect_contains(rect, pos) {
                         let row_in_list = ev.row.saturating_sub(rect.y) as usize;
                         let order = self.visible_order();
                         if let Some((chat_idx, _)) = order.get(row_in_list).copied() {
                             self.selected = chat_idx;
+                            // Picking an agent always returns to the
+                            // chat view — matches the j/k keyboard
+                            // behaviour.
+                            self.return_to_chat_if_viewing_tasks();
                             self.focus = Focus::Chat;
                         } else {
                             self.focus = Focus::Agents;
@@ -1393,13 +1677,30 @@ impl App {
                 }
                 if let Some(rect) = self.layout.chat_history_inner {
                     if rect_contains(rect, pos) {
-                        self.focus = Focus::Chat;
+                        // Main area: Focus depends on which view is
+                        // drawn there.
+                        self.focus = match self.active_view {
+                            ActiveView::Chat => Focus::Chat,
+                            ActiveView::Tasks => Focus::Tasks,
+                        };
+                        // In Tasks view, clicking a row selects it.
+                        if self.active_view == ActiveView::Tasks {
+                            let row_in_list = ev.row.saturating_sub(rect.y) as usize;
+                            let rows = TasksScreen::rows(&self.tasks);
+                            if let Some(super::tasks_view::TaskRow::Task(_)) = rows.get(row_in_list)
+                            {
+                                self.tasks_screen.selected_row = row_in_list;
+                            }
+                        }
                         return;
                     }
                 }
                 if let Some(rect) = self.layout.chat_input_inner {
                     if rect_contains(rect, pos) {
-                        self.focus = Focus::Chat;
+                        self.focus = match self.active_view {
+                            ActiveView::Chat => Focus::Chat,
+                            ActiveView::Tasks => Focus::Tasks,
+                        };
                     }
                 }
             }
@@ -1488,7 +1789,7 @@ impl App {
 /// Render the gap between `then_secs` and `now_secs` as a compact
 /// relative string: `12s ago`, `5m ago`, `3h ago`, `2d ago`, or
 /// `just now` when the gap is zero. Both args are unix seconds.
-fn format_age(now_secs: u64, then_secs: u64) -> String {
+pub(crate) fn format_age(now_secs: u64, then_secs: u64) -> String {
     let delta = now_secs.saturating_sub(then_secs);
     if delta == 0 {
         return "just now".into();
@@ -1503,6 +1804,80 @@ fn format_age(now_secs: u64, then_secs: u64) -> String {
         return format!("{}h ago", delta / 3600);
     }
     format!("{}d ago", delta / 86_400)
+}
+
+/// Build the multi-line detail rendering for a task — used by both
+/// the `aciddog task show` IPC handler and the TUI's detail modal so
+/// the two surfaces stay visually identical.
+pub(crate) fn format_task_detail(t: &Task, store: &TaskStore, now: u64) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Task: {}\n", t.id));
+    out.push_str(&format!("Title: {}\n", t.title));
+    out.push_str(&format!("Status: {}\n", t.status.as_str()));
+    out.push_str(&format!(
+        "Assignee: {}\n",
+        t.assignee.as_deref().unwrap_or("-")
+    ));
+    out.push_str(&format!("Created by: {}\n", t.created_by));
+    out.push_str(&format!(
+        "Created: {} (unix {})\n",
+        format_age(now, t.created_at_secs),
+        t.created_at_secs
+    ));
+    out.push_str(&format!(
+        "Updated: {} (unix {})\n",
+        format_age(now, t.updated_at_secs),
+        t.updated_at_secs
+    ));
+
+    out.push_str("\nDescription:\n");
+    match &t.description {
+        Some(d) if !d.is_empty() => {
+            for line in d.lines() {
+                out.push_str("  ");
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        _ => out.push_str("  (none)\n"),
+    }
+
+    out.push_str("\nDependencies:\n");
+    if t.blocked_by.is_empty() {
+        out.push_str("  (none)\n");
+    } else {
+        for dep in &t.blocked_by {
+            match store.get(*dep) {
+                Some(d) => out.push_str(&format!(
+                    "  {}  {:<12}  {}\n",
+                    d.id,
+                    d.status.as_str(),
+                    d.title
+                )),
+                None => out.push_str(&format!("  {dep}  (missing)\n")),
+            }
+        }
+        if store.is_blocked(t) {
+            out.push_str("  -> blocked: some deps not yet done\n");
+        } else {
+            out.push_str("  -> ready: all deps done\n");
+        }
+    }
+
+    out.push_str("\nNotes:\n");
+    if t.notes.is_empty() {
+        out.push_str("  (none)\n");
+    } else {
+        for n in &t.notes {
+            out.push_str(&format!(
+                "  [{} · {}] {}\n",
+                format_age(now, n.timestamp_secs),
+                n.author,
+                n.body
+            ));
+        }
+    }
+    out.trim_end().to_string()
 }
 
 pub fn rect_contains(rect: Rect, (x, y): (u16, u16)) -> bool {
@@ -1841,11 +2216,13 @@ mod tests {
     }
 
     #[test]
-    fn tab_toggles_focus() {
+    fn tab_cycles_focus_through_three_panels_in_chat_view() {
         let mut app = App::new(sample_config());
         assert_eq!(app.focus, Focus::Chat);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.focus, Focus::Agents);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Views);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.focus, Focus::Chat);
     }
@@ -4111,5 +4488,468 @@ mod tests {
         let t = app2.tasks.get(id).expect("task survived restart");
         assert_eq!(t.title, "persisted");
         assert_eq!(t.assignee.as_deref(), Some("b"));
+    }
+
+    // --------- Tasks screen (in-TUI) ----------
+
+    use super::super::tasks_view::{FormField, TaskFormKind, TasksPrompt};
+
+    fn send_keys(app: &mut App, keys: &[KeyCode]) {
+        for k in keys {
+            app.handle_key(*k, KeyModifiers::NONE);
+        }
+    }
+
+    fn type_string(app: &mut App, s: &str) {
+        for c in s.chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+    }
+
+    #[test]
+    fn activating_tasks_view_from_views_list_switches_main_area() {
+        let mut app = App::new(sample_config());
+        // Tab twice → Views focus.
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Views);
+        // Enter activates the selected view (only "Tasks" today).
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.active_view, ActiveView::Tasks);
+        assert_eq!(app.focus, Focus::Tasks);
+    }
+
+    #[test]
+    fn tab_cycles_three_panels_in_tasks_view() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Agents);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Views);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Tasks);
+    }
+
+    #[test]
+    fn moving_in_agents_list_while_viewing_tasks_returns_to_chat() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Agents;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.active_view, ActiveView::Chat);
+    }
+
+    #[test]
+    fn pressing_a_opens_add_form_and_submitting_creates_task() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        // `a` opens the form.
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert!(app.tasks_screen.form.is_some());
+        // Type a title, then Enter submits.
+        type_string(&mut app, "from tui");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.tasks_screen.form.is_none(), "form closes on submit");
+        assert_eq!(app.tasks.all().len(), 1);
+        assert_eq!(app.tasks.all()[0].title, "from tui");
+        assert_eq!(app.tasks.all()[0].created_by, "tui");
+    }
+
+    #[test]
+    fn add_form_rejects_empty_title_and_surfaces_error() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        // Submit with no title.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.tasks_screen.form.is_some());
+        assert!(app.tasks_screen.form.as_ref().unwrap().error.is_some());
+        assert_eq!(app.tasks.all().len(), 0);
+    }
+
+    #[test]
+    fn t_takes_an_open_task() {
+        let mut app = App::new(sample_config());
+        app.tasks
+            .add("work".into(), None, None, "seed".into(), Vec::new())
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        // Selection should land on the first task row automatically;
+        // render_tasks_screen would reclamp, but since tests don't
+        // render, do it manually.
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        let t = &app.tasks.all()[0];
+        assert_eq!(t.status, crate::tasks::TaskStatus::InProgress);
+        assert_eq!(t.assignee.as_deref(), Some("tui"));
+    }
+
+    #[test]
+    fn s_cycles_status_on_selected_task() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        // After cycle from Open the task moves to Assigned group.
+        // reclamp snaps selected_row to the first task; which group
+        // it's in is irrelevant to this assertion.
+        assert_eq!(
+            app.tasks.get(id).unwrap().status,
+            crate::tasks::TaskStatus::Assigned
+        );
+    }
+
+    #[test]
+    fn d_then_y_removes_the_selected_task() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(matches!(
+            app.tasks_screen.prompt,
+            Some(TasksPrompt::ConfirmDelete { .. })
+        ));
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert!(app.tasks.get(id).is_none());
+        assert!(app.tasks_screen.prompt.is_none());
+    }
+
+    #[test]
+    fn d_then_n_cancels_delete() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(app.tasks.get(id).is_some(), "task should still exist");
+        assert!(app.tasks_screen.prompt.is_none());
+    }
+
+    #[test]
+    fn n_prompts_for_note_body_and_submitting_appends_it() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        type_string(&mut app, "progress");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        let t = app.tasks.get(id).unwrap();
+        assert_eq!(t.notes.len(), 1);
+        assert_eq!(t.notes[0].body, "progress");
+        assert_eq!(t.notes[0].author, "tui");
+    }
+
+    #[test]
+    fn enter_opens_detail_modal_and_esc_closes_it() {
+        let mut app = App::new(sample_config());
+        app.tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.tasks_screen.detail.is_some());
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.tasks_screen.detail.is_none());
+    }
+
+    #[test]
+    fn e_opens_edit_form_prefilled_from_task() {
+        let mut app = App::new(sample_config());
+        app.tasks
+            .add(
+                "original".into(),
+                Some("original desc".into()),
+                Some("a".into()),
+                "seed".into(),
+                Vec::new(),
+            )
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        let form = app.tasks_screen.form.as_ref().unwrap();
+        assert!(matches!(form.kind, TaskFormKind::Edit(_)));
+        assert_eq!(form.title, "original");
+        assert_eq!(form.description, "original desc");
+        assert_eq!(form.assignee, "a");
+    }
+
+    #[test]
+    fn esc_from_idle_tasks_view_returns_to_chat() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.focus, Focus::Chat);
+    }
+
+    #[test]
+    fn views_list_nav_up_down_adjusts_selection() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Views;
+        // Only one entry; nav is no-op but must not panic.
+        send_keys(&mut app, &[KeyCode::Down, KeyCode::Up]);
+        assert_eq!(app.selected_view, 0);
+    }
+
+    #[test]
+    fn clicking_tasks_entry_in_views_activates_the_tasks_view() {
+        let mut app = App::new(sample_config());
+        // Pretend the UI drew the views list at (30, 5) 20×3.
+        app.layout.views_list_inner = Some(Rect::new(30, 5, 20, 3));
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 31,
+            row: 5, // the first entry row
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.active_view, ActiveView::Tasks);
+        assert_eq!(app.focus, Focus::Tasks);
+    }
+
+    #[test]
+    fn clicking_outside_views_entries_focuses_views_panel_only() {
+        let mut app = App::new(sample_config());
+        app.layout.views_list_inner = Some(Rect::new(30, 5, 20, 5));
+        // Row 8 is inside the panel but beyond the single entry at row 5.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 31,
+            row: 8,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.focus, Focus::Views);
+    }
+
+    #[test]
+    fn clicking_main_area_while_viewing_tasks_sets_tasks_focus_not_chat() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.layout.chat_history_inner = Some(Rect::new(0, 2, 60, 20));
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.focus, Focus::Tasks);
+    }
+
+    #[test]
+    fn tab_in_open_form_moves_to_next_field_not_focus_cycle() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        // Sanity: form is on Title to start.
+        assert_eq!(
+            app.tasks_screen.form.as_ref().unwrap().focused_field,
+            FormField::Title
+        );
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        // Tab must have moved the form cursor, not cycled panel focus.
+        assert_eq!(app.focus, Focus::Tasks);
+        assert_eq!(
+            app.tasks_screen.form.as_ref().unwrap().focused_field,
+            FormField::Description
+        );
+    }
+
+    #[test]
+    fn down_arrow_in_form_also_moves_to_next_field() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(
+            app.tasks_screen.form.as_ref().unwrap().focused_field,
+            FormField::Description
+        );
+    }
+
+    #[test]
+    fn up_arrow_in_form_moves_to_prev_field() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(
+            app.tasks_screen.form.as_ref().unwrap().focused_field,
+            FormField::Title
+        );
+    }
+
+    #[test]
+    fn typing_in_second_field_writes_to_second_field_only() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        type_string(&mut app, "mytitle");
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        type_string(&mut app, "mydesc");
+        let form = app.tasks_screen.form.as_ref().unwrap();
+        assert_eq!(form.title, "mytitle");
+        assert_eq!(form.description, "mydesc");
+    }
+
+    #[test]
+    fn enter_on_dropdown_field_opens_picker_popup() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        // Tab to Assignee.
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(
+            app.tasks_screen.form.as_ref().unwrap().focused_field,
+            FormField::Assignee
+        );
+        // Enter opens the picker; does NOT submit.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.tasks_screen.form.is_some());
+        assert!(app.tasks_screen.form.as_ref().unwrap().picker.is_some());
+    }
+
+    #[test]
+    fn picker_down_and_enter_updates_assignee() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE); // open picker
+        let before = app.tasks_screen.form.as_ref().unwrap().assignee.clone();
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE); // next option
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE); // commit
+        let after = app.tasks_screen.form.as_ref().unwrap().assignee.clone();
+        assert_ne!(before, after);
+        assert!(app.tasks_screen.form.as_ref().unwrap().picker.is_none());
+    }
+
+    #[test]
+    fn picker_esc_cancels_without_changing_value() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        let before = app.tasks_screen.form.as_ref().unwrap().assignee.clone();
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.tasks_screen.form.as_ref().unwrap().picker.is_none());
+        assert_eq!(app.tasks_screen.form.as_ref().unwrap().assignee, before);
+        assert!(app.tasks_screen.form.is_some());
+    }
+
+    #[test]
+    fn typing_is_ignored_on_a_dropdown_field() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        let before = app.tasks_screen.form.as_ref().unwrap().assignee.clone();
+        app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        let after = app.tasks_screen.form.as_ref().unwrap().assignee.clone();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn edit_form_status_picker_updates_status_on_commit() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        // Tab to Status (Title → Description → Assignee → Status).
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        // Open the picker, move down to "assigned", commit.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.tasks_screen.form.as_ref().unwrap().status, "assigned");
+        // Back to Title, Enter to submit.
+        app.handle_key(KeyCode::BackTab, KeyModifiers::NONE);
+        app.handle_key(KeyCode::BackTab, KeyModifiers::NONE);
+        app.handle_key(KeyCode::BackTab, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            app.tasks.get(id).unwrap().status,
+            crate::tasks::TaskStatus::Assigned
+        );
+    }
+
+    #[test]
+    fn clicking_agent_from_tasks_view_returns_to_chat() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.layout.agent_list_inner = Some(Rect::new(60, 5, 20, 10));
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 61,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.focus, Focus::Chat);
     }
 }
