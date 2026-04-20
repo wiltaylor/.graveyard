@@ -70,7 +70,8 @@ impl App {
         app.messages.push(ChatMessage {
             role: MessageRole::System,
             content: "Chat is a UI stub — messages aren't sent anywhere yet. \
-                      Tab toggles focus, mouse wheel scrolls history."
+                      Tab toggles focus, mouse wheel scrolls history. \
+                      Slash commands: /version, /exit."
                 .to_string(),
         });
         app
@@ -99,11 +100,41 @@ impl App {
         if trimmed.is_empty() {
             return;
         }
+        let content = trimmed.to_string();
         self.messages.push(ChatMessage {
             role: MessageRole::User,
-            content: trimmed.to_string(),
+            content: content.clone(),
         });
         self.input.clear();
+        self.chat_scroll = u16::MAX;
+
+        if content.starts_with('/') {
+            if let Some(outcome) = super::commands::dispatch(&content) {
+                self.apply_command(outcome);
+            }
+        }
+    }
+
+    fn apply_command(&mut self, outcome: super::commands::CommandOutcome) {
+        use super::commands::CommandOutcome;
+        match outcome {
+            CommandOutcome::Message(text) => {
+                self.messages.push(ChatMessage {
+                    role: MessageRole::System,
+                    content: text,
+                });
+            }
+            CommandOutcome::Quit => {
+                info!("quit requested via /exit");
+                self.should_quit = true;
+            }
+            CommandOutcome::Unknown { name, hint } => {
+                self.messages.push(ChatMessage {
+                    role: MessageRole::System,
+                    content: format!("unknown command: /{name} — {hint}"),
+                });
+            }
+        }
         self.chat_scroll = u16::MAX;
     }
 
@@ -338,6 +369,65 @@ mod tests {
             .messages
             .iter()
             .any(|m| m.role == MessageRole::User && m.content == "hello"));
+    }
+
+    #[test]
+    fn slash_version_emits_system_message() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        for c in "/version".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        let last = app.messages.last().unwrap();
+        assert_eq!(last.role, MessageRole::System);
+        assert!(last.content.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn slash_exit_sets_should_quit() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        for c in "/exit".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn unknown_slash_command_emits_hint() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        for c in "/frobnicate".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        let last = app.messages.last().unwrap();
+        assert_eq!(last.role, MessageRole::System);
+        assert!(last.content.contains("unknown command"));
+        assert!(last.content.contains("frobnicate"));
+    }
+
+    #[test]
+    fn non_slash_input_is_not_dispatched() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        for c in "hello world".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!app.should_quit);
+        // Only the user message should have been added (plus the startup system message).
+        let user_msgs: Vec<_> = app
+            .messages
+            .iter()
+            .filter(|m| m.role == MessageRole::User)
+            .collect();
+        assert_eq!(user_msgs.len(), 1);
+        assert_eq!(user_msgs[0].content, "hello world");
     }
 
     #[test]
