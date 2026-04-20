@@ -7,7 +7,7 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use aciddog::agent_ipc::{self, Request, RequestCmd};
-use aciddog::cli::{AgentArgs, AgentCommand, Args, WorkerCommand};
+use aciddog::cli::{AgentArgs, AgentCommand, Args, TaskCommand, WorkerCommand};
 use aciddog::config::load_config;
 use aciddog::tui;
 
@@ -82,6 +82,67 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
         AgentCommand::Worker {
             cmd: WorkerCommand::Complete { body },
         } => RequestCmd::WorkerComplete { body },
+        AgentCommand::Task {
+            cmd:
+                TaskCommand::Add {
+                    title,
+                    description,
+                    assignee,
+                    blocked_by,
+                },
+        } => RequestCmd::TaskAdd {
+            title,
+            description,
+            assignee,
+            blocked_by,
+        },
+        AgentCommand::Task {
+            cmd:
+                TaskCommand::List {
+                    assignee,
+                    status,
+                    mine,
+                    unassigned,
+                },
+        } => RequestCmd::TaskList {
+            assignee,
+            status,
+            mine,
+            unassigned,
+        },
+        AgentCommand::Task {
+            cmd:
+                TaskCommand::Update {
+                    id,
+                    title,
+                    description,
+                    status,
+                    assignee,
+                    unassign,
+                    note,
+                    add_blocked_by,
+                    remove_blocked_by,
+                },
+        } => RequestCmd::TaskUpdate {
+            id,
+            title,
+            description,
+            status,
+            assignee,
+            unassign,
+            note,
+            add_blocked_by,
+            remove_blocked_by,
+        },
+        AgentCommand::Task {
+            cmd: TaskCommand::Remove { id },
+        } => RequestCmd::TaskRemove { id },
+        AgentCommand::Task {
+            cmd: TaskCommand::Take,
+        } => RequestCmd::TaskTake,
+        AgentCommand::Task {
+            cmd: TaskCommand::Note { id, body },
+        } => RequestCmd::TaskNote { id, body },
     };
 
     let response = agent_ipc::client::send(&socket_path, &Request { agent_id, cmd })

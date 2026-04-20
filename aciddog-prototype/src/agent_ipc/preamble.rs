@@ -88,6 +88,23 @@ pub fn cli_preamble(binary: &str, contactable: &[&str], creatable: &[&str]) -> S
             &format!("  You are allowed to spawn: {}", creatable.join(", ")),
         );
     }
+    push_section(
+        &mut out,
+        binary,
+        "task <add|list|update|remove|take|note>",
+        "shared team task board. Use `task add --title \"<t>\" [--description ...] [--assignee <id>] \
+         [--blocked-by <dep-uuid>]...` to create work (repeat `--blocked-by` for multiple deps), \
+         `task list [--mine|--assignee <id>|--status <s>|--unassigned]` to see it (the `deps` column \
+         shows `blocked(n)` or `ready(n)` for tasks with dependencies), \
+         `task update --id <uuid> [--title ...] [--description ...] [--status open|assigned|in_progress|done|cancelled] \
+         [--assignee <id>|--unassign] [--note \"<context>\"] [--add-blocked-by <uuid>]... [--remove-blocked-by <uuid>]...` \
+         to change it or hand it off, `task take` to atomically claim the oldest unblocked unassigned task \
+         (it moves to `in_progress` assigned to you — tasks with any open dependency are skipped until \
+         every dep reaches `done`), `task remove --id <uuid>` to drop it (also prunes the id from any \
+         dependents' lists), and `task note --id <uuid> --body \"<text>\"` to append a log entry. \
+         The board is team-wide — there is no allowlist. Always attach a `--note` when reassigning so \
+         the next owner sees context (e.g. \"ready for test, commit abc123\").",
+    );
     // add new subcommand sections above this line
 
     out
@@ -250,6 +267,27 @@ mod tests {
             p.contains("/a send --to coder --body"),
             "missing progress send example: {p}"
         );
+    }
+
+    #[test]
+    fn preamble_mentions_task_subcommand() {
+        let p = cli_preamble("/a", &[], &[]);
+        assert!(
+            p.contains("/a task <add|list|update|remove|take|note>"),
+            "missing task subcommand entry: {p}"
+        );
+        assert!(
+            p.to_lowercase().contains("shared team task board"),
+            "missing task board description: {p}"
+        );
+    }
+
+    #[test]
+    fn preamble_task_subcommand_present_even_without_allowlists() {
+        // The task board has no allowlist gate, so it must appear even
+        // when `contactable` and `creatable` are both empty.
+        let p = cli_preamble("/a", &[], &[]);
+        assert!(p.contains("/a task"), "task should be unconditional: {p}");
     }
 
     #[test]

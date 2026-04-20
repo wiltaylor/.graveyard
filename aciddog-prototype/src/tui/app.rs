@@ -25,6 +25,7 @@ use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
 use crate::ai::{AICore, AIEvent, ClaudeCodeCore};
 use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::AciddogConfig;
+use crate::tasks::{TaskFilter, TaskPatch, TaskStatus, TaskStore};
 
 use super::blocks::{BlockAction, ChatBlock, ChatButton, ScrollAnchor};
 use super::clipboard;
@@ -130,6 +131,11 @@ pub struct App {
     /// so new worker spawns can route their stream into the same
     /// event loop that serves configured agents.
     pub ai_tx: Option<mpsc::Sender<(usize, AIEvent)>>,
+    /// Shared team task board. `App::new` initialises this ephemeral
+    /// (in-memory only); `tui::run` replaces it with a disk-backed
+    /// store rooted at `.aciddog/tasks.json` in the cwd so tasks
+    /// survive restarts.
+    pub tasks: TaskStore,
 }
 
 impl App {
@@ -166,6 +172,7 @@ impl App {
             aciddog_binary: String::new(),
             socket_path: String::new(),
             ai_tx: None,
+            tasks: TaskStore::new(),
         }
     }
 
@@ -414,6 +421,56 @@ impl App {
             }
             RequestCmd::WorkerComplete { body } => {
                 self.handle_worker_complete(idx, body, reply);
+            }
+            RequestCmd::TaskAdd {
+                title,
+                description,
+                assignee,
+                blocked_by,
+            } => {
+                self.handle_task_add(idx, title, description, assignee, blocked_by, reply);
+            }
+            RequestCmd::TaskList {
+                assignee,
+                status,
+                mine,
+                unassigned,
+            } => {
+                self.handle_task_list(idx, assignee, status, mine, unassigned, reply);
+            }
+            RequestCmd::TaskUpdate {
+                id,
+                title,
+                description,
+                status,
+                assignee,
+                unassign,
+                note,
+                add_blocked_by,
+                remove_blocked_by,
+            } => {
+                self.handle_task_update(
+                    idx,
+                    id,
+                    title,
+                    description,
+                    status,
+                    assignee,
+                    unassign,
+                    note,
+                    add_blocked_by,
+                    remove_blocked_by,
+                    reply,
+                );
+            }
+            RequestCmd::TaskRemove { id } => {
+                self.handle_task_remove(idx, id, reply);
+            }
+            RequestCmd::TaskTake => {
+                self.handle_task_take(idx, reply);
+            }
+            RequestCmd::TaskNote { id, body } => {
+                self.handle_task_note(idx, id, body, reply);
             }
         }
     }
@@ -787,6 +844,284 @@ impl App {
         let _ = reply.send(Response::ok("queued"));
     }
 
+    fn handle_task_add(
+        &mut self,
+        sender_idx: usize,
+        title: String,
+        description: Option<String>,
+        assignee: Option<String>,
+        blocked_by: Vec<Uuid>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(sender_chat) = self.chats.get(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        let who = sender_chat.display_name.clone();
+
+        if let Some(ref name) = assignee {
+            if !self.chats.iter().any(|c| &c.display_name == name) {
+                let _ = reply.send(Response::err(format!("no agent or worker named `{name}`")));
+                return;
+            }
+        }
+
+        let (task_id, title_clone, assignee_clone) = match self.tasks.add(
+            title,
+            description,
+            assignee.clone(),
+            who.clone(),
+            blocked_by,
+        ) {
+            Ok(t) => (t.id, t.title.clone(), t.assignee.clone()),
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+                return;
+            }
+        };
+
+        if let Some(new_assignee) = assignee_clone {
+            // Don't notify yourself on self-assignment during `add`.
+            if new_assignee != who {
+                self.notify_assignee(
+                    &new_assignee,
+                    task_id,
+                    &title_clone,
+                    &format!("assigned to you by {who}"),
+                );
+            }
+        }
+
+        let _ = reply.send(Response::ok(format!("task created: {task_id}")));
+    }
+
+    fn handle_task_list(
+        &mut self,
+        sender_idx: usize,
+        assignee: Option<String>,
+        status: Option<String>,
+        mine: bool,
+        unassigned: bool,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(sender_chat) = self.chats.get(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        let who = sender_chat.display_name.clone();
+
+        let parsed_status = match status.as_deref().map(TaskStatus::parse).transpose() {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+                return;
+            }
+        };
+
+        let filter = TaskFilter {
+            assignee: if mine { Some(who) } else { assignee },
+            status: parsed_status,
+            unassigned_only: unassigned,
+        };
+
+        let rows = self.tasks.list(&filter);
+        if rows.is_empty() {
+            let _ = reply.send(Response::ok("(no tasks match)"));
+            return;
+        }
+        let mut out = String::new();
+        out.push_str(
+            "id                                     status        assignee            deps       title\n",
+        );
+        for t in rows {
+            let deps_col = if t.blocked_by.is_empty() {
+                "-".to_string()
+            } else if self.tasks.is_blocked(t) {
+                format!("blocked({})", t.blocked_by.len())
+            } else {
+                format!("ready({})", t.blocked_by.len())
+            };
+            out.push_str(&format!(
+                "{}  {:<12}  {:<18}  {:<9}  {}\n",
+                t.id,
+                t.status.as_str(),
+                t.assignee.as_deref().unwrap_or("-"),
+                deps_col,
+                t.title
+            ));
+        }
+        let _ = reply.send(Response::ok(out.trim_end().to_string()));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_task_update(
+        &mut self,
+        sender_idx: usize,
+        id: Uuid,
+        title: Option<String>,
+        description: Option<String>,
+        status: Option<String>,
+        assignee: Option<String>,
+        unassign: bool,
+        note: Option<String>,
+        add_blocked_by: Vec<Uuid>,
+        remove_blocked_by: Vec<Uuid>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(sender_chat) = self.chats.get(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        let who = sender_chat.display_name.clone();
+
+        let parsed_status = match status.as_deref().map(TaskStatus::parse).transpose() {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+                return;
+            }
+        };
+
+        let assignee_patch: Option<Option<String>> = if unassign {
+            Some(None)
+        } else if let Some(name) = assignee {
+            if !self.chats.iter().any(|c| c.display_name == name) {
+                let _ = reply.send(Response::err(format!("no agent or worker named `{name}`")));
+                return;
+            }
+            Some(Some(name))
+        } else {
+            None
+        };
+
+        let patch = TaskPatch {
+            title,
+            description,
+            status: parsed_status,
+            assignee: assignee_patch,
+            note,
+            add_blocked_by,
+            remove_blocked_by,
+        };
+
+        let outcome = match self.tasks.update(id, patch, &who) {
+            Ok(o) => o,
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+                return;
+            }
+        };
+
+        if let Some(new_assignee) = outcome.reassigned_to.as_deref() {
+            if new_assignee != who {
+                if let Some(t) = self.tasks.get(id) {
+                    let title_clone = t.title.clone();
+                    self.notify_assignee(
+                        new_assignee,
+                        id,
+                        &title_clone,
+                        &format!("assigned to you by {who}"),
+                    );
+                }
+            }
+        }
+
+        let _ = reply.send(Response::ok("task updated"));
+    }
+
+    fn handle_task_remove(
+        &mut self,
+        sender_idx: usize,
+        id: Uuid,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if self.chats.get(sender_idx).is_none() {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        }
+        match self.tasks.remove(id) {
+            Ok(_) => {
+                let _ = reply.send(Response::ok("task removed"));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
+    fn handle_task_take(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(sender_chat) = self.chats.get(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        let who = sender_chat.display_name.clone();
+
+        let (task_id, title_clone) = match self.tasks.take(&who) {
+            Ok(t) => (t.id, t.title.clone()),
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+                return;
+            }
+        };
+
+        // Drop a system block into the taker's own pane so their chat
+        // history records the claim (handy when reviewing transcripts).
+        self.notify_assignee(&who, task_id, &title_clone, "taken by you");
+
+        let _ = reply.send(Response::ok(format!("took task {task_id}: {title_clone}")));
+    }
+
+    fn handle_task_note(
+        &mut self,
+        sender_idx: usize,
+        id: Uuid,
+        body: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(sender_chat) = self.chats.get(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        let who = sender_chat.display_name.clone();
+
+        match self.tasks.add_note(id, who, body) {
+            Ok(_) => {
+                let _ = reply.send(Response::ok("note added"));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
+    /// Push a passive `system_info` block into the assignee's chat so
+    /// they see the new work next time they look at the pane. Does
+    /// NOT resurrect hibernated workers — tasks are pull-driven, so
+    /// waking a sleeping worker every time someone assigns a task
+    /// would undo the point of hibernation.
+    fn notify_assignee(
+        &mut self,
+        assignee_display: &str,
+        task_id: Uuid,
+        title: &str,
+        context: &str,
+    ) {
+        let short = task_id.to_string();
+        let short = &short[..8.min(short.len())];
+        let msg = format!("Task {short} {context}: {title}");
+        if let Some(chat) = self
+            .chats
+            .iter_mut()
+            .find(|c| c.display_name == assignee_display)
+        {
+            chat.push_block(ChatBlock::system_info(msg));
+        }
+    }
+
     fn apply_command(&mut self, outcome: super::commands::CommandOutcome) {
         use super::commands::CommandOutcome;
         let selected = self.selected;
@@ -1120,6 +1455,20 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new(config);
+
+    // Load the disk-backed task store from `.aciddog/tasks.json` in the
+    // cwd so tasks survive restarts. On I/O/parse error, warn and fall
+    // back to an ephemeral store so the TUI still boots.
+    let tasks_path = std::path::PathBuf::from(".aciddog").join("tasks.json");
+    match TaskStore::load_or_init(tasks_path.clone()) {
+        Ok(store) => {
+            info!(path = %tasks_path.display(), count = store.len(), "loaded task store");
+            app.tasks = store;
+        }
+        Err(e) => {
+            warn!(error = %e, path = %tasks_path.display(), "failed to load task store; using ephemeral store");
+        }
+    }
 
     // Bind the agent IPC socket for this team before spawning cores, so its
     // path can be injected into each claude child's environment.
@@ -2853,5 +3202,685 @@ mod tests {
             }
             other => panic!("expected WorkerComplete, got {other:?}"),
         }
+    }
+
+    // --------- Task board ----------
+
+    /// Parse a `"task created: <uuid>"` reply into the Uuid, else fail the test.
+    fn parse_task_created(msg: &str) -> Uuid {
+        let id_str = msg
+            .strip_prefix("task created: ")
+            .expect("task created reply");
+        Uuid::parse_str(id_str).expect("valid uuid in reply")
+    }
+
+    #[tokio::test]
+    async fn task_add_creates_open_task_when_unassigned() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::TaskAdd {
+                    title: "fix bug".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok, "error: {:?}", resp.error);
+        let id = parse_task_created(resp.message.as_deref().unwrap());
+        let t = app.tasks.get(id).unwrap();
+        assert_eq!(t.title, "fix bug");
+        assert_eq!(t.status, crate::tasks::TaskStatus::Open);
+        assert!(t.assignee.is_none());
+    }
+
+    #[tokio::test]
+    async fn task_add_with_assignee_notifies_recipient_pane() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+        let b_blocks_before = app.chats[1].blocks.len();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::TaskAdd {
+                    title: "look at logs".into(),
+                    description: None,
+                    assignee: Some("b".into()),
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx,
+        });
+        assert!(rx.await.unwrap().ok);
+        let b_blocks_after = app.chats[1].blocks.len();
+        assert_eq!(
+            b_blocks_after,
+            b_blocks_before + 1,
+            "recipient should have a new system block"
+        );
+        match app.chats[1].blocks.last().unwrap() {
+            ChatBlock::System { text, .. } => {
+                assert!(text.contains("assigned to you by a"), "got: {text}");
+                assert!(text.contains("look at logs"), "got: {text}");
+            }
+            other => panic!("expected System block, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn task_add_rejects_unknown_assignee() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::TaskAdd {
+                    title: "t".into(),
+                    description: None,
+                    assignee: Some("ghost".into()),
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("ghost"));
+    }
+
+    #[tokio::test]
+    async fn task_take_claims_oldest_free_task_and_sets_in_progress() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+        let b = app.chats[1].session_id.unwrap();
+
+        // `a` creates an unassigned task.
+        let (tx1, rx1) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "work".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx1,
+        });
+        let id = parse_task_created(rx1.await.unwrap().message.as_deref().unwrap());
+
+        // `b` takes it.
+        let (tx2, rx2) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: b,
+                cmd: RequestCmd::TaskTake,
+            },
+            reply: tx2,
+        });
+        let resp = rx2.await.unwrap();
+        assert!(resp.ok, "error: {:?}", resp.error);
+
+        let t = app.tasks.get(id).unwrap();
+        assert_eq!(t.assignee.as_deref(), Some("b"));
+        assert_eq!(t.status, crate::tasks::TaskStatus::InProgress);
+        assert_eq!(t.notes.len(), 1);
+        assert!(t.notes[0].body.contains("taken by b"));
+    }
+
+    #[tokio::test]
+    async fn task_take_errors_when_no_free_tasks() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskTake,
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("no unassigned"));
+    }
+
+    #[tokio::test]
+    async fn task_update_reassign_with_note_notifies_new_assignee() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+        let b = app.chats[1].session_id.unwrap();
+
+        // a adds and takes the task.
+        let (tx1, rx1) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "ship feature".into(),
+                    description: None,
+                    assignee: Some("a".into()),
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx1,
+        });
+        let id = parse_task_created(rx1.await.unwrap().message.as_deref().unwrap());
+        let a_blocks_before_handoff = app.chats[0].blocks.len();
+
+        // a reassigns to b with a note (simulating handoff to tester).
+        let (tx2, rx2) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskUpdate {
+                    id,
+                    title: None,
+                    description: None,
+                    status: None,
+                    assignee: Some("b".into()),
+                    unassign: false,
+                    note: Some("ready for test, see PR #1".into()),
+                    add_blocked_by: vec![],
+                    remove_blocked_by: vec![],
+                },
+            },
+            reply: tx2,
+        });
+        assert!(rx2.await.unwrap().ok);
+
+        let t = app.tasks.get(id).unwrap();
+        assert_eq!(t.assignee.as_deref(), Some("b"));
+        assert_eq!(t.notes.len(), 1);
+        assert_eq!(t.notes[0].body, "ready for test, see PR #1");
+
+        // b's pane got a system block.
+        match app.chats[1].blocks.last().unwrap() {
+            ChatBlock::System { text, .. } => {
+                assert!(text.contains("assigned to you by a"), "got: {text}");
+            }
+            other => panic!("expected System block, got {other:?}"),
+        }
+        // a's pane is unchanged (self-reassignment suppressed, and b
+        // didn't notify a).
+        assert_eq!(app.chats[0].blocks.len(), a_blocks_before_handoff);
+
+        // b hands it back with a bug report.
+        let (tx3, rx3) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: b,
+                cmd: RequestCmd::TaskUpdate {
+                    id,
+                    title: None,
+                    description: None,
+                    status: None,
+                    assignee: Some("a".into()),
+                    unassign: false,
+                    note: Some("bug in edge case X".into()),
+                    add_blocked_by: vec![],
+                    remove_blocked_by: vec![],
+                },
+            },
+            reply: tx3,
+        });
+        assert!(rx3.await.unwrap().ok);
+
+        let t = app.tasks.get(id).unwrap();
+        assert_eq!(t.assignee.as_deref(), Some("a"));
+        assert_eq!(t.notes.len(), 2);
+        assert_eq!(t.notes[1].body, "bug in edge case X");
+        // a's pane now has a handoff-back system block.
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::System { text, .. } => {
+                assert!(text.contains("assigned to you by b"), "got: {text}");
+            }
+            other => panic!("expected System block, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn task_update_invalid_status_errors() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+
+        let (tx1, rx1) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "t".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx1,
+        });
+        let id = parse_task_created(rx1.await.unwrap().message.as_deref().unwrap());
+
+        let (tx2, rx2) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskUpdate {
+                    id,
+                    title: None,
+                    description: None,
+                    status: Some("nope".into()),
+                    assignee: None,
+                    unassign: false,
+                    note: None,
+                    add_blocked_by: vec![],
+                    remove_blocked_by: vec![],
+                },
+            },
+            reply: tx2,
+        });
+        let resp = rx2.await.unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("invalid status"));
+    }
+
+    #[tokio::test]
+    async fn task_list_mine_filters_to_calling_agent() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+        let b = app.chats[1].session_id.unwrap();
+
+        // a adds one task assigned to b, one to a.
+        for assignee in ["b", "a"] {
+            let (tx, rx) = oneshot::channel();
+            app.handle_agent_socket_event(AgentSocketEvent {
+                request: crate::agent_ipc::Request {
+                    agent_id: a,
+                    cmd: RequestCmd::TaskAdd {
+                        title: format!("t for {assignee}"),
+                        description: None,
+                        assignee: Some(assignee.into()),
+                        blocked_by: vec![],
+                    },
+                },
+                reply: tx,
+            });
+            assert!(rx.await.unwrap().ok);
+        }
+
+        // b lists --mine → 1 task.
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: b,
+                cmd: RequestCmd::TaskList {
+                    assignee: None,
+                    status: None,
+                    mine: true,
+                    unassigned: false,
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok);
+        let msg = resp.message.unwrap();
+        assert!(msg.contains("t for b"), "got: {msg}");
+        assert!(!msg.contains("t for a"), "leaked other assignment: {msg}");
+    }
+
+    #[tokio::test]
+    async fn task_remove_drops_the_task() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+
+        let (tx1, rx1) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "t".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx1,
+        });
+        let id = parse_task_created(rx1.await.unwrap().message.as_deref().unwrap());
+
+        let (tx2, rx2) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskRemove { id },
+            },
+            reply: tx2,
+        });
+        assert!(rx2.await.unwrap().ok);
+        assert!(app.tasks.get(id).is_none());
+    }
+
+    #[tokio::test]
+    async fn task_note_appends_to_log() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+
+        let (tx1, rx1) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "t".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx1,
+        });
+        let id = parse_task_created(rx1.await.unwrap().message.as_deref().unwrap());
+
+        let (tx2, rx2) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskNote {
+                    id,
+                    body: "investigating".into(),
+                },
+            },
+            reply: tx2,
+        });
+        assert!(rx2.await.unwrap().ok);
+        let t = app.tasks.get(id).unwrap();
+        assert_eq!(t.notes.len(), 1);
+        assert_eq!(t.notes[0].body, "investigating");
+        assert_eq!(t.notes[0].author, "a");
+    }
+
+    #[tokio::test]
+    async fn task_take_skips_blocked_tasks_and_claims_them_when_dep_done() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+        let b = app.chats[1].session_id.unwrap();
+
+        // a creates a prereq task.
+        let (tx1, rx1) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "prereq".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx1,
+        });
+        let prereq_id = parse_task_created(rx1.await.unwrap().message.as_deref().unwrap());
+
+        // a creates a dependent task blocked by the prereq.
+        let (tx2, rx2) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "dependent".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![prereq_id],
+                },
+            },
+            reply: tx2,
+        });
+        let dep_id = parse_task_created(rx2.await.unwrap().message.as_deref().unwrap());
+
+        // b takes → must claim the prereq, NOT the dependent.
+        let (tx3, rx3) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: b,
+                cmd: RequestCmd::TaskTake,
+            },
+            reply: tx3,
+        });
+        let resp = rx3.await.unwrap();
+        assert!(resp.ok);
+        assert!(resp.message.unwrap().contains("prereq"));
+        assert_eq!(
+            app.tasks.get(prereq_id).unwrap().assignee.as_deref(),
+            Some("b")
+        );
+        assert!(app.tasks.get(dep_id).unwrap().assignee.is_none());
+
+        // b marks the prereq done.
+        let (tx4, rx4) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: b,
+                cmd: RequestCmd::TaskUpdate {
+                    id: prereq_id,
+                    title: None,
+                    description: None,
+                    status: Some("done".into()),
+                    assignee: None,
+                    unassign: false,
+                    note: None,
+                    add_blocked_by: vec![],
+                    remove_blocked_by: vec![],
+                },
+            },
+            reply: tx4,
+        });
+        assert!(rx4.await.unwrap().ok);
+
+        // b takes again → now the dependent is claimable.
+        let (tx5, rx5) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: b,
+                cmd: RequestCmd::TaskTake,
+            },
+            reply: tx5,
+        });
+        assert!(rx5.await.unwrap().ok);
+        assert_eq!(
+            app.tasks.get(dep_id).unwrap().assignee.as_deref(),
+            Some("b")
+        );
+    }
+
+    #[tokio::test]
+    async fn task_add_rejects_unknown_blocked_by() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "t".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![Uuid::new_v4()],
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().to_lowercase().contains("dependency"));
+    }
+
+    #[tokio::test]
+    async fn task_update_rejects_cycle() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+
+        // Create x; create y blocked_by x.
+        let (tx1, rx1) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "x".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx1,
+        });
+        let x = parse_task_created(rx1.await.unwrap().message.as_deref().unwrap());
+
+        let (tx2, rx2) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "y".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![x],
+                },
+            },
+            reply: tx2,
+        });
+        let y = parse_task_created(rx2.await.unwrap().message.as_deref().unwrap());
+
+        // Now try to make x depend on y → cycle.
+        let (tx3, rx3) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskUpdate {
+                    id: x,
+                    title: None,
+                    description: None,
+                    status: None,
+                    assignee: None,
+                    unassign: false,
+                    note: None,
+                    add_blocked_by: vec![y],
+                    remove_blocked_by: vec![],
+                },
+            },
+            reply: tx3,
+        });
+        let resp = rx3.await.unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().to_lowercase().contains("cycle"));
+    }
+
+    #[tokio::test]
+    async fn task_remove_prunes_dependents() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+
+        let (tx1, rx1) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "prereq".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx1,
+        });
+        let prereq = parse_task_created(rx1.await.unwrap().message.as_deref().unwrap());
+
+        let (tx2, rx2) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "dependent".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![prereq],
+                },
+            },
+            reply: tx2,
+        });
+        let dep = parse_task_created(rx2.await.unwrap().message.as_deref().unwrap());
+
+        // Remove the prereq; dependent's blocked_by should be empty now.
+        let (tx3, rx3) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskRemove { id: prereq },
+            },
+            reply: tx3,
+        });
+        assert!(rx3.await.unwrap().ok);
+        assert!(app.tasks.get(dep).unwrap().blocked_by.is_empty());
+    }
+
+    #[tokio::test]
+    async fn task_store_persists_across_app_restart() {
+        use crate::tasks::TaskStore;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("tasks.json");
+
+        let id;
+        {
+            let mut app = App::new(sample_config());
+            app.tasks = TaskStore::load_or_init(path.clone()).unwrap();
+            wire_up_agent_ids_and_channels(&mut app);
+            let a = app.chats[0].session_id.unwrap();
+
+            let (tx, rx) = oneshot::channel();
+            app.handle_agent_socket_event(AgentSocketEvent {
+                request: crate::agent_ipc::Request {
+                    agent_id: a,
+                    cmd: RequestCmd::TaskAdd {
+                        title: "persisted".into(),
+                        description: None,
+                        assignee: Some("b".into()),
+                        blocked_by: vec![],
+                    },
+                },
+                reply: tx,
+            });
+            id = parse_task_created(rx.await.unwrap().message.as_deref().unwrap());
+        } // drop app → file must already be on disk from persist()
+
+        let mut app2 = App::new(sample_config());
+        app2.tasks = TaskStore::load_or_init(path).unwrap();
+        let t = app2.tasks.get(id).expect("task survived restart");
+        assert_eq!(t.title, "persisted");
+        assert_eq!(t.assignee.as_deref(), Some("b"));
     }
 }
