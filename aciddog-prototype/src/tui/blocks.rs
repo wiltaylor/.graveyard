@@ -592,7 +592,9 @@ fn render_agent_info(
         return;
     }
 
-    // Prompt body.
+    // Prompt body. Pass the String directly so ratatui splits on newlines
+    // into individual Lines; a single Span would treat `\n` as a glyph and
+    // collapse the body onto one wrapped line.
     let body_w = rect.width.saturating_sub(2);
     let body_rows = wrapped_rows(prompt, body_w);
     let available = end_y.saturating_sub(y);
@@ -602,12 +604,10 @@ fn render_agent_info(
         .borders(Borders::LEFT)
         .border_style(Style::default().fg(Color::DarkGray));
     frame.render_widget(
-        Paragraph::new(Span::styled(
-            prompt.to_string(),
-            Style::default().fg(Color::Gray),
-        ))
-        .block(block)
-        .wrap(Wrap { trim: false }),
+        Paragraph::new(prompt.to_string())
+            .style(Style::default().fg(Color::Gray))
+            .block(block)
+            .wrap(Wrap { trim: false }),
         body_rect,
     );
 }

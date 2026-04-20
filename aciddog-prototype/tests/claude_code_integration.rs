@@ -5,15 +5,18 @@
 
 use aciddog::ai::{AICore, AIEvent, ClaudeCodeCore};
 use futures::StreamExt;
+use uuid::Uuid;
 
 #[tokio::test]
 #[ignore]
 async fn live_turn_streams_events_and_reuses_session() {
+    let expected_session = Uuid::new_v4();
     let mut core = ClaudeCodeCore::new(
+        expected_session,
         "Respond with a single word.".into(),
         vec!["Read".into()],
     );
-    let expected_session = core.session_id().expect("session id always present");
+    assert_eq!(core.session_id(), Some(expected_session));
 
     let mut stream = core
         .turn("Reply with exactly the word READY and nothing else.")
@@ -57,7 +60,7 @@ async fn live_turn_streams_events_and_reuses_session() {
 async fn missing_binary_yields_spawn_error() {
     use aciddog::ai::AIError;
 
-    let mut core = ClaudeCodeCore::new("i".into(), vec![])
+    let mut core = ClaudeCodeCore::new(Uuid::new_v4(), "i".into(), vec![])
         .with_binary("/no/such/path/claude");
     match core.turn("hi").await {
         Err(AIError::NotFound) | Err(AIError::Spawn(_)) => {}

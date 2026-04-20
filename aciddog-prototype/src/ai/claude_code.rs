@@ -19,16 +19,25 @@ pub struct ClaudeCodeCore {
     session_id: Uuid,
     initial_instructions: String,
     allowed_tools: Vec<String>,
+    env: Vec<(String, String)>,
     started: bool,
 }
 
 impl ClaudeCodeCore {
-    pub fn new(initial_instructions: String, allowed_tools: Vec<String>) -> Self {
+    /// Construct a core for a brand-new session. The caller owns the
+    /// session id so it can be shared with the chat UI and the agent IPC
+    /// layer before the first turn has run.
+    pub fn new(
+        session_id: Uuid,
+        initial_instructions: String,
+        allowed_tools: Vec<String>,
+    ) -> Self {
         Self {
             binary: DEFAULT_BINARY.to_string(),
-            session_id: Uuid::new_v4(),
+            session_id,
             initial_instructions,
             allowed_tools,
+            env: Vec::new(),
             started: false,
         }
     }
@@ -44,6 +53,7 @@ impl ClaudeCodeCore {
             session_id,
             initial_instructions,
             allowed_tools,
+            env: Vec::new(),
             started: true,
         }
     }
@@ -51,6 +61,14 @@ impl ClaudeCodeCore {
     /// Override the binary path (useful for tests pointing at `/bin/false`, etc).
     pub fn with_binary(mut self, binary: impl Into<String>) -> Self {
         self.binary = binary.into();
+        self
+    }
+
+    /// Additional environment variables to pass to the spawned claude process.
+    /// Used to inject `ACIDDOG_AGENT_ID` / `ACIDDOG_AGENT_SOCKET` so the
+    /// agent can call back into aciddog via the IPC socket.
+    pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.env = env;
         self
     }
 
@@ -124,6 +142,10 @@ impl AICore for ClaudeCodeCore {
         // before the positional prompt to prevent the prompt being parsed as
         // another tool name.
         cmd.arg("--").arg(&full_prompt);
+
+        if !self.env.is_empty() {
+            cmd.envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        }
 
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -233,9 +255,13 @@ impl AICore for ClaudeCodeCore {
 mod tests {
     use super::*;
 
+    fn fresh(instructions: &str, tools: Vec<String>) -> ClaudeCodeCore {
+        ClaudeCodeCore::new(Uuid::new_v4(), instructions.into(), tools)
+    }
+
     #[test]
     fn rejects_empty_tool_name() {
-        let core = ClaudeCodeCore::new("i".into(), vec!["".into()]);
+        let core = fresh("i", vec!["".into()]);
         assert!(matches!(
             core.validate_tools(),
             Err(AIError::InvalidToolName(s)) if s.is_empty()
@@ -244,25 +270,25 @@ mod tests {
 
     #[test]
     fn rejects_tool_name_with_comma() {
-        let core = ClaudeCodeCore::new("i".into(), vec!["Ba,sh".into()]);
+        let core = fresh("i", vec!["Ba,sh".into()]);
         assert!(matches!(core.validate_tools(), Err(AIError::InvalidToolName(_))));
     }
 
     #[test]
     fn rejects_tool_name_with_whitespace() {
-        let core = ClaudeCodeCore::new("i".into(), vec!["Bash Edit".into()]);
+        let core = fresh("i", vec!["Bash Edit".into()]);
         assert!(matches!(core.validate_tools(), Err(AIError::InvalidToolName(_))));
     }
 
     #[test]
     fn accepts_valid_tool_names() {
-        let core = ClaudeCodeCore::new("i".into(), vec!["Bash".into(), "Edit".into()]);
+        let core = fresh("i", vec!["Bash".into(), "Edit".into()]);
         assert!(core.validate_tools().is_ok());
     }
 
     #[test]
     fn first_turn_prepends_instructions() {
-        let mut core = ClaudeCodeCore::new("you are a helper".into(), vec![]);
+        let mut core = fresh("you are a helper", vec![]);
         let p = core.build_prompt("hello");
         assert_eq!(p, "you are a helper\n\nhello");
         assert!(core.started);
@@ -270,10 +296,18 @@ mod tests {
 
     #[test]
     fn second_turn_does_not_prepend_instructions() {
-        let mut core = ClaudeCodeCore::new("you are a helper".into(), vec![]);
+        let mut core = fresh("you are a helper", vec![]);
         let _ = core.build_prompt("hello");
         let p = core.build_prompt("another question");
         assert_eq!(p, "another question");
+    }
+
+    #[test]
+    fn new_uses_caller_provided_session_id() {
+        let id = Uuid::new_v4();
+        let core = ClaudeCodeCore::new(id, "i".into(), vec![]);
+        assert_eq!(core.session_id(), Some(id));
+        assert!(!core.started, "new() sessions have not started yet");
     }
 
     #[test]
@@ -285,9 +319,19 @@ mod tests {
         assert_eq!(p, "hi");
     }
 
+    #[test]
+    fn with_env_stores_entries() {
+        let core = fresh("i", vec![]).with_env(vec![
+            ("FOO".into(), "1".into()),
+            ("BAR".into(), "2".into()),
+        ]);
+        assert_eq!(core.env.len(), 2);
+        assert_eq!(core.env[0], ("FOO".into(), "1".into()));
+    }
+
     #[tokio::test]
     async fn spawn_failure_surfaces_as_error() {
-        let mut core = ClaudeCodeCore::new("i".into(), vec![])
+        let mut core = fresh("i", vec![])
             .with_binary("/this/path/definitely/does/not/exist/claude");
         let result = core.turn("hi").await;
         assert!(matches!(

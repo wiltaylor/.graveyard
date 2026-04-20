@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
     KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -17,7 +17,9 @@ use ratatui::layout::Rect;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
+use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
 use crate::ai::{AICore, AIEvent, ClaudeCodeCore};
 use crate::config::AciddogConfig;
 
@@ -61,6 +63,9 @@ pub struct AgentChat {
     pub selected_block: Option<usize>,
     pub user_tx: Option<mpsc::Sender<String>>,
     pub status: AgentStatus,
+    /// Session UUID shared with the AICore and the agent IPC layer. Set at
+    /// spawn time; used to route inbound socket requests to the right chat.
+    pub session_id: Option<Uuid>,
 }
 
 impl AgentChat {
@@ -254,6 +259,31 @@ impl App {
             }
             AIEvent::Other(v) => {
                 debug!(event = ?v, agent_idx = idx, "unhandled ai event");
+            }
+        }
+    }
+
+    pub fn handle_agent_socket_event(&mut self, event: AgentSocketEvent) {
+        let AgentSocketEvent { request, reply } = event;
+        let Some(idx) = self
+            .chats
+            .iter()
+            .position(|c| c.session_id == Some(request.agent_id))
+        else {
+            let _ = reply.send(Response::err(format!(
+                "no live agent with id {}",
+                request.agent_id
+            )));
+            return;
+        };
+
+        match request.cmd {
+            RequestCmd::Test => {
+                let msg = "agent connectivity test passed";
+                if let Some(chat) = self.chats.get_mut(idx) {
+                    chat.push_block(ChatBlock::system_info(msg));
+                }
+                let _ = reply.send(Response::ok(msg));
             }
         }
     }
@@ -545,6 +575,22 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new(config);
 
+    // Bind the agent IPC socket for this team before spawning cores, so its
+    // path can be injected into each claude child's environment.
+    let team_id = app.config.team.id.clone();
+    let mut socket = agent_ipc::server::bind(&team_id)
+        .await
+        .with_context(|| format!("binding agent IPC socket for team {team_id}"))?;
+    info!(path = %socket.path.display(), "agent IPC socket bound");
+    let socket_path_str = socket.path.display().to_string();
+
+    // Resolve our own binary path so agents can invoke aciddog without it
+    // being on PATH (cargo run, dev installs, nix store, etc).
+    let aciddog_binary = std::env::current_exe()
+        .context("resolving current aciddog binary path for agent preamble")?;
+    let aciddog_binary_str = aciddog_binary.to_string_lossy().into_owned();
+    info!(binary = %aciddog_binary_str, "agent CLI binary");
+
     // One core per agent, each with its own session and user channel.
     let (ai_tx, ai_rx) = mpsc::channel::<(usize, AIEvent)>(256);
     for (idx, agent) in app.config.agents.iter().enumerate() {
@@ -555,13 +601,38 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             .iter()
             .map(|s| (*s).to_string())
             .collect();
-        let core: Box<dyn AICore> =
-            Box::new(ClaudeCodeCore::new(agent.instructions.clone(), tools));
+
+        let session_id = Uuid::new_v4();
+        app.chats[idx].session_id = Some(session_id);
+
+        let instructions = format!(
+            "{}\n\n{}",
+            agent_ipc::preamble::cli_preamble(&aciddog_binary_str),
+            agent.instructions,
+        );
+
+        // Reflect the full prompt (preamble + instructions) in the top
+        // AgentInfo block so the user can expand it and see exactly what
+        // the LLM receives.
+        if let Some(ChatBlock::AgentInfo { prompt, .. }) =
+            app.chats[idx].blocks.first_mut()
+        {
+            *prompt = instructions.clone();
+        }
+
+        let env = vec![
+            (agent_ipc::ENV_AGENT_ID.to_string(), session_id.to_string()),
+            (agent_ipc::ENV_AGENT_SOCKET.to_string(), socket_path_str.clone()),
+        ];
+
+        let core: Box<dyn AICore> = Box::new(
+            ClaudeCodeCore::new(session_id, instructions, tools).with_env(env),
+        );
         tokio::spawn(run_core(idx, core, user_rx, ai_tx.clone()));
     }
     drop(ai_tx);
 
-    let result = event_loop(&mut terminal, &mut app, ai_rx).await;
+    let result = event_loop(&mut terminal, &mut app, ai_rx, &mut socket.events).await;
 
     execute!(
         terminal.backend_mut(),
@@ -609,6 +680,7 @@ async fn event_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     mut ai_rx: mpsc::Receiver<(usize, AIEvent)>,
+    socket_rx: &mut mpsc::Receiver<AgentSocketEvent>,
 ) -> Result<()> {
     let mut events = EventStream::new();
     terminal.draw(|f| ui::render(f, app))?;
@@ -635,6 +707,9 @@ async fn event_loop<B: ratatui::backend::Backend>(
             }
             Some((idx, ev)) = ai_rx.recv() => {
                 app.handle_ai_event(idx, ev);
+            }
+            Some(event) = socket_rx.recv() => {
+                app.handle_agent_socket_event(event);
             }
         }
 
