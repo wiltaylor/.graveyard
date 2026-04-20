@@ -1,16 +1,25 @@
-/// Build the system-generated preamble that is prepended to each agent's
-/// instructions. Describes the `aciddog` CLI surface so the agent knows
-/// which subcommands it can invoke.
+/// Build the system-generated preamble that is prepended to each
+/// actor's instructions. Describes the `aciddog` CLI surface so the
+/// actor knows which subcommands it can invoke.
 ///
 /// `binary` is the absolute path to the running aciddog binary, so the
-/// agent can invoke it directly without relying on it being on `PATH`.
+/// actor can invoke it directly without relying on it being on `PATH`.
 ///
-/// `contactable` is the list of other-agent config ids this agent is
-/// permitted to message. If empty, the `send` subcommand is omitted.
+/// `contactable` is the list of other-actor ids this actor is permitted
+/// to message. If empty, the `send` subcommand is omitted.
 ///
-/// Extending: add a new `push_section` call for each new subcommand just
-/// before the `// add new subcommand sections above this line` marker.
-pub fn cli_preamble(binary: &str, contactable: &[&str]) -> String {
+/// `creatable` is the list of worker template ids this actor is
+/// permitted to spawn. If empty, the `worker create` subcommand is
+/// omitted.
+///
+/// The `worker complete` subcommand is **not** documented here — it is
+/// only available inside a running worker and is injected by
+/// `worker_preamble` so plain agents cannot accidentally call it.
+///
+/// Extending: add a new `push_section` call for each new subcommand
+/// just before the `// add new subcommand sections above this line`
+/// marker.
+pub fn cli_preamble(binary: &str, contactable: &[&str], creatable: &[&str]) -> String {
     let mut out = String::new();
     push_line(&mut out, "## aciddog agent CLI");
     push_line(
@@ -58,13 +67,67 @@ pub fn cli_preamble(binary: &str, contactable: &[&str]) -> String {
              agent messages.",
         );
     }
+
+    if creatable.is_empty() {
+        push_line(
+            &mut out,
+            "- `worker create` — disabled: you may not spawn workers.",
+        );
+    } else {
+        push_section(
+            &mut out,
+            binary,
+            "worker create --template <template-id> --task \"<initial task>\"",
+            "spawn an ephemeral worker from a declared template to handle a sub-task. \
+             The response carries the new worker's display id and session UUID; use \
+             the display id with `send --to` to message the worker, and retain the \
+             UUID so you can resume the worker later if it hibernates.",
+        );
+        push_line(
+            &mut out,
+            &format!("  You are allowed to spawn: {}", creatable.join(", ")),
+        );
+    }
     // add new subcommand sections above this line
 
     out
 }
 
-/// Append a line followed by a blank line, so the final rendered prompt has
-/// visible breathing room between entries.
+/// Worker-only preamble chunk. Prepended before `cli_preamble` when
+/// spawning a worker, so the first thing the model sees is its
+/// identity, task, and termination contract.
+pub fn worker_preamble(binary: &str, parent_id: &str, task: &str) -> String {
+    let mut out = String::new();
+    push_line(&mut out, "## Worker assignment");
+    push_line(
+        &mut out,
+        &format!(
+            "You are an ephemeral worker spawned by `{parent_id}`. Your only job \
+             is to complete the task below and report back. You may only message \
+             `{parent_id}`; you cannot message anyone else on the team."
+        ),
+    );
+    push_line(&mut out, "### Your task");
+    push_line(&mut out, task);
+    push_line(&mut out, "### Reporting back");
+    push_line(
+        &mut out,
+        &format!("- For progress updates, use `{binary} send --to {parent_id} --body \"<text>\"`.",),
+    );
+    push_line(
+        &mut out,
+        &format!(
+            "- When you are finished, call `{binary} worker complete --body \"<final report>\"`. \
+             This delivers your final report to `{parent_id}` and hibernates you. After that \
+             call, stop taking further actions; your parent may resume the conversation later \
+             if they need more from you.",
+        ),
+    );
+    out
+}
+
+/// Append a line followed by a blank line, so the final rendered prompt
+/// has visible breathing room between entries.
 fn push_line(out: &mut String, line: &str) {
     out.push_str(line);
     out.push_str("\n\n");
@@ -80,7 +143,7 @@ mod tests {
 
     #[test]
     fn preamble_mentions_test_subcommand_with_binary_path() {
-        let p = cli_preamble("/opt/aciddog/bin/aciddog", &["coder"]);
+        let p = cli_preamble("/opt/aciddog/bin/aciddog", &["coder"], &[]);
         assert!(
             p.contains("/opt/aciddog/bin/aciddog test"),
             "missing fully-qualified `test` entry: {p}"
@@ -93,13 +156,13 @@ mod tests {
 
     #[test]
     fn preamble_has_header() {
-        let p = cli_preamble("/usr/local/bin/aciddog", &["coder"]);
+        let p = cli_preamble("/usr/local/bin/aciddog", &["coder"], &[]);
         assert!(p.starts_with("## aciddog agent CLI"), "missing header: {p}");
     }
 
     #[test]
     fn preamble_surfaces_binary_path_explicitly() {
-        let p = cli_preamble("/tmp/weird path/aciddog", &["coder"]);
+        let p = cli_preamble("/tmp/weird path/aciddog", &["coder"], &[]);
         assert!(
             p.contains("Binary path: `/tmp/weird path/aciddog`"),
             "binary path callout missing: {p}"
@@ -108,7 +171,7 @@ mod tests {
 
     #[test]
     fn preamble_lists_only_contactable_ids() {
-        let p = cli_preamble("/a", &["coder", "reviewer"]);
+        let p = cli_preamble("/a", &["coder", "reviewer"], &[]);
         assert!(
             p.contains("coder, reviewer"),
             "missing contactable ids: {p}"
@@ -117,7 +180,7 @@ mod tests {
 
     #[test]
     fn preamble_mentions_send_subcommand_and_wrapping_format() {
-        let p = cli_preamble("/a", &["coder"]);
+        let p = cli_preamble("/a", &["coder"], &[]);
         assert!(p.contains("/a send --to"), "missing send example: {p}");
         assert!(
             p.contains("<Message from=\"sender-id\">body</Message>"),
@@ -131,8 +194,74 @@ mod tests {
 
     #[test]
     fn preamble_hides_send_when_allowlist_is_empty() {
-        let p = cli_preamble("/a", &[]);
+        let p = cli_preamble("/a", &[], &[]);
         assert!(!p.contains("/a send"), "send should be hidden: {p}");
-        assert!(p.contains("disabled"), "should note send is disabled: {p}");
+        assert!(
+            p.contains("- `send` — disabled"),
+            "should note send is disabled: {p}"
+        );
+    }
+
+    #[test]
+    fn preamble_mentions_worker_create_when_creatable() {
+        let p = cli_preamble("/a", &["coder"], &["researcher", "tester"]);
+        assert!(
+            p.contains("/a worker create --template"),
+            "missing worker create example: {p}"
+        );
+        assert!(
+            p.contains("researcher, tester"),
+            "missing creatable ids: {p}"
+        );
+    }
+
+    #[test]
+    fn preamble_hides_worker_create_when_empty() {
+        let p = cli_preamble("/a", &["coder"], &[]);
+        assert!(
+            !p.contains("/a worker create"),
+            "worker create should be hidden: {p}"
+        );
+        assert!(
+            p.contains("- `worker create` — disabled"),
+            "should note worker create is disabled: {p}"
+        );
+    }
+
+    #[test]
+    fn preamble_never_documents_worker_complete() {
+        let p = cli_preamble("/a", &["coder"], &["researcher"]);
+        assert!(
+            !p.contains("worker complete"),
+            "plain agents must not see worker complete: {p}"
+        );
+    }
+
+    #[test]
+    fn worker_preamble_names_parent_task_and_complete() {
+        let p = worker_preamble("/a", "coder", "find FOO");
+        assert!(p.contains("spawned by `coder`"), "missing parent id: {p}");
+        assert!(p.contains("find FOO"), "missing task: {p}");
+        assert!(
+            p.contains("/a worker complete --body"),
+            "missing complete example: {p}"
+        );
+        assert!(
+            p.contains("/a send --to coder --body"),
+            "missing progress send example: {p}"
+        );
+    }
+
+    #[test]
+    fn worker_preamble_mentions_hibernation_and_resume() {
+        let p = worker_preamble("/a", "coder", "task");
+        assert!(
+            p.to_lowercase().contains("hibernate"),
+            "missing hibernate wording: {p}"
+        );
+        assert!(
+            p.to_lowercase().contains("resume") || p.to_lowercase().contains("resurr"),
+            "missing resume wording: {p}"
+        );
     }
 }

@@ -24,6 +24,14 @@ fn loads_scaffold_template_end_to_end() {
         assert!(!agent.instructions.is_empty());
         assert!(!agent.model.is_empty());
     }
+
+    // Workers declared in the scaffold should parse and be referenced
+    // correctly by each other and by the coder agent.
+    assert!(cfg.workers.iter().any(|w| w.id == "researcher"));
+    assert!(cfg.workers.iter().any(|w| w.id == "fetcher"));
+    assert!(cfg.can_create("coder", "researcher"));
+    assert!(cfg.can_create("researcher", "fetcher"));
+    assert!(!cfg.can_create("planner", "researcher"));
 }
 
 #[test]

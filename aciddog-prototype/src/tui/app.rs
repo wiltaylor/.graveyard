@@ -54,6 +54,10 @@ pub enum AgentStatus {
     Ready,
     Working,
     Error,
+    /// A worker that has called `aciddog worker complete`. Its
+    /// `ClaudeCodeCore` is gone, but the session UUID and chat history
+    /// are retained so the parent can resume it later.
+    Hibernated,
 }
 
 #[derive(Debug, Default)]
@@ -75,6 +79,23 @@ pub struct AgentChat {
     /// Session UUID shared with the AICore and the agent IPC layer. Set at
     /// spawn time; used to route inbound socket requests to the right chat.
     pub session_id: Option<Uuid>,
+    /// For workers, index into `App::chats` of the chat that spawned
+    /// this one. `None` for statically configured agents. Used to
+    /// enforce "worker can only message its parent" routing.
+    pub parent_idx: Option<usize>,
+    /// For workers, the id of the `worker { ... }` template this
+    /// instance was spawned from. Needed to look up
+    /// `can_create_workers` for nested spawns and to rebuild the tool
+    /// list / instructions on resurrection.
+    pub worker_template: Option<String>,
+    /// Display name for the agent list. Matches the config id for
+    /// statically declared agents and `<template>#<uuid-prefix>` for
+    /// worker instances. Also used as the `send --to` target.
+    pub display_name: String,
+    /// True after `worker complete`. Channels are dropped; the pane
+    /// stays visible. Next inbound message triggers resurrection via
+    /// `App::resurrect_worker`.
+    pub hibernated: bool,
 }
 
 impl AgentChat {
@@ -102,6 +123,13 @@ pub struct App {
     /// `aciddog send …` bash tool invocations and rewrite them into a
     /// richer Mail block.
     pub aciddog_binary: String,
+    /// Socket path injected into every spawned agent's environment.
+    /// Set by `run`; required for spawning workers at runtime.
+    pub socket_path: String,
+    /// AI-event sender cloned for every `run_core` task. Kept on `App`
+    /// so new worker spawns can route their stream into the same
+    /// event loop that serves configured agents.
+    pub ai_tx: Option<mpsc::Sender<(usize, AIEvent)>>,
 }
 
 impl App {
@@ -121,6 +149,7 @@ impl App {
                 AgentChat {
                     blocks: vec![info],
                     sticky_bottom: true,
+                    display_name: agent.id.clone(),
                     ..Default::default()
                 }
             })
@@ -135,6 +164,8 @@ impl App {
             copied_at: None,
             agent_ids: HashMap::new(),
             aciddog_binary: String::new(),
+            socket_path: String::new(),
+            ai_tx: None,
         }
     }
 
@@ -152,23 +183,81 @@ impl App {
             .unwrap_or(false)
     }
 
+    /// Display order for the agent list: chat indices paired with
+    /// their indentation depth. Hibernated chats are skipped. Workers
+    /// appear immediately after the nearest *visible* ancestor; if
+    /// that ancestor is hidden the worker floats up to the next one.
+    pub fn visible_order(&self) -> Vec<(usize, usize)> {
+        // Precompute nearest visible ancestor for every chat. `None`
+        // means the chat is rendered at the top level.
+        let mut visible_parent: Vec<Option<usize>> = vec![None; self.chats.len()];
+        for (i, c) in self.chats.iter().enumerate() {
+            let mut p = c.parent_idx;
+            while let Some(pi) = p {
+                match self.chats.get(pi) {
+                    Some(parent) if !parent.hibernated => {
+                        visible_parent[i] = Some(pi);
+                        break;
+                    }
+                    Some(parent) => {
+                        p = parent.parent_idx;
+                    }
+                    None => break,
+                }
+            }
+        }
+
+        let mut out: Vec<(usize, usize)> = Vec::with_capacity(self.chats.len());
+        // Iterative DFS keyed by "what's the visible parent we're
+        // currently listing children of?". Stable recursion is fine
+        // here because `chats` is small (tens of entries at most).
+        fn walk(
+            chats: &[AgentChat],
+            vp: &[Option<usize>],
+            out: &mut Vec<(usize, usize)>,
+            parent: Option<usize>,
+            depth: usize,
+        ) {
+            for (i, c) in chats.iter().enumerate() {
+                if c.hibernated {
+                    continue;
+                }
+                if vp[i] == parent {
+                    out.push((i, depth));
+                    walk(chats, vp, out, Some(i), depth + 1);
+                }
+            }
+        }
+        walk(&self.chats, &visible_parent, &mut out, None, 0);
+        out
+    }
+
     fn select_next(&mut self) {
-        if self.config.agents.is_empty() {
+        let order = self.visible_order();
+        if order.is_empty() {
             return;
         }
-        self.selected = (self.selected + 1) % self.config.agents.len();
+        let pos = order.iter().position(|(i, _)| *i == self.selected);
+        let next = match pos {
+            Some(p) => (p + 1) % order.len(),
+            None => 0,
+        };
+        self.selected = order[next].0;
         self.focus = Focus::Chat;
     }
 
     fn select_prev(&mut self) {
-        if self.config.agents.is_empty() {
+        let order = self.visible_order();
+        if order.is_empty() {
             return;
         }
-        if self.selected == 0 {
-            self.selected = self.config.agents.len() - 1;
-        } else {
-            self.selected -= 1;
-        }
+        let pos = order.iter().position(|(i, _)| *i == self.selected);
+        let prev = match pos {
+            Some(0) => order.len() - 1,
+            Some(p) => p - 1,
+            None => 0,
+        };
+        self.selected = order[prev].0;
         self.focus = Focus::Chat;
     }
 
@@ -229,12 +318,19 @@ impl App {
             AIEvent::ToolUse {
                 id, name, input, ..
             } => {
-                // Rewrite `aciddog send` invocations into a Mail block so the
-                // UI shows To/Message instead of the raw shell command.
+                // Rewrite `aciddog send`/`worker create`/`worker complete`
+                // invocations into dedicated blocks so the UI shows the
+                // semantic action instead of the raw shell command.
                 let block = if name == "Bash" {
                     let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
                     if let Some((to, body)) = try_parse_aciddog_send(cmd, &binary) {
                         ChatBlock::mail_sent(to, body)
+                    } else if let Some((template, task)) =
+                        try_parse_aciddog_worker_create(cmd, &binary)
+                    {
+                        ChatBlock::worker_spawn(template, task)
+                    } else if let Some(body) = try_parse_aciddog_worker_complete(cmd, &binary) {
+                        ChatBlock::worker_complete(body)
                     } else {
                         ChatBlock::from_tool_use(&name, &input)
                     }
@@ -313,7 +409,287 @@ impl App {
             RequestCmd::SendMessage { to, body } => {
                 self.handle_send_message(idx, to, body, reply);
             }
+            RequestCmd::WorkerCreate { template, task } => {
+                self.handle_worker_create(idx, template, task, reply);
+            }
+            RequestCmd::WorkerComplete { body } => {
+                self.handle_worker_complete(idx, body, reply);
+            }
         }
+    }
+
+    fn handle_worker_create(
+        &mut self,
+        sender_idx: usize,
+        template: String,
+        task: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        // Resolve the sender's "template id" for the allowlist check.
+        // Configured agents are identified by config id; workers are
+        // identified by the template they were spawned from.
+        let sender_template = match self.chats.get(sender_idx) {
+            Some(c) if c.worker_template.is_some() => c.worker_template.clone().unwrap(),
+            Some(_) => match self.config.agents.get(sender_idx) {
+                Some(a) => a.id.clone(),
+                None => {
+                    let _ = reply.send(Response::err("unknown sender"));
+                    return;
+                }
+            },
+            None => {
+                let _ = reply.send(Response::err("unknown sender"));
+                return;
+            }
+        };
+
+        let sender_display = match self.chats.get(sender_idx) {
+            Some(c) => c.display_name.clone(),
+            None => {
+                let _ = reply.send(Response::err("unknown sender"));
+                return;
+            }
+        };
+
+        if !self.config.can_create(&sender_template, &template) {
+            let _ = reply.send(Response::err(format!(
+                "`{sender_template}` is not permitted to create workers of template `{template}`"
+            )));
+            return;
+        }
+
+        let worker = match self.config.worker(&template).cloned() {
+            Some(w) => w,
+            None => {
+                let _ = reply.send(Response::err(format!("no worker template `{template}`")));
+                return;
+            }
+        };
+
+        let Some(ai_tx) = self.ai_tx.clone() else {
+            let _ = reply.send(Response::err(
+                "orchestrator has no ai_tx; cannot spawn workers at runtime",
+            ));
+            return;
+        };
+
+        let session_id = Uuid::new_v4();
+        let display_name = format!("{}#{}", template, &session_id.to_string()[..8]);
+
+        // Tool list: explicit template tools override the default.
+        let tools: Vec<String> = worker.tools.clone().unwrap_or_else(|| {
+            DEFAULT_ALLOWED_TOOLS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect()
+        });
+
+        let creatable: Vec<&str> = worker
+            .can_create_workers
+            .as_deref()
+            .map(|list| list.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+
+        let instructions = format!(
+            "{}\n\n{}\n\n{}",
+            agent_ipc::preamble::worker_preamble(&self.aciddog_binary, &sender_display, &task),
+            agent_ipc::preamble::cli_preamble(
+                &self.aciddog_binary,
+                &[sender_display.as_str()],
+                &creatable,
+            ),
+            worker.instructions,
+        );
+
+        let env = vec![
+            (agent_ipc::ENV_AGENT_ID.to_string(), session_id.to_string()),
+            (
+                agent_ipc::ENV_AGENT_SOCKET.to_string(),
+                self.socket_path.clone(),
+            ),
+        ];
+
+        let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
+        let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
+
+        let info_block = ChatBlock::agent_info("claude-code", tools.clone(), instructions.clone());
+        let mut chat = AgentChat {
+            blocks: vec![info_block],
+            sticky_bottom: true,
+            user_tx: Some(user_tx.clone()),
+            agent_tx: Some(agent_tx),
+            session_id: Some(session_id),
+            status: AgentStatus::Working,
+            parent_idx: Some(sender_idx),
+            worker_template: Some(template.clone()),
+            display_name: display_name.clone(),
+            hibernated: false,
+            ..Default::default()
+        };
+        // Surface the initial task as a user message on the worker's
+        // pane so its chat reads naturally.
+        chat.push_block(ChatBlock::user(task.clone()));
+
+        let new_idx = self.chats.len();
+        self.chats.push(chat);
+        self.agent_ids.insert(session_id, display_name.clone());
+
+        // Feed the task as the first prompt.
+        if user_tx.send(task.clone()).is_err() {
+            // Should not happen — we just created the channel.
+            tracing::warn!(%display_name, "user_tx closed before initial task could be sent");
+        }
+
+        let core: Box<dyn AICore> =
+            Box::new(ClaudeCodeCore::new(session_id, instructions, tools).with_env(env));
+        tokio::spawn(run_core(new_idx, core, user_rx, agent_rx, ai_tx));
+
+        // Surface the spawn on the parent pane so the user can see it.
+        if let Some(parent) = self.chats.get_mut(sender_idx) {
+            parent.push_block(ChatBlock::WorkerSpawn {
+                template: template.clone(),
+                worker_id: Some(display_name.clone()),
+                task: task.clone(),
+                is_error: false,
+                collapsed: true,
+                pending: false,
+            });
+        }
+
+        // Reply with "<display_name> <uuid>" so the parent can parse
+        // either token: display_name for subsequent `send --to`,
+        // UUID if it wants to track the session explicitly.
+        let _ = reply.send(Response::ok(format!("{display_name} {session_id}")));
+    }
+
+    fn handle_worker_complete(
+        &mut self,
+        sender_idx: usize,
+        body: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let (parent_idx, sender_display) = match self.chats.get(sender_idx) {
+            Some(c) if c.parent_idx.is_some() => (c.parent_idx.unwrap(), c.display_name.clone()),
+            Some(_) => {
+                let _ = reply.send(Response::err(
+                    "`worker complete` may only be called from a running worker",
+                ));
+                return;
+            }
+            None => {
+                let _ = reply.send(Response::err("unknown sender"));
+                return;
+            }
+        };
+
+        // Deliver the final report to the parent.
+        let payload = format!("<Message from=\"{sender_display}\">{body}</Message>");
+        let parent_tx = self.chats.get(parent_idx).and_then(|c| c.agent_tx.clone());
+        if let Some(tx) = parent_tx.clone() {
+            let body_for_task = payload.clone();
+            tokio::spawn(async move {
+                if tx.send(body_for_task).await.is_err() {
+                    tracing::warn!("final report dropped: parent channel closed");
+                }
+            });
+        }
+        if let Some(parent_chat) = self.chats.get_mut(parent_idx) {
+            parent_chat.push_block(ChatBlock::mail_received(
+                sender_display.clone(),
+                body.clone(),
+            ));
+        }
+
+        // Record the final report on the worker's own pane, then
+        // hibernate: drop both channel senders so `run_core` exits on
+        // its next iteration and the claude child tears down.
+        if let Some(chat) = self.chats.get_mut(sender_idx) {
+            chat.push_block(ChatBlock::WorkerComplete {
+                body: body.clone(),
+                is_error: false,
+                collapsed: true,
+                pending: false,
+            });
+            chat.user_tx = None;
+            chat.agent_tx = None;
+            chat.status = AgentStatus::Hibernated;
+            chat.hibernated = true;
+        }
+
+        // A hibernated worker is hidden from the agent list. If the
+        // user was viewing its pane, snap selection to the parent so
+        // the UI lands somewhere still visible.
+        if self.selected == sender_idx {
+            self.selected = parent_idx;
+        }
+
+        let _ = reply.send(Response::ok("hibernated"));
+    }
+
+    /// Restart a hibernated worker so a newly delivered message can be
+    /// handled. Recreates the IPC channels, rebuilds the
+    /// `ClaudeCodeCore` via `with_session_id` (which uses
+    /// `claude --resume` on its first turn so the model resumes its
+    /// prior history), and spawns a fresh `run_core`.
+    fn resurrect_worker(&mut self, idx: usize) -> Result<(), String> {
+        let Some(ai_tx) = self.ai_tx.clone() else {
+            return Err("orchestrator has no ai_tx".into());
+        };
+        let chat = self
+            .chats
+            .get(idx)
+            .ok_or_else(|| "unknown chat".to_string())?;
+        if !chat.hibernated {
+            return Ok(());
+        }
+        let template_id = chat
+            .worker_template
+            .clone()
+            .ok_or_else(|| "chat is not a worker".to_string())?;
+        let session_id = chat
+            .session_id
+            .ok_or_else(|| "worker has no session id".to_string())?;
+        let worker = self
+            .config
+            .worker(&template_id)
+            .cloned()
+            .ok_or_else(|| format!("worker template `{template_id}` no longer exists"))?;
+
+        let tools: Vec<String> = worker.tools.clone().unwrap_or_else(|| {
+            DEFAULT_ALLOWED_TOOLS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect()
+        });
+
+        let env = vec![
+            (agent_ipc::ENV_AGENT_ID.to_string(), session_id.to_string()),
+            (
+                agent_ipc::ENV_AGENT_SOCKET.to_string(),
+                self.socket_path.clone(),
+            ),
+        ];
+
+        // `with_session_id` sets `started = true`, so the first turn
+        // after resurrection runs `claude --resume <uuid>` and does
+        // not re-prepend the worker preamble — that content already
+        // lives in the claude session's history.
+        let core: Box<dyn AICore> = Box::new(
+            ClaudeCodeCore::with_session_id(session_id, String::new(), tools).with_env(env),
+        );
+
+        let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
+        let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
+
+        if let Some(chat) = self.chats.get_mut(idx) {
+            chat.user_tx = Some(user_tx);
+            chat.agent_tx = Some(agent_tx);
+            chat.status = AgentStatus::Working;
+            chat.hibernated = false;
+        }
+
+        tokio::spawn(run_core(idx, core, user_rx, agent_rx, ai_tx));
+        Ok(())
     }
 
     fn handle_send_message(
@@ -323,26 +699,63 @@ impl App {
         body: String,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
-        let Some(sender_id) = self.config.agents.get(sender_idx).map(|a| a.id.clone()) else {
+        let Some(sender_chat) = self.chats.get(sender_idx) else {
             let _ = reply.send(Response::err("unknown sender"));
             return;
         };
+        let sender_id = sender_chat.display_name.clone();
+        let sender_parent_idx = sender_chat.parent_idx;
 
         if to == sender_id {
             let _ = reply.send(Response::err("cannot send a message to yourself"));
             return;
         }
 
-        let Some(recipient_idx) = self.config.agents.iter().position(|a| a.id == to) else {
+        // Resolve recipient by display name across all chats, so workers
+        // (whose names are `<template>#<uuid>`) are reachable too.
+        let Some(recipient_idx) = self.chats.iter().position(|c| c.display_name == to) else {
             let _ = reply.send(Response::err(format!("no agent named {to}")));
             return;
         };
 
-        if !self.config.can_send(&sender_id, &to) {
-            let _ = reply.send(Response::err(format!(
-                "agent `{sender_id}` is not permitted to message `{to}`"
-            )));
-            return;
+        // Worker routing rule: a worker may only message its parent.
+        if let Some(parent_idx) = sender_parent_idx {
+            if recipient_idx != parent_idx {
+                let _ = reply.send(Response::err(
+                    "worker can only message its parent".to_string(),
+                ));
+                return;
+            }
+        } else {
+            // Statically configured agent: apply the regular
+            // `can_message` allowlist — but only when the recipient is
+            // itself a configured agent. Workers spawned by this agent
+            // are not in the allowlist; reaching them by display id is
+            // always permitted, since the agent spawned them.
+            let recipient_is_worker = self
+                .chats
+                .get(recipient_idx)
+                .map(|c| c.parent_idx.is_some())
+                .unwrap_or(false);
+            if !recipient_is_worker && !self.config.can_send(&sender_id, &to) {
+                let _ = reply.send(Response::err(format!(
+                    "agent `{sender_id}` is not permitted to message `{to}`"
+                )));
+                return;
+            }
+        }
+
+        // Auto-resurrect a hibernated recipient before delivering.
+        let recipient_hibernated = self
+            .chats
+            .get(recipient_idx)
+            .map(|c| c.hibernated)
+            .unwrap_or(false);
+        if recipient_hibernated {
+            if let Err(e) = self.resurrect_worker(recipient_idx) {
+                let _ = reply.send(Response::err(format!("failed to resume worker: {e}")));
+                return;
+            }
         }
 
         let payload = format!("<Message from=\"{sender_id}\">{body}</Message>");
@@ -539,8 +952,9 @@ impl App {
                 if let Some(rect) = self.layout.agent_list_inner {
                     if rect_contains(rect, pos) {
                         let row_in_list = ev.row.saturating_sub(rect.y) as usize;
-                        if row_in_list < self.config.agents.len() {
-                            self.selected = row_in_list;
+                        let order = self.visible_order();
+                        if let Some((chat_idx, _)) = order.get(row_in_list).copied() {
+                            self.selected = chat_idx;
                             self.focus = Focus::Chat;
                         } else {
                             self.focus = Focus::Agents;
@@ -657,6 +1071,31 @@ pub fn rect_contains(rect: Rect, (x, y): (u16, u16)) -> bool {
 /// Parsing reuses `AgentArgs` (the same clap parser the agent-mode binary
 /// uses) so flag semantics stay in one place.
 fn try_parse_aciddog_send(cmd: &str, binary: &str) -> Option<(String, String)> {
+    match try_parse_aciddog(cmd, binary)? {
+        AgentCommand::Send { to, body } => Some((to, body)),
+        _ => None,
+    }
+}
+
+fn try_parse_aciddog_worker_create(cmd: &str, binary: &str) -> Option<(String, String)> {
+    match try_parse_aciddog(cmd, binary)? {
+        AgentCommand::Worker {
+            cmd: crate::cli::WorkerCommand::Create { template, task },
+        } => Some((template, task)),
+        _ => None,
+    }
+}
+
+fn try_parse_aciddog_worker_complete(cmd: &str, binary: &str) -> Option<String> {
+    match try_parse_aciddog(cmd, binary)? {
+        AgentCommand::Worker {
+            cmd: crate::cli::WorkerCommand::Complete { body },
+        } => Some(body),
+        _ => None,
+    }
+}
+
+fn try_parse_aciddog(cmd: &str, binary: &str) -> Option<AgentCommand> {
     if binary.is_empty() {
         return None;
     }
@@ -667,11 +1106,7 @@ fn try_parse_aciddog_send(cmd: &str, binary: &str) -> Option<(String, String)> {
         return None;
     }
     let argv: Vec<String> = std::iter::once("aciddog".to_string()).chain(iter).collect();
-    let parsed = AgentArgs::try_parse_from(argv).ok()?;
-    match parsed.cmd {
-        AgentCommand::Send { to, body } => Some((to, body)),
-        _ => None,
-    }
+    AgentArgs::try_parse_from(argv).ok().map(|p| p.cmd)
 }
 
 #[tracing::instrument(skip(config))]
@@ -694,6 +1129,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         .with_context(|| format!("binding agent IPC socket for team {team_id}"))?;
     info!(path = %socket.path.display(), "agent IPC socket bound");
     let socket_path_str = socket.path.display().to_string();
+    app.socket_path = socket_path_str.clone();
 
     // Resolve our own binary path so agents can invoke aciddog without it
     // being on PATH (cargo run, dev installs, nix store, etc).
@@ -708,6 +1144,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     // handler must never block or drop); agent channel is bounded so
     // the socket side has backpressure.
     let (ai_tx, ai_rx) = mpsc::channel::<(usize, AIEvent)>(256);
+    app.ai_tx = Some(ai_tx.clone());
     let all_ids: Vec<String> = app.config.agents.iter().map(|a| a.id.clone()).collect();
     for (idx, agent) in app.config.agents.iter().enumerate() {
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
@@ -736,9 +1173,17 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
                 .collect(),
         };
 
+        // Worker templates this agent can spawn. `None` in config means
+        // the agent has no worker-create capability at all.
+        let creatable: Vec<&str> = agent
+            .can_create_workers
+            .as_deref()
+            .map(|list| list.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+
         let instructions = format!(
             "{}\n\n{}",
-            agent_ipc::preamble::cli_preamble(&aciddog_binary_str, &contactable),
+            agent_ipc::preamble::cli_preamble(&aciddog_binary_str, &contactable, &creatable),
             agent.instructions,
         );
 
@@ -762,6 +1207,10 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         tokio::spawn(run_core(idx, core, user_rx, agent_rx, ai_tx.clone()));
     }
     drop(ai_tx);
+    // `app.ai_tx` retains a sender clone so runtime worker spawns can
+    // route their stream into the same loop. That clone is dropped
+    // either when a new worker's `run_core` captures it, or when the
+    // event loop exits and `App` is dropped.
 
     let result = event_loop(&mut terminal, &mut app, ai_rx, &mut socket.events).await;
 
@@ -883,6 +1332,7 @@ mod tests {
                     model: "m".into(),
                     instructions: "i".into(),
                     can_message: None,
+                    can_create_workers: None,
                 },
                 Agent {
                     id: "b".into(),
@@ -890,6 +1340,7 @@ mod tests {
                     model: "m".into(),
                     instructions: "i".into(),
                     can_message: None,
+                    can_create_workers: None,
                 },
                 Agent {
                     id: "c".into(),
@@ -897,8 +1348,10 @@ mod tests {
                     model: "m".into(),
                     instructions: "i".into(),
                     can_message: None,
+                    can_create_workers: None,
                 },
             ],
+            workers: vec![],
         }
     }
 
@@ -1956,5 +2409,449 @@ mod tests {
             sender_blocks_before,
             "socket handler must not push extra blocks into sender chat"
         );
+    }
+
+    // --------- Workers ----------
+
+    use crate::config::Worker;
+
+    fn worker_config() -> AciddogConfig {
+        AciddogConfig {
+            team: Team {
+                id: "t".into(),
+                description: "d".into(),
+            },
+            agents: vec![
+                Agent {
+                    id: "coder".into(),
+                    role: "r".into(),
+                    model: "m".into(),
+                    instructions: "i".into(),
+                    can_message: None,
+                    can_create_workers: Some(vec!["researcher".into()]),
+                },
+                Agent {
+                    id: "planner".into(),
+                    role: "r".into(),
+                    model: "m".into(),
+                    instructions: "i".into(),
+                    can_message: None,
+                    can_create_workers: None,
+                },
+            ],
+            workers: vec![
+                Worker {
+                    id: "researcher".into(),
+                    role: "investigator".into(),
+                    model: "m".into(),
+                    instructions: "look stuff up".into(),
+                    tools: None,
+                    can_create_workers: None,
+                },
+                Worker {
+                    id: "fetcher".into(),
+                    role: "fetcher".into(),
+                    model: "m".into(),
+                    instructions: "fetch".into(),
+                    tools: None,
+                    can_create_workers: None,
+                },
+            ],
+        }
+    }
+
+    /// Prime an App as if `run()` had already initialized channels /
+    /// session ids / the AI event sender, so worker-creation tests can
+    /// invoke `handle_agent_socket_event` without racing with the real
+    /// runtime setup.
+    fn prime_worker_app(cfg: AciddogConfig) -> (App, mpsc::Receiver<(usize, AIEvent)>) {
+        let mut app = App::new(cfg);
+        app.aciddog_binary = "/opt/aciddog".into();
+        app.socket_path = "/tmp/fake.sock".into();
+        let (ai_tx, ai_rx) = mpsc::channel::<(usize, AIEvent)>(32);
+        app.ai_tx = Some(ai_tx);
+        for (i, agent) in app.config.agents.clone().iter().enumerate() {
+            let session_id = Uuid::new_v4();
+            app.chats[i].session_id = Some(session_id);
+            app.chats[i].display_name = agent.id.clone();
+            app.agent_ids.insert(session_id, agent.id.clone());
+            let (atx, _arx) = mpsc::channel::<String>(16);
+            app.chats[i].agent_tx = Some(atx);
+        }
+        (app, ai_rx)
+    }
+
+    #[tokio::test]
+    async fn worker_create_rejects_unknown_template() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        let sender_uuid = app.chats[0].session_id.unwrap();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::WorkerCreate {
+                    template: "ghost".into(),
+                    task: "anything".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        let resp = reply_rx.await.unwrap();
+        assert!(!resp.ok);
+        let err = resp.error.unwrap();
+        assert!(
+            err.contains("not permitted") || err.contains("no worker template"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_create_rejects_when_sender_lacks_permission() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        // planner is chat index 1 and has no can_create_workers.
+        let planner_uuid = app.chats[1].session_id.unwrap();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: planner_uuid,
+                cmd: RequestCmd::WorkerCreate {
+                    template: "researcher".into(),
+                    task: "t".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        let resp = reply_rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("not permitted"));
+    }
+
+    #[tokio::test]
+    async fn worker_create_registers_new_chat_with_parent_idx_and_template() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        let coder_uuid = app.chats[0].session_id.unwrap();
+        let chats_before = app.chats.len();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: coder_uuid,
+                cmd: RequestCmd::WorkerCreate {
+                    template: "researcher".into(),
+                    task: "find FOO".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        let resp = reply_rx.await.unwrap();
+        assert!(resp.ok, "worker create failed: {resp:?}");
+        assert_eq!(app.chats.len(), chats_before + 1);
+
+        let worker = app.chats.last().unwrap();
+        assert_eq!(worker.parent_idx, Some(0));
+        assert_eq!(worker.worker_template.as_deref(), Some("researcher"));
+        assert!(
+            worker.display_name.starts_with("researcher#"),
+            "unexpected display name: {}",
+            worker.display_name
+        );
+        assert_eq!(worker.status, AgentStatus::Working);
+        assert!(!worker.hibernated);
+        // Parent should have a WorkerSpawn block surfacing the spawn.
+        let parent_has_spawn_block = app.chats[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b, ChatBlock::WorkerSpawn { .. }));
+        assert!(parent_has_spawn_block, "missing WorkerSpawn on parent");
+    }
+
+    #[tokio::test]
+    async fn worker_send_to_non_parent_is_rejected() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        // Manually register a fake worker under coder (index 0) so we
+        // can drive its send path without running claude.
+        let session_id = Uuid::new_v4();
+        let worker_chat = AgentChat {
+            display_name: "researcher#deadbeef".into(),
+            parent_idx: Some(0),
+            worker_template: Some("researcher".into()),
+            session_id: Some(session_id),
+            status: AgentStatus::Working,
+            agent_tx: Some(mpsc::channel::<String>(1).0),
+            ..Default::default()
+        };
+        app.chats.push(worker_chat);
+        app.agent_ids
+            .insert(session_id, "researcher#deadbeef".into());
+
+        // Worker tries to message `planner` — not its parent.
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: session_id,
+                cmd: RequestCmd::SendMessage {
+                    to: "planner".into(),
+                    body: "hi".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        let resp = reply_rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("can only message its parent"));
+    }
+
+    #[tokio::test]
+    async fn worker_complete_delivers_body_to_parent_and_hibernates() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        // Replace the coder's agent_tx with one we control so we can
+        // verify the delivered payload.
+        let (parent_tx, mut parent_rx) = mpsc::channel::<String>(4);
+        app.chats[0].agent_tx = Some(parent_tx);
+
+        // Register a worker parented to coder.
+        let session_id = Uuid::new_v4();
+        let (user_tx, _user_rx) = mpsc::unbounded_channel::<String>();
+        let (worker_agent_tx, _worker_agent_rx) = mpsc::channel::<String>(4);
+        let worker_chat = AgentChat {
+            display_name: "researcher#abcd1234".into(),
+            parent_idx: Some(0),
+            worker_template: Some("researcher".into()),
+            session_id: Some(session_id),
+            status: AgentStatus::Working,
+            user_tx: Some(user_tx),
+            agent_tx: Some(worker_agent_tx),
+            ..Default::default()
+        };
+        let worker_idx = app.chats.len();
+        app.chats.push(worker_chat);
+        app.agent_ids
+            .insert(session_id, "researcher#abcd1234".into());
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: session_id,
+                cmd: RequestCmd::WorkerComplete {
+                    body: "findings".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        assert!(reply_rx.await.unwrap().ok);
+
+        // Parent received the wrapped final report.
+        let payload = parent_rx.recv().await.expect("parent got message");
+        assert_eq!(
+            payload,
+            r#"<Message from="researcher#abcd1234">findings</Message>"#
+        );
+
+        // Worker hibernated: channels dropped, status flipped.
+        assert!(app.chats[worker_idx].hibernated);
+        assert!(app.chats[worker_idx].user_tx.is_none());
+        assert!(app.chats[worker_idx].agent_tx.is_none());
+        assert_eq!(app.chats[worker_idx].status, AgentStatus::Hibernated);
+
+        // Parent has a Mail(Received) block; worker has a WorkerComplete.
+        let parent_last = app.chats[0].blocks.last().unwrap();
+        assert!(matches!(
+            parent_last,
+            ChatBlock::Mail {
+                direction: crate::tui::blocks::MailDirection::Received,
+                ..
+            }
+        ));
+        let worker_last = app.chats[worker_idx].blocks.last().unwrap();
+        assert!(matches!(worker_last, ChatBlock::WorkerComplete { .. }));
+    }
+
+    #[tokio::test]
+    async fn worker_complete_rejects_when_sender_is_not_a_worker() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        let coder_uuid = app.chats[0].session_id.unwrap();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: coder_uuid,
+                cmd: RequestCmd::WorkerComplete {
+                    body: "nope".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        let resp = reply_rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("running worker"));
+    }
+
+    #[test]
+    fn try_parse_aciddog_worker_create_extracts_template_and_task() {
+        let cmd = r#"/opt/aciddog worker create --template researcher --task "find FOO""#;
+        let (t, k) = try_parse_aciddog_worker_create(cmd, "/opt/aciddog").unwrap();
+        assert_eq!(t, "researcher");
+        assert_eq!(k, "find FOO");
+    }
+
+    #[test]
+    fn try_parse_aciddog_worker_complete_extracts_body() {
+        let cmd = r#"/opt/aciddog worker complete --body "all done""#;
+        let body = try_parse_aciddog_worker_complete(cmd, "/opt/aciddog").unwrap();
+        assert_eq!(body, "all done");
+    }
+
+    #[test]
+    fn bash_tool_use_for_worker_create_becomes_spawn_block() {
+        let mut app = App::new(worker_config());
+        app.aciddog_binary = "/opt/aciddog".into();
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolUse {
+                id: "t1".into(),
+                name: "Bash".into(),
+                input: json!({
+                    "command":
+                        r#"/opt/aciddog worker create --template researcher --task "find FOO""#,
+                }),
+                raw: serde_json::Value::Null,
+            },
+        );
+        let last = app.chats[0].blocks.last().unwrap();
+        match last {
+            ChatBlock::WorkerSpawn { template, task, .. } => {
+                assert_eq!(template, "researcher");
+                assert_eq!(task, "find FOO");
+            }
+            other => panic!("expected WorkerSpawn, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_complete_hides_worker_from_visible_order_and_snaps_selection() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        // Register a worker parented to coder (idx 0).
+        let session_id = Uuid::new_v4();
+        let (worker_agent_tx, _worker_agent_rx) = mpsc::channel::<String>(1);
+        let worker_chat = AgentChat {
+            display_name: "researcher#11112222".into(),
+            parent_idx: Some(0),
+            worker_template: Some("researcher".into()),
+            session_id: Some(session_id),
+            status: AgentStatus::Working,
+            agent_tx: Some(worker_agent_tx),
+            user_tx: Some(mpsc::unbounded_channel::<String>().0),
+            ..Default::default()
+        };
+        let worker_idx = app.chats.len();
+        app.chats.push(worker_chat);
+        app.agent_ids
+            .insert(session_id, "researcher#11112222".into());
+
+        // Pre-check: worker is visible while running.
+        let order_before = app.visible_order();
+        assert!(order_before.iter().any(|(i, _)| *i == worker_idx));
+
+        // User is viewing the worker's pane when it completes.
+        app.selected = worker_idx;
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: session_id,
+                cmd: RequestCmd::WorkerComplete {
+                    body: "done".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        assert!(reply_rx.await.unwrap().ok);
+
+        // Worker is gone from the visible order...
+        let order_after = app.visible_order();
+        assert!(
+            !order_after.iter().any(|(i, _)| *i == worker_idx),
+            "hibernated worker should disappear from agent list",
+        );
+        // ...but still present in `chats` so resurrection can find it.
+        assert!(app.chats[worker_idx].hibernated);
+        assert_eq!(
+            app.chats[worker_idx].session_id,
+            Some(session_id),
+            "session id must survive hibernation for resurrection"
+        );
+        // Selection snapped to the parent.
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn visible_order_nests_workers_under_their_parent() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        // Coder is chat 0; planner is chat 1.
+        // Register a worker under coder (0) and a sub-worker under it.
+        let w1_id = Uuid::new_v4();
+        app.chats.push(AgentChat {
+            display_name: "researcher#aaa".into(),
+            parent_idx: Some(0),
+            worker_template: Some("researcher".into()),
+            session_id: Some(w1_id),
+            status: AgentStatus::Working,
+            ..Default::default()
+        });
+        let w1_idx = app.chats.len() - 1;
+        app.chats.push(AgentChat {
+            display_name: "fetcher#bbb".into(),
+            parent_idx: Some(w1_idx),
+            worker_template: Some("fetcher".into()),
+            session_id: Some(Uuid::new_v4()),
+            status: AgentStatus::Working,
+            ..Default::default()
+        });
+        let w2_idx = app.chats.len() - 1;
+        // And a worker directly under planner (1).
+        app.chats.push(AgentChat {
+            display_name: "jokester#ccc".into(),
+            parent_idx: Some(1),
+            worker_template: Some("jokester".into()),
+            session_id: Some(Uuid::new_v4()),
+            status: AgentStatus::Working,
+            ..Default::default()
+        });
+        let w3_idx = app.chats.len() - 1;
+
+        let order: Vec<(usize, usize)> = app.visible_order();
+        assert_eq!(
+            order,
+            vec![
+                (0, 0),      // coder
+                (w1_idx, 1), // researcher under coder
+                (w2_idx, 2), // fetcher under researcher
+                (1, 0),      // planner
+                (w3_idx, 1), // jokester under planner
+            ]
+        );
+    }
+
+    #[test]
+    fn bash_tool_use_for_worker_complete_becomes_complete_block() {
+        let mut app = App::new(worker_config());
+        app.aciddog_binary = "/opt/aciddog".into();
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolUse {
+                id: "t1".into(),
+                name: "Bash".into(),
+                input: json!({
+                    "command": r#"/opt/aciddog worker complete --body "all done""#,
+                }),
+                raw: serde_json::Value::Null,
+            },
+        );
+        let last = app.chats[0].blocks.last().unwrap();
+        match last {
+            ChatBlock::WorkerComplete { body, .. } => {
+                assert_eq!(body, "all done");
+            }
+            other => panic!("expected WorkerComplete, got {other:?}"),
+        }
     }
 }

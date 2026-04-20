@@ -30,6 +30,18 @@ pub enum RequestCmd {
         to: String,
         body: String,
     },
+    /// Spawn an ephemeral worker from a declared worker template.
+    /// Enforces the caller's `can_create_workers` allowlist. Reply
+    /// message carries the new worker's display id and session UUID.
+    WorkerCreate {
+        template: String,
+        task: String,
+    },
+    /// Deliver a final report to the parent and hibernate the calling
+    /// worker. Only valid when the caller is itself a worker.
+    WorkerComplete {
+        body: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +140,53 @@ mod tests {
                 assert_eq!(body, "hello world");
             }
             other => panic!("expected SendMessage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_create_serializes_with_template_and_task() {
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::WorkerCreate {
+                template: "researcher".into(),
+                task: "find FOO".into(),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"worker_create\""), "got: {s}");
+        assert!(s.contains("\"template\":\"researcher\""), "got: {s}");
+        assert!(s.contains("\"task\":\"find FOO\""), "got: {s}");
+    }
+
+    #[test]
+    fn worker_complete_serializes_with_body() {
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::WorkerComplete {
+                body: "all done".into(),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"worker_complete\""), "got: {s}");
+        assert!(s.contains("\"body\":\"all done\""), "got: {s}");
+    }
+
+    #[test]
+    fn worker_create_roundtrips() {
+        let req = Request {
+            agent_id: Uuid::new_v4(),
+            cmd: RequestCmd::WorkerCreate {
+                template: "r".into(),
+                task: "t".into(),
+            },
+        };
+        let back: Request = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        match back.cmd {
+            RequestCmd::WorkerCreate { template, task } => {
+                assert_eq!(template, "r");
+                assert_eq!(task, "t");
+            }
+            other => panic!("expected WorkerCreate, got {other:?}"),
         }
     }
 

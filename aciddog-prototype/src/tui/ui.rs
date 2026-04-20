@@ -89,21 +89,16 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
         .border_style(focus_border_style(focused));
     let inner = block.inner(area);
 
-    let items: Vec<ListItem> = app
-        .config
-        .agents
+    let order = app.visible_order();
+    let items: Vec<ListItem> = order
         .iter()
-        .enumerate()
-        .map(|(i, a)| {
-            let status = app
-                .chats
-                .get(i)
-                .map(|c| c.status)
-                .unwrap_or(AgentStatus::Ready);
-            let dot = match status {
+        .map(|&(i, depth)| {
+            let c = &app.chats[i];
+            let dot = match c.status {
                 AgentStatus::Ready => "🟢",
                 AgentStatus::Working => "🟡",
                 AgentStatus::Error => "🔴",
+                AgentStatus::Hibernated => "💤",
             };
             let name_style = if i == app.selected {
                 Style::default()
@@ -113,18 +108,33 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
             } else {
                 Style::default()
             };
-            ListItem::new(Line::from(vec![
-                Span::raw(format!("{dot} ")),
-                Span::styled(a.id.clone(), name_style),
-            ]))
+            let mut spans: Vec<Span> = Vec::with_capacity(4);
+            if depth > 0 {
+                // Indent once per ancestor, with a single "↳ " on the
+                // last level so the reader can see which row is the
+                // child entry.
+                if depth > 1 {
+                    spans.push(Span::raw("  ".repeat(depth - 1)));
+                }
+                spans.push(Span::styled("↳ ", Style::default().fg(Color::DarkGray)));
+            }
+            spans.push(Span::raw(format!("{dot} ")));
+            spans.push(Span::styled(c.display_name.clone(), name_style));
+            if c.parent_idx.is_some() {
+                spans.push(Span::styled(
+                    " [worker]",
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
     let list = List::new(items).block(block);
 
     let mut state = ListState::default();
-    if !app.config.agents.is_empty() {
-        state.select(Some(app.selected));
+    if let Some(sel_row) = order.iter().position(|(i, _)| *i == app.selected) {
+        state.select(Some(sel_row));
     }
     f.render_stateful_widget(list, area, &mut state);
     inner
@@ -134,8 +144,27 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     let focused = app.focus == Focus::Chat;
     let selected_agent = app.selected;
 
-    let title = match app.config.agents.get(selected_agent) {
-        Some(a) => format!(" {} · {} · {} ", a.id, a.role, a.model),
+    let title = match app.chats.get(selected_agent) {
+        Some(chat) => {
+            // Show role/model for configured agents; for workers,
+            // fall back to "worker · <template>" since the chat
+            // itself carries the display name and template, not the
+            // role/model pair from an `agent` config block.
+            if let Some(template) = &chat.worker_template {
+                if let Some(w) = app.config.worker(template) {
+                    format!(
+                        " {} · worker · {} · {} ",
+                        chat.display_name, w.role, w.model
+                    )
+                } else {
+                    format!(" {} · worker ", chat.display_name)
+                }
+            } else if let Some(a) = app.config.agents.get(selected_agent) {
+                format!(" {} · {} · {} ", a.id, a.role, a.model)
+            } else {
+                format!(" {} ", chat.display_name)
+            }
+        }
         None => " chat ".to_string(),
     };
     let block = Block::default()

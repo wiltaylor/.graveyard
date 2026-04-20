@@ -20,12 +20,35 @@ pub struct Agent {
     /// `None` means unrestricted (can message anyone).
     /// `Some(vec![])` means may not message any other agent.
     pub can_message: Option<Vec<String>>,
+    /// Allowlist of worker template ids this agent may spawn via
+    /// `aciddog worker create`. `None` (the default) disables worker
+    /// creation entirely; `Some(list)` is the set of permitted
+    /// templates.
+    pub can_create_workers: Option<Vec<String>>,
+}
+
+/// A template for an ephemeral worker. Unlike `Agent`, a `Worker` is not
+/// spawned at startup — it is instantiated on demand when an agent (or
+/// another worker whose template opts in) calls `aciddog worker create`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Worker {
+    pub id: String,
+    pub role: String,
+    pub model: String,
+    pub instructions: String,
+    /// Optional per-template tool allowlist. `None` falls back to the
+    /// default tool list used by configured agents.
+    pub tools: Option<Vec<String>>,
+    /// Allowlist of worker template ids an instance of this template
+    /// may itself spawn. Same semantics as `Agent::can_create_workers`.
+    pub can_create_workers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AciddogConfig {
     pub team: Team,
     pub agents: Vec<Agent>,
+    pub workers: Vec<Worker>,
 }
 
 #[derive(Debug, Error)]
@@ -64,6 +87,9 @@ pub enum ConfigError {
         attr: String,
         to: String,
     },
+
+    #[error("`{from}` references unknown worker template `{to}` in `can_create_workers`")]
+    UnknownWorkerRef { from: String, to: String },
 }
 
 pub fn load_config(path: &Path) -> Result<AciddogConfig, ConfigError> {
@@ -107,13 +133,34 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 model: optional_string(b, "model").unwrap_or_else(|| "claude-opus-4-7".to_string()),
                 instructions: require_string(b, "instructions")?,
                 can_message: optional_string_list(b, "can_message")?,
+                can_create_workers: optional_string_list(b, "can_create_workers")?,
+            })
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+
+    let workers = doc
+        .blocks_of_type_resolved("worker")
+        .iter()
+        .map(|b| {
+            Ok(Worker {
+                id: require_id(&b.id, &b.kind)?,
+                role: require_string(b, "role")?,
+                model: optional_string(b, "model").unwrap_or_else(|| "claude-opus-4-7".to_string()),
+                instructions: require_string(b, "instructions")?,
+                tools: optional_string_list(b, "tools")?,
+                can_create_workers: optional_string_list(b, "can_create_workers")?,
             })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
 
     validate_agent_refs(&agents)?;
+    validate_worker_refs(&agents, &workers)?;
 
-    Ok(AciddogConfig { team, agents })
+    Ok(AciddogConfig {
+        team,
+        agents,
+        workers,
+    })
 }
 
 /// Every id mentioned in a `can_message` list must correspond to a real
@@ -137,6 +184,34 @@ fn validate_agent_refs(agents: &[Agent]) -> Result<(), ConfigError> {
     Ok(())
 }
 
+/// Every id in an agent's or worker's `can_create_workers` list must
+/// match a declared worker template.
+fn validate_worker_refs(agents: &[Agent], workers: &[Worker]) -> Result<(), ConfigError> {
+    let known: std::collections::HashSet<&str> = workers.iter().map(|w| w.id.as_str()).collect();
+    let check = |from: &str, list: &[String]| -> Result<(), ConfigError> {
+        for id in list {
+            if !known.contains(id.as_str()) {
+                return Err(ConfigError::UnknownWorkerRef {
+                    from: from.to_string(),
+                    to: id.clone(),
+                });
+            }
+        }
+        Ok(())
+    };
+    for a in agents {
+        if let Some(list) = &a.can_create_workers {
+            check(&a.id, list)?;
+        }
+    }
+    for w in workers {
+        if let Some(list) = &w.can_create_workers {
+            check(&w.id, list)?;
+        }
+    }
+    Ok(())
+}
+
 impl AciddogConfig {
     /// Returns true if agent `from` is permitted to send a message to
     /// agent `to`. Unknown `from` id → false (conservative default).
@@ -151,6 +226,36 @@ impl AciddogConfig {
             Some(None) => true,
             None => false,
         }
+    }
+
+    /// Returns true if the actor identified by `actor_template_id` is
+    /// permitted to spawn a worker of template id `worker_id`.
+    ///
+    /// `actor_template_id` is an agent config id for configured agents,
+    /// or a worker **template** id for workers spawned from that
+    /// template. Worker create capability is a template-level property:
+    /// every instance of a template has identical rights.
+    ///
+    /// Unknown actor ids and templates with no `can_create_workers`
+    /// list default to denied.
+    pub fn can_create(&self, actor_template_id: &str, worker_id: &str) -> bool {
+        if let Some(a) = self.agents.iter().find(|a| a.id == actor_template_id) {
+            return match &a.can_create_workers {
+                Some(list) => list.iter().any(|id| id == worker_id),
+                None => false,
+            };
+        }
+        if let Some(w) = self.workers.iter().find(|w| w.id == actor_template_id) {
+            return match &w.can_create_workers {
+                Some(list) => list.iter().any(|id| id == worker_id),
+                None => false,
+            };
+        }
+        false
+    }
+
+    pub fn worker(&self, id: &str) -> Option<&Worker> {
+        self.workers.iter().find(|w| w.id == id)
     }
 }
 
@@ -406,5 +511,185 @@ mod tests {
     fn can_send_unknown_sender_is_denied() {
         let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
         assert!(!cfg.can_send("ghost", "alpha"));
+    }
+
+    #[test]
+    fn parses_worker_block() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha { role = "a" instructions = "b" }
+            worker researcher {
+                role = "investigator"
+                instructions = "Investigate things."
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.workers.len(), 1);
+        assert_eq!(cfg.workers[0].id, "researcher");
+        assert_eq!(cfg.workers[0].role, "investigator");
+        assert_eq!(cfg.workers[0].model, "claude-opus-4-7");
+        assert!(cfg.workers[0].tools.is_none());
+        assert!(cfg.workers[0].can_create_workers.is_none());
+    }
+
+    #[test]
+    fn parses_worker_tools_and_nested_can_create() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha { role = "a" instructions = "b" }
+            worker researcher {
+                role = "r"
+                instructions = "i"
+                tools = ["Read", "Grep"]
+                can_create_workers = ["fetcher"]
+            }
+            worker fetcher {
+                role = "r"
+                instructions = "i"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        let r = cfg.worker("researcher").unwrap();
+        assert_eq!(
+            r.tools.as_deref(),
+            Some(&["Read".into(), "Grep".into()][..])
+        );
+        assert_eq!(
+            r.can_create_workers.as_deref(),
+            Some(&["fetcher".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn parses_agent_can_create_workers() {
+        let src = r#"
+            team default { description = "t" }
+            agent coder {
+                role = "i"
+                instructions = "i"
+                can_create_workers = ["researcher"]
+            }
+            worker researcher { role = "r" instructions = "i" }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.agents[0].can_create_workers.as_deref(),
+            Some(&["researcher".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn rejects_agent_can_create_workers_referencing_unknown_template() {
+        let src = r#"
+            team default { description = "t" }
+            agent coder {
+                role = "i"
+                instructions = "i"
+                can_create_workers = ["ghost"]
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownWorkerRef { from, to }
+                if from == "coder" && to == "ghost"
+        ));
+    }
+
+    #[test]
+    fn rejects_worker_can_create_workers_referencing_unknown_template() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            worker w {
+                role = "r"
+                instructions = "i"
+                can_create_workers = ["ghost"]
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownWorkerRef { from, to }
+                if from == "w" && to == "ghost"
+        ));
+    }
+
+    #[test]
+    fn can_create_returns_true_for_permitted_agent() {
+        let cfg = parse_config(
+            r#"
+                team default { description = "t" }
+                agent coder {
+                    role = "i"
+                    instructions = "i"
+                    can_create_workers = ["researcher"]
+                }
+                worker researcher { role = "r" instructions = "i" }
+            "#,
+            &dummy_path(),
+        )
+        .unwrap();
+        assert!(cfg.can_create("coder", "researcher"));
+    }
+
+    #[test]
+    fn can_create_returns_false_when_not_listed() {
+        let cfg = parse_config(
+            r#"
+                team default { description = "t" }
+                agent coder {
+                    role = "i"
+                    instructions = "i"
+                    can_create_workers = ["researcher"]
+                }
+                worker researcher { role = "r" instructions = "i" }
+                worker other      { role = "r" instructions = "i" }
+            "#,
+            &dummy_path(),
+        )
+        .unwrap();
+        assert!(!cfg.can_create("coder", "other"));
+    }
+
+    #[test]
+    fn can_create_returns_false_for_agent_without_allowlist() {
+        let cfg = parse_config(
+            r#"
+                team default { description = "t" }
+                agent coder { role = "i" instructions = "i" }
+                worker researcher { role = "r" instructions = "i" }
+            "#,
+            &dummy_path(),
+        )
+        .unwrap();
+        assert!(!cfg.can_create("coder", "researcher"));
+    }
+
+    #[test]
+    fn can_create_resolves_worker_template_actor() {
+        let cfg = parse_config(
+            r#"
+                team default { description = "t" }
+                agent coder { role = "i" instructions = "i" }
+                worker researcher {
+                    role = "r"
+                    instructions = "i"
+                    can_create_workers = ["fetcher"]
+                }
+                worker fetcher { role = "r" instructions = "i" }
+            "#,
+            &dummy_path(),
+        )
+        .unwrap();
+        // Actor is a worker *template* id, not an instance id.
+        assert!(cfg.can_create("researcher", "fetcher"));
+        assert!(!cfg.can_create("fetcher", "researcher"));
+    }
+
+    #[test]
+    fn can_create_unknown_actor_is_denied() {
+        let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
+        assert!(!cfg.can_create("ghost", "alpha"));
     }
 }

@@ -132,6 +132,26 @@ pub enum ChatBlock {
         collapsed: bool,
         pending: bool,
     },
+    /// Rendered on the spawner's pane when it runs
+    /// `aciddog worker create`. Captures the template id, the assigned
+    /// worker display id (if known), and the initial task.
+    WorkerSpawn {
+        template: String,
+        worker_id: Option<String>,
+        task: String,
+        is_error: bool,
+        collapsed: bool,
+        pending: bool,
+    },
+    /// Rendered on a worker's own pane when it runs
+    /// `aciddog worker complete`. Makes it visible that the worker
+    /// delivered a final report and hibernated.
+    WorkerComplete {
+        body: String,
+        is_error: bool,
+        collapsed: bool,
+        pending: bool,
+    },
 }
 
 impl ChatBlock {
@@ -146,6 +166,8 @@ impl ChatBlock {
                 | Self::GlobTool { .. }
                 | Self::GenericTool { .. }
                 | Self::Mail { .. }
+                | Self::WorkerSpawn { .. }
+                | Self::WorkerComplete { .. }
         )
     }
 
@@ -158,7 +180,9 @@ impl ChatBlock {
             | Self::GrepTool { collapsed, .. }
             | Self::GlobTool { collapsed, .. }
             | Self::GenericTool { collapsed, .. }
-            | Self::Mail { collapsed, .. } => *collapsed = !*collapsed,
+            | Self::Mail { collapsed, .. }
+            | Self::WorkerSpawn { collapsed, .. }
+            | Self::WorkerComplete { collapsed, .. } => *collapsed = !*collapsed,
             _ => {}
         }
     }
@@ -178,6 +202,8 @@ impl ChatBlock {
             Self::GenericTool { result_pretty, .. } => Some(result_pretty.clone()),
             Self::System { text, .. } => Some(text.clone()),
             Self::Mail { body, .. } => Some(body.clone()),
+            Self::WorkerSpawn { task, .. } => Some(task.clone()),
+            Self::WorkerComplete { body, .. } => Some(body.clone()),
         }
     }
 
@@ -253,6 +279,19 @@ impl ChatBlock {
                 let subj = mail_subject(*direction, counterpart);
                 tool_body_height(&subj, body, *collapsed, w)
             }
+            Self::WorkerSpawn {
+                template,
+                worker_id,
+                task,
+                collapsed,
+                ..
+            } => {
+                let subj = worker_spawn_subject(template, worker_id.as_deref());
+                tool_body_height(&subj, task, *collapsed, w)
+            }
+            Self::WorkerComplete {
+                body, collapsed, ..
+            } => tool_body_height("Final report", body, *collapsed, w),
         }
     }
 
@@ -530,6 +569,55 @@ impl ChatBlock {
                     Some(("copy".into(), body.clone())),
                 );
             }
+            Self::WorkerSpawn {
+                template,
+                worker_id,
+                task,
+                is_error,
+                collapsed,
+                pending,
+            } => {
+                let subj = worker_spawn_subject(template, worker_id.as_deref());
+                render_tool_block(
+                    frame,
+                    body_rect,
+                    buttons,
+                    block_idx,
+                    "🧑‍🌾",
+                    &subj,
+                    "task",
+                    task,
+                    *collapsed,
+                    *is_error,
+                    *pending,
+                    Some(task.clone()),
+                    None,
+                    Some(("copy".into(), task.clone())),
+                );
+            }
+            Self::WorkerComplete {
+                body,
+                is_error,
+                collapsed,
+                pending,
+            } => {
+                render_tool_block(
+                    frame,
+                    body_rect,
+                    buttons,
+                    block_idx,
+                    "🏁",
+                    "Final report (hibernating)",
+                    "report",
+                    body,
+                    *collapsed,
+                    *is_error,
+                    *pending,
+                    Some(body.clone()),
+                    None,
+                    Some(("copy".into(), body.clone())),
+                );
+            }
         }
     }
 
@@ -673,6 +761,13 @@ fn mail_subject(direction: MailDirection, counterpart: &str) -> String {
     match direction {
         MailDirection::Sent => format!("To: {counterpart}"),
         MailDirection::Received => format!("From: {counterpart}"),
+    }
+}
+
+fn worker_spawn_subject(template: &str, worker_id: Option<&str>) -> String {
+    match worker_id {
+        Some(id) => format!("Spawn worker {id} (template: {template})"),
+        None => format!("Spawn worker (template: {template})"),
     }
 }
 
@@ -1174,6 +1269,30 @@ impl ChatBlock {
         }
     }
 
+    /// Block for an `aciddog worker create` tool call, rendered on the
+    /// spawner's pane.
+    pub fn worker_spawn(template: impl Into<String>, task: impl Into<String>) -> Self {
+        Self::WorkerSpawn {
+            template: template.into(),
+            worker_id: None,
+            task: task.into(),
+            is_error: false,
+            collapsed: true,
+            pending: true,
+        }
+    }
+
+    /// Block for an `aciddog worker complete` tool call, rendered on
+    /// the worker's own pane.
+    pub fn worker_complete(body: impl Into<String>) -> Self {
+        Self::WorkerComplete {
+            body: body.into(),
+            is_error: false,
+            collapsed: true,
+            pending: true,
+        }
+    }
+
     /// Build the right tool-call variant from a `ToolUse` event.
     pub fn from_tool_use(name: &str, input: &serde_json::Value) -> Self {
         use serde_json::Value;
@@ -1336,6 +1455,46 @@ impl ChatBlock {
                 }
             }
             ChatBlock::Mail {
+                is_error: e,
+                collapsed,
+                pending,
+                ..
+            } => {
+                *e = is_error;
+                *pending = false;
+                if is_error {
+                    *collapsed = false;
+                }
+            }
+            ChatBlock::WorkerSpawn {
+                worker_id,
+                is_error: e,
+                collapsed,
+                pending,
+                ..
+            } => {
+                // The orchestrator replies with "<worker_id> <uuid>" on
+                // success; extract the first whitespace-separated token
+                // as the display id so the UI header shows the spawned
+                // instance. On error, leave `worker_id` untouched.
+                if !is_error {
+                    if let Some(id) = stringify_content(content)
+                        .split_whitespace()
+                        .next()
+                        .map(str::to_string)
+                    {
+                        if !id.is_empty() {
+                            *worker_id = Some(id);
+                        }
+                    }
+                }
+                *e = is_error;
+                *pending = false;
+                if is_error {
+                    *collapsed = false;
+                }
+            }
+            ChatBlock::WorkerComplete {
                 is_error: e,
                 collapsed,
                 pending,

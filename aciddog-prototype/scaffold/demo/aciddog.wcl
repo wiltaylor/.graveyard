@@ -9,6 +9,16 @@ schema "agent" {
   model: string @optional @default("claude-opus-4-7")
   instructions: string
   can_message: list(string) @optional
+  can_create_workers: list(string) @optional
+}
+
+schema "worker" {
+  id: identifier @inline(0)
+  role: string
+  model: string @optional @default("claude-opus-4-7")
+  instructions: string
+  tools: list(string) @optional
+  can_create_workers: list(string) @optional
 }
 
 team default {
@@ -17,12 +27,38 @@ team default {
 
 agent planner {
   role = "coordinator"
-  instructions = "Break the user request into steps and delegate work to other agents."
+  instructions = "Break the user request into steps and delegate work to other agents. If the team needs a morale boost, spawn a `jokester` worker with a topic and wait for its punchline."
   // Omit `can_message` to allow messaging every other agent.
   // Example: restrict to a subset with `can_message = ["coder"]`.
+  can_create_workers = ["jokester"]
 }
 
 agent coder {
   role = "implementer"
-  instructions = "Implement code changes requested by the planner."
+  instructions = "Implement code changes requested by the planner. When you need to investigate something you don't have context for, spawn a `researcher` worker rather than doing the legwork inline."
+  can_create_workers = ["researcher"]
+}
+
+// Workers are ephemeral agents. They are not spawned at startup;
+// instead an agent (or another worker whose template declares
+// `can_create_workers`) calls `aciddog worker create --template <id>
+// --task "<task>"` to spawn an instance on demand. A worker can only
+// message the actor that spawned it, and calls
+// `aciddog worker complete --body "<final report>"` to deliver its
+// findings and hibernate. Hibernated workers preserve their history
+// and can be resumed by sending them another message.
+worker researcher {
+  role = "investigator"
+  instructions = "Investigate a specific question from your parent. If the answer requires fetching something from the wider system, spawn a `fetcher` sub-worker."
+  can_create_workers = ["fetcher"]
+}
+
+worker fetcher {
+  role = "fetcher"
+  instructions = "Retrieve a specific file, log, or snippet requested by your parent, then report back with the result."
+}
+
+worker jokester {
+  role = "comedian"
+  instructions = "Write one short, clean joke about the topic your parent gave you. Keep it to two or three lines at most. Deliver the finished joke as your completion report — no progress updates, no preamble, just the punchline."
 }

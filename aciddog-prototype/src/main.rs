@@ -7,7 +7,7 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use aciddog::agent_ipc::{self, Request, RequestCmd};
-use aciddog::cli::{AgentArgs, AgentCommand, Args};
+use aciddog::cli::{AgentArgs, AgentCommand, Args, WorkerCommand};
 use aciddog::config::load_config;
 use aciddog::tui;
 
@@ -76,6 +76,12 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
     let cmd = match args.cmd {
         AgentCommand::Test => RequestCmd::Test,
         AgentCommand::Send { to, body } => RequestCmd::SendMessage { to, body },
+        AgentCommand::Worker {
+            cmd: WorkerCommand::Create { template, task },
+        } => RequestCmd::WorkerCreate { template, task },
+        AgentCommand::Worker {
+            cmd: WorkerCommand::Complete { body },
+        } => RequestCmd::WorkerComplete { body },
     };
 
     let response = agent_ipc::client::send(&socket_path, &Request { agent_id, cmd })

@@ -38,6 +38,19 @@ agent planner {
 }
 ```
 
+## Workers
+
+Agents can spawn ephemeral **workers** to handle sub-tasks. Workers are
+declared in `aciddog.wcl` as `worker <id> { ... }` blocks and are
+opt-in per agent via `can_create_workers = ["<worker-id>"]`. An agent
+spawns one by running `aciddog worker create --template <id> --task
+"<what to do>"`. The worker reports back with
+`aciddog worker complete --body "<findings>"`, which delivers its
+report to the parent and hibernates it. Hibernated workers keep their
+pane and history — sending them another message resumes the session.
+See [`scaffold/demo/aciddog.wcl`](scaffold/demo/aciddog.wcl) for a
+working example.
+
 ## Layout
 
 - `src/` — Rust binary + library
