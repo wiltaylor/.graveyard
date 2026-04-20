@@ -160,9 +160,9 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     };
 
     if chat.blocks.is_empty() {
-        render_empty_hint(f, inner, config.agents.get(selected_agent));
         return inner;
     }
+    let _ = config;
 
     // Compute heights at the current viewport width.
     let heights: Vec<u16> = chat
@@ -191,31 +191,6 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
         y = y.saturating_add(visible_h);
     }
     inner
-}
-
-fn render_empty_hint(f: &mut Frame, inner: Rect, agent: Option<&crate::config::Agent>) {
-    let mut lines: Vec<Line> = Vec::new();
-    if let Some(a) = agent {
-        lines.push(Line::from(Span::styled(
-            "instructions",
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(Span::styled(
-            a.instructions.clone(),
-            Style::default().fg(Color::DarkGray),
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "type a message and press Enter to begin this agent's session",
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::ITALIC),
-        )));
-    }
-    let para = Paragraph::new(lines);
-    f.render_widget(para, inner);
 }
 
 /// Make sure the scroll anchor points somewhere sensible given the block

@@ -46,6 +46,15 @@ pub enum BlockAction {
 /// One message in the chat.
 #[derive(Debug, Clone)]
 pub enum ChatBlock {
+    AgentInfo {
+        agent_id: String,
+        role: String,
+        model: String,
+        core: String,
+        tools: Vec<String>,
+        prompt: String,
+        collapsed: bool,
+    },
     UserText {
         text: String,
     },
@@ -77,9 +86,7 @@ pub enum ChatBlock {
     ReadTool {
         file_path: String,
         range: Option<String>,
-        preview: String,
         is_error: bool,
-        collapsed: bool,
         pending: bool,
     },
     GrepTool {
@@ -116,10 +123,10 @@ impl ChatBlock {
     pub fn is_collapsible(&self) -> bool {
         matches!(
             self,
-            Self::BashTool { .. }
+            Self::AgentInfo { .. }
+                | Self::BashTool { .. }
                 | Self::EditTool { .. }
                 | Self::WriteTool { .. }
-                | Self::ReadTool { .. }
                 | Self::GrepTool { .. }
                 | Self::GlobTool { .. }
                 | Self::GenericTool { .. }
@@ -128,10 +135,10 @@ impl ChatBlock {
 
     pub fn toggle_collapsed(&mut self) {
         match self {
-            Self::BashTool { collapsed, .. }
+            Self::AgentInfo { collapsed, .. }
+            | Self::BashTool { collapsed, .. }
             | Self::EditTool { collapsed, .. }
             | Self::WriteTool { collapsed, .. }
-            | Self::ReadTool { collapsed, .. }
             | Self::GrepTool { collapsed, .. }
             | Self::GlobTool { collapsed, .. }
             | Self::GenericTool { collapsed, .. } => *collapsed = !*collapsed,
@@ -142,11 +149,12 @@ impl ChatBlock {
     /// The content that `Alt+c` should copy from this block.
     pub fn primary_copy_text(&self) -> Option<String> {
         match self {
+            Self::AgentInfo { prompt, .. } => Some(prompt.clone()),
             Self::UserText { text } => Some(text.clone()),
             Self::AiMarkdown { raw, .. } => Some(raw.clone()),
             Self::BashTool { stdout, .. } => Some(stdout.clone()),
             Self::EditTool { diff, .. } | Self::WriteTool { diff, .. } => Some(diff.clone()),
-            Self::ReadTool { preview, .. } => Some(preview.clone()),
+            Self::ReadTool { file_path, .. } => Some(file_path.clone()),
             Self::GrepTool { matches, .. } | Self::GlobTool { matches, .. } => {
                 Some(matches.clone())
             }
@@ -159,6 +167,12 @@ impl ChatBlock {
     pub fn height(&self, width: u16) -> u16 {
         let w = width.max(1);
         match self {
+            Self::AgentInfo {
+                tools,
+                prompt,
+                collapsed,
+                ..
+            } => agent_info_height(tools, prompt, *collapsed, w),
             Self::UserText { text } => wrapped_rows(text, w.saturating_sub(2)).max(1),
             Self::AiMarkdown { parsed, .. } => 1 + parsed_md_height(parsed, w),
             Self::BashTool {
@@ -179,9 +193,7 @@ impl ChatBlock {
                 collapsed,
                 ..
             } => tool_body_height(file_path, diff, *collapsed, w),
-            Self::ReadTool {
-                preview, collapsed, ..
-            } => tool_body_height("", preview, *collapsed, w),
+            Self::ReadTool { .. } => 1,
             Self::GrepTool {
                 pattern,
                 path,
@@ -249,6 +261,18 @@ impl ChatBlock {
         };
 
         match self {
+            Self::AgentInfo {
+                agent_id,
+                role,
+                model,
+                core,
+                tools,
+                prompt,
+                collapsed,
+            } => render_agent_info(
+                frame, body_rect, buttons, block_idx, agent_id, role, model, core, tools, prompt,
+                *collapsed,
+            ),
             Self::UserText { text } => self.render_prefix_text(
                 frame,
                 body_rect,
@@ -350,32 +374,14 @@ impl ChatBlock {
             Self::ReadTool {
                 file_path,
                 range,
-                preview,
                 is_error,
-                collapsed,
                 pending,
-                ..
             } => {
                 let subj = match range {
                     Some(r) => format!("{file_path}:{r}"),
                     None => file_path.clone(),
                 };
-                render_tool_block(
-                    frame,
-                    body_rect,
-                    buttons,
-                    block_idx,
-                    "📄",
-                    &subj,
-                    "preview",
-                    preview,
-                    *collapsed,
-                    *is_error,
-                    *pending,
-                    Some(preview.clone()),
-                    None,
-                    Some(("copy".into(), preview.clone())),
-                );
+                render_tool_header(frame, body_rect, "📄", &subj, *is_error, *pending);
             }
             Self::GrepTool {
                 pattern,
@@ -500,6 +506,147 @@ impl ChatBlock {
 
 const COLLAPSED_PREVIEW_ROWS: u16 = 3;
 
+fn agent_info_detail_line(tools: &[String], core: &str) -> String {
+    let tools_joined = if tools.is_empty() {
+        "(none)".to_string()
+    } else {
+        tools.join(", ")
+    };
+    format!("core: {core}   tools: {tools_joined}")
+}
+
+fn agent_info_height(tools: &[String], prompt: &str, collapsed: bool, width: u16) -> u16 {
+    // Rows: header(1) + detail(1..) + prompt-header(1) + optional prompt body
+    let detail_text = agent_info_detail_line(tools, "");
+    let detail_rows = wrapped_rows(&detail_text, width.saturating_sub(2)).max(1);
+    let prompt_body = if collapsed {
+        0
+    } else {
+        wrapped_rows(prompt, width.saturating_sub(2))
+    };
+    1 + detail_rows + 1 + prompt_body
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_agent_info(
+    frame: &mut Frame,
+    rect: Rect,
+    buttons: &mut Vec<ChatButton>,
+    block_idx: usize,
+    agent_id: &str,
+    role: &str,
+    model: &str,
+    core: &str,
+    tools: &[String],
+    prompt: &str,
+    collapsed: bool,
+) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    let mut y = rect.y;
+    let end_y = rect.y.saturating_add(rect.height);
+
+    // Header row.
+    let header = Line::from(vec![
+        Span::styled(
+            "ℹ ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            agent_id.to_string(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" · "),
+        Span::styled(role.to_string(), Style::default().fg(Color::Cyan)),
+        Span::raw(" · "),
+        Span::styled(model.to_string(), Style::default().fg(Color::Magenta)),
+    ]);
+    frame.render_widget(Paragraph::new(header), Rect::new(rect.x, y, rect.width, 1));
+    y = y.saturating_add(1);
+    if y >= end_y {
+        return;
+    }
+
+    // Details row (core + tools), wrapped.
+    let detail = agent_info_detail_line(tools, core);
+    let detail_w = rect.width.saturating_sub(2);
+    let detail_rows = wrapped_rows(&detail, detail_w).max(1);
+    let available = end_y.saturating_sub(y);
+    let draw_h = detail_rows.min(available);
+    let detail_rect = Rect::new(rect.x + 2, y, detail_w, draw_h);
+    frame.render_widget(
+        Paragraph::new(Span::styled(detail, Style::default().fg(Color::DarkGray)))
+            .wrap(Wrap { trim: false }),
+        detail_rect,
+    );
+    y = y.saturating_add(draw_h);
+    if y >= end_y {
+        return;
+    }
+
+    // Prompt toggle row.
+    let toggle_label = if collapsed { "[ + ]" } else { "[ - ]" };
+    let tw = toggle_label.chars().count() as u16;
+    let prompt_row = Rect::new(rect.x, y, rect.width, 1);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "prompt ",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("({} chars)", prompt.chars().count()),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])),
+        prompt_row,
+    );
+    if rect.width > tw + 1 {
+        let btn_rect = Rect::new(rect.x + rect.width - tw, y, tw, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                toggle_label.to_string(),
+                Style::default().fg(Color::Cyan),
+            ))),
+            btn_rect,
+        );
+        buttons.push(ChatButton {
+            rect: btn_rect,
+            action: BlockAction::ToggleCollapse(block_idx),
+        });
+    }
+    y = y.saturating_add(1);
+    if y >= end_y || collapsed {
+        return;
+    }
+
+    // Prompt body.
+    let body_w = rect.width.saturating_sub(2);
+    let body_rows = wrapped_rows(prompt, body_w);
+    let available = end_y.saturating_sub(y);
+    let draw_h = body_rows.min(available);
+    let body_rect = Rect::new(rect.x + 2, y, body_w, draw_h);
+    let block = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            prompt.to_string(),
+            Style::default().fg(Color::Gray),
+        ))
+        .block(block)
+        .wrap(Wrap { trim: false }),
+        body_rect,
+    );
+}
+
 fn tool_body_height(_subject: &str, body: &str, collapsed: bool, width: u16) -> u16 {
     // Layout:
     //   header row (1)  — icon + subject + buttons
@@ -574,6 +721,44 @@ fn wrapped_rows(text: &str, width: u16) -> u16 {
 // ---------------------------------------------------------------------------
 // Tool block renderer
 // ---------------------------------------------------------------------------
+
+/// Render a one-line tool header with no body or buttons.
+fn render_tool_header(
+    frame: &mut Frame,
+    rect: Rect,
+    icon: &str,
+    subject: &str,
+    is_error: bool,
+    pending: bool,
+) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    let header_rect = Rect::new(rect.x, rect.y, rect.width, 1);
+    let status_glyph = if pending {
+        "⋯"
+    } else if is_error {
+        "!"
+    } else {
+        "✓"
+    };
+    let status_style = if is_error {
+        Style::default().fg(Color::Red)
+    } else if pending {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+    let header_line = Line::from(vec![
+        Span::styled(format!("{status_glyph} "), status_style),
+        Span::styled(format!("{icon} "), Style::default().fg(Color::Magenta)),
+        Span::raw(truncate_display(
+            subject,
+            rect.width.saturating_sub(4) as usize,
+        )),
+    ]);
+    frame.render_widget(Paragraph::new(header_line), header_rect);
+}
 
 #[allow(clippy::too_many_arguments)]
 fn render_tool_block(
@@ -890,6 +1075,25 @@ fn render_fence(
 // ---------------------------------------------------------------------------
 
 impl ChatBlock {
+    pub fn agent_info(
+        agent_id: impl Into<String>,
+        role: impl Into<String>,
+        model: impl Into<String>,
+        core: impl Into<String>,
+        tools: Vec<String>,
+        prompt: impl Into<String>,
+    ) -> Self {
+        Self::AgentInfo {
+            agent_id: agent_id.into(),
+            role: role.into(),
+            model: model.into(),
+            core: core.into(),
+            tools,
+            prompt: prompt.into(),
+            collapsed: true,
+        }
+    }
+
     pub fn user(text: impl Into<String>) -> Self {
         Self::UserText { text: text.into() }
     }
@@ -971,9 +1175,7 @@ impl ChatBlock {
             "Read" => ChatBlock::ReadTool {
                 file_path: get_str("file_path"),
                 range: range_from_read(input),
-                preview: String::new(),
                 is_error: false,
-                collapsed: true,
                 pending: true,
             },
             "Grep" => ChatBlock::GrepTool {
@@ -1041,18 +1243,13 @@ impl ChatBlock {
                 }
             }
             ChatBlock::ReadTool {
-                preview,
                 is_error: e,
-                collapsed,
                 pending,
                 ..
             } => {
-                *preview = stringify_content(content);
+                let _ = stringify_content(content);
                 *e = is_error;
                 *pending = false;
-                if is_error {
-                    *collapsed = false;
-                }
             }
             ChatBlock::GrepTool {
                 matches,

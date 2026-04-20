@@ -84,10 +84,26 @@ pub struct App {
 
 impl App {
     pub fn new(config: AciddogConfig) -> Self {
-        let chats = (0..config.agents.len())
-            .map(|_| AgentChat {
-                sticky_bottom: true,
-                ..Default::default()
+        let chats: Vec<AgentChat> = config
+            .agents
+            .iter()
+            .map(|agent| {
+                let info = ChatBlock::agent_info(
+                    agent.id.clone(),
+                    agent.role.clone(),
+                    agent.model.clone(),
+                    "claude-code",
+                    DEFAULT_ALLOWED_TOOLS
+                        .iter()
+                        .map(|s| (*s).to_string())
+                        .collect(),
+                    agent.instructions.clone(),
+                );
+                AgentChat {
+                    blocks: vec![info],
+                    sticky_bottom: true,
+                    ..Default::default()
+                }
             })
             .collect();
         Self {
@@ -674,6 +690,18 @@ mod tests {
         chat.blocks.last().expect("no blocks")
     }
 
+    /// Build an app and clear the per-agent seeded AgentInfo blocks so tests
+    /// that assert on absolute block indices/length don't have to account for
+    /// them.
+    fn fresh_app() -> App {
+        let mut app = App::new(sample_config());
+        for c in &mut app.chats {
+            c.blocks.clear();
+            c.tool_index.clear();
+        }
+        app
+    }
+
     #[test]
     fn app_starts_with_chat_focused() {
         let app = App::new(sample_config());
@@ -907,7 +935,7 @@ mod tests {
 
     #[test]
     fn tool_use_and_result_stitch_into_one_bash_block() {
-        let mut app = App::new(sample_config());
+        let mut app = fresh_app();
         app.handle_ai_event(
             0,
             AIEvent::ToolUse {
@@ -949,7 +977,7 @@ mod tests {
 
     #[test]
     fn error_tool_result_auto_expands_block() {
-        let mut app = App::new(sample_config());
+        let mut app = fresh_app();
         app.handle_ai_event(
             0,
             AIEvent::ToolUse {
@@ -1020,7 +1048,7 @@ mod tests {
 
     #[test]
     fn ai_events_route_to_the_correct_agent() {
-        let mut app = App::new(sample_config());
+        let mut app = fresh_app();
         app.handle_ai_event(
             1,
             AIEvent::AssistantText {
@@ -1173,7 +1201,7 @@ mod tests {
 
     #[test]
     fn alt_up_down_moves_selection() {
-        let mut app = App::new(sample_config());
+        let mut app = fresh_app();
         app.focus = Focus::Chat;
         app.chats[0].blocks.push(ChatBlock::user("one"));
         app.chats[0].blocks.push(ChatBlock::user("two"));
@@ -1191,7 +1219,7 @@ mod tests {
 
     #[test]
     fn alt_enter_toggles_collapse_on_selected_block() {
-        let mut app = App::new(sample_config());
+        let mut app = fresh_app();
         app.focus = Focus::Chat;
         app.handle_ai_event(
             0,
@@ -1233,7 +1261,7 @@ mod tests {
 
     #[test]
     fn click_on_chat_button_toggles_collapse() {
-        let mut app = App::new(sample_config());
+        let mut app = fresh_app();
         app.focus = Focus::Chat;
         app.handle_ai_event(
             0,
@@ -1287,7 +1315,7 @@ mod tests {
 
     #[test]
     fn each_tool_kind_routes_to_expected_variant() {
-        let mut app = App::new(sample_config());
+        let mut app = fresh_app();
         let cases: Vec<(&str, serde_json::Value)> = vec![
             (
                 "Edit",
@@ -1322,5 +1350,26 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, vec!["Edit", "Write", "Read", "Grep", "Glob"]);
+    }
+
+    #[test]
+    fn each_chat_is_seeded_with_an_agent_info_block() {
+        let app = App::new(sample_config());
+        for (i, chat) in app.chats.iter().enumerate() {
+            assert_eq!(chat.blocks.len(), 1, "chat {i} missing agent info block");
+            match &chat.blocks[0] {
+                ChatBlock::AgentInfo {
+                    agent_id,
+                    tools,
+                    collapsed,
+                    ..
+                } => {
+                    assert_eq!(agent_id, &app.config.agents[i].id);
+                    assert!(tools.contains(&"Bash".to_string()));
+                    assert!(*collapsed, "prompt starts collapsed");
+                }
+                other => panic!("expected AgentInfo, got {other:?}"),
+            }
+        }
     }
 }
