@@ -1,0 +1,60 @@
+use async_trait::async_trait;
+use futures::stream::BoxStream;
+use thiserror::Error;
+use uuid::Uuid;
+
+use super::event::AIEvent;
+
+#[async_trait]
+pub trait AICore: Send + Sync {
+    /// Run a single conversational turn. The returned stream yields events
+    /// (text, tool calls, tool results, errors) until the turn completes.
+    async fn turn(
+        &mut self,
+        prompt: &str,
+    ) -> Result<BoxStream<'static, AIEvent>, AIError>;
+
+    /// The session id this core is bound to, if one has been assigned.
+    fn session_id(&self) -> Option<Uuid>;
+}
+
+#[derive(Debug, Error)]
+pub enum AIError {
+    #[error("failed to spawn claude CLI: {0}")]
+    Spawn(#[source] std::io::Error),
+
+    #[error("claude CLI not found on PATH")]
+    NotFound,
+
+    #[error("invalid tool name `{0}` (must be non-empty, no commas or whitespace)")]
+    InvalidToolName(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::stream::StreamExt;
+
+    #[derive(Default)]
+    struct MockCore {
+        id: Option<Uuid>,
+    }
+
+    #[async_trait]
+    impl AICore for MockCore {
+        async fn turn(
+            &mut self,
+            _prompt: &str,
+        ) -> Result<BoxStream<'static, AIEvent>, AIError> {
+            Ok(futures::stream::empty().boxed())
+        }
+        fn session_id(&self) -> Option<Uuid> {
+            self.id
+        }
+    }
+
+    #[test]
+    fn ai_core_is_object_safe() {
+        let _boxed: Box<dyn AICore> = Box::new(MockCore::default());
+    }
+}

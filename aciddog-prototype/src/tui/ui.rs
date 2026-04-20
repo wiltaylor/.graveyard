@@ -13,37 +13,34 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Percentage(60),
-            Constraint::Min(5),
-            Constraint::Length(3),
-            Constraint::Length(1),
+            Constraint::Length(1), // title
+            Constraint::Min(10),   // chat + agents
+            Constraint::Length(3), // input
+            Constraint::Length(1), // status
         ])
         .split(f.area());
 
     let title_area = root[0];
-    let top_area = root[1];
-    let chat_history_area = root[2];
-    let chat_input_area = root[3];
-    let status_area = root[4];
+    let body_area = root[1];
+    let chat_input_area = root[2];
+    let status_area = root[3];
 
-    let top_cols = Layout::default()
+    let body_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-        .split(top_area);
+        .constraints([Constraint::Percentage(75), Constraint::Percentage(25)])
+        .split(body_area);
 
-    let details_area = top_cols[0];
-    let agents_area = top_cols[1];
+    let chat_area = body_cols[0];
+    let agents_area = body_cols[1];
 
     render_title(f, title_area, app);
-    render_agent_details(f, details_area, app);
+    let chat_inner = render_agent_chat(f, chat_area, app);
     let list_inner = render_agent_list(f, agents_area, app);
-    let history_inner = render_chat_history(f, chat_history_area, app);
     let input_inner = render_chat_input(f, chat_input_area, app);
     render_status(f, status_area, app);
 
     app.layout.agent_list_inner = Some(list_inner);
-    app.layout.chat_history_inner = Some(history_inner);
+    app.layout.chat_history_inner = Some(chat_inner);
     app.layout.chat_input_inner = Some(input_inner);
 }
 
@@ -113,86 +110,79 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
     inner
 }
 
-fn render_agent_details(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" details ")
-        .border_style(Style::default().fg(Color::DarkGray));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let Some(agent) = app.config.agents.get(app.selected) else {
-        let placeholder = Paragraph::new("no agents defined in aciddog.wcl")
-            .style(Style::default().fg(Color::DarkGray));
-        f.render_widget(placeholder, inner);
-        return;
-    };
-
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("name: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                agent.id.clone(),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("role: ", Style::default().fg(Color::DarkGray)),
-            Span::raw(agent.role.clone()),
-        ]),
-        Line::from(vec![
-            Span::styled("model: ", Style::default().fg(Color::DarkGray)),
-            Span::raw(agent.model.clone()),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "instructions:",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(agent.instructions.clone()),
-    ];
-
-    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
-    f.render_widget(para, inner);
-}
-
-fn render_chat_history(f: &mut Frame, area: Rect, app: &App) -> Rect {
+fn render_agent_chat(f: &mut Frame, area: Rect, app: &App) -> Rect {
     let focused = app.focus == Focus::Chat;
+    let agent = app.config.agents.get(app.selected);
+
+    let title = match agent {
+        Some(a) => format!(" {} · {} · {} ", a.id, a.role, a.model),
+        None => " chat ".to_string(),
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" chat ")
+        .title(title)
         .border_style(focus_border_style(focused));
     let inner = block.inner(area);
 
+    let Some(chat) = app.current_chat() else {
+        let para = Paragraph::new("no agents defined in aciddog.wcl")
+            .block(block)
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(para, area);
+        return inner;
+    };
+
     let mut lines: Vec<Line> = Vec::new();
-    for msg in &app.messages {
-        let (prefix, style) = match msg.role {
-            MessageRole::User => (
-                "you ",
+    if chat.messages.is_empty() {
+        if let Some(a) = agent {
+            lines.push(Line::from(Span::styled(
+                "instructions",
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(Color::DarkGray)
                     .add_modifier(Modifier::BOLD),
-            ),
-            MessageRole::System => (
-                "sys ",
+            )));
+            lines.push(Line::from(Span::styled(
+                a.instructions.clone(),
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "type a message and press Enter to begin this agent's session",
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::ITALIC),
-            ),
-        };
-        lines.push(Line::from(vec![
-            Span::styled(prefix, style),
-            Span::raw(msg.content.clone()),
-        ]));
-        lines.push(Line::from(""));
+            )));
+        }
+    } else {
+        for msg in &chat.messages {
+            let (prefix, style) = match msg.role {
+                MessageRole::User => (
+                    "👤 ",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                MessageRole::Ai => ("🤖 ", Style::default().fg(Color::Cyan)),
+                MessageRole::Tool => ("🛠️  ", Style::default().fg(Color::Magenta)),
+                MessageRole::System => (
+                    "⚙️  ",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::raw(msg.content.clone()),
+            ]));
+            lines.push(Line::from(""));
+        }
     }
 
     let total_lines = lines.len() as u16;
     let viewport = inner.height;
     let max_scroll = total_lines.saturating_sub(viewport);
-    let effective_scroll = app.chat_scroll.min(max_scroll);
+    let effective_scroll = chat.scroll.min(max_scroll);
 
     let para = Paragraph::new(lines)
         .block(block)
@@ -210,9 +200,14 @@ fn render_chat_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
         .border_style(focus_border_style(focused));
     let inner = block.inner(area);
 
+    let input_text = app
+        .current_chat()
+        .map(|c| c.input.clone())
+        .unwrap_or_default();
+
     let display: Line = if focused {
         Line::from(vec![
-            Span::raw(app.input.clone()),
+            Span::raw(input_text),
             Span::styled(
                 "▏",
                 Style::default()
@@ -221,7 +216,7 @@ fn render_chat_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
             ),
         ])
     } else {
-        let placeholder = if app.input.is_empty() {
+        let placeholder = if input_text.is_empty() {
             Span::styled(
                 "click here or press Tab to chat",
                 Style::default()
@@ -229,7 +224,7 @@ fn render_chat_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
                     .add_modifier(Modifier::ITALIC),
             )
         } else {
-            Span::raw(app.input.clone())
+            Span::raw(input_text)
         };
         Line::from(placeholder)
     };
