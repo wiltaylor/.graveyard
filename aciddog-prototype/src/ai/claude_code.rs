@@ -103,7 +103,12 @@ impl AICore for ClaudeCodeCore {
             .arg("--dangerously-skip-permissions")
             .arg("--output-format")
             .arg("stream-json")
-            .arg("--verbose");
+            .arg("--verbose")
+            // Block online MCP servers: empty inline config + strict mode
+            // means only this (empty) MCP config is honored.
+            .arg("--strict-mcp-config")
+            .arg("--mcp-config")
+            .arg(r#"{"mcpServers":{}}"#);
 
         if is_first {
             cmd.arg("--session-id").arg(&session_id);

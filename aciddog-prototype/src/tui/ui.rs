@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::app::{App, Focus, MessageRole};
+use super::app::{AgentStatus, App, Focus, MessageRole};
 
 const APP_NAME: &str = "aciddog";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -89,18 +89,36 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
         .config
         .agents
         .iter()
-        .map(|a| ListItem::new(a.id.clone()))
+        .enumerate()
+        .map(|(i, a)| {
+            let status = app
+                .chats
+                .get(i)
+                .map(|c| c.status)
+                .unwrap_or(AgentStatus::Ready);
+            let dot = match status {
+                AgentStatus::Ready => "🟢",
+                AgentStatus::Working => "🟡",
+                AgentStatus::Error => "🔴",
+            };
+            // Style only the name — NOT the emoji — so the status color
+            // survives on terminals that monochrome emoji behind a styled bg.
+            let name_style = if i == app.selected {
+                Style::default()
+                    .bg(Color::Cyan)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::raw(format!("{dot} ")),
+                Span::styled(a.id.clone(), name_style),
+            ]))
+        })
         .collect();
 
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(
-            Style::default()
-                .bg(Color::Cyan)
-                .fg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
+    let list = List::new(items).block(block);
 
     let mut state = ListState::default();
     if !app.config.agents.is_empty() {

@@ -50,12 +50,21 @@ pub struct LayoutRects {
     pub chat_input_inner: Option<Rect>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentStatus {
+    #[default]
+    Ready,
+    Working,
+    Error,
+}
+
 #[derive(Debug, Default)]
 pub struct AgentChat {
     pub messages: Vec<ChatMessage>,
     pub input: String,
     pub scroll: u16,
     pub user_tx: Option<mpsc::Sender<String>>,
+    pub status: AgentStatus,
 }
 
 pub struct App {
@@ -141,20 +150,26 @@ impl App {
             return;
         };
         if let Some(tx) = &chat.user_tx {
-            if let Err(err) = tx.try_send(content) {
-                let msg = match err {
-                    mpsc::error::TrySendError::Full(_) => {
-                        "agent busy, message dropped".to_string()
-                    }
-                    mpsc::error::TrySendError::Closed(_) => {
-                        "agent offline, message dropped".to_string()
-                    }
-                };
-                chat.messages.push(ChatMessage {
-                    role: MessageRole::System,
-                    content: msg,
-                });
-                chat.scroll = u16::MAX;
+            match tx.try_send(content) {
+                Ok(()) => {
+                    chat.status = AgentStatus::Working;
+                }
+                Err(err) => {
+                    let msg = match err {
+                        mpsc::error::TrySendError::Full(_) => {
+                            "agent busy, message dropped".to_string()
+                        }
+                        mpsc::error::TrySendError::Closed(_) => {
+                            "agent offline, message dropped".to_string()
+                        }
+                    };
+                    chat.messages.push(ChatMessage {
+                        role: MessageRole::System,
+                        content: msg,
+                    });
+                    chat.scroll = u16::MAX;
+                    chat.status = AgentStatus::Error;
+                }
             }
         }
     }
@@ -200,12 +215,16 @@ impl App {
                 if let Some(cost) = total_cost_usd {
                     info!(cost_usd = cost, agent_idx = idx, "turn complete");
                 }
+                if chat.status == AgentStatus::Working {
+                    chat.status = AgentStatus::Ready;
+                }
             }
             AIEvent::Error { message, .. } => {
                 chat.messages.push(ChatMessage {
                     role: MessageRole::System,
                     content: message,
                 });
+                chat.status = AgentStatus::Error;
             }
             AIEvent::Other(v) => {
                 debug!(event = ?v, agent_idx = idx, "unhandled ai event");
@@ -840,6 +859,68 @@ mod tests {
             .messages
             .iter()
             .any(|m| m.role == MessageRole::System && m.content.contains("offline")));
+    }
+
+    #[test]
+    fn initial_agent_status_is_ready() {
+        let app = App::new(sample_config());
+        assert_eq!(app.chats[0].status, AgentStatus::Ready);
+    }
+
+    #[tokio::test]
+    async fn submit_marks_agent_working() {
+        let mut app = App::new(sample_config());
+        let (tx, _rx) = mpsc::channel::<String>(8);
+        app.chats[0].user_tx = Some(tx);
+        app.focus = Focus::Chat;
+        for c in "hi".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.chats[0].status, AgentStatus::Working);
+    }
+
+    #[test]
+    fn turn_result_returns_agent_to_ready() {
+        let mut app = App::new(sample_config());
+        app.chats[0].status = AgentStatus::Working;
+        app.handle_ai_event(
+            0,
+            AIEvent::TurnResult {
+                stop_reason: Some("end_turn".into()),
+                total_cost_usd: Some(0.01),
+                raw: serde_json::Value::Null,
+            },
+        );
+        assert_eq!(app.chats[0].status, AgentStatus::Ready);
+    }
+
+    #[test]
+    fn error_event_marks_agent_error() {
+        let mut app = App::new(sample_config());
+        app.chats[0].status = AgentStatus::Working;
+        app.handle_ai_event(
+            0,
+            AIEvent::Error {
+                message: "boom".into(),
+                raw: None,
+            },
+        );
+        assert_eq!(app.chats[0].status, AgentStatus::Error);
+    }
+
+    #[tokio::test]
+    async fn closed_channel_sets_error_status() {
+        let mut app = App::new(sample_config());
+        let (tx, rx) = mpsc::channel::<String>(1);
+        drop(rx);
+        app.chats[0].user_tx = Some(tx);
+        app.focus = Focus::Chat;
+        for c in "hi".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.chats[0].status, AgentStatus::Error);
     }
 
     #[test]
