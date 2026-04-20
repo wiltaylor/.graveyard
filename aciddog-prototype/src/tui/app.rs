@@ -19,8 +19,11 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use clap::Parser;
+
 use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
 use crate::ai::{AICore, AIEvent, ClaudeCodeCore};
+use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::AciddogConfig;
 
 use super::blocks::{BlockAction, ChatBlock, ChatButton, ScrollAnchor};
@@ -95,6 +98,10 @@ pub struct App {
     /// time so the IPC handler can resolve a sender's friendly name from
     /// the UUID it sees in `Request::agent_id`.
     pub agent_ids: HashMap<Uuid, String>,
+    /// Absolute path to the running aciddog binary. Used to detect
+    /// `aciddog send …` bash tool invocations and rewrite them into a
+    /// richer Mail block.
+    pub aciddog_binary: String,
 }
 
 impl App {
@@ -127,6 +134,7 @@ impl App {
             layout: LayoutRects::default(),
             copied_at: None,
             agent_ids: HashMap::new(),
+            aciddog_binary: String::new(),
         }
     }
 
@@ -206,6 +214,7 @@ impl App {
     }
 
     pub fn handle_ai_event(&mut self, idx: usize, ev: AIEvent) {
+        let binary = self.aciddog_binary.clone();
         let Some(chat) = self.chats.get_mut(idx) else {
             debug!(agent_idx = idx, "dropping AI event for unknown agent");
             return;
@@ -220,7 +229,18 @@ impl App {
             AIEvent::ToolUse {
                 id, name, input, ..
             } => {
-                let block = ChatBlock::from_tool_use(&name, &input);
+                // Rewrite `aciddog send` invocations into a Mail block so the
+                // UI shows To/Message instead of the raw shell command.
+                let block = if name == "Bash" {
+                    let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                    if let Some((to, body)) = try_parse_aciddog_send(cmd, &binary) {
+                        ChatBlock::mail_sent(to, body)
+                    } else {
+                        ChatBlock::from_tool_use(&name, &input)
+                    }
+                } else {
+                    ChatBlock::from_tool_use(&name, &input)
+                };
                 let pos = chat.push_block(block);
                 if !id.is_empty() {
                     chat.tool_index.insert(id, pos);
@@ -336,16 +356,12 @@ impl App {
             return;
         };
 
-        // Echo into both chats so the user can see the traffic.
+        // Recipient sees a Mail block naming the sender and carrying the
+        // body. The sender's chat already has a Mail block from the Bash
+        // tool-call intercept in `handle_ai_event`, so no echo is needed
+        // there.
         if let Some(chat) = self.chats.get_mut(recipient_idx) {
-            chat.push_block(ChatBlock::system_info(format!(
-                "message from {sender_id}: {body}"
-            )));
-        }
-        if let Some(chat) = self.chats.get_mut(sender_idx) {
-            chat.push_block(ChatBlock::system_info(format!(
-                "sent message to {to}: {body}"
-            )));
+            chat.push_block(ChatBlock::mail_received(sender_id.clone(), body.clone()));
         }
 
         // Enqueue on a background task so the IPC reply doesn't depend on
@@ -633,6 +649,31 @@ pub fn rect_contains(rect: Rect, (x, y): (u16, u16)) -> bool {
         && y < rect.y.saturating_add(rect.height)
 }
 
+/// If `cmd` is a shell invocation of `<binary> send --to <id> --body <text>`,
+/// return the extracted `(to, body)`. Returns `None` otherwise — including
+/// for invocations like `bash -c "..."` or composite pipelines that don't
+/// start with the aciddog binary.
+///
+/// Parsing reuses `AgentArgs` (the same clap parser the agent-mode binary
+/// uses) so flag semantics stay in one place.
+fn try_parse_aciddog_send(cmd: &str, binary: &str) -> Option<(String, String)> {
+    if binary.is_empty() {
+        return None;
+    }
+    let tokens = shlex::split(cmd)?;
+    let mut iter = tokens.into_iter();
+    let first = iter.next()?;
+    if first != binary {
+        return None;
+    }
+    let argv: Vec<String> = std::iter::once("aciddog".to_string()).chain(iter).collect();
+    let parsed = AgentArgs::try_parse_from(argv).ok()?;
+    match parsed.cmd {
+        AgentCommand::Send { to, body } => Some((to, body)),
+        _ => None,
+    }
+}
+
 #[tracing::instrument(skip(config))]
 pub async fn run(config: AciddogConfig) -> Result<()> {
     info!(team = %config.team.id, agents = config.agents.len(), "starting TUI");
@@ -660,6 +701,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         .context("resolving current aciddog binary path for agent preamble")?;
     let aciddog_binary_str = aciddog_binary.to_string_lossy().into_owned();
     info!(binary = %aciddog_binary_str, "agent CLI binary");
+    app.aciddog_binary = aciddog_binary_str.clone();
 
     // One core per agent, each with its own session, user channel, and
     // agent-to-agent channel. User channel is unbounded (the TUI key
@@ -1732,5 +1774,187 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 10_000);
+    }
+
+    // --------- Bash → Mail rewrite ----------
+
+    #[test]
+    fn try_parse_aciddog_send_extracts_to_and_body() {
+        let cmd = r#"/opt/aciddog send --to coder --body "hi there""#;
+        let (to, body) = try_parse_aciddog_send(cmd, "/opt/aciddog").unwrap();
+        assert_eq!(to, "coder");
+        assert_eq!(body, "hi there");
+    }
+
+    #[test]
+    fn try_parse_aciddog_send_rejects_non_aciddog_commands() {
+        assert!(try_parse_aciddog_send("ls -la", "/opt/aciddog").is_none());
+        assert!(try_parse_aciddog_send("/opt/aciddog test", "/opt/aciddog").is_none());
+        // Shell pipelines / bash -c wrappers don't match; we intentionally
+        // only intercept direct invocations.
+        assert!(try_parse_aciddog_send(
+            r#"bash -c "/opt/aciddog send --to x --body y""#,
+            "/opt/aciddog"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn try_parse_aciddog_send_requires_matching_binary_path() {
+        let cmd = "/usr/local/bin/aciddog send --to coder --body hi";
+        assert!(try_parse_aciddog_send(cmd, "/opt/aciddog").is_none());
+    }
+
+    #[test]
+    fn try_parse_aciddog_send_is_disabled_when_binary_empty() {
+        // Test harness (App::new) leaves aciddog_binary blank until run()
+        // populates it — a blank binary must never match a real command.
+        assert!(try_parse_aciddog_send("aciddog send --to coder --body hi", "").is_none());
+    }
+
+    #[test]
+    fn bash_tool_use_for_aciddog_send_becomes_mail_sent() {
+        let mut app = App::new(sample_config());
+        app.aciddog_binary = "/opt/aciddog".into();
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolUse {
+                id: "t1".into(),
+                name: "Bash".into(),
+                input: json!({
+                    "command": r#"/opt/aciddog send --to b --body "hi friend""#
+                }),
+                raw: serde_json::Value::Null,
+            },
+        );
+        match &app.chats[0].blocks.last().unwrap() {
+            ChatBlock::Mail {
+                direction,
+                counterpart,
+                body,
+                pending,
+                ..
+            } => {
+                assert_eq!(*direction, super::super::blocks::MailDirection::Sent);
+                assert_eq!(counterpart, "b");
+                assert_eq!(body, "hi friend");
+                assert!(*pending);
+            }
+            other => panic!("expected Mail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_result_for_aciddog_send_clears_pending_on_mail() {
+        let mut app = App::new(sample_config());
+        app.aciddog_binary = "/opt/aciddog".into();
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolUse {
+                id: "t1".into(),
+                name: "Bash".into(),
+                input: json!({"command": "/opt/aciddog send --to b --body hi"}),
+                raw: serde_json::Value::Null,
+            },
+        );
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolResult {
+                tool_use_id: "t1".into(),
+                content: serde_json::Value::String("queued".into()),
+                is_error: false,
+                raw: serde_json::Value::Null,
+            },
+        );
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::Mail { pending, .. } => assert!(!*pending),
+            other => panic!("expected Mail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_aciddog_bash_still_becomes_bash_tool_block() {
+        let mut app = App::new(sample_config());
+        app.aciddog_binary = "/opt/aciddog".into();
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolUse {
+                id: "t1".into(),
+                name: "Bash".into(),
+                input: json!({"command": "ls -la"}),
+                raw: serde_json::Value::Null,
+            },
+        );
+        assert!(matches!(
+            app.chats[0].blocks.last().unwrap(),
+            ChatBlock::BashTool { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn send_message_pushes_mail_received_on_recipient() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SendMessage {
+                    to: "b".into(),
+                    body: "hello b".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        assert!(reply_rx.await.unwrap().ok);
+
+        // Recipient chat (agent b, index 1) should end with a Mail(Received).
+        match app.chats[1].blocks.last().unwrap() {
+            ChatBlock::Mail {
+                direction,
+                counterpart,
+                body,
+                pending,
+                ..
+            } => {
+                assert_eq!(*direction, super::super::blocks::MailDirection::Received);
+                assert_eq!(counterpart, "a");
+                assert_eq!(body, "hello b");
+                assert!(!*pending);
+            }
+            other => panic!("expected Mail(Received), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_message_does_not_echo_into_sender_chat() {
+        // The sender's chat shows a Mail(Sent) block from the Bash tool-use
+        // intercept elsewhere; the socket handler must not also push a
+        // system_info or second Mail block into the sender's chat.
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+        let sender_blocks_before = app.chats[0].blocks.len();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SendMessage {
+                    to: "b".into(),
+                    body: "hi".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        assert!(reply_rx.await.unwrap().ok);
+
+        assert_eq!(
+            app.chats[0].blocks.len(),
+            sender_blocks_before,
+            "socket handler must not push extra blocks into sender chat"
+        );
     }
 }

@@ -29,6 +29,13 @@ pub enum SystemKind {
     Error,
 }
 
+/// Direction of a mail block: this agent sent the message, or received it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MailDirection {
+    Sent,
+    Received,
+}
+
 /// A clickable hot rect registered during render.
 #[derive(Debug, Clone)]
 pub struct ChatButton {
@@ -114,6 +121,17 @@ pub enum ChatBlock {
         text: String,
         kind: SystemKind,
     },
+    /// An inter-agent message, either sent by this agent or received from
+    /// another. Replaces the raw Bash tool call for `aciddog send` and the
+    /// system_info echo that used to surface receipts.
+    Mail {
+        direction: MailDirection,
+        counterpart: String,
+        body: String,
+        is_error: bool,
+        collapsed: bool,
+        pending: bool,
+    },
 }
 
 impl ChatBlock {
@@ -127,6 +145,7 @@ impl ChatBlock {
                 | Self::GrepTool { .. }
                 | Self::GlobTool { .. }
                 | Self::GenericTool { .. }
+                | Self::Mail { .. }
         )
     }
 
@@ -138,7 +157,8 @@ impl ChatBlock {
             | Self::WriteTool { collapsed, .. }
             | Self::GrepTool { collapsed, .. }
             | Self::GlobTool { collapsed, .. }
-            | Self::GenericTool { collapsed, .. } => *collapsed = !*collapsed,
+            | Self::GenericTool { collapsed, .. }
+            | Self::Mail { collapsed, .. } => *collapsed = !*collapsed,
             _ => {}
         }
     }
@@ -157,6 +177,7 @@ impl ChatBlock {
             }
             Self::GenericTool { result_pretty, .. } => Some(result_pretty.clone()),
             Self::System { text, .. } => Some(text.clone()),
+            Self::Mail { body, .. } => Some(body.clone()),
         }
     }
 
@@ -222,6 +243,16 @@ impl ChatBlock {
                 tool_body_height(&subj, result_pretty, *collapsed, w)
             }
             Self::System { text, .. } => wrapped_rows(text, w.saturating_sub(2)).max(1),
+            Self::Mail {
+                direction,
+                counterpart,
+                body,
+                collapsed,
+                ..
+            } => {
+                let subj = mail_subject(*direction, counterpart);
+                tool_body_height(&subj, body, *collapsed, w)
+            }
         }
     }
 
@@ -473,6 +504,32 @@ impl ChatBlock {
                 };
                 self.render_prefix_text(frame, body_rect, "⚙ ", text, style);
             }
+            Self::Mail {
+                direction,
+                counterpart,
+                body,
+                is_error,
+                collapsed,
+                pending,
+            } => {
+                let subj = mail_subject(*direction, counterpart);
+                render_tool_block(
+                    frame,
+                    body_rect,
+                    buttons,
+                    block_idx,
+                    "📬",
+                    &subj,
+                    "message",
+                    body,
+                    *collapsed,
+                    *is_error,
+                    *pending,
+                    Some(body.clone()),
+                    None,
+                    Some(("copy".into(), body.clone())),
+                );
+            }
         }
     }
 
@@ -610,6 +667,13 @@ fn render_agent_info(
             .wrap(Wrap { trim: false }),
         body_rect,
     );
+}
+
+fn mail_subject(direction: MailDirection, counterpart: &str) -> String {
+    match direction {
+        MailDirection::Sent => format!("To: {counterpart}"),
+        MailDirection::Received => format!("From: {counterpart}"),
+    }
 }
 
 fn tool_body_height(_subject: &str, body: &str, collapsed: bool, width: u16) -> u16 {
@@ -1084,6 +1148,32 @@ impl ChatBlock {
         }
     }
 
+    /// A mail block representing a message this agent sent to another.
+    /// Starts collapsed so long bodies don't push chat history offscreen.
+    pub fn mail_sent(to: impl Into<String>, body: impl Into<String>) -> Self {
+        Self::Mail {
+            direction: MailDirection::Sent,
+            counterpart: to.into(),
+            body: body.into(),
+            is_error: false,
+            collapsed: true,
+            pending: true,
+        }
+    }
+
+    /// A mail block representing a message received from another agent.
+    /// Already-delivered, so `pending` is false from the start.
+    pub fn mail_received(from: impl Into<String>, body: impl Into<String>) -> Self {
+        Self::Mail {
+            direction: MailDirection::Received,
+            counterpart: from.into(),
+            body: body.into(),
+            is_error: false,
+            collapsed: true,
+            pending: false,
+        }
+    }
+
     /// Build the right tool-call variant from a `ToolUse` event.
     pub fn from_tool_use(name: &str, input: &serde_json::Value) -> Self {
         use serde_json::Value;
@@ -1239,6 +1329,18 @@ impl ChatBlock {
                 ..
             } => {
                 *result_pretty = stringify_content(content);
+                *e = is_error;
+                *pending = false;
+                if is_error {
+                    *collapsed = false;
+                }
+            }
+            ChatBlock::Mail {
+                is_error: e,
+                collapsed,
+                pending,
+                ..
+            } => {
                 *e = is_error;
                 *pending = false;
                 if is_error {
@@ -1498,5 +1600,97 @@ mod tests {
         b.toggle_collapsed();
         let expanded_h = b.height(80);
         assert!(expanded_h > collapsed_h);
+    }
+
+    // --------- Mail block ----------
+
+    #[test]
+    fn mail_sent_block_starts_collapsed_and_pending() {
+        let b = ChatBlock::mail_sent("coder", "please fix it");
+        match b {
+            ChatBlock::Mail {
+                direction,
+                counterpart,
+                body,
+                collapsed,
+                pending,
+                is_error,
+            } => {
+                assert_eq!(direction, MailDirection::Sent);
+                assert_eq!(counterpart, "coder");
+                assert_eq!(body, "please fix it");
+                assert!(collapsed);
+                assert!(pending);
+                assert!(!is_error);
+            }
+            _ => panic!("expected Mail"),
+        }
+    }
+
+    #[test]
+    fn mail_received_block_is_not_pending() {
+        let b = ChatBlock::mail_received("planner", "hi there");
+        match b {
+            ChatBlock::Mail {
+                direction, pending, ..
+            } => {
+                assert_eq!(direction, MailDirection::Received);
+                assert!(!pending);
+            }
+            _ => panic!("expected Mail"),
+        }
+    }
+
+    #[test]
+    fn mail_block_is_collapsible_and_toggles() {
+        let mut b = ChatBlock::mail_sent("coder", "body");
+        assert!(b.is_collapsible());
+        b.toggle_collapsed();
+        match &b {
+            ChatBlock::Mail { collapsed, .. } => assert!(!collapsed),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn mail_primary_copy_returns_body() {
+        let b = ChatBlock::mail_sent("coder", "the payload");
+        assert_eq!(b.primary_copy_text().as_deref(), Some("the payload"));
+    }
+
+    #[test]
+    fn apply_tool_result_clears_pending_on_mail() {
+        let mut b = ChatBlock::mail_sent("coder", "hi");
+        b.apply_tool_result(&json!("queued"), false);
+        match b {
+            ChatBlock::Mail {
+                pending,
+                is_error,
+                collapsed,
+                ..
+            } => {
+                assert!(!pending);
+                assert!(!is_error);
+                assert!(collapsed);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn apply_tool_result_marks_mail_errored_and_expanded() {
+        let mut b = ChatBlock::mail_sent("ghost", "hi");
+        b.apply_tool_result(&json!("no agent named ghost"), true);
+        match b {
+            ChatBlock::Mail {
+                is_error,
+                collapsed,
+                ..
+            } => {
+                assert!(is_error);
+                assert!(!collapsed, "error should auto-expand");
+            }
+            _ => unreachable!(),
+        }
     }
 }
