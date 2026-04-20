@@ -1,0 +1,75 @@
+# Top-level justfile for aciddog.
+
+[default, private]
+main:
+	@just --list
+
+# Compile the binary
+[group('app')]
+app-build:
+	cargo build
+
+# Type-check without building
+[group('app')]
+app-check:
+	cargo check --all-targets
+
+# Run clippy with warnings as errors
+[group('app')]
+app-lint:
+	cargo clippy --all-targets -- -D warnings
+
+# Format the codebase
+[group('app')]
+app-fmt:
+	cargo fmt
+
+# Verify formatting without modifying
+[group('app')]
+app-fmt-check:
+	cargo fmt -- --check
+
+# Run unit tests (lib only)
+[group('app')]
+app-test-unit:
+	cargo test --lib
+
+# Run integration tests (tests/)
+[group('app')]
+app-test-integration:
+	cargo test --test '*'
+
+# Run all tests
+[group('app')]
+app-test: app-test-unit app-test-integration
+
+[private]
+demo-ensure:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	if [ ! -d demo ]; then
+		echo "scaffolding demo/ from scaffold/demo/"
+		cp -r scaffold/demo demo
+	fi
+
+# Remove the demo workspace
+[group('demo')]
+demo-clean:
+	rm -rf demo
+
+# Start the TUI in the demo workspace (scaffolds demo/ if missing)
+[group('run')]
+run: demo-ensure
+	cd demo && cargo run --manifest-path ../Cargo.toml
+
+# Build everything
+[group('build')]
+build: app-build
+
+# Run every test
+[group('test')]
+test: app-test
+
+# Full CI pipeline: fmt check, lint, tests
+[group('ci')]
+ci: app-fmt-check app-lint app-test

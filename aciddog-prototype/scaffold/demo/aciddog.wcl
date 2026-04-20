@@ -1,0 +1,25 @@
+schema "team" {
+  id: identifier @inline(0)
+  description: string
+}
+
+schema "agent" {
+  id: identifier @inline(0)
+  role: string
+  model: string @optional @default("claude-opus-4-7")
+  instructions: string
+}
+
+team default {
+  description = "Default aciddog team"
+}
+
+agent planner {
+  role = "coordinator"
+  instructions = "Break the user request into steps and delegate work to other agents."
+}
+
+agent coder {
+  role = "implementer"
+  instructions = "Implement code changes requested by the planner."
+}
