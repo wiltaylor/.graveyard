@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::io;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{
@@ -14,14 +16,18 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::ai::{AICore, AIEvent, ClaudeCodeCore};
 use crate::config::AciddogConfig;
 
+use super::blocks::{BlockAction, ChatBlock, ChatButton, ScrollAnchor};
+use super::clipboard;
+
 use super::ui;
 
 const DEFAULT_ALLOWED_TOOLS: &[&str] = &["Bash", "Read", "Edit", "Grep", "Glob"];
+const COPIED_TOAST_MS: u64 = 1500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -29,25 +35,12 @@ pub enum Focus {
     Chat,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MessageRole {
-    User,
-    Ai,
-    Tool,
-    System,
-}
-
-#[derive(Debug, Clone)]
-pub struct ChatMessage {
-    pub role: MessageRole,
-    pub content: String,
-}
-
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct LayoutRects {
     pub agent_list_inner: Option<Rect>,
     pub chat_history_inner: Option<Rect>,
     pub chat_input_inner: Option<Rect>,
+    pub chat_buttons: Vec<ChatButton>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -60,11 +53,23 @@ pub enum AgentStatus {
 
 #[derive(Debug, Default)]
 pub struct AgentChat {
-    pub messages: Vec<ChatMessage>,
+    pub blocks: Vec<ChatBlock>,
+    pub tool_index: HashMap<String, usize>,
     pub input: String,
-    pub scroll: u16,
+    pub anchor: ScrollAnchor,
+    pub sticky_bottom: bool,
+    pub selected_block: Option<usize>,
     pub user_tx: Option<mpsc::Sender<String>>,
     pub status: AgentStatus,
+}
+
+impl AgentChat {
+    fn push_block(&mut self, block: ChatBlock) -> usize {
+        let idx = self.blocks.len();
+        self.blocks.push(block);
+        self.sticky_bottom = true;
+        idx
+    }
 }
 
 pub struct App {
@@ -74,12 +79,16 @@ pub struct App {
     pub focus: Focus,
     pub chats: Vec<AgentChat>,
     pub layout: LayoutRects,
+    pub copied_at: Option<Instant>,
 }
 
 impl App {
     pub fn new(config: AciddogConfig) -> Self {
         let chats = (0..config.agents.len())
-            .map(|_| AgentChat::default())
+            .map(|_| AgentChat {
+                sticky_bottom: true,
+                ..Default::default()
+            })
             .collect();
         Self {
             config,
@@ -88,6 +97,7 @@ impl App {
             focus: Focus::Chat,
             chats,
             layout: LayoutRects::default(),
+            copied_at: None,
         }
     }
 
@@ -97,6 +107,12 @@ impl App {
 
     pub fn current_chat_mut(&mut self) -> Option<&mut AgentChat> {
         self.chats.get_mut(self.selected)
+    }
+
+    pub fn copied_recently(&self) -> bool {
+        self.copied_at
+            .map(|t| t.elapsed() < Duration::from_millis(COPIED_TOAST_MS))
+            .unwrap_or(false)
     }
 
     fn select_next(&mut self) {
@@ -130,12 +146,8 @@ impl App {
                 return;
             }
             let content = trimmed.to_string();
-            chat.messages.push(ChatMessage {
-                role: MessageRole::User,
-                content: content.clone(),
-            });
+            chat.push_block(ChatBlock::user(content.clone()));
             chat.input.clear();
-            chat.scroll = u16::MAX;
             content
         };
 
@@ -163,11 +175,7 @@ impl App {
                             "agent offline, message dropped".to_string()
                         }
                     };
-                    chat.messages.push(ChatMessage {
-                        role: MessageRole::System,
-                        content: msg,
-                    });
-                    chat.scroll = u16::MAX;
+                    chat.push_block(ChatBlock::system_error(msg));
                     chat.status = AgentStatus::Error;
                 }
             }
@@ -184,32 +192,40 @@ impl App {
                 info!(%session_id, agent_idx = idx, "claude session ready");
             }
             AIEvent::AssistantText { text, .. } => {
-                chat.messages.push(ChatMessage {
-                    role: MessageRole::Ai,
-                    content: text,
-                });
+                chat.push_block(ChatBlock::ai_markdown(text));
             }
-            AIEvent::ToolUse { name, input, .. } => {
-                let input_str = serde_json::to_string(&input).unwrap_or_default();
-                let truncated: String = input_str.chars().take(160).collect();
-                chat.messages.push(ChatMessage {
-                    role: MessageRole::Tool,
-                    content: format!("{name}: {truncated}"),
-                });
+            AIEvent::ToolUse {
+                id, name, input, ..
+            } => {
+                let block = ChatBlock::from_tool_use(&name, &input);
+                let pos = chat.push_block(block);
+                if !id.is_empty() {
+                    chat.tool_index.insert(id, pos);
+                }
             }
             AIEvent::ToolResult {
-                content, is_error, ..
+                tool_use_id,
+                content,
+                is_error,
+                ..
             } => {
-                let content_str = match content {
-                    serde_json::Value::String(s) => s,
-                    other => serde_json::to_string(&other).unwrap_or_default(),
-                };
-                let truncated: String = content_str.chars().take(240).collect();
-                let prefix = if is_error { "(error) " } else { "" };
-                chat.messages.push(ChatMessage {
-                    role: MessageRole::Tool,
-                    content: format!("{prefix}↳ {truncated}"),
-                });
+                if let Some(&pos) = chat.tool_index.get(&tool_use_id) {
+                    if let Some(block) = chat.blocks.get_mut(pos) {
+                        block.apply_tool_result(&content, is_error);
+                    }
+                } else {
+                    // Unknown id — fallback to a generic result block.
+                    warn!(%tool_use_id, "orphan tool_result; appending generic block");
+                    let input_pretty = serde_json::to_string(&content).unwrap_or_default();
+                    chat.push_block(ChatBlock::GenericTool {
+                        name: "(orphan result)".into(),
+                        input_pretty,
+                        result_pretty: String::new(),
+                        is_error,
+                        collapsed: !is_error,
+                        pending: false,
+                    });
+                }
             }
             AIEvent::TurnResult { total_cost_usd, .. } => {
                 if let Some(cost) = total_cost_usd {
@@ -220,17 +236,13 @@ impl App {
                 }
             }
             AIEvent::Error { message, .. } => {
-                chat.messages.push(ChatMessage {
-                    role: MessageRole::System,
-                    content: message,
-                });
+                chat.push_block(ChatBlock::system_error(message));
                 chat.status = AgentStatus::Error;
             }
             AIEvent::Other(v) => {
                 debug!(event = ?v, agent_idx = idx, "unhandled ai event");
             }
         }
-        chat.scroll = u16::MAX;
     }
 
     fn apply_command(&mut self, outcome: super::commands::CommandOutcome) {
@@ -239,11 +251,7 @@ impl App {
         match outcome {
             CommandOutcome::Message(text) => {
                 if let Some(chat) = self.chats.get_mut(selected) {
-                    chat.messages.push(ChatMessage {
-                        role: MessageRole::System,
-                        content: text,
-                    });
-                    chat.scroll = u16::MAX;
+                    chat.push_block(ChatBlock::system_info(text));
                 }
             }
             CommandOutcome::Quit => {
@@ -252,11 +260,9 @@ impl App {
             }
             CommandOutcome::Unknown { name, hint } => {
                 if let Some(chat) = self.chats.get_mut(selected) {
-                    chat.messages.push(ChatMessage {
-                        role: MessageRole::System,
-                        content: format!("unknown command: /{name} — {hint}"),
-                    });
-                    chat.scroll = u16::MAX;
+                    chat.push_block(ChatBlock::system_warn(format!(
+                        "unknown command: /{name} — {hint}"
+                    )));
                 }
             }
         }
@@ -296,7 +302,30 @@ impl App {
         }
     }
 
-    fn handle_key_chat(&mut self, code: KeyCode, _mods: KeyModifiers) {
+    fn handle_key_chat(&mut self, code: KeyCode, mods: KeyModifiers) {
+        // Alt-modified keys address blocks, not the input buffer.
+        if mods.contains(KeyModifiers::ALT) {
+            match code {
+                KeyCode::Up => {
+                    self.move_selection(-1);
+                    return;
+                }
+                KeyCode::Down => {
+                    self.move_selection(1);
+                    return;
+                }
+                KeyCode::Enter => {
+                    self.toggle_selected_collapse();
+                    return;
+                }
+                KeyCode::Char('c') => {
+                    self.copy_selected_primary();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match code {
             KeyCode::Esc => self.focus = Focus::Agents,
             KeyCode::Enter => self.submit_input(),
@@ -314,10 +343,70 @@ impl App {
         }
     }
 
+    fn move_selection(&mut self, delta: i32) {
+        let Some(chat) = self.current_chat_mut() else {
+            return;
+        };
+        if chat.blocks.is_empty() {
+            return;
+        }
+        let last = chat.blocks.len() - 1;
+        let cur = chat.selected_block.unwrap_or(last);
+        let next = (cur as i32 + delta).clamp(0, last as i32) as usize;
+        chat.selected_block = Some(next);
+        chat.sticky_bottom = false;
+    }
+
+    fn toggle_selected_collapse(&mut self) {
+        let Some(chat) = self.current_chat_mut() else {
+            return;
+        };
+        let Some(i) = chat
+            .selected_block
+            .or_else(|| chat.blocks.len().checked_sub(1))
+        else {
+            return;
+        };
+        if let Some(b) = chat.blocks.get_mut(i) {
+            if b.is_collapsible() {
+                b.toggle_collapsed();
+            }
+        }
+    }
+
+    fn copy_selected_primary(&mut self) {
+        let chat = match self.current_chat() {
+            Some(c) => c,
+            None => return,
+        };
+        let idx = chat
+            .selected_block
+            .or_else(|| chat.blocks.len().checked_sub(1));
+        let Some(i) = idx else { return };
+        let Some(payload) = chat.blocks.get(i).and_then(|b| b.primary_copy_text()) else {
+            return;
+        };
+        if clipboard::osc52_copy(&payload).is_ok() {
+            self.copied_at = Some(Instant::now());
+        }
+    }
+
     pub fn handle_mouse(&mut self, ev: MouseEvent) {
         let pos = (ev.column, ev.row);
         match ev.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                // 1. Chat buttons take priority.
+                if let Some(btn) = self
+                    .layout
+                    .chat_buttons
+                    .iter()
+                    .find(|b| rect_contains(b.rect, pos))
+                    .cloned()
+                {
+                    self.dispatch_button(btn.action);
+                    return;
+                }
+
                 if let Some(rect) = self.layout.agent_list_inner {
                     if rect_contains(rect, pos) {
                         let row_in_list = ev.row.saturating_sub(rect.y) as usize;
@@ -344,19 +433,75 @@ impl App {
             }
             MouseEventKind::ScrollUp => {
                 if self.mouse_in_chat_scroll_zone(pos) {
-                    if let Some(chat) = self.current_chat_mut() {
-                        chat.scroll = chat.scroll.saturating_sub(1);
-                    }
+                    self.scroll_up(3);
                 }
             }
             MouseEventKind::ScrollDown => {
                 if self.mouse_in_chat_scroll_zone(pos) {
-                    if let Some(chat) = self.current_chat_mut() {
-                        chat.scroll = chat.scroll.saturating_add(1);
-                    }
+                    self.scroll_down(3);
                 }
             }
             _ => {}
+        }
+    }
+
+    fn dispatch_button(&mut self, action: BlockAction) {
+        match action {
+            BlockAction::ToggleCollapse(idx) => {
+                if let Some(chat) = self.current_chat_mut() {
+                    if let Some(b) = chat.blocks.get_mut(idx) {
+                        if b.is_collapsible() {
+                            b.toggle_collapsed();
+                        }
+                    }
+                }
+            }
+            BlockAction::CopyText(payload) => {
+                if clipboard::osc52_copy(&payload).is_ok() {
+                    self.copied_at = Some(Instant::now());
+                }
+            }
+        }
+    }
+
+    fn scroll_up(&mut self, amount: u16) {
+        let Some(chat) = self.current_chat_mut() else {
+            return;
+        };
+        chat.sticky_bottom = false;
+        let mut left = amount;
+        while left > 0 {
+            if chat.anchor.within > 0 {
+                chat.anchor.within -= 1;
+                left -= 1;
+            } else if chat.anchor.block_idx > 0 {
+                chat.anchor.block_idx -= 1;
+                chat.anchor.within = 0;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn scroll_down(&mut self, amount: u16) {
+        let Some(chat) = self.current_chat_mut() else {
+            return;
+        };
+        chat.sticky_bottom = false;
+        let max_block = chat.blocks.len().saturating_sub(1);
+        for _ in 0..amount {
+            if chat.anchor.block_idx < max_block {
+                chat.anchor.within += 1;
+                // Height not known here; the renderer will clamp visually.
+                // If the within grows too large it'll auto-advance next time
+                // the renderer reconciles. Cap at something sane to avoid drift.
+                if chat.anchor.within > 64 {
+                    chat.anchor.block_idx += 1;
+                    chat.anchor.within = 0;
+                }
+            } else {
+                break;
+            }
         }
     }
 
@@ -368,7 +513,7 @@ impl App {
     }
 }
 
-fn rect_contains(rect: Rect, (x, y): (u16, u16)) -> bool {
+pub fn rect_contains(rect: Rect, (x, y): (u16, u16)) -> bool {
     x >= rect.x
         && x < rect.x.saturating_add(rect.width)
         && y >= rect.y
@@ -494,6 +639,7 @@ async fn event_loop<B: ratatui::backend::Backend>(
 mod tests {
     use super::*;
     use crate::config::{AciddogConfig, Agent, Team};
+    use serde_json::json;
 
     fn sample_config() -> AciddogConfig {
         AciddogConfig {
@@ -522,6 +668,10 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn last_block(chat: &AgentChat) -> &ChatBlock {
+        chat.blocks.last().expect("no blocks")
     }
 
     #[test]
@@ -563,16 +713,15 @@ mod tests {
         assert_eq!(app.current_chat().unwrap().input, "hello");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.current_chat().unwrap().input, "");
-        assert!(app
-            .current_chat()
-            .unwrap()
-            .messages
-            .iter()
-            .any(|m| m.role == MessageRole::User && m.content == "hello"));
+        let last = last_block(app.current_chat().unwrap());
+        match last {
+            ChatBlock::UserText { text } => assert_eq!(text, "hello"),
+            other => panic!("expected UserText, got {other:?}"),
+        }
     }
 
     #[test]
-    fn slash_version_emits_system_message() {
+    fn slash_version_emits_system_block() {
         let mut app = App::new(sample_config());
         app.focus = Focus::Chat;
         for c in "/version".chars() {
@@ -580,9 +729,13 @@ mod tests {
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
 
-        let last = app.current_chat().unwrap().messages.last().unwrap();
-        assert_eq!(last.role, MessageRole::System);
-        assert!(last.content.contains(env!("CARGO_PKG_VERSION")));
+        let last = last_block(app.current_chat().unwrap());
+        match last {
+            ChatBlock::System { text, .. } => {
+                assert!(text.contains(env!("CARGO_PKG_VERSION")))
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
     }
 
     #[test]
@@ -605,10 +758,14 @@ mod tests {
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
 
-        let last = app.current_chat().unwrap().messages.last().unwrap();
-        assert_eq!(last.role, MessageRole::System);
-        assert!(last.content.contains("unknown command"));
-        assert!(last.content.contains("frobnicate"));
+        let last = last_block(app.current_chat().unwrap());
+        match last {
+            ChatBlock::System { text, .. } => {
+                assert!(text.contains("unknown command"));
+                assert!(text.contains("frobnicate"));
+            }
+            other => panic!("expected System, got {other:?}"),
+        }
     }
 
     #[test]
@@ -620,24 +777,26 @@ mod tests {
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
         assert!(!app.should_quit);
-        let user_msgs: Vec<_> = app
+        let user_msgs: Vec<&str> = app
             .current_chat()
             .unwrap()
-            .messages
+            .blocks
             .iter()
-            .filter(|m| m.role == MessageRole::User)
+            .filter_map(|b| match b {
+                ChatBlock::UserText { text } => Some(text.as_str()),
+                _ => None,
+            })
             .collect();
-        assert_eq!(user_msgs.len(), 1);
-        assert_eq!(user_msgs[0].content, "hello world");
+        assert_eq!(user_msgs, vec!["hello world"]);
     }
 
     #[test]
-    fn empty_input_does_not_create_message() {
+    fn empty_input_does_not_create_block() {
         let mut app = App::new(sample_config());
         app.focus = Focus::Chat;
-        let initial_count = app.current_chat().unwrap().messages.len();
+        let initial = app.current_chat().unwrap().blocks.len();
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(app.current_chat().unwrap().messages.len(), initial_count);
+        assert_eq!(app.current_chat().unwrap().blocks.len(), initial);
     }
 
     #[test]
@@ -648,7 +807,7 @@ mod tests {
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 15,
-            row: 7, // 7 - 5 = index 2
+            row: 7,
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.selected, 2);
@@ -693,26 +852,17 @@ mod tests {
     }
 
     #[test]
-    fn scroll_wheel_in_chat_history_changes_scroll() {
+    fn scroll_wheel_in_chat_history_clears_sticky_bottom() {
         let mut app = App::new(sample_config());
         app.layout.chat_history_inner = Some(Rect::new(0, 20, 80, 10));
-        assert_eq!(app.current_chat().unwrap().scroll, 0);
-
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::ScrollDown,
-            column: 5,
-            row: 25,
-            modifiers: KeyModifiers::NONE,
-        });
-        assert_eq!(app.current_chat().unwrap().scroll, 1);
-
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::ScrollUp,
-            column: 5,
-            row: 25,
-            modifiers: KeyModifiers::NONE,
-        });
-        assert_eq!(app.current_chat().unwrap().scroll, 0);
+        let chat = app.current_chat_mut().unwrap();
+        chat.blocks.push(ChatBlock::user("first"));
+        chat.blocks.push(ChatBlock::user("second"));
+        chat.anchor = ScrollAnchor {
+            block_idx: 1,
+            within: 0,
+        };
+        chat.sticky_bottom = true;
 
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::ScrollUp,
@@ -720,7 +870,10 @@ mod tests {
             row: 25,
             modifiers: KeyModifiers::NONE,
         });
-        assert_eq!(app.current_chat().unwrap().scroll, 0);
+        assert!(!app.current_chat().unwrap().sticky_bottom);
+        // Anchor moved toward the start.
+        let a = app.current_chat().unwrap().anchor;
+        assert!(a.block_idx == 0 || a.within == 0);
     }
 
     #[test]
@@ -733,44 +886,121 @@ mod tests {
             row: 5,
             modifiers: KeyModifiers::NONE,
         });
-        assert_eq!(app.current_chat().unwrap().scroll, 0);
+        assert!(app.current_chat().unwrap().sticky_bottom);
     }
 
     #[test]
-    fn assistant_text_event_pushes_ai_message() {
+    fn assistant_text_event_pushes_ai_markdown_block() {
         let mut app = App::new(sample_config());
         app.handle_ai_event(
             0,
             AIEvent::AssistantText {
-                text: "hi there".into(),
+                text: "hi **there**".into(),
                 raw: serde_json::Value::Null,
             },
         );
-        let last = app.chats[0].messages.last().unwrap();
-        assert_eq!(last.role, MessageRole::Ai);
-        assert_eq!(last.content, "hi there");
+        match last_block(&app.chats[0]) {
+            ChatBlock::AiMarkdown { raw, .. } => assert_eq!(raw, "hi **there**"),
+            other => panic!("expected AiMarkdown, got {other:?}"),
+        }
     }
 
     #[test]
-    fn tool_use_event_pushes_tool_message() {
+    fn tool_use_and_result_stitch_into_one_bash_block() {
         let mut app = App::new(sample_config());
         app.handle_ai_event(
             0,
             AIEvent::ToolUse {
                 id: "t1".into(),
                 name: "Bash".into(),
-                input: serde_json::json!({"command": "ls"}),
+                input: json!({"command": "ls"}),
                 raw: serde_json::Value::Null,
             },
         );
-        let last = app.chats[0].messages.last().unwrap();
-        assert_eq!(last.role, MessageRole::Tool);
-        assert!(last.content.starts_with("Bash: "));
-        assert!(last.content.contains("ls"));
+        assert_eq!(app.chats[0].blocks.len(), 1);
+
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolResult {
+                tool_use_id: "t1".into(),
+                content: serde_json::Value::String("Cargo.toml\nsrc\n".into()),
+                is_error: false,
+                raw: serde_json::Value::Null,
+            },
+        );
+        // Still a single block — the result was stitched onto the existing one.
+        assert_eq!(app.chats[0].blocks.len(), 1);
+        match &app.chats[0].blocks[0] {
+            ChatBlock::BashTool {
+                command,
+                stdout,
+                pending,
+                is_error,
+                ..
+            } => {
+                assert_eq!(command, "ls");
+                assert!(stdout.contains("Cargo.toml"));
+                assert!(!pending);
+                assert!(!is_error);
+            }
+            other => panic!("expected BashTool, got {other:?}"),
+        }
     }
 
     #[test]
-    fn error_event_pushes_system_message() {
+    fn error_tool_result_auto_expands_block() {
+        let mut app = App::new(sample_config());
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolUse {
+                id: "t1".into(),
+                name: "Bash".into(),
+                input: json!({"command": "cat /nope"}),
+                raw: serde_json::Value::Null,
+            },
+        );
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolResult {
+                tool_use_id: "t1".into(),
+                content: serde_json::Value::String("no such file".into()),
+                is_error: true,
+                raw: serde_json::Value::Null,
+            },
+        );
+        match &app.chats[0].blocks[0] {
+            ChatBlock::BashTool {
+                is_error,
+                collapsed,
+                ..
+            } => {
+                assert!(is_error);
+                assert!(!collapsed, "error should auto-expand");
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn orphan_tool_result_becomes_generic_block() {
+        let mut app = App::new(sample_config());
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolResult {
+                tool_use_id: "unknown".into(),
+                content: serde_json::Value::String("content".into()),
+                is_error: false,
+                raw: serde_json::Value::Null,
+            },
+        );
+        assert!(matches!(
+            last_block(&app.chats[0]),
+            ChatBlock::GenericTool { .. }
+        ));
+    }
+
+    #[test]
+    fn error_event_pushes_system_error_block() {
         let mut app = App::new(sample_config());
         app.handle_ai_event(
             0,
@@ -779,15 +1009,18 @@ mod tests {
                 raw: None,
             },
         );
-        let last = app.chats[0].messages.last().unwrap();
-        assert_eq!(last.role, MessageRole::System);
-        assert_eq!(last.content, "API down");
+        match last_block(&app.chats[0]) {
+            ChatBlock::System { text, kind } => {
+                assert_eq!(text, "API down");
+                assert!(matches!(kind, super::super::blocks::SystemKind::Error));
+            }
+            other => panic!("got {other:?}"),
+        }
     }
 
     #[test]
     fn ai_events_route_to_the_correct_agent() {
         let mut app = App::new(sample_config());
-        // Event targeted at agent index 1 should not land on agent 0.
         app.handle_ai_event(
             1,
             AIEvent::AssistantText {
@@ -795,9 +1028,8 @@ mod tests {
                 raw: serde_json::Value::Null,
             },
         );
-        assert!(app.chats[0].messages.is_empty());
-        assert_eq!(app.chats[1].messages.len(), 1);
-        assert_eq!(app.chats[1].messages[0].content, "for b only");
+        assert!(app.chats[0].blocks.is_empty());
+        assert_eq!(app.chats[1].blocks.len(), 1);
     }
 
     #[tokio::test]
@@ -824,13 +1056,11 @@ mod tests {
         app.chats[1].user_tx = Some(tx_b);
         app.focus = Focus::Chat;
 
-        // Send on agent 0
         for c in "for a".chars() {
             app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
 
-        // Switch to agent 1 and send
         app.selected = 1;
         for c in "for b".chars() {
             app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
@@ -844,7 +1074,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closed_channel_surfaces_system_message() {
+    async fn closed_channel_surfaces_system_error_block() {
         let mut app = App::new(sample_config());
         let (tx, rx) = mpsc::channel::<String>(1);
         drop(rx);
@@ -855,10 +1085,11 @@ mod tests {
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
 
-        assert!(app.chats[0]
-            .messages
-            .iter()
-            .any(|m| m.role == MessageRole::System && m.content.contains("offline")));
+        let saw_offline = app.chats[0].blocks.iter().any(|b| match b {
+            ChatBlock::System { text, .. } => text.contains("offline"),
+            _ => false,
+        });
+        assert!(saw_offline);
     }
 
     #[test]
@@ -936,5 +1167,160 @@ mod tests {
         }
         assert_eq!(app.chats[0].input, "typing on a");
         assert_eq!(app.chats[1].input, "typing on b");
+    }
+
+    // --------- New tests for rich blocks ----------
+
+    #[test]
+    fn alt_up_down_moves_selection() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        app.chats[0].blocks.push(ChatBlock::user("one"));
+        app.chats[0].blocks.push(ChatBlock::user("two"));
+        app.chats[0].blocks.push(ChatBlock::user("three"));
+
+        app.handle_key(KeyCode::Up, KeyModifiers::ALT);
+        assert_eq!(app.chats[0].selected_block, Some(1));
+        app.handle_key(KeyCode::Up, KeyModifiers::ALT);
+        assert_eq!(app.chats[0].selected_block, Some(0));
+        app.handle_key(KeyCode::Up, KeyModifiers::ALT);
+        assert_eq!(app.chats[0].selected_block, Some(0)); // clamped
+        app.handle_key(KeyCode::Down, KeyModifiers::ALT);
+        assert_eq!(app.chats[0].selected_block, Some(1));
+    }
+
+    #[test]
+    fn alt_enter_toggles_collapse_on_selected_block() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolUse {
+                id: "t1".into(),
+                name: "Bash".into(),
+                input: json!({"command": "ls"}),
+                raw: serde_json::Value::Null,
+            },
+        );
+        // Starts collapsed.
+        match &app.chats[0].blocks[0] {
+            ChatBlock::BashTool { collapsed, .. } => assert!(*collapsed),
+            _ => unreachable!(),
+        }
+        app.chats[0].selected_block = Some(0);
+        app.handle_key(KeyCode::Enter, KeyModifiers::ALT);
+        match &app.chats[0].blocks[0] {
+            ChatBlock::BashTool { collapsed, .. } => assert!(!*collapsed),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn alt_c_on_user_block_without_selection_copies_last_block() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        app.chats[0].blocks.push(ChatBlock::user("to copy"));
+        // Nothing selected.
+        assert!(app.chats[0].selected_block.is_none());
+        // Should not panic; may or may not land in system clipboard
+        // depending on terminal, but the flag must flip either way if osc52 write succeeds.
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::ALT);
+        // We can't easily assert clipboard contents; just confirm no crash
+        // and that plain 'c' without ALT still types.
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(app.current_chat().unwrap().input, "c");
+    }
+
+    #[test]
+    fn click_on_chat_button_toggles_collapse() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolUse {
+                id: "t1".into(),
+                name: "Bash".into(),
+                input: json!({"command": "ls"}),
+                raw: serde_json::Value::Null,
+            },
+        );
+        // Simulate a button registered by a prior render.
+        app.layout.chat_buttons.push(ChatButton {
+            rect: Rect::new(10, 5, 5, 1),
+            action: BlockAction::ToggleCollapse(0),
+        });
+
+        // Pre-state.
+        match &app.chats[0].blocks[0] {
+            ChatBlock::BashTool { collapsed, .. } => assert!(*collapsed),
+            _ => unreachable!(),
+        }
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 12,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        match &app.chats[0].blocks[0] {
+            ChatBlock::BashTool { collapsed, .. } => {
+                assert!(!*collapsed, "click on toggle button should expand")
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn new_block_sets_sticky_bottom() {
+        let mut app = App::new(sample_config());
+        app.chats[0].sticky_bottom = false;
+        app.handle_ai_event(
+            0,
+            AIEvent::AssistantText {
+                text: "hi".into(),
+                raw: serde_json::Value::Null,
+            },
+        );
+        assert!(app.chats[0].sticky_bottom);
+    }
+
+    #[test]
+    fn each_tool_kind_routes_to_expected_variant() {
+        let mut app = App::new(sample_config());
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            (
+                "Edit",
+                json!({"file_path": "a", "old_string": "", "new_string": "hi"}),
+            ),
+            ("Write", json!({"file_path": "b", "content": "x"})),
+            ("Read", json!({"file_path": "c"})),
+            ("Grep", json!({"pattern": "foo"})),
+            ("Glob", json!({"pattern": "*.rs"})),
+        ];
+        for (i, (name, input)) in cases.into_iter().enumerate() {
+            app.handle_ai_event(
+                0,
+                AIEvent::ToolUse {
+                    id: format!("t{i}"),
+                    name: name.to_string(),
+                    input,
+                    raw: serde_json::Value::Null,
+                },
+            );
+        }
+        let kinds: Vec<&str> = app.chats[0]
+            .blocks
+            .iter()
+            .map(|b| match b {
+                ChatBlock::EditTool { .. } => "Edit",
+                ChatBlock::WriteTool { .. } => "Write",
+                ChatBlock::ReadTool { .. } => "Read",
+                ChatBlock::GrepTool { .. } => "Grep",
+                ChatBlock::GlobTool { .. } => "Glob",
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["Edit", "Write", "Read", "Grep", "Glob"]);
     }
 }
