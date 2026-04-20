@@ -76,7 +76,7 @@ impl App {
             config,
             selected: 0,
             should_quit: false,
-            focus: Focus::Agents,
+            focus: Focus::Chat,
             chats,
             layout: LayoutRects::default(),
         }
@@ -95,6 +95,7 @@ impl App {
             return;
         }
         self.selected = (self.selected + 1) % self.config.agents.len();
+        self.focus = Focus::Chat;
     }
 
     fn select_prev(&mut self) {
@@ -106,6 +107,7 @@ impl App {
         } else {
             self.selected -= 1;
         }
+        self.focus = Focus::Chat;
     }
 
     fn submit_input(&mut self) {
@@ -299,10 +301,12 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(rect) = self.layout.agent_list_inner {
                     if rect_contains(rect, pos) {
-                        self.focus = Focus::Agents;
                         let row_in_list = ev.row.saturating_sub(rect.y) as usize;
                         if row_in_list < self.config.agents.len() {
                             self.selected = row_in_list;
+                            self.focus = Focus::Chat;
+                        } else {
+                            self.focus = Focus::Agents;
                         }
                         return;
                     }
@@ -502,13 +506,19 @@ mod tests {
     }
 
     #[test]
+    fn app_starts_with_chat_focused() {
+        let app = App::new(sample_config());
+        assert_eq!(app.focus, Focus::Chat);
+    }
+
+    #[test]
     fn tab_toggles_focus() {
         let mut app = App::new(sample_config());
-        assert_eq!(app.focus, Focus::Agents);
-        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.focus, Focus::Chat);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.focus, Focus::Agents);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Chat);
     }
 
     #[test]
@@ -612,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn click_in_agent_list_selects_agent() {
+    fn click_in_agent_list_selects_agent_and_focuses_chat() {
         let mut app = App::new(sample_config());
         app.layout.agent_list_inner = Some(Rect::new(10, 5, 20, 10));
 
@@ -623,7 +633,16 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.selected, 2);
-        assert_eq!(app.focus, Focus::Agents);
+        assert_eq!(app.focus, Focus::Chat);
+    }
+
+    #[test]
+    fn j_k_navigation_focuses_chat_after_switching() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Agents;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.focus, Focus::Chat);
     }
 
     #[test]

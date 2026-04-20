@@ -90,6 +90,10 @@ impl AICore for ClaudeCodeCore {
     ) -> Result<BoxStream<'static, AIEvent>, AIError> {
         self.validate_tools()?;
 
+        // First turn creates the session with `--session-id`; subsequent
+        // turns resume it with `--resume` (claude rejects reuse of
+        // `--session-id` for an existing session).
+        let is_first = !self.started;
         let full_prompt = self.build_prompt(prompt);
         let tools_arg = self.allowed_tools.join(",");
         let session_id = self.session_id.to_string();
@@ -99,9 +103,13 @@ impl AICore for ClaudeCodeCore {
             .arg("--dangerously-skip-permissions")
             .arg("--output-format")
             .arg("stream-json")
-            .arg("--verbose")
-            .arg("--session-id")
-            .arg(&session_id);
+            .arg("--verbose");
+
+        if is_first {
+            cmd.arg("--session-id").arg(&session_id);
+        } else {
+            cmd.arg("--resume").arg(&session_id);
+        }
 
         if !tools_arg.is_empty() {
             cmd.arg("--tools").arg(&tools_arg);
