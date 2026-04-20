@@ -89,9 +89,6 @@ impl App {
             .iter()
             .map(|agent| {
                 let info = ChatBlock::agent_info(
-                    agent.id.clone(),
-                    agent.role.clone(),
-                    agent.model.clone(),
                     "claude-code",
                     DEFAULT_ALLOWED_TOOLS
                         .iter()
@@ -1359,13 +1356,14 @@ mod tests {
             assert_eq!(chat.blocks.len(), 1, "chat {i} missing agent info block");
             match &chat.blocks[0] {
                 ChatBlock::AgentInfo {
-                    agent_id,
+                    core,
                     tools,
+                    prompt,
                     collapsed,
-                    ..
                 } => {
-                    assert_eq!(agent_id, &app.config.agents[i].id);
+                    assert_eq!(core, "claude-code");
                     assert!(tools.contains(&"Bash".to_string()));
+                    assert_eq!(prompt, &app.config.agents[i].instructions);
                     assert!(*collapsed, "prompt starts collapsed");
                 }
                 other => panic!("expected AgentInfo, got {other:?}"),

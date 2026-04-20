@@ -47,9 +47,6 @@ pub enum BlockAction {
 #[derive(Debug, Clone)]
 pub enum ChatBlock {
     AgentInfo {
-        agent_id: String,
-        role: String,
-        model: String,
         core: String,
         tools: Vec<String>,
         prompt: String,
@@ -262,16 +259,12 @@ impl ChatBlock {
 
         match self {
             Self::AgentInfo {
-                agent_id,
-                role,
-                model,
                 core,
                 tools,
                 prompt,
                 collapsed,
             } => render_agent_info(
-                frame, body_rect, buttons, block_idx, agent_id, role, model, core, tools, prompt,
-                *collapsed,
+                frame, body_rect, buttons, block_idx, core, tools, prompt, *collapsed,
             ),
             Self::UserText { text } => self.render_prefix_text(
                 frame,
@@ -516,7 +509,7 @@ fn agent_info_detail_line(tools: &[String], core: &str) -> String {
 }
 
 fn agent_info_height(tools: &[String], prompt: &str, collapsed: bool, width: u16) -> u16 {
-    // Rows: header(1) + detail(1..) + prompt-header(1) + optional prompt body
+    // Rows: detail(1..) + prompt-header(1) + optional prompt body
     let detail_text = agent_info_detail_line(tools, "");
     let detail_rows = wrapped_rows(&detail_text, width.saturating_sub(2)).max(1);
     let prompt_body = if collapsed {
@@ -524,7 +517,7 @@ fn agent_info_height(tools: &[String], prompt: &str, collapsed: bool, width: u16
     } else {
         wrapped_rows(prompt, width.saturating_sub(2))
     };
-    1 + detail_rows + 1 + prompt_body
+    detail_rows + 1 + prompt_body
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -533,9 +526,6 @@ fn render_agent_info(
     rect: Rect,
     buttons: &mut Vec<ChatButton>,
     block_idx: usize,
-    agent_id: &str,
-    role: &str,
-    model: &str,
     core: &str,
     tools: &[String],
     prompt: &str,
@@ -546,31 +536,6 @@ fn render_agent_info(
     }
     let mut y = rect.y;
     let end_y = rect.y.saturating_add(rect.height);
-
-    // Header row.
-    let header = Line::from(vec![
-        Span::styled(
-            "ℹ ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            agent_id.to_string(),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" · "),
-        Span::styled(role.to_string(), Style::default().fg(Color::Cyan)),
-        Span::raw(" · "),
-        Span::styled(model.to_string(), Style::default().fg(Color::Magenta)),
-    ]);
-    frame.render_widget(Paragraph::new(header), Rect::new(rect.x, y, rect.width, 1));
-    y = y.saturating_add(1);
-    if y >= end_y {
-        return;
-    }
 
     // Details row (core + tools), wrapped.
     let detail = agent_info_detail_line(tools, core);
@@ -1076,17 +1041,11 @@ fn render_fence(
 
 impl ChatBlock {
     pub fn agent_info(
-        agent_id: impl Into<String>,
-        role: impl Into<String>,
-        model: impl Into<String>,
         core: impl Into<String>,
         tools: Vec<String>,
         prompt: impl Into<String>,
     ) -> Self {
         Self::AgentInfo {
-            agent_id: agent_id.into(),
-            role: role.into(),
-            model: model.into(),
             core: core.into(),
             tools,
             prompt: prompt.into(),
