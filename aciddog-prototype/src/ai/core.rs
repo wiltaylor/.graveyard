@@ -9,10 +9,7 @@ use super::event::AIEvent;
 pub trait AICore: Send + Sync {
     /// Run a single conversational turn. The returned stream yields events
     /// (text, tool calls, tool results, errors) until the turn completes.
-    async fn turn(
-        &mut self,
-        prompt: &str,
-    ) -> Result<BoxStream<'static, AIEvent>, AIError>;
+    async fn turn(&mut self, prompt: &str) -> Result<BoxStream<'static, AIEvent>, AIError>;
 
     /// The session id this core is bound to, if one has been assigned.
     fn session_id(&self) -> Option<Uuid>;
@@ -42,10 +39,7 @@ mod tests {
 
     #[async_trait]
     impl AICore for MockCore {
-        async fn turn(
-            &mut self,
-            _prompt: &str,
-        ) -> Result<BoxStream<'static, AIEvent>, AIError> {
+        async fn turn(&mut self, _prompt: &str) -> Result<BoxStream<'static, AIEvent>, AIError> {
             Ok(futures::stream::empty().boxed())
         }
         fn session_id(&self) -> Option<Uuid> {

@@ -8,6 +8,7 @@ schema "agent" {
   role: string
   model: string @optional @default("claude-opus-4-7")
   instructions: string
+  can_message: list(string) @optional
 }
 
 team default {
@@ -17,6 +18,8 @@ team default {
 agent planner {
   role = "coordinator"
   instructions = "Break the user request into steps and delegate work to other agents."
+  // Omit `can_message` to allow messaging every other agent.
+  // Example: restrict to a subset with `can_message = ["coder"]`.
 }
 
 agent coder {

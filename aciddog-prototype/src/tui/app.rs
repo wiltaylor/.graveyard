@@ -61,7 +61,13 @@ pub struct AgentChat {
     pub anchor: ScrollAnchor,
     pub sticky_bottom: bool,
     pub selected_block: Option<usize>,
-    pub user_tx: Option<mpsc::Sender<String>>,
+    /// Priority queue: user-typed prompts. Unbounded so a busy agent can
+    /// never make the TUI drop keystrokes. Drained before `agent_tx`.
+    pub user_tx: Option<mpsc::UnboundedSender<String>>,
+    /// Inter-agent messages queued through the IPC socket. Bounded so a
+    /// runaway sender can't exhaust memory; the socket handler awaits
+    /// when full.
+    pub agent_tx: Option<mpsc::Sender<String>>,
     pub status: AgentStatus,
     /// Session UUID shared with the AICore and the agent IPC layer. Set at
     /// spawn time; used to route inbound socket requests to the right chat.
@@ -85,6 +91,10 @@ pub struct App {
     pub chats: Vec<AgentChat>,
     pub layout: LayoutRects,
     pub copied_at: Option<Instant>,
+    /// Maps each agent's session UUID to its config id. Populated at spawn
+    /// time so the IPC handler can resolve a sender's friendly name from
+    /// the UUID it sees in `Request::agent_id`.
+    pub agent_ids: HashMap<Uuid, String>,
 }
 
 impl App {
@@ -116,6 +126,7 @@ impl App {
             chats,
             layout: LayoutRects::default(),
             copied_at: None,
+            agent_ids: HashMap::new(),
         }
     }
 
@@ -180,20 +191,14 @@ impl App {
             return;
         };
         if let Some(tx) = &chat.user_tx {
-            match tx.try_send(content) {
+            match tx.send(content) {
                 Ok(()) => {
                     chat.status = AgentStatus::Working;
                 }
-                Err(err) => {
-                    let msg = match err {
-                        mpsc::error::TrySendError::Full(_) => {
-                            "agent busy, message dropped".to_string()
-                        }
-                        mpsc::error::TrySendError::Closed(_) => {
-                            "agent offline, message dropped".to_string()
-                        }
-                    };
-                    chat.push_block(ChatBlock::system_error(msg));
+                Err(_closed) => {
+                    chat.push_block(ChatBlock::system_error(
+                        "agent offline, message dropped".to_string(),
+                    ));
                     chat.status = AgentStatus::Error;
                 }
             }
@@ -285,7 +290,72 @@ impl App {
                 }
                 let _ = reply.send(Response::ok(msg));
             }
+            RequestCmd::SendMessage { to, body } => {
+                self.handle_send_message(idx, to, body, reply);
+            }
         }
+    }
+
+    fn handle_send_message(
+        &mut self,
+        sender_idx: usize,
+        to: String,
+        body: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(sender_id) = self.config.agents.get(sender_idx).map(|a| a.id.clone()) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+
+        if to == sender_id {
+            let _ = reply.send(Response::err("cannot send a message to yourself"));
+            return;
+        }
+
+        let Some(recipient_idx) = self.config.agents.iter().position(|a| a.id == to) else {
+            let _ = reply.send(Response::err(format!("no agent named {to}")));
+            return;
+        };
+
+        if !self.config.can_send(&sender_id, &to) {
+            let _ = reply.send(Response::err(format!(
+                "agent `{sender_id}` is not permitted to message `{to}`"
+            )));
+            return;
+        }
+
+        let payload = format!("<Message from=\"{sender_id}\">{body}</Message>");
+
+        let Some(agent_tx) = self
+            .chats
+            .get(recipient_idx)
+            .and_then(|c| c.agent_tx.clone())
+        else {
+            let _ = reply.send(Response::err(format!("agent `{to}` is not online")));
+            return;
+        };
+
+        // Echo into both chats so the user can see the traffic.
+        if let Some(chat) = self.chats.get_mut(recipient_idx) {
+            chat.push_block(ChatBlock::system_info(format!(
+                "message from {sender_id}: {body}"
+            )));
+        }
+        if let Some(chat) = self.chats.get_mut(sender_idx) {
+            chat.push_block(ChatBlock::system_info(format!(
+                "sent message to {to}: {body}"
+            )));
+        }
+
+        // Enqueue on a background task so the IPC reply doesn't depend on
+        // the recipient actually running. Reply "queued" immediately.
+        tokio::spawn(async move {
+            if agent_tx.send(payload).await.is_err() {
+                tracing::warn!(recipient = %to, "agent message dropped: recipient channel closed");
+            }
+        });
+        let _ = reply.send(Response::ok("queued"));
     }
 
     fn apply_command(&mut self, outcome: super::commands::CommandOutcome) {
@@ -591,11 +661,17 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     let aciddog_binary_str = aciddog_binary.to_string_lossy().into_owned();
     info!(binary = %aciddog_binary_str, "agent CLI binary");
 
-    // One core per agent, each with its own session and user channel.
+    // One core per agent, each with its own session, user channel, and
+    // agent-to-agent channel. User channel is unbounded (the TUI key
+    // handler must never block or drop); agent channel is bounded so
+    // the socket side has backpressure.
     let (ai_tx, ai_rx) = mpsc::channel::<(usize, AIEvent)>(256);
+    let all_ids: Vec<String> = app.config.agents.iter().map(|a| a.id.clone()).collect();
     for (idx, agent) in app.config.agents.iter().enumerate() {
-        let (user_tx, user_rx) = mpsc::channel::<String>(8);
+        let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
+        let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
         app.chats[idx].user_tx = Some(user_tx);
+        app.chats[idx].agent_tx = Some(agent_tx);
 
         let tools: Vec<String> = DEFAULT_ALLOWED_TOOLS
             .iter()
@@ -604,31 +680,44 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
 
         let session_id = Uuid::new_v4();
         app.chats[idx].session_id = Some(session_id);
+        app.agent_ids.insert(session_id, agent.id.clone());
+
+        // Compute the list of other agents this one is allowed to message.
+        // `None` in config means unrestricted (all teammates except self);
+        // `Some(list)` is used verbatim. An empty list disables `send`.
+        let contactable: Vec<&str> = match &agent.can_message {
+            Some(list) => list.iter().map(String::as_str).collect(),
+            None => all_ids
+                .iter()
+                .filter(|id| id.as_str() != agent.id.as_str())
+                .map(String::as_str)
+                .collect(),
+        };
 
         let instructions = format!(
             "{}\n\n{}",
-            agent_ipc::preamble::cli_preamble(&aciddog_binary_str),
+            agent_ipc::preamble::cli_preamble(&aciddog_binary_str, &contactable),
             agent.instructions,
         );
 
         // Reflect the full prompt (preamble + instructions) in the top
         // AgentInfo block so the user can expand it and see exactly what
         // the LLM receives.
-        if let Some(ChatBlock::AgentInfo { prompt, .. }) =
-            app.chats[idx].blocks.first_mut()
-        {
+        if let Some(ChatBlock::AgentInfo { prompt, .. }) = app.chats[idx].blocks.first_mut() {
             *prompt = instructions.clone();
         }
 
         let env = vec![
             (agent_ipc::ENV_AGENT_ID.to_string(), session_id.to_string()),
-            (agent_ipc::ENV_AGENT_SOCKET.to_string(), socket_path_str.clone()),
+            (
+                agent_ipc::ENV_AGENT_SOCKET.to_string(),
+                socket_path_str.clone(),
+            ),
         ];
 
-        let core: Box<dyn AICore> = Box::new(
-            ClaudeCodeCore::new(session_id, instructions, tools).with_env(env),
-        );
-        tokio::spawn(run_core(idx, core, user_rx, ai_tx.clone()));
+        let core: Box<dyn AICore> =
+            Box::new(ClaudeCodeCore::new(session_id, instructions, tools).with_env(env));
+        tokio::spawn(run_core(idx, core, user_rx, agent_rx, ai_tx.clone()));
     }
     drop(ai_tx);
 
@@ -649,10 +738,20 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
 async fn run_core(
     idx: usize,
     mut core: Box<dyn AICore>,
-    mut user_rx: mpsc::Receiver<String>,
+    mut user_rx: mpsc::UnboundedReceiver<String>,
+    mut agent_rx: mpsc::Receiver<String>,
     ai_tx: mpsc::Sender<(usize, AIEvent)>,
 ) {
-    while let Some(prompt) = user_rx.recv().await {
+    loop {
+        // Biased select: user-typed prompts always preempt queued
+        // inter-agent messages when both are pending.
+        let prompt = tokio::select! {
+            biased;
+            Some(m) = user_rx.recv() => m,
+            Some(m) = agent_rx.recv() => m,
+            else => return,
+        };
+
         match core.turn(&prompt).await {
             Ok(mut stream) => {
                 while let Some(ev) = stream.next().await {
@@ -741,18 +840,21 @@ mod tests {
                     role: "r".into(),
                     model: "m".into(),
                     instructions: "i".into(),
+                    can_message: None,
                 },
                 Agent {
                     id: "b".into(),
                     role: "r".into(),
                     model: "m".into(),
                     instructions: "i".into(),
+                    can_message: None,
                 },
                 Agent {
                     id: "c".into(),
                     role: "r".into(),
                     model: "m".into(),
                     instructions: "i".into(),
+                    can_message: None,
                 },
             ],
         }
@@ -1135,7 +1237,7 @@ mod tests {
     #[tokio::test]
     async fn non_slash_input_dispatches_to_current_agent_channel() {
         let mut app = App::new(sample_config());
-        let (tx, mut rx) = mpsc::channel::<String>(8);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         app.chats[0].user_tx = Some(tx);
         app.focus = Focus::Chat;
         for c in "hi there".chars() {
@@ -1150,8 +1252,8 @@ mod tests {
     #[tokio::test]
     async fn messages_routed_to_selected_agent_only() {
         let mut app = App::new(sample_config());
-        let (tx_a, mut rx_a) = mpsc::channel::<String>(8);
-        let (tx_b, mut rx_b) = mpsc::channel::<String>(8);
+        let (tx_a, mut rx_a) = mpsc::unbounded_channel::<String>();
+        let (tx_b, mut rx_b) = mpsc::unbounded_channel::<String>();
         app.chats[0].user_tx = Some(tx_a);
         app.chats[1].user_tx = Some(tx_b);
         app.focus = Focus::Chat;
@@ -1176,7 +1278,7 @@ mod tests {
     #[tokio::test]
     async fn closed_channel_surfaces_system_error_block() {
         let mut app = App::new(sample_config());
-        let (tx, rx) = mpsc::channel::<String>(1);
+        let (tx, rx) = mpsc::unbounded_channel::<String>();
         drop(rx);
         app.chats[0].user_tx = Some(tx);
         app.focus = Focus::Chat;
@@ -1201,7 +1303,7 @@ mod tests {
     #[tokio::test]
     async fn submit_marks_agent_working() {
         let mut app = App::new(sample_config());
-        let (tx, _rx) = mpsc::channel::<String>(8);
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
         app.chats[0].user_tx = Some(tx);
         app.focus = Focus::Chat;
         for c in "hi".chars() {
@@ -1243,7 +1345,7 @@ mod tests {
     #[tokio::test]
     async fn closed_channel_sets_error_status() {
         let mut app = App::new(sample_config());
-        let (tx, rx) = mpsc::channel::<String>(1);
+        let (tx, rx) = mpsc::unbounded_channel::<String>();
         drop(rx);
         app.chats[0].user_tx = Some(tx);
         app.focus = Focus::Chat;
@@ -1444,5 +1546,191 @@ mod tests {
                 other => panic!("expected AgentInfo, got {other:?}"),
             }
         }
+    }
+
+    // --------- Mailbox / inter-agent messaging ----------
+
+    use tokio::sync::oneshot;
+
+    fn wire_up_agent_ids_and_channels(app: &mut App) -> Vec<mpsc::Receiver<String>> {
+        let mut agent_rxs = Vec::new();
+        for (i, agent) in app.config.agents.clone().iter().enumerate() {
+            let session_id = Uuid::new_v4();
+            app.chats[i].session_id = Some(session_id);
+            app.agent_ids.insert(session_id, agent.id.clone());
+            let (agent_tx, agent_rx) = mpsc::channel::<String>(16);
+            app.chats[i].agent_tx = Some(agent_tx);
+            agent_rxs.push(agent_rx);
+        }
+        agent_rxs
+    }
+
+    #[tokio::test]
+    async fn send_message_wraps_body_with_sender_config_id() {
+        let mut app = App::new(sample_config());
+        let mut agent_rxs = wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SendMessage {
+                    to: "b".into(),
+                    body: "hello".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        assert!(reply_rx.await.unwrap().ok);
+
+        // Recipient is chat index 1.
+        let payload = agent_rxs[1].recv().await.expect("delivered");
+        assert_eq!(payload, r#"<Message from="a">hello</Message>"#);
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_self() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SendMessage {
+                    to: "a".into(),
+                    body: "hi".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        let resp = reply_rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("yourself"));
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_unknown_recipient() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SendMessage {
+                    to: "ghost".into(),
+                    body: "hi".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        let resp = reply_rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("no agent named ghost"));
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_when_allowlist_disallows_recipient() {
+        let mut cfg = sample_config();
+        // Restrict agent `a` to message only `b`.
+        cfg.agents[0].can_message = Some(vec!["b".to_string()]);
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SendMessage {
+                    to: "c".into(),
+                    body: "hi".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        let resp = reply_rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(
+            resp.error.as_ref().unwrap().contains("not permitted"),
+            "got: {resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_input_is_not_wrapped() {
+        // User-typed input must arrive plain — only agent-to-agent traffic
+        // is wrapped in <Message> tags.
+        let mut app = App::new(sample_config());
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        app.chats[0].user_tx = Some(tx);
+        app.focus = Focus::Chat;
+        for c in "plain body".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received, "plain body");
+        assert!(!received.starts_with("<Message"));
+    }
+
+    #[tokio::test]
+    async fn user_messages_preempt_queued_agent_messages() {
+        // Biased select in run_core must drain all pending user messages
+        // before any queued agent message is picked.
+        let (user_tx, mut user_rx) = mpsc::unbounded_channel::<String>();
+        let (agent_tx, mut agent_rx) = mpsc::channel::<String>(16);
+
+        agent_tx.send("agent-first".into()).await.unwrap();
+        user_tx.send("user-first".into()).unwrap();
+        user_tx.send("user-second".into()).unwrap();
+
+        // Simulate run_core's drain loop.
+        let first = tokio::select! {
+            biased;
+            Some(m) = user_rx.recv() => m,
+            Some(m) = agent_rx.recv() => m,
+            else => unreachable!(),
+        };
+        let second = tokio::select! {
+            biased;
+            Some(m) = user_rx.recv() => m,
+            Some(m) = agent_rx.recv() => m,
+            else => unreachable!(),
+        };
+        let third = tokio::select! {
+            biased;
+            Some(m) = user_rx.recv() => m,
+            Some(m) = agent_rx.recv() => m,
+            else => unreachable!(),
+        };
+        assert_eq!(first, "user-first");
+        assert_eq!(second, "user-second");
+        assert_eq!(third, "agent-first");
+    }
+
+    #[tokio::test]
+    async fn submit_input_does_not_drop_under_flood() {
+        // Unbounded user channel: 10k pushes all arrive, none dropped.
+        let mut app = App::new(sample_config());
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        app.chats[0].user_tx = Some(tx);
+        app.focus = Focus::Chat;
+        for i in 0..10_000 {
+            let msg = format!("m{i}");
+            for c in msg.chars() {
+                app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+            }
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        }
+        let mut count = 0;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 10_000);
     }
 }

@@ -45,7 +45,10 @@ async fn live_turn_streams_events_and_reuses_session() {
     assert!(saw_result, "expected a TurnResult event");
 
     // Second turn reuses the same session id.
-    let mut stream2 = core.turn("What word did you just say?").await.expect("second turn");
+    let mut stream2 = core
+        .turn("What word did you just say?")
+        .await
+        .expect("second turn");
     let mut saw_second_init = false;
     while let Some(ev) = stream2.next().await {
         if let AIEvent::SystemInit { session_id, .. } = ev {
@@ -53,15 +56,18 @@ async fn live_turn_streams_events_and_reuses_session() {
             saw_second_init = true;
         }
     }
-    assert!(saw_second_init, "second turn should re-emit SystemInit with same session id");
+    assert!(
+        saw_second_init,
+        "second turn should re-emit SystemInit with same session id"
+    );
 }
 
 #[tokio::test]
 async fn missing_binary_yields_spawn_error() {
     use aciddog::ai::AIError;
 
-    let mut core = ClaudeCodeCore::new(Uuid::new_v4(), "i".into(), vec![])
-        .with_binary("/no/such/path/claude");
+    let mut core =
+        ClaudeCodeCore::new(Uuid::new_v4(), "i".into(), vec![]).with_binary("/no/such/path/claude");
     match core.turn("hi").await {
         Err(AIError::NotFound) | Err(AIError::Spawn(_)) => {}
         Err(other) => panic!("expected NotFound/Spawn, got {other:?}"),

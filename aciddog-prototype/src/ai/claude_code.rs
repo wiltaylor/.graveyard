@@ -27,11 +27,7 @@ impl ClaudeCodeCore {
     /// Construct a core for a brand-new session. The caller owns the
     /// session id so it can be shared with the chat UI and the agent IPC
     /// layer before the first turn has run.
-    pub fn new(
-        session_id: Uuid,
-        initial_instructions: String,
-        allowed_tools: Vec<String>,
-    ) -> Self {
+    pub fn new(session_id: Uuid, initial_instructions: String, allowed_tools: Vec<String>) -> Self {
         Self {
             binary: DEFAULT_BINARY.to_string(),
             session_id,
@@ -74,10 +70,7 @@ impl ClaudeCodeCore {
 
     fn validate_tools(&self) -> Result<(), AIError> {
         for tool in &self.allowed_tools {
-            if tool.is_empty()
-                || tool.contains(',')
-                || tool.chars().any(char::is_whitespace)
-            {
+            if tool.is_empty() || tool.contains(',') || tool.chars().any(char::is_whitespace) {
                 return Err(AIError::InvalidToolName(tool.clone()));
             }
         }
@@ -102,10 +95,7 @@ impl ClaudeCodeCore {
 
 #[async_trait]
 impl AICore for ClaudeCodeCore {
-    async fn turn(
-        &mut self,
-        prompt: &str,
-    ) -> Result<BoxStream<'static, AIEvent>, AIError> {
+    async fn turn(&mut self, prompt: &str) -> Result<BoxStream<'static, AIEvent>, AIError> {
         self.validate_tools()?;
 
         // First turn creates the session with `--session-id`; subsequent
@@ -220,7 +210,10 @@ impl AICore for ClaudeCodeCore {
             match status {
                 Ok(s) if s.success() => {}
                 Ok(s) => {
-                    let code = s.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
+                    let code = s
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "signal".into());
                     let msg = format!(
                         "claude exited with status {code}; stderr: {}",
                         stderr_buf.trim()
@@ -271,13 +264,19 @@ mod tests {
     #[test]
     fn rejects_tool_name_with_comma() {
         let core = fresh("i", vec!["Ba,sh".into()]);
-        assert!(matches!(core.validate_tools(), Err(AIError::InvalidToolName(_))));
+        assert!(matches!(
+            core.validate_tools(),
+            Err(AIError::InvalidToolName(_))
+        ));
     }
 
     #[test]
     fn rejects_tool_name_with_whitespace() {
         let core = fresh("i", vec!["Bash Edit".into()]);
-        assert!(matches!(core.validate_tools(), Err(AIError::InvalidToolName(_))));
+        assert!(matches!(
+            core.validate_tools(),
+            Err(AIError::InvalidToolName(_))
+        ));
     }
 
     #[test]
@@ -321,18 +320,16 @@ mod tests {
 
     #[test]
     fn with_env_stores_entries() {
-        let core = fresh("i", vec![]).with_env(vec![
-            ("FOO".into(), "1".into()),
-            ("BAR".into(), "2".into()),
-        ]);
+        let core = fresh("i", vec![])
+            .with_env(vec![("FOO".into(), "1".into()), ("BAR".into(), "2".into())]);
         assert_eq!(core.env.len(), 2);
         assert_eq!(core.env[0], ("FOO".into(), "1".into()));
     }
 
     #[tokio::test]
     async fn spawn_failure_surfaces_as_error() {
-        let mut core = fresh("i", vec![])
-            .with_binary("/this/path/definitely/does/not/exist/claude");
+        let mut core =
+            fresh("i", vec![]).with_binary("/this/path/definitely/does/not/exist/claude");
         let result = core.turn("hi").await;
         assert!(matches!(
             result,

@@ -39,6 +39,16 @@ pub enum AgentCommand {
     /// Verify connectivity to the agent orchestrator by asking it to post a
     /// system message into this agent's chat.
     Test,
+    /// Send a chat message to another agent on the team.
+    Send {
+        /// Config id of the recipient agent (e.g. `coder`).
+        #[arg(long)]
+        to: String,
+        /// Message body to deliver. The orchestrator wraps this as
+        /// `<Message from="your-id">body</Message>` on the recipient side.
+        #[arg(long)]
+        body: String,
+    },
 }
 
 #[cfg(test)]
@@ -52,9 +62,33 @@ mod tests {
     }
 
     #[test]
+    fn agent_args_parses_send_subcommand() {
+        let args =
+            AgentArgs::try_parse_from(["aciddog", "send", "--to", "coder", "--body", "hi there"])
+                .expect("parses");
+        match args.cmd {
+            AgentCommand::Send { to, body } => {
+                assert_eq!(to, "coder");
+                assert_eq!(body, "hi there");
+            }
+            other => panic!("expected Send, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_send_requires_to_and_body() {
+        assert!(AgentArgs::try_parse_from(["aciddog", "send"]).is_err());
+        assert!(AgentArgs::try_parse_from(["aciddog", "send", "--to", "coder"]).is_err());
+        assert!(AgentArgs::try_parse_from(["aciddog", "send", "--body", "hi"]).is_err());
+    }
+
+    #[test]
     fn agent_args_rejects_unknown_subcommand() {
         let err = AgentArgs::try_parse_from(["aciddog", "nope"]).unwrap_err();
-        assert!(err.to_string().to_lowercase().contains("subcommand") || err.to_string().contains("nope"));
+        assert!(
+            err.to_string().to_lowercase().contains("subcommand")
+                || err.to_string().contains("nope")
+        );
     }
 
     #[test]

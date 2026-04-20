@@ -23,6 +23,13 @@ pub struct Request {
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum RequestCmd {
     Test,
+    /// Send a chat message to another agent on the team by its config id.
+    /// The orchestrator wraps the body as `<Message from="sender">body</Message>`
+    /// before delivering it, and enforces the sender's `can_message` allowlist.
+    SendMessage {
+        to: String,
+        body: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +94,41 @@ mod tests {
         let back: Request = serde_json::from_str(&s).unwrap();
         assert_eq!(back.agent_id, id);
         assert!(matches!(back.cmd, RequestCmd::Test));
+    }
+
+    #[test]
+    fn send_message_serializes_with_to_and_body() {
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::SendMessage {
+                to: "coder".into(),
+                body: "hi".into(),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"send_message\""), "got: {s}");
+        assert!(s.contains("\"to\":\"coder\""), "got: {s}");
+        assert!(s.contains("\"body\":\"hi\""), "got: {s}");
+    }
+
+    #[test]
+    fn send_message_roundtrips() {
+        let req = Request {
+            agent_id: Uuid::new_v4(),
+            cmd: RequestCmd::SendMessage {
+                to: "coder".into(),
+                body: "hello world".into(),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::SendMessage { to, body } => {
+                assert_eq!(to, "coder");
+                assert_eq!(body, "hello world");
+            }
+            other => panic!("expected SendMessage, got {other:?}"),
+        }
     }
 
     #[test]

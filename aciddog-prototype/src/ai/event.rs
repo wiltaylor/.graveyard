@@ -98,10 +98,7 @@ fn parse_system(raw: Value) -> Vec<AIEvent> {
         })
         .unwrap_or_default();
 
-    let model = raw
-        .get("model")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let model = raw.get("model").and_then(Value::as_str).map(str::to_string);
 
     vec![AIEvent::SystemInit {
         session_id,

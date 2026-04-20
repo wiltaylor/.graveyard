@@ -75,17 +75,12 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
 
     let cmd = match args.cmd {
         AgentCommand::Test => RequestCmd::Test,
+        AgentCommand::Send { to, body } => RequestCmd::SendMessage { to, body },
     };
 
-    let response = agent_ipc::client::send(
-        &socket_path,
-        &Request {
-            agent_id,
-            cmd,
-        },
-    )
-    .await
-    .context("agent IPC request failed")?;
+    let response = agent_ipc::client::send(&socket_path, &Request { agent_id, cmd })
+        .await
+        .context("agent IPC request failed")?;
 
     if response.ok {
         if let Some(msg) = response.message {

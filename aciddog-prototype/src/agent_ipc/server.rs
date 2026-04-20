@@ -62,9 +62,9 @@ pub async fn bind_at(path: PathBuf) -> Result<Bound> {
             }
             Err(_) => {
                 debug!(path = %path.display(), "removing stale socket file");
-                tokio::fs::remove_file(&path).await.with_context(|| {
-                    format!("removing stale socket file {}", path.display())
-                })?;
+                tokio::fs::remove_file(&path)
+                    .await
+                    .with_context(|| format!("removing stale socket file {}", path.display()))?;
             }
         }
     }
@@ -87,9 +87,8 @@ pub async fn bind_at(path: PathBuf) -> Result<Bound> {
 
 /// Resolve the socket path for a team id from `$XDG_RUNTIME_DIR`.
 pub fn socket_path(team_id: &str) -> Result<PathBuf> {
-    let runtime = std::env::var("XDG_RUNTIME_DIR").map_err(|_| {
-        anyhow!("XDG_RUNTIME_DIR is not set; required to locate the agent socket")
-    })?;
+    let runtime = std::env::var("XDG_RUNTIME_DIR")
+        .map_err(|_| anyhow!("XDG_RUNTIME_DIR is not set; required to locate the agent socket"))?;
     Ok(PathBuf::from(runtime)
         .join("aciddog")
         .join(team_id)
@@ -203,7 +202,9 @@ mod tests {
         }
         // File still present, but no listener. Bind should reclaim it.
         assert!(path.exists());
-        let _bound = bind_at(path.clone()).await.expect("should reclaim stale socket");
+        let _bound = bind_at(path.clone())
+            .await
+            .expect("should reclaim stale socket");
     }
 
     #[tokio::test]
