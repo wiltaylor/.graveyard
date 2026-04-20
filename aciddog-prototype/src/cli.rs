@@ -135,6 +135,12 @@ pub enum TaskCommand {
         #[arg(long)]
         id: Uuid,
     },
+    /// Show the full body of a task: title, description, status,
+    /// assignee, timestamps, dependencies, and the complete note log.
+    Show {
+        #[arg(long)]
+        id: Uuid,
+    },
     /// Atomically claim the oldest unassigned task and move it to
     /// `in_progress` with the calling agent as assignee.
     Take,
@@ -506,6 +512,26 @@ mod tests {
             }
             other => panic!("expected Task::Remove, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn agent_args_parses_task_show() {
+        let id = Uuid::new_v4();
+        let args = AgentArgs::try_parse_from(["aciddog", "task", "show", "--id", &id.to_string()])
+            .unwrap();
+        match args.cmd {
+            AgentCommand::Task {
+                cmd: TaskCommand::Show { id: parsed },
+            } => {
+                assert_eq!(parsed, id);
+            }
+            other => panic!("expected Task::Show, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_task_show_requires_id() {
+        assert!(AgentArgs::try_parse_from(["aciddog", "task", "show"]).is_err());
     }
 
     #[test]

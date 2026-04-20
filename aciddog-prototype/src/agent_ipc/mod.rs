@@ -92,6 +92,11 @@ pub enum RequestCmd {
     TaskRemove {
         id: Uuid,
     },
+    /// Return a detailed rendering of a single task — full
+    /// description, dependencies, and the complete note log.
+    TaskShow {
+        id: Uuid,
+    },
     /// Atomically claim the oldest unassigned task for the caller.
     TaskTake,
     /// Append a standalone note to a task.
@@ -380,6 +385,22 @@ mod tests {
         assert!(matches!(
             back.cmd,
             RequestCmd::TaskRemove { id: parsed } if parsed == id
+        ));
+    }
+
+    #[test]
+    fn task_show_roundtrips() {
+        let id = Uuid::new_v4();
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::TaskShow { id },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"task_show\""), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        assert!(matches!(
+            back.cmd,
+            RequestCmd::TaskShow { id: parsed } if parsed == id
         ));
     }
 

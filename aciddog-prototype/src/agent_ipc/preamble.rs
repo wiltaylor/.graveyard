@@ -91,11 +91,13 @@ pub fn cli_preamble(binary: &str, contactable: &[&str], creatable: &[&str]) -> S
     push_section(
         &mut out,
         binary,
-        "task <add|list|update|remove|take|note>",
+        "task <add|list|show|update|remove|take|note>",
         "shared team task board. Use `task add --title \"<t>\" [--description ...] [--assignee <id>] \
          [--blocked-by <dep-uuid>]...` to create work (repeat `--blocked-by` for multiple deps), \
-         `task list [--mine|--assignee <id>|--status <s>|--unassigned]` to see it (the `deps` column \
-         shows `blocked(n)` or `ready(n)` for tasks with dependencies), \
+         `task list [--mine|--assignee <id>|--status <s>|--unassigned]` to see the table (the `deps` \
+         column shows `blocked(n)` or `ready(n)` for tasks with dependencies), \
+         `task show --id <uuid>` to print a task's full body — description, dependencies with their \
+         current status, and the complete note log with authors and ages, \
          `task update --id <uuid> [--title ...] [--description ...] [--status open|assigned|in_progress|done|cancelled] \
          [--assignee <id>|--unassign] [--note \"<context>\"] [--add-blocked-by <uuid>]... [--remove-blocked-by <uuid>]...` \
          to change it or hand it off, `task take` to atomically claim the oldest unblocked unassigned task \
@@ -103,7 +105,8 @@ pub fn cli_preamble(binary: &str, contactable: &[&str], creatable: &[&str]) -> S
          every dep reaches `done`), `task remove --id <uuid>` to drop it (also prunes the id from any \
          dependents' lists), and `task note --id <uuid> --body \"<text>\"` to append a log entry. \
          The board is team-wide — there is no allowlist. Always attach a `--note` when reassigning so \
-         the next owner sees context (e.g. \"ready for test, commit abc123\").",
+         the next owner sees context (e.g. \"ready for test, commit abc123\"); run `task show` when you \
+         pick up a handed-off task to read prior notes.",
     );
     // add new subcommand sections above this line
 
@@ -273,13 +276,14 @@ mod tests {
     fn preamble_mentions_task_subcommand() {
         let p = cli_preamble("/a", &[], &[]);
         assert!(
-            p.contains("/a task <add|list|update|remove|take|note>"),
+            p.contains("/a task <add|list|show|update|remove|take|note>"),
             "missing task subcommand entry: {p}"
         );
         assert!(
             p.to_lowercase().contains("shared team task board"),
             "missing task board description: {p}"
         );
+        assert!(p.contains("task show --id"), "missing show docs: {p}");
     }
 
     #[test]

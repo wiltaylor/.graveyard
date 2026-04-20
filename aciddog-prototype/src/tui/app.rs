@@ -472,6 +472,9 @@ impl App {
             RequestCmd::TaskNote { id, body } => {
                 self.handle_task_note(idx, id, body, reply);
             }
+            RequestCmd::TaskShow { id } => {
+                self.handle_task_show(idx, id, reply);
+            }
         }
     }
 
@@ -1098,6 +1101,97 @@ impl App {
         }
     }
 
+    fn handle_task_show(
+        &mut self,
+        sender_idx: usize,
+        id: Uuid,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if self.chats.get(sender_idx).is_none() {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        }
+        let Some(t) = self.tasks.get(id) else {
+            let _ = reply.send(Response::err(format!("task {id} not found")));
+            return;
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut out = String::new();
+        out.push_str(&format!("Task: {}\n", t.id));
+        out.push_str(&format!("Title: {}\n", t.title));
+        out.push_str(&format!("Status: {}\n", t.status.as_str()));
+        out.push_str(&format!(
+            "Assignee: {}\n",
+            t.assignee.as_deref().unwrap_or("-")
+        ));
+        out.push_str(&format!("Created by: {}\n", t.created_by));
+        out.push_str(&format!(
+            "Created: {} (unix {})\n",
+            format_age(now, t.created_at_secs),
+            t.created_at_secs
+        ));
+        out.push_str(&format!(
+            "Updated: {} (unix {})\n",
+            format_age(now, t.updated_at_secs),
+            t.updated_at_secs
+        ));
+
+        out.push_str("\nDescription:\n");
+        match &t.description {
+            Some(d) if !d.is_empty() => {
+                for line in d.lines() {
+                    out.push_str("  ");
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            _ => out.push_str("  (none)\n"),
+        }
+
+        out.push_str("\nDependencies:\n");
+        if t.blocked_by.is_empty() {
+            out.push_str("  (none)\n");
+        } else {
+            for dep in &t.blocked_by {
+                match self.tasks.get(*dep) {
+                    Some(d) => out.push_str(&format!(
+                        "  {}  {:<12}  {}\n",
+                        d.id,
+                        d.status.as_str(),
+                        d.title
+                    )),
+                    None => out.push_str(&format!("  {dep}  (missing)\n")),
+                }
+            }
+            if self.tasks.is_blocked(t) {
+                out.push_str("  -> blocked: some deps not yet done\n");
+            } else {
+                out.push_str("  -> ready: all deps done\n");
+            }
+        }
+
+        out.push_str("\nNotes:\n");
+        if t.notes.is_empty() {
+            out.push_str("  (none)\n");
+        } else {
+            for n in &t.notes {
+                out.push_str(&format!(
+                    "  [{} · {}] {}\n",
+                    format_age(now, n.timestamp_secs),
+                    n.author,
+                    n.body
+                ));
+            }
+        }
+
+        let _ = reply.send(Response::ok(out.trim_end().to_string()));
+    }
+
     /// Push a passive `system_info` block into the assignee's chat so
     /// they see the new work next time they look at the pane. Does
     /// NOT resurrect hibernated workers — tasks are pull-driven, so
@@ -1389,6 +1483,26 @@ impl App {
             .map(|r| rect_contains(r, pos))
             .unwrap_or(false)
     }
+}
+
+/// Render the gap between `then_secs` and `now_secs` as a compact
+/// relative string: `12s ago`, `5m ago`, `3h ago`, `2d ago`, or
+/// `just now` when the gap is zero. Both args are unix seconds.
+fn format_age(now_secs: u64, then_secs: u64) -> String {
+    let delta = now_secs.saturating_sub(then_secs);
+    if delta == 0 {
+        return "just now".into();
+    }
+    if delta < 60 {
+        return format!("{delta}s ago");
+    }
+    if delta < 3600 {
+        return format!("{}m ago", delta / 60);
+    }
+    if delta < 86_400 {
+        return format!("{}h ago", delta / 3600);
+    }
+    format!("{}d ago", delta / 86_400)
 }
 
 pub fn rect_contains(rect: Rect, (x, y): (u16, u16)) -> bool {
@@ -3618,6 +3732,121 @@ mod tests {
         assert_eq!(t.notes.len(), 1);
         assert_eq!(t.notes[0].body, "investigating");
         assert_eq!(t.notes[0].author, "a");
+    }
+
+    #[tokio::test]
+    async fn task_show_renders_full_body_with_notes_and_deps() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+
+        // Create a prereq, then a main task depending on it.
+        let (tx0, rx0) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "prereq".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx0,
+        });
+        let prereq = parse_task_created(rx0.await.unwrap().message.as_deref().unwrap());
+
+        let (tx1, rx1) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "ship feature".into(),
+                    description: Some("Wire up the thing.\nAcceptance: tests pass.".into()),
+                    assignee: Some("b".into()),
+                    blocked_by: vec![prereq],
+                },
+            },
+            reply: tx1,
+        });
+        let id = parse_task_created(rx1.await.unwrap().message.as_deref().unwrap());
+
+        // Attach a handoff note so the Notes block has content.
+        let (tx2, rx2) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskNote {
+                    id,
+                    body: "see commit abc123".into(),
+                },
+            },
+            reply: tx2,
+        });
+        assert!(rx2.await.unwrap().ok);
+
+        // Now show it and check the rendering.
+        let (tx3, rx3) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskShow { id },
+            },
+            reply: tx3,
+        });
+        let resp = rx3.await.unwrap();
+        assert!(resp.ok, "error: {:?}", resp.error);
+        let body = resp.message.unwrap();
+
+        assert!(body.contains(&id.to_string()), "missing id: {body}");
+        assert!(
+            body.contains("Title: ship feature"),
+            "missing title: {body}"
+        );
+        assert!(body.contains("Status: assigned"), "missing status: {body}");
+        assert!(body.contains("Assignee: b"), "missing assignee: {body}");
+        assert!(
+            body.contains("Wire up the thing."),
+            "missing description: {body}"
+        );
+        assert!(
+            body.contains("Acceptance: tests pass."),
+            "missing description line 2: {body}"
+        );
+        assert!(
+            body.contains("Dependencies:"),
+            "missing deps header: {body}"
+        );
+        assert!(body.contains(&prereq.to_string()), "missing dep id: {body}");
+        assert!(body.contains("prereq"), "missing dep title: {body}");
+        assert!(
+            body.contains("blocked: some deps not yet done"),
+            "missing blocked marker: {body}"
+        );
+        assert!(body.contains("Notes:"), "missing notes header: {body}");
+        assert!(
+            body.contains("see commit abc123"),
+            "missing note body: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn task_show_missing_id_errors() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskShow { id: Uuid::new_v4() },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("not found"));
     }
 
     #[tokio::test]

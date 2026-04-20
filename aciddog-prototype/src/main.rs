@@ -138,6 +138,9 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
             cmd: TaskCommand::Remove { id },
         } => RequestCmd::TaskRemove { id },
         AgentCommand::Task {
+            cmd: TaskCommand::Show { id },
+        } => RequestCmd::TaskShow { id },
+        AgentCommand::Task {
             cmd: TaskCommand::Take,
         } => RequestCmd::TaskTake,
         AgentCommand::Task {
