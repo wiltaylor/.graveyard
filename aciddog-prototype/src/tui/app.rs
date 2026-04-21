@@ -109,6 +109,11 @@ fn build_team_block(cfg: &AciddogConfig, contactable: &[&str], creatable: &[&str
 /// Format a list of memory-search hits as the plaintext body we return
 /// to the calling agent. Empty results get a short "(no matches)" line
 /// so the agent doesn't have to special-case empty strings.
+///
+/// Uuids are printed in full so the agent can copy them straight into
+/// `memory link` / `memory unlink` / `memory links` calls — the short
+/// form would force them to re-run `memory store` just to recover the
+/// full id.
 fn format_memory_hits(hits: &[crate::memory::Hit]) -> String {
     if hits.is_empty() {
         return "(no matches)".to_string();
@@ -119,7 +124,7 @@ fn format_memory_hits(hits: &[crate::memory::Hit]) -> String {
         out.push_str(&format!(
             "{n}. [{id} · d={dist:.3} · {ts}] {body}\n",
             n = i + 1,
-            id = short_uuid(h.id),
+            id = h.id,
             dist = h.distance,
             ts = ts,
             body = h.body
@@ -137,10 +142,11 @@ fn short_uuid(id: uuid::Uuid) -> String {
 /// Format a list of links from `memory links` as the plaintext body
 /// returned to the agent. Arrows reflect direction: `->` for outgoing,
 /// `<-` for incoming. An empty kind is omitted so short links don't
-/// carry dead brackets.
+/// carry dead brackets. Peer uuids are printed in full so the agent
+/// can feed them directly into another `memory` call.
 fn format_memory_links(id: uuid::Uuid, links: &[crate::memory::Link]) -> String {
     if links.is_empty() {
-        return format!("(no links on {})", short_uuid(id));
+        return format!("(no links on {id})");
     }
     let mut out = String::new();
     for link in links {
@@ -156,7 +162,7 @@ fn format_memory_links(id: uuid::Uuid, links: &[crate::memory::Link]) -> String 
         };
         out.push_str(&format!(
             "{arrow} {peer}{kind} {body}\n",
-            peer = short_uuid(link.peer_id),
+            peer = link.peer_id,
             body = link.peer_body
         ));
     }
