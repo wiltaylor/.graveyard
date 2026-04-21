@@ -901,7 +901,15 @@ impl App {
                 info!(%session_id, agent_idx = idx, "claude session ready");
             }
             AIEvent::AssistantText { text, .. } => {
-                chat.push_block(ChatBlock::ai_markdown(text));
+                // The tag-mode core synthesizes ToolUse/ToolResult
+                // events for every `<aciddog-call>` it extracts, so
+                // the raw tag markup is visual noise in the assistant
+                // text. Strip it; if the whole message was tags, drop
+                // the block entirely.
+                let cleaned = crate::ai::tag_call::strip_tags(&text);
+                if !cleaned.trim().is_empty() {
+                    chat.push_block(ChatBlock::ai_markdown(cleaned));
+                }
             }
             AIEvent::ToolUse {
                 id, name, input, ..

@@ -56,6 +56,75 @@ pub fn extract_calls(text: &str) -> Vec<TagCall> {
     out
 }
 
+/// Remove `<aciddog-call>…</aciddog-call>` and
+/// `<aciddog-response …>…</aciddog-response>` blocks from an assistant
+/// text buffer, leaving fenced code blocks untouched so the model can
+/// still quote the protocol in documentation.
+///
+/// Used by the TUI to hide tag XML from the user — the core emits
+/// semantic ToolUse / ToolResult events in its place, so the raw
+/// markup would just be visual noise next to the dedicated chat
+/// block.
+pub fn strip_tags(text: &str) -> String {
+    let fences = fenced_ranges(text);
+    let in_fence = |pos: usize| fences.iter().any(|(a, b)| *a <= pos && pos < *b);
+
+    const CALL_OPEN: &str = "<aciddog-call>";
+    const CALL_CLOSE: &str = "</aciddog-call>";
+    const RESP_OPEN_PREFIX: &str = "<aciddog-response";
+    const RESP_CLOSE: &str = "</aciddog-response>";
+
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+
+    while cursor < text.len() {
+        let call_pos = text[cursor..].find(CALL_OPEN).map(|p| cursor + p);
+        let resp_pos = text[cursor..].find(RESP_OPEN_PREFIX).map(|p| cursor + p);
+
+        let (open_start, close_tag) = match (call_pos, resp_pos) {
+            (None, None) => break,
+            (Some(c), None) => (c, CALL_CLOSE),
+            (None, Some(r)) => (r, RESP_CLOSE),
+            (Some(c), Some(r)) => {
+                if c <= r {
+                    (c, CALL_CLOSE)
+                } else {
+                    (r, RESP_CLOSE)
+                }
+            }
+        };
+
+        if in_fence(open_start) {
+            // Fenced example — preserve it verbatim. Advance by one
+            // character so the next iteration looks past this match.
+            let advance = next_char_boundary(text, open_start + 1);
+            out.push_str(&text[cursor..advance]);
+            cursor = advance;
+            continue;
+        }
+
+        // Drop the whole tag and its body.
+        out.push_str(&text[cursor..open_start]);
+        let Some(close_rel) = text[open_start..].find(close_tag) else {
+            // Unterminated tag: drop the remainder, matching
+            // `extract_calls`'s behavior.
+            return out;
+        };
+        cursor = open_start + close_rel + close_tag.len();
+    }
+
+    out.push_str(&text[cursor..]);
+    out
+}
+
+fn next_char_boundary(text: &str, from: usize) -> usize {
+    let mut i = from.min(text.len());
+    while i < text.len() && !text.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
 /// Render a list of (index, response) pairs as the synthetic user-turn
 /// payload for the next round of the tag chain.
 pub fn render_responses(responses: &[(usize, Response)]) -> String {
@@ -220,6 +289,49 @@ mid
     #[test]
     fn render_responses_handles_empty_list() {
         assert_eq!(render_responses(&[]), "");
+    }
+
+    #[test]
+    fn strip_tags_removes_call_block() {
+        let text = "before <aciddog-call>{\"cmd\":\"test\"}</aciddog-call> after";
+        assert_eq!(strip_tags(text), "before  after");
+    }
+
+    #[test]
+    fn strip_tags_removes_response_block() {
+        let text = "prefix <aciddog-response index=\"0\">{\"ok\":true}</aciddog-response> suffix";
+        assert_eq!(strip_tags(text), "prefix  suffix");
+    }
+
+    #[test]
+    fn strip_tags_removes_multiple_interleaved_blocks() {
+        let text = "a <aciddog-call>{\"cmd\":\"test\"}</aciddog-call> b <aciddog-response index=\"0\">{\"ok\":true}</aciddog-response> c";
+        assert_eq!(strip_tags(text), "a  b  c");
+    }
+
+    #[test]
+    fn strip_tags_preserves_fenced_example() {
+        // Fenced examples must survive so the model can document the
+        // protocol without having its examples eaten by the stripper.
+        let text = "```\n<aciddog-call>{\"cmd\":\"test\"}</aciddog-call>\n```\nand a real call <aciddog-call>{\"cmd\":\"test\"}</aciddog-call> done";
+        let stripped = strip_tags(text);
+        // Fence content preserved.
+        assert!(stripped.contains("```"));
+        assert!(stripped.contains("<aciddog-call>"));
+        // Real (out-of-fence) call removed.
+        assert!(stripped.contains("and a real call  done"));
+    }
+
+    #[test]
+    fn strip_tags_noop_when_no_tags() {
+        let text = "just regular text";
+        assert_eq!(strip_tags(text), text);
+    }
+
+    #[test]
+    fn strip_tags_drops_remainder_on_unterminated_tag() {
+        let text = "ok so far <aciddog-call>{\"cmd\":\"test\"";
+        assert_eq!(strip_tags(text), "ok so far ");
     }
 
     #[test]
