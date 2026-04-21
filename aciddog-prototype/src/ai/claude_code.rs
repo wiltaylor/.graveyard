@@ -381,7 +381,12 @@ async fn run_round(
         // means only this (empty) MCP config is honored.
         .arg("--strict-mcp-config")
         .arg("--mcp-config")
-        .arg(r#"{"mcpServers":{}}"#);
+        .arg(r#"{"mcpServers":{}}"#)
+        // Skip CLAUDE.md auto-discovery and the auto-memory system so
+        // spawned agents only see the prompt aciddog constructs.
+        // Env-var form (not --bare) preserves OAuth/keychain auth.
+        .env("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1")
+        .env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1");
 
     if let Some(path) = &ctx.system_prompt_path {
         cmd.arg("--system-prompt-file").arg(path);
