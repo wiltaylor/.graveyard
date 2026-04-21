@@ -23,8 +23,8 @@ use clap::Parser;
 
 use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
 use crate::ai::{
-    AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, OpenAiApiCore, PromptParts,
-    WorkerCtx,
+    AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, CopilotCliCore, OpenAiApiCore,
+    PromptParts, WorkerCtx,
 };
 use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::{AciddogConfig, AiCore, AiCoreKind};
@@ -61,6 +61,7 @@ fn core_display_label(core: &AiCore) -> String {
         AiCoreKind::ClaudeCode { .. } => "claude-code",
         AiCoreKind::AnthropicApi { .. } => "anthropic-api",
         AiCoreKind::OpenAiApi { .. } => "openai-api",
+        AiCoreKind::CopilotCli { .. } => "copilot-cli",
     };
     format!("{kind} ({})", core.id)
 }
@@ -73,7 +74,8 @@ fn shell_tool_name_for_core(core: &AiCore) -> Option<&'static str> {
     match &core.kind {
         AiCoreKind::ClaudeCode { .. }
         | AiCoreKind::AnthropicApi { .. }
-        | AiCoreKind::OpenAiApi { .. } => Some("Bash"),
+        | AiCoreKind::OpenAiApi { .. }
+        | AiCoreKind::CopilotCli { .. } => Some("Bash"),
     }
 }
 
@@ -156,6 +158,21 @@ fn build_core(
             .with_env(env);
             if resume {
                 c = c.mark_started();
+            }
+            if let Some(tx) = socket_tx {
+                c = c.with_socket_tx(tx);
+            }
+            Box::new(c)
+        }
+        AiCoreKind::CopilotCli { model, .. } => {
+            let mut c = if resume {
+                CopilotCliCore::with_session_id(session_id, tools)
+            } else {
+                CopilotCliCore::new(session_id, parts, tools)
+            }
+            .with_env(env);
+            if let Some(m) = model {
+                c = c.with_model(m.clone());
             }
             if let Some(tx) = socket_tx {
                 c = c.with_socket_tx(tx);

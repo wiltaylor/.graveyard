@@ -105,6 +105,36 @@ fn demo_declares_openrouter_openai_core_bound_to_jokemaster() {
 }
 
 #[test]
+fn demo_declares_copilot_haiku_core_bound_to_shitposter() {
+    let path = repo_root().join("demo").join("aciddog.wcl");
+    let cfg = load_config(&path).expect("demo aciddog.wcl should parse");
+
+    let core = cfg
+        .ai_cores
+        .iter()
+        .find(|c| c.id == "copilot_haiku")
+        .expect("copilot_haiku core should be declared");
+    match &core.kind {
+        AiCoreKind::CopilotCli {
+            model,
+            default_tools,
+        } => {
+            assert_eq!(model.as_deref(), Some("claude-haiku-4.5"));
+            assert_eq!(default_tools.as_deref(), Some(&["Read".to_string()][..]));
+        }
+        other => panic!("expected CopilotCli variant, got {other:?}"),
+    }
+
+    let shitposter = cfg
+        .agents
+        .iter()
+        .find(|a| a.id == "shitposter")
+        .expect("shitposter agent");
+    assert_eq!(shitposter.ai_core.as_deref(), Some("copilot_haiku"));
+    assert_eq!(shitposter.tools.as_deref(), Some(&["Read".to_string()][..]));
+}
+
+#[test]
 fn demo_declares_project_context_memory_bank_and_wires_it() {
     let path = repo_root().join("demo").join("aciddog.wcl");
     let cfg = load_config(&path).expect("demo aciddog.wcl should parse");

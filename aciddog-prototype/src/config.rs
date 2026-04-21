@@ -136,6 +136,22 @@ pub enum AiCoreKind {
         /// at config parse time (see `validate_ai_core_tools`).
         default_tools: Option<Vec<String>>,
     },
+    /// GitHub Copilot CLI core — drives the `copilot` binary the same
+    /// way `ClaudeCode` drives `claude`. Copilot doesn't support a
+    /// system-prompt flag, so this variant has no `system_prompt`
+    /// field. Tool names in `default_tools` use the aciddog-side
+    /// capitalized names (e.g. `Bash`, `Read`); the core translates
+    /// them to copilot's lowercase natives at spawn time.
+    CopilotCli {
+        /// Optional `--model <id>` passed on every turn. `None` lets
+        /// copilot pick its own default. Accepts copilot's native
+        /// model ids (e.g. `claude-haiku-4.5`, `gpt-5.2`).
+        model: Option<String>,
+        /// Per-core default tool allowlist. Limited to the six names
+        /// that map to copilot built-ins (Bash, Read, Write, Edit,
+        /// Glob, Grep) — see `validate_ai_core_tools`.
+        default_tools: Option<Vec<String>>,
+    },
     /// Generic OpenAI-chat-completions-compatible core. Works against
     /// api.openai.com, OpenRouter, Ollama's OpenAI-compatible endpoint,
     /// or any other vendor that implements `/chat/completions`.
@@ -168,7 +184,8 @@ impl AiCore {
         match &self.kind {
             AiCoreKind::ClaudeCode { default_tools, .. }
             | AiCoreKind::AnthropicApi { default_tools, .. }
-            | AiCoreKind::OpenAiApi { default_tools, .. } => default_tools.as_deref(),
+            | AiCoreKind::OpenAiApi { default_tools, .. }
+            | AiCoreKind::CopilotCli { default_tools, .. } => default_tools.as_deref(),
         }
     }
 
@@ -182,6 +199,7 @@ impl AiCore {
             AiCoreKind::AnthropicApi { model, .. } | AiCoreKind::OpenAiApi { model, .. } => {
                 Some(model.as_str())
             }
+            AiCoreKind::CopilotCli { model, .. } => model.as_deref(),
         }
     }
 }
@@ -425,6 +443,10 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                     system_prompt: optional_string(b, "systemPrompt"),
                     default_tools: optional_string_list(b, "default_tools")?,
                 },
+                "copilotCli" => AiCoreKind::CopilotCli {
+                    model: optional_string(b, "model"),
+                    default_tools: optional_string_list(b, "default_tools")?,
+                },
                 other => {
                     return Err(ConfigError::UnknownAiCoreType {
                         core: id,
@@ -540,17 +562,28 @@ fn validate_ai_core_refs(
 /// skip this check because tool names there are decided by the
 /// external `claude` binary.
 fn validate_ai_core_tools(cores: &[AiCore]) -> Result<(), ConfigError> {
-    let known: std::collections::HashSet<&str> =
+    let api_known: std::collections::HashSet<&str> =
         crate::ai::tools::BUILT_IN_TOOL_NAMES.iter().copied().collect();
+    let copilot_known: std::collections::HashSet<&str> = crate::ai::copilot_cli::COPILOT_ALLOWED_TOOLS
+        .iter()
+        .copied()
+        .collect();
     for core in cores {
-        let (type_name, defaults) = match &core.kind {
-            AiCoreKind::AnthropicApi { default_tools, .. } => ("anthropicApi", default_tools.as_deref()),
-            AiCoreKind::OpenAiApi { default_tools, .. } => ("openAiApi", default_tools.as_deref()),
+        let (type_name, defaults, allowlist) = match &core.kind {
+            AiCoreKind::AnthropicApi { default_tools, .. } => {
+                ("anthropicApi", default_tools.as_deref(), &api_known)
+            }
+            AiCoreKind::OpenAiApi { default_tools, .. } => {
+                ("openAiApi", default_tools.as_deref(), &api_known)
+            }
+            AiCoreKind::CopilotCli { default_tools, .. } => {
+                ("copilotCli", default_tools.as_deref(), &copilot_known)
+            }
             AiCoreKind::ClaudeCode { .. } => continue,
         };
         let Some(list) = defaults else { continue };
         for name in list {
-            if !known.contains(name.as_str()) {
+            if !allowlist.contains(name.as_str()) {
                 return Err(ConfigError::UnknownTool {
                     core: core.id.clone(),
                     type_name: type_name.to_string(),

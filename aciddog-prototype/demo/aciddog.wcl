@@ -83,6 +83,21 @@ schema "ai_core" {
     default_tools: list(string) @optional
   }
 
+  // GitHub Copilot CLI core. Drives the `copilot` binary (install
+  // with `npm i -g @github/copilot`) and streams its JSONL output.
+  // Copilot picks its own system prompt; none can be supplied here.
+  variant "copilotCli" {
+    // Optional `--model <id>` passed on every turn. Accepts copilot's
+    // native model ids (e.g. `claude-haiku-4.5`, `gpt-5.2`). Omit to
+    // let copilot use its default.
+    model: string @optional
+    // Fallback tool allowlist. Uses the aciddog-side capitalized
+    // names (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`) — only
+    // those six map to copilot built-ins. The core translates them to
+    // copilot's lowercase names at spawn time.
+    default_tools: list(string) @optional
+  }
+
   // Generic OpenAI-chat-completions-compatible core. Works against
   // api.openai.com, OpenRouter, Ollama's OpenAI-compatible endpoint,
   // or any other provider that implements `/chat/completions`.
@@ -170,6 +185,16 @@ ai_core openrouter {
   EOT
 }
 
+// GitHub Copilot CLI core pinned to Claude Haiku 4.5 — the cheapest
+// model copilot offers, suitable for low-stakes agents. Requires the
+// `copilot` binary on PATH (install with `npm i -g @github/copilot`)
+// and a GitHub Copilot subscription authenticated via `copilot auth`.
+ai_core copilot_haiku {
+  type = :copilotCli
+  model = "claude-haiku-4.5"
+  default_tools = ["Read"]
+}
+
 team default {
   description = "Default aciddog team"
   // Fleet-wide default core — agents and workers inherit this unless
@@ -237,6 +262,21 @@ agent jokemaster {
   instructions = "When sent a topic, reply with exactly one short clean joke about it. No setup outside the joke, no commentary — just the punchline. Make sure to use the mailbox tool to send the joke back to the sender if you recieved the joke via your inbox instead of directly from a user."
   tools = ["Read"]
   ai_core = "openrouter"
+}
+
+// Low-stakes morale agent wired through the GitHub Copilot CLI core
+// on Claude Haiku 4.5 — cheap, fast, and a good exercise of the
+// copilot_cli code path. `tools = ["Read"]` (no Bash) also keeps this
+// agent on the tag-IPC protocol, so mailbox routing through copilot
+// gets exercised too.
+agent shitposter {
+  role = "shitposter"
+  role_description = <<EOT
+    You are the team's resident shitposter. When another agent (or the user) pings you with a topic, you reply with one short, punchy, low-effort take — think group-chat energy, not stand-up special. Self-aware, irreverent, tech-brained humour. Keep it clean-ish (no slurs, no punching down), but feel free to dunk on frameworks, languages, or your own life choices. One or two lines. No preamble, no hedging, no explanation — the post is the entire deliverable.
+  EOT
+  instructions = "When sent a topic, reply with one short shitpost about it — group-chat energy, self-aware, tech-flavoured, clean-ish. One or two lines, no preamble, no commentary. If the topic came through your mailbox rather than from a user directly, use `send` to route the reply back to the original sender. Do not implement code, do not run commands — the post is the entire deliverable."
+  tools = ["Read"]
+  ai_core = "copilot_haiku"
 }
 
 // Workers are ephemeral agents. They are not spawned at startup;
