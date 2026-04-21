@@ -161,6 +161,18 @@ pub struct AgentChat {
     /// stays visible. Next inbound message triggers resurrection via
     /// `App::resurrect_worker`.
     pub hibernated: bool,
+    /// Byte offset of the caret inside `input`. Always on a UTF-8 char
+    /// boundary.
+    pub input_cursor: usize,
+    /// Top visible wrapped row when the input buffer overflows the
+    /// visible rows of the input box.
+    pub input_scroll: u16,
+    /// Inner width of the input box at the last render, cached so the
+    /// key handler can wrap the buffer the same way.
+    pub input_wrap_width: u16,
+    /// Inner height of the input box at the last render, cached so
+    /// Up/Down and scroll-follow math match what the user sees.
+    pub input_visible_rows: u16,
 }
 
 impl AgentChat {
@@ -169,6 +181,280 @@ impl AgentChat {
         self.blocks.push(block);
         self.sticky_bottom = true;
         idx
+    }
+
+    /// Clear the input buffer and any cursor/scroll state that references it.
+    fn reset_input(&mut self) {
+        self.input.clear();
+        self.input_cursor = 0;
+        self.input_scroll = 0;
+    }
+
+    /// Word-wrap the input buffer to the given width and return one
+    /// `(start, end)` byte span per visual row. A trailing empty row
+    /// is emitted when the last logical line is empty or ends in `\n`,
+    /// so the caret can be positioned there.
+    pub fn input_visual_rows(&self, width: u16) -> Vec<(usize, usize)> {
+        wrap_rows(&self.input, width)
+    }
+
+    /// Byte offset at the start of the caret's current visual row,
+    /// plus the caret's column (in chars, not bytes) within that row.
+    pub fn input_cursor_visual(&self, width: u16) -> (usize, usize, usize) {
+        let rows = self.input_visual_rows(width);
+        if rows.is_empty() {
+            return (0, 0, 0);
+        }
+        // Find the row that contains `input_cursor`. Prefer the later row
+        // when the cursor sits exactly on a boundary: that matches what
+        // the user sees after Down/End.
+        let cursor = self.input_cursor.min(self.input.len());
+        let mut row_idx = 0;
+        for (i, &(start, end)) in rows.iter().enumerate() {
+            if cursor >= start && cursor <= end {
+                row_idx = i;
+                // If cursor is exactly at `end` and a later row starts at
+                // the same offset (word-wrap boundary with no newline),
+                // prefer that later row.
+                if cursor == end && i + 1 < rows.len() && rows[i + 1].0 == end {
+                    row_idx = i + 1;
+                }
+                break;
+            }
+            if i == rows.len() - 1 {
+                row_idx = i;
+            }
+        }
+        let (row_start, _) = rows[row_idx];
+        let col = self.input[row_start..cursor].chars().count();
+        (row_idx, row_start, col)
+    }
+}
+
+/// Word-wrap `s` to `width` columns. Returns one `(start, end)` byte
+/// span per visual row. Width 0 is treated as 1. Wraps on word (space)
+/// boundaries; words longer than `width` are hard-broken. Always
+/// returns at least one row — an empty buffer yields `[(0, 0)]`.
+fn wrap_rows(s: &str, width: u16) -> Vec<(usize, usize)> {
+    let width = width.max(1) as usize;
+    let mut rows: Vec<(usize, usize)> = Vec::new();
+    let mut line_start = 0usize;
+    for (i, b) in s.bytes().enumerate() {
+        if b == b'\n' {
+            wrap_line_into(s, line_start, i, width, &mut rows);
+            line_start = i + 1;
+        }
+    }
+    wrap_line_into(s, line_start, s.len(), width, &mut rows);
+    if rows.is_empty() {
+        rows.push((0, 0));
+    }
+    rows
+}
+
+/// Wrap one logical line `[start, end)` (no newlines inside) into visual
+/// rows. Empty lines produce a single empty row so the caret has a home.
+fn wrap_line_into(s: &str, start: usize, end: usize, width: usize, out: &mut Vec<(usize, usize)>) {
+    if start == end {
+        out.push((start, start));
+        return;
+    }
+
+    // Collect tokens as (tok_start, tok_end, is_space, cols).
+    let mut tokens: Vec<(usize, usize, bool, usize)> = Vec::new();
+    let line = &s[start..end];
+    let mut cur_start = start;
+    let mut cur_is_space: Option<bool> = None;
+    let mut cur_cols = 0usize;
+    for (off, ch) in line.char_indices() {
+        let abs = start + off;
+        let is_space = ch == ' ';
+        match cur_is_space {
+            None => {
+                cur_is_space = Some(is_space);
+                cur_start = abs;
+                cur_cols = 1;
+            }
+            Some(prev) if prev == is_space => cur_cols += 1,
+            Some(prev) => {
+                tokens.push((cur_start, abs, prev, cur_cols));
+                cur_is_space = Some(is_space);
+                cur_start = abs;
+                cur_cols = 1;
+            }
+        }
+    }
+    if let Some(is_space) = cur_is_space {
+        tokens.push((cur_start, end, is_space, cur_cols));
+    }
+
+    let mut row_start = start;
+    let mut row_cols = 0usize;
+    for &(t_start, t_end, is_space, t_cols) in &tokens {
+        if is_space {
+            row_cols += t_cols;
+            continue;
+        }
+        if t_cols > width {
+            // Hard-break the word across rows.
+            if row_cols >= width && row_cols > 0 {
+                out.push((row_start, t_start));
+                row_start = t_start;
+                row_cols = 0;
+            }
+            let mut cursor = t_start;
+            if row_cols > 0 && row_cols < width {
+                let take = width - row_cols;
+                let br = advance_chars(s, cursor, take, t_end);
+                out.push((row_start, br));
+                cursor = br;
+                row_start = br;
+                row_cols = 0;
+            }
+            while cursor < t_end {
+                let br = advance_chars(s, cursor, width, t_end);
+                if br == t_end {
+                    row_start = cursor;
+                    row_cols = s[cursor..br].chars().count();
+                    break;
+                }
+                out.push((cursor, br));
+                cursor = br;
+                row_start = br;
+                row_cols = 0;
+            }
+        } else {
+            if row_cols + t_cols > width && row_cols > 0 {
+                out.push((row_start, t_start));
+                row_start = t_start;
+                row_cols = 0;
+            }
+            row_cols += t_cols;
+        }
+    }
+    if row_cols > 0 || out.last().is_none_or(|&(_, e)| e != end) {
+        out.push((row_start, end));
+    }
+}
+
+fn advance_chars(s: &str, from: usize, count: usize, cap: usize) -> usize {
+    for (taken, (off, _)) in s[from..cap].char_indices().enumerate() {
+        if taken == count {
+            return from + off;
+        }
+    }
+    cap
+}
+
+/// Effective wrap width to use in key-handling. Falls back to a sane
+/// default when the input hasn't been rendered yet (e.g. during tests).
+fn effective_input_wrap_width(chat: &AgentChat) -> u16 {
+    if chat.input_wrap_width > 0 {
+        chat.input_wrap_width
+    } else {
+        u16::MAX
+    }
+}
+
+/// Visible input rows. Mirrors `input_wrap_width`: if unset, fall back
+/// to the 5-row cap we plan to grow to so scroll math works in tests.
+fn effective_input_visible_rows(chat: &AgentChat) -> u16 {
+    if chat.input_visible_rows > 0 {
+        chat.input_visible_rows
+    } else {
+        5
+    }
+}
+
+fn input_insert(chat: &mut AgentChat, ch: char) {
+    let idx = chat.input_cursor.min(chat.input.len());
+    chat.input.insert(idx, ch);
+    chat.input_cursor = idx + ch.len_utf8();
+    clamp_input_scroll(chat);
+}
+
+fn input_backspace(chat: &mut AgentChat) {
+    if chat.input_cursor == 0 {
+        return;
+    }
+    let mut prev = chat.input_cursor - 1;
+    while prev > 0 && !chat.input.is_char_boundary(prev) {
+        prev -= 1;
+    }
+    chat.input.replace_range(prev..chat.input_cursor, "");
+    chat.input_cursor = prev;
+    clamp_input_scroll(chat);
+}
+
+fn input_move_char(chat: &mut AgentChat, delta: i32) {
+    if delta < 0 {
+        if chat.input_cursor == 0 {
+            return;
+        }
+        let mut prev = chat.input_cursor - 1;
+        while prev > 0 && !chat.input.is_char_boundary(prev) {
+            prev -= 1;
+        }
+        chat.input_cursor = prev;
+    } else if delta > 0 {
+        if chat.input_cursor >= chat.input.len() {
+            return;
+        }
+        let mut next = chat.input_cursor + 1;
+        while next < chat.input.len() && !chat.input.is_char_boundary(next) {
+            next += 1;
+        }
+        chat.input_cursor = next;
+    }
+    clamp_input_scroll(chat);
+}
+
+fn input_move_line(chat: &mut AgentChat, delta: i32) {
+    let width = effective_input_wrap_width(chat);
+    let rows = chat.input_visual_rows(width);
+    let (row_idx, _row_start, col) = chat.input_cursor_visual(width);
+    let target_row = (row_idx as i32 + delta).clamp(0, rows.len() as i32 - 1) as usize;
+    if target_row == row_idx {
+        return;
+    }
+    let (t_start, t_end) = rows[target_row];
+    chat.input_cursor = advance_chars(&chat.input, t_start, col, t_end);
+    clamp_input_scroll(chat);
+}
+
+fn input_move_to_row_start(chat: &mut AgentChat) {
+    let width = effective_input_wrap_width(chat);
+    let (_row_idx, row_start, _col) = chat.input_cursor_visual(width);
+    chat.input_cursor = row_start;
+    clamp_input_scroll(chat);
+}
+
+fn input_move_to_row_end(chat: &mut AgentChat) {
+    let width = effective_input_wrap_width(chat);
+    let rows = chat.input_visual_rows(width);
+    let (row_idx, _row_start, _col) = chat.input_cursor_visual(width);
+    if let Some(&(_, end)) = rows.get(row_idx) {
+        chat.input_cursor = end;
+    }
+    clamp_input_scroll(chat);
+}
+
+/// Keep `input_scroll` such that the cursor's visual row is visible.
+fn clamp_input_scroll(chat: &mut AgentChat) {
+    let width = effective_input_wrap_width(chat);
+    let visible = effective_input_visible_rows(chat).max(1);
+    let rows = chat.input_visual_rows(width);
+    let total = rows.len() as u16;
+    let (row_idx, _, _) = chat.input_cursor_visual(width);
+    let row_idx = row_idx as u16;
+    if row_idx < chat.input_scroll {
+        chat.input_scroll = row_idx;
+    } else if row_idx >= chat.input_scroll + visible {
+        chat.input_scroll = row_idx + 1 - visible;
+    }
+    let max_scroll = total.saturating_sub(visible);
+    if chat.input_scroll > max_scroll {
+        chat.input_scroll = max_scroll;
     }
 }
 
@@ -362,7 +648,7 @@ impl App {
             }
             let content = trimmed.to_string();
             chat.push_block(ChatBlock::user(content.clone()));
-            chat.input.clear();
+            chat.reset_input();
             content
         };
 
@@ -772,6 +1058,12 @@ impl App {
                 sender_display.clone(),
                 body.clone(),
             ));
+            // Parent's AI turn is about to process the worker's report;
+            // reflect that in the status icon. `TurnResult` resets to
+            // `Ready`. Preserve existing `Error`.
+            if parent_chat.status != AgentStatus::Error {
+                parent_chat.status = AgentStatus::Working;
+            }
         }
 
         // Record the final report on the worker's own pane, then
@@ -949,6 +1241,13 @@ impl App {
         // there.
         if let Some(chat) = self.chats.get_mut(recipient_idx) {
             chat.push_block(ChatBlock::mail_received(sender_id.clone(), body.clone()));
+            // Recipient's AI turn is about to start — reflect that in
+            // the agent-list icon so background agents don't appear
+            // idle while they're actually processing. `TurnResult`
+            // flips it back to `Ready`. Preserve existing `Error`.
+            if chat.status != AgentStatus::Error {
+                chat.status = AgentStatus::Working;
+            }
         }
 
         // Enqueue on a background task so the IPC reply doesn't depend on
@@ -2177,17 +2476,59 @@ impl App {
             }
         }
 
+        // Shift+Enter inserts a newline; Ctrl+J is the terminal-safe
+        // fallback for terminals that conflate Enter with Shift+Enter.
+        let is_newline = matches!(code, KeyCode::Enter) && mods.contains(KeyModifiers::SHIFT)
+            || (matches!(code, KeyCode::Char('j')) && mods.contains(KeyModifiers::CONTROL));
+
+        if is_newline {
+            if let Some(chat) = self.current_chat_mut() {
+                input_insert(chat, '\n');
+            }
+            return;
+        }
+
         match code {
             KeyCode::Esc => self.focus = Focus::Agents,
             KeyCode::Enter => self.submit_input(),
             KeyCode::Backspace => {
                 if let Some(chat) = self.current_chat_mut() {
-                    chat.input.pop();
+                    input_backspace(chat);
+                }
+            }
+            KeyCode::Left => {
+                if let Some(chat) = self.current_chat_mut() {
+                    input_move_char(chat, -1);
+                }
+            }
+            KeyCode::Right => {
+                if let Some(chat) = self.current_chat_mut() {
+                    input_move_char(chat, 1);
+                }
+            }
+            KeyCode::Up => {
+                if let Some(chat) = self.current_chat_mut() {
+                    input_move_line(chat, -1);
+                }
+            }
+            KeyCode::Down => {
+                if let Some(chat) = self.current_chat_mut() {
+                    input_move_line(chat, 1);
+                }
+            }
+            KeyCode::Home => {
+                if let Some(chat) = self.current_chat_mut() {
+                    input_move_to_row_start(chat);
+                }
+            }
+            KeyCode::End => {
+                if let Some(chat) = self.current_chat_mut() {
+                    input_move_to_row_end(chat);
                 }
             }
             KeyCode::Char(c) => {
                 if let Some(chat) = self.current_chat_mut() {
-                    chat.input.push(c);
+                    input_insert(chat, c);
                 }
             }
             _ => {}
@@ -3419,6 +3760,141 @@ mod tests {
     }
 
     #[test]
+    fn shift_enter_inserts_newline_without_submitting() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        for c in "hi".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT);
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        let chat = app.current_chat().unwrap();
+        assert_eq!(chat.input, "hi\na");
+        assert_eq!(chat.input_cursor, 4);
+        // The buffer hasn't been submitted, so no user block yet.
+        assert!(
+            !chat
+                .blocks
+                .iter()
+                .any(|b| matches!(b, ChatBlock::UserText { .. })),
+            "no UserText expected yet"
+        );
+    }
+
+    #[test]
+    fn ctrl_j_inserts_newline_as_terminal_fallback() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        app.handle_key(KeyCode::Char('b'), KeyModifiers::NONE);
+        assert_eq!(app.current_chat().unwrap().input, "a\nb");
+    }
+
+    #[test]
+    fn left_right_move_cursor() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        for c in "abc".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(app.current_chat().unwrap().input_cursor, 3);
+        app.handle_key(KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(app.current_chat().unwrap().input_cursor, 2);
+        app.handle_key(KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(app.current_chat().unwrap().input, "abXc");
+        app.handle_key(KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(app.current_chat().unwrap().input_cursor, 4);
+    }
+
+    #[test]
+    fn backspace_is_utf8_safe() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        // Type "héllo" — 'é' is two bytes.
+        for c in "héllo".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.current_chat().unwrap().input, "héll");
+        // Move to after 'é', then backspace should remove the whole 'é'.
+        app.handle_key(KeyCode::Left, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Left, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.current_chat().unwrap().input, "hll");
+    }
+
+    #[test]
+    fn up_down_navigate_between_logical_lines() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        for c in "ab".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT);
+        for c in "cd".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        // Cursor at end of "cd" on second row.
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE);
+        // Now on first row at col 2 → byte offset 2 ("ab").
+        assert_eq!(app.current_chat().unwrap().input_cursor, 2);
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        // Back to second row col 2 → byte offset 5 ("ab\ncd").
+        assert_eq!(app.current_chat().unwrap().input_cursor, 5);
+    }
+
+    #[test]
+    fn submit_input_resets_cursor_and_scroll() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        for c in "hi".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        let chat = app.current_chat().unwrap();
+        assert_eq!(chat.input, "");
+        assert_eq!(chat.input_cursor, 0);
+        assert_eq!(chat.input_scroll, 0);
+    }
+
+    #[test]
+    fn input_visual_rows_wraps_on_word_boundaries() {
+        let chat = AgentChat {
+            input: "aaa bbb ccc".to_string(),
+            ..Default::default()
+        };
+        let rows = chat.input_visual_rows(5);
+        // "aaa " (4) / "bbb " (4) / "ccc" (3) — the word "bbb" won't
+        // fit onto the first row's 5 cols alongside "aaa ", so the row
+        // breaks at that boundary.
+        assert!(
+            rows.len() >= 2,
+            "expected at least 2 wrapped rows: {rows:?}"
+        );
+        // First row must end before "bbb" starts.
+        let (_, first_end) = rows[0];
+        assert!(first_end <= 4);
+    }
+
+    #[test]
+    fn input_scroll_follows_cursor_past_visible_rows() {
+        let input: String = (1..=7)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut chat = AgentChat {
+            input_wrap_width: 80,
+            input_visible_rows: 5,
+            input_cursor: input.len(),
+            input,
+            ..Default::default()
+        };
+        clamp_input_scroll(&mut chat);
+        assert_eq!(chat.input_scroll, 2);
+    }
+
+    #[test]
     fn click_in_agent_list_selects_agent_and_focuses_chat() {
         let mut app = App::new(sample_config());
         app.layout.agent_list_inner = Some(Rect::new(10, 5, 20, 10));
@@ -4351,6 +4827,52 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn send_message_marks_recipient_working() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SendMessage {
+                    to: "b".into(),
+                    body: "ping".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        assert!(reply_rx.await.unwrap().ok);
+
+        // Recipient (b, idx 1) must flip to Working so its icon
+        // reflects the incoming turn, not just the selected agent.
+        assert_eq!(app.chats[1].status, AgentStatus::Working);
+    }
+
+    #[tokio::test]
+    async fn send_message_preserves_recipient_error_status() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        app.chats[1].status = AgentStatus::Error;
+        let sender_uuid = app.chats[0].session_id.unwrap();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SendMessage {
+                    to: "b".into(),
+                    body: "ping".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        assert!(reply_rx.await.unwrap().ok);
+        assert_eq!(app.chats[1].status, AgentStatus::Error);
+    }
+
     // --------- Workers ----------
 
     use crate::config::Worker;
@@ -4604,6 +5126,76 @@ mod tests {
         ));
         let worker_last = app.chats[worker_idx].blocks.last().unwrap();
         assert!(matches!(worker_last, ChatBlock::WorkerComplete { .. }));
+    }
+
+    #[tokio::test]
+    async fn worker_complete_marks_parent_working() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        app.chats[0].status = AgentStatus::Ready;
+
+        let session_id = Uuid::new_v4();
+        let (user_tx, _user_rx) = mpsc::unbounded_channel::<String>();
+        let (worker_agent_tx, _worker_agent_rx) = mpsc::channel::<String>(4);
+        app.chats.push(AgentChat {
+            display_name: "researcher#abcd1234".into(),
+            parent_idx: Some(0),
+            worker_template: Some("researcher".into()),
+            session_id: Some(session_id),
+            status: AgentStatus::Working,
+            user_tx: Some(user_tx),
+            agent_tx: Some(worker_agent_tx),
+            ..Default::default()
+        });
+        app.agent_ids
+            .insert(session_id, "researcher#abcd1234".into());
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: session_id,
+                cmd: RequestCmd::WorkerComplete {
+                    body: "done".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        assert!(reply_rx.await.unwrap().ok);
+        assert_eq!(app.chats[0].status, AgentStatus::Working);
+    }
+
+    #[tokio::test]
+    async fn worker_complete_preserves_parent_error_status() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        app.chats[0].status = AgentStatus::Error;
+
+        let session_id = Uuid::new_v4();
+        let (user_tx, _user_rx) = mpsc::unbounded_channel::<String>();
+        let (worker_agent_tx, _worker_agent_rx) = mpsc::channel::<String>(4);
+        app.chats.push(AgentChat {
+            display_name: "researcher#abcd1234".into(),
+            parent_idx: Some(0),
+            worker_template: Some("researcher".into()),
+            session_id: Some(session_id),
+            status: AgentStatus::Working,
+            user_tx: Some(user_tx),
+            agent_tx: Some(worker_agent_tx),
+            ..Default::default()
+        });
+        app.agent_ids
+            .insert(session_id, "researcher#abcd1234".into());
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: session_id,
+                cmd: RequestCmd::WorkerComplete {
+                    body: "done".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        assert!(reply_rx.await.unwrap().ok);
+        assert_eq!(app.chats[0].status, AgentStatus::Error);
     }
 
     #[tokio::test]

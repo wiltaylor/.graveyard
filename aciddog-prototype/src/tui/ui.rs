@@ -1,7 +1,10 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
+};
 use ratatui::Frame;
 
 use super::app::{
@@ -23,13 +26,32 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.layout.child_overlay_rows.clear();
     app.layout.child_overlay_outer = None;
 
+    // Input height: in Chat view, grow from 3 to 7 rows (1–5 usable +
+    // 2 for borders) based on the wrapped line count of the current
+    // chat's input buffer. Tasks view keeps the fixed 3 rows so
+    // `render_tasks_input` is unaffected.
+    let input_rows = match app.active_view {
+        ActiveView::Chat => {
+            let inner_width = f.area().width.saturating_sub(2);
+            let usable = app
+                .current_chat()
+                .map(|c| {
+                    let rows = c.input_visual_rows(inner_width);
+                    (rows.len() as u16).clamp(1, 5)
+                })
+                .unwrap_or(1);
+            usable + 2
+        }
+        ActiveView::Tasks => 3,
+    };
+
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // title
-            Constraint::Min(10),   // chat + agents
-            Constraint::Length(3), // input
-            Constraint::Length(1), // status
+            Constraint::Length(1),          // title
+            Constraint::Min(10),            // chat + agents
+            Constraint::Length(input_rows), // input
+            Constraint::Length(1),          // status
         ])
         .split(f.area());
 
@@ -312,7 +334,7 @@ fn reconcile_anchor(chat: &mut AgentChat, heights: &[u16], viewport_h: u16) {
     }
 }
 
-fn render_chat_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
+fn render_chat_input(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     // In Tasks view the bottom box does double duty: it shows
     // operation hints when the screen is idle, field-nav hints when
     // a form is open, and the current input buffer when a
@@ -329,37 +351,93 @@ fn render_chat_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
         .border_style(focus_border_style(focused));
     let inner = block.inner(area);
 
-    let input_text = app
-        .current_chat()
-        .map(|c| c.input.clone())
-        .unwrap_or_default();
-
-    let display: Line = if focused {
-        Line::from(vec![
-            Span::raw(input_text),
-            Span::styled(
-                "▏",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ])
-    } else {
-        let placeholder = if input_text.is_empty() {
-            Span::styled(
-                "click here or press Tab to chat",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            )
-        } else {
-            Span::raw(input_text)
-        };
-        Line::from(placeholder)
+    let Some(chat) = app.current_chat_mut() else {
+        f.render_widget(Paragraph::new("").block(block), area);
+        return inner;
     };
 
-    let para = Paragraph::new(display).block(block);
+    // Cache the current layout on the chat so key handlers wrap the
+    // buffer the same way the renderer does.
+    chat.input_wrap_width = inner.width;
+    chat.input_visible_rows = inner.height;
+
+    // Unfocused + empty: show placeholder on a single line.
+    if !focused && chat.input.is_empty() {
+        let placeholder = Line::from(Span::styled(
+            "click here or press Tab to chat",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ));
+        f.render_widget(Paragraph::new(placeholder).block(block), area);
+        return inner;
+    }
+
+    let rows = chat.input_visual_rows(inner.width);
+    let total = rows.len() as u16;
+    let visible = inner.height.max(1);
+    let max_scroll = total.saturating_sub(visible);
+    if chat.input_scroll > max_scroll {
+        chat.input_scroll = max_scroll;
+    }
+    let scroll = chat.input_scroll;
+
+    // Compute the caret's (row, col) so we can inject the cursor span.
+    let (cursor_row, _cursor_row_start, cursor_col) = chat.input_cursor_visual(inner.width);
+
+    let first = scroll as usize;
+    let last = (first + visible as usize).min(rows.len());
+    let mut lines: Vec<Line> = Vec::with_capacity(last - first);
+    for (i, &(r_start, r_end)) in rows[first..last].iter().enumerate() {
+        let row_idx = first + i;
+        let row_text = &chat.input[r_start..r_end];
+        if focused && row_idx == cursor_row {
+            // Split the row text at the caret column (in chars) and
+            // inject the caret glyph between the two spans.
+            let char_count = row_text.chars().count();
+            let caret_col = cursor_col.min(char_count);
+            let caret_byte: usize = row_text
+                .char_indices()
+                .nth(caret_col)
+                .map(|(off, _)| off)
+                .unwrap_or(row_text.len());
+            let before = &row_text[..caret_byte];
+            let after = &row_text[caret_byte..];
+            lines.push(Line::from(vec![
+                Span::raw(before.to_string()),
+                Span::styled(
+                    "▏",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(after.to_string()),
+            ]));
+        } else {
+            lines.push(Line::from(Span::raw(row_text.to_string())));
+        }
+    }
+
+    let para = Paragraph::new(lines).block(block);
     f.render_widget(para, area);
+
+    // Vertical scrollbar when content overflows the visible rows.
+    if total > visible {
+        let mut sb_state = ScrollbarState::new(total as usize)
+            .viewport_content_length(visible as usize)
+            .position(scroll as usize);
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        let sb_area = Rect {
+            x: area.x + area.width.saturating_sub(1),
+            y: inner.y,
+            width: 1,
+            height: inner.height,
+        };
+        f.render_stateful_widget(sb, sb_area, &mut sb_state);
+    }
+
     inner
 }
 
@@ -460,6 +538,8 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             Span::raw("   "),
             Span::styled("enter", Style::default().fg(Color::Cyan)),
             Span::raw(" send  "),
+            Span::styled("shift/ctrl-j+⏎", Style::default().fg(Color::Cyan)),
+            Span::raw(" newline  "),
             Span::styled("alt+↑↓", Style::default().fg(Color::Cyan)),
             Span::raw(" select  "),
             Span::styled("alt+⏎", Style::default().fg(Color::Cyan)),
