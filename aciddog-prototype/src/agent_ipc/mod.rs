@@ -147,6 +147,19 @@ pub enum RequestCmd {
         task: Uuid,
         id: Uuid,
     },
+    /// Search a memory bank by semantic similarity. `limit` is the top-k
+    /// cap; handlers clamp it to at least 1.
+    MemorySearch {
+        bank: String,
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+    },
+    /// Persist a new entry in a memory bank.
+    MemoryStore {
+        bank: String,
+        body: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

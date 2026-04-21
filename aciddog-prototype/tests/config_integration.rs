@@ -1,20 +1,15 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use aciddog::config::load_config;
-use aciddog::scaffold::ensure_demo;
-use tempfile::TempDir;
+use aciddog::config::{load_config, parse_config, ConfigError};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 #[test]
-fn loads_scaffold_template_end_to_end() {
-    let path = repo_root()
-        .join("scaffold")
-        .join("demo")
-        .join("aciddog.wcl");
-    let cfg = load_config(&path).expect("scaffold aciddog.wcl should parse");
+fn loads_demo_config_end_to_end() {
+    let path = repo_root().join("demo").join("aciddog.wcl");
+    let cfg = load_config(&path).expect("demo aciddog.wcl should parse");
 
     assert_eq!(cfg.team.id, "default");
     assert!(cfg.agents.iter().any(|a| a.id == "planner"));
@@ -25,7 +20,7 @@ fn loads_scaffold_template_end_to_end() {
         assert!(!agent.model.is_empty());
     }
 
-    // Workers declared in the scaffold should parse and be referenced
+    // Workers declared in the demo config should parse and be referenced
     // correctly by each other and by the coder agent.
     assert!(cfg.workers.iter().any(|w| w.id == "researcher"));
     assert!(cfg.workers.iter().any(|w| w.id == "fetcher"));
@@ -35,20 +30,55 @@ fn loads_scaffold_template_end_to_end() {
 }
 
 #[test]
-fn ensure_demo_bootstraps_from_scaffold_template() {
-    let tmp = TempDir::new().unwrap();
-    let demo = tmp.path().join("demo");
-    let template = repo_root().join("scaffold").join("demo");
+fn demo_declares_project_context_memory_bank_and_wires_it() {
+    let path = repo_root().join("demo").join("aciddog.wcl");
+    let cfg = load_config(&path).expect("demo aciddog.wcl should parse");
 
-    let created = ensure_demo(&demo, &template).unwrap();
-    assert!(created);
-    assert!(demo.join("aciddog.wcl").is_file());
+    let bank = cfg
+        .memory_bank("project_context")
+        .expect("demo should declare project_context bank");
+    assert!(bank.description.to_lowercase().contains("project"));
+    assert!(cfg.can_access_bank("planner", "project_context"));
+    assert!(cfg.can_access_bank("coder", "project_context"));
+    // jokester was never granted access; must default to denied.
+    assert!(!cfg.can_access_bank("jokester", "project_context"));
+}
 
-    // Second call is a no-op.
-    let created_again = ensure_demo(&demo, &template).unwrap();
-    assert!(!created_again);
+#[test]
+fn memory_bank_block_parses_with_optional_embed_model() {
+    let src = r#"
+        team default { description = "t" }
+        memory_bank vault {
+          description = "shared notes"
+          embed_model = "BGE-base-en-v1.5"
+        }
+        agent alpha {
+          role = "r"
+          instructions = "i"
+          memory_banks = ["vault"]
+        }
+    "#;
+    let cfg = parse_config(src, Path::new("<test>")).expect("parses");
+    assert_eq!(cfg.memory_banks.len(), 1);
+    let bank = &cfg.memory_banks[0];
+    assert_eq!(bank.id, "vault");
+    assert_eq!(bank.embed_model.as_deref(), Some("BGE-base-en-v1.5"));
+    assert!(cfg.can_access_bank("alpha", "vault"));
+}
 
-    // The copied file is a valid aciddog config.
-    let cfg = load_config(&demo.join("aciddog.wcl")).unwrap();
-    assert_eq!(cfg.team.id, "default");
+#[test]
+fn unknown_memory_bank_ref_errors() {
+    let src = r#"
+        team default { description = "t" }
+        agent alpha {
+          role = "r"
+          instructions = "i"
+          memory_banks = ["ghost"]
+        }
+    "#;
+    let err = parse_config(src, Path::new("<test>")).expect_err("should fail");
+    assert!(
+        matches!(err, ConfigError::UnknownMemoryBankRef { ref from, ref to } if from == "alpha" && to == "ghost"),
+        "got {err:?}"
+    );
 }

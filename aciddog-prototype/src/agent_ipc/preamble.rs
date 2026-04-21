@@ -19,7 +19,12 @@
 /// Extending: add a new `push_section` call for each new subcommand
 /// just before the `// add new subcommand sections above this line`
 /// marker.
-pub fn cli_preamble(binary: &str, contactable: &[&str], creatable: &[&str]) -> String {
+pub fn cli_preamble(
+    binary: &str,
+    contactable: &[&str],
+    creatable: &[&str],
+    memory_banks: &[&str],
+) -> String {
     let mut out = String::new();
     push_line(&mut out, "## aciddog agent CLI");
     push_line(
@@ -126,6 +131,38 @@ pub fn cli_preamble(binary: &str, contactable: &[&str], creatable: &[&str]) -> S
          you're handing work off and the next owner needs specific context (e.g. \"tests pass, but \
          watch for flake X in CI\"). `update` / `remove` let you revise or withdraw your own comments.",
     );
+    if memory_banks.is_empty() {
+        push_line(
+            &mut out,
+            "- `memory search` / `memory store` — disabled: you have no memory banks \
+             allowlisted on your agent/worker config.",
+        );
+    } else {
+        push_section(
+            &mut out,
+            binary,
+            "memory search --bank <bank-id> --query \"<text>\" [--limit N]",
+            "semantic search over a memory bank. Returns up to `N` (default 5) hits, \
+             each prefixed with a short entry id and a distance score. Use this when \
+             you need context from prior sessions or work that others have recorded.",
+        );
+        push_section(
+            &mut out,
+            binary,
+            "memory store --bank <bank-id> --body \"<text>\"",
+            "persist an entry in a memory bank so later search queries can retrieve it. \
+             Write one self-contained fact per call — the entry is embedded as a whole. \
+             Avoid storing ephemeral work-in-progress; entries are permanent.",
+        );
+        push_line(
+            &mut out,
+            &format!(
+                "  You may access these banks: {}. Each is scoped to a topic — \
+                 see the `<memory>` block in your first-turn prompt for descriptions.",
+                memory_banks.join(", ")
+            ),
+        );
+    }
     // add new subcommand sections above this line
 
     out
@@ -181,7 +218,11 @@ fn push_section(out: &mut String, binary: &str, name: &str, description: &str) {
 /// intercepts and dispatches through the same handlers as CLI requests.
 /// Responses arrive on the next turn wrapped in
 /// `<aciddog-response index="N">{...}</aciddog-response>` blocks.
-pub fn tag_preamble(contactable: &[&str], creatable: &[&str]) -> String {
+pub fn tag_preamble(
+    contactable: &[&str],
+    creatable: &[&str],
+    memory_banks: &[&str],
+) -> String {
     let mut out = String::new();
     push_line(&mut out, "## aciddog tag protocol");
     push_line(
@@ -275,6 +316,8 @@ pub fn tag_preamble(contactable: &[&str], creatable: &[&str]) -> String {
 
     push_task_board_tag_docs(&mut out);
 
+    push_memory_tag_docs(&mut out, memory_banks);
+
     out
 }
 
@@ -366,13 +409,52 @@ fn push_task_board_tag_docs(out: &mut String) {
     );
 }
 
+fn push_memory_tag_docs(out: &mut String, memory_banks: &[&str]) {
+    if memory_banks.is_empty() {
+        push_line(
+            out,
+            "- `memory_search` / `memory_store` — disabled: you have no memory banks \
+             allowlisted on your agent/worker config.",
+        );
+        return;
+    }
+    push_line(out, "### Semantic memory banks");
+    push_line(
+        out,
+        "Each bank is a persistent, embedding-indexed store of free-form entries. \
+         Search when you need context; store when you learn something worth persisting. \
+         Entries are retrieved by semantic similarity, not keyword match.",
+    );
+    push_tag_section(
+        out,
+        "memory_search",
+        r#"{"cmd":"memory_search","bank":"<bank-id>","query":"<text>","limit":5}"#,
+        "search a bank. Returns up to `limit` hits (default 5), each with an id, \
+         distance score, and body text.",
+    );
+    push_tag_section(
+        out,
+        "memory_store",
+        r#"{"cmd":"memory_store","bank":"<bank-id>","body":"<text>"}"#,
+        "persist an entry. Write one self-contained fact per call — the entry \
+         is embedded as a whole. Entries are permanent.",
+    );
+    push_line(
+        out,
+        &format!(
+            "You may access these banks: {}. Descriptions are in your `<memory>` block.",
+            memory_banks.join(", ")
+        ),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn preamble_mentions_test_subcommand_with_binary_path() {
-        let p = cli_preamble("/opt/aciddog/bin/aciddog", &["coder"], &[]);
+        let p = cli_preamble("/opt/aciddog/bin/aciddog", &["coder"], &[], &[]);
         assert!(
             p.contains("/opt/aciddog/bin/aciddog test"),
             "missing fully-qualified `test` entry: {p}"
@@ -385,13 +467,13 @@ mod tests {
 
     #[test]
     fn preamble_has_header() {
-        let p = cli_preamble("/usr/local/bin/aciddog", &["coder"], &[]);
+        let p = cli_preamble("/usr/local/bin/aciddog", &["coder"], &[], &[]);
         assert!(p.starts_with("## aciddog agent CLI"), "missing header: {p}");
     }
 
     #[test]
     fn preamble_surfaces_binary_path_explicitly() {
-        let p = cli_preamble("/tmp/weird path/aciddog", &["coder"], &[]);
+        let p = cli_preamble("/tmp/weird path/aciddog", &["coder"], &[], &[]);
         assert!(
             p.contains("Binary path: `/tmp/weird path/aciddog`"),
             "binary path callout missing: {p}"
@@ -400,7 +482,7 @@ mod tests {
 
     #[test]
     fn preamble_lists_only_contactable_ids() {
-        let p = cli_preamble("/a", &["coder", "reviewer"], &[]);
+        let p = cli_preamble("/a", &["coder", "reviewer"], &[], &[]);
         assert!(
             p.contains("coder, reviewer"),
             "missing contactable ids: {p}"
@@ -409,7 +491,7 @@ mod tests {
 
     #[test]
     fn preamble_mentions_send_subcommand_and_wrapping_format() {
-        let p = cli_preamble("/a", &["coder"], &[]);
+        let p = cli_preamble("/a", &["coder"], &[], &[]);
         assert!(p.contains("/a send --to"), "missing send example: {p}");
         assert!(
             p.contains("<Message from=\"sender-id\">body</Message>"),
@@ -423,7 +505,7 @@ mod tests {
 
     #[test]
     fn preamble_hides_send_when_allowlist_is_empty() {
-        let p = cli_preamble("/a", &[], &[]);
+        let p = cli_preamble("/a", &[], &[], &[]);
         assert!(!p.contains("/a send"), "send should be hidden: {p}");
         assert!(
             p.contains("- `send` — disabled"),
@@ -433,7 +515,7 @@ mod tests {
 
     #[test]
     fn preamble_mentions_worker_create_when_creatable() {
-        let p = cli_preamble("/a", &["coder"], &["researcher", "tester"]);
+        let p = cli_preamble("/a", &["coder"], &["researcher", "tester"], &[]);
         assert!(
             p.contains("/a worker create --template"),
             "missing worker create example: {p}"
@@ -446,7 +528,7 @@ mod tests {
 
     #[test]
     fn preamble_hides_worker_create_when_empty() {
-        let p = cli_preamble("/a", &["coder"], &[]);
+        let p = cli_preamble("/a", &["coder"], &[], &[]);
         assert!(
             !p.contains("/a worker create"),
             "worker create should be hidden: {p}"
@@ -459,7 +541,7 @@ mod tests {
 
     #[test]
     fn preamble_never_documents_worker_complete() {
-        let p = cli_preamble("/a", &["coder"], &["researcher"]);
+        let p = cli_preamble("/a", &["coder"], &["researcher"], &[]);
         assert!(
             !p.contains("worker complete"),
             "plain agents must not see worker complete: {p}"
@@ -483,7 +565,7 @@ mod tests {
 
     #[test]
     fn preamble_mentions_task_subcommand() {
-        let p = cli_preamble("/a", &[], &[]);
+        let p = cli_preamble("/a", &[], &[], &[]);
         assert!(
             p.contains("/a task <add|list|show|update|remove|take|note|todo|comment>"),
             "missing task subcommand entry: {p}"
@@ -499,7 +581,7 @@ mod tests {
     fn preamble_task_subcommand_present_even_without_allowlists() {
         // The task board has no allowlist gate, so it must appear even
         // when `contactable` and `creatable` are both empty.
-        let p = cli_preamble("/a", &[], &[]);
+        let p = cli_preamble("/a", &[], &[], &[]);
         assert!(p.contains("/a task"), "task should be unconditional: {p}");
     }
 
@@ -520,7 +602,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_has_header_and_format_note() {
-        let p = tag_preamble(&["coder"], &[]);
+        let p = tag_preamble(&["coder"], &[], &[]);
         assert!(p.starts_with("## aciddog tag protocol"), "header: {p}");
         assert!(
             p.contains("<aciddog-call>"),
@@ -534,7 +616,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_mentions_chain_cap() {
-        let p = tag_preamble(&["coder"], &[]);
+        let p = tag_preamble(&["coder"], &[], &[]);
         assert!(
             p.contains("8 consecutive"),
             "must tell the model about the 8-round cap: {p}"
@@ -543,7 +625,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_lists_contactable_ids() {
-        let p = tag_preamble(&["coder", "reviewer"], &[]);
+        let p = tag_preamble(&["coder", "reviewer"], &[], &[]);
         assert!(
             p.contains("coder, reviewer"),
             "missing contactable ids: {p}"
@@ -556,7 +638,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_hides_send_when_allowlist_empty() {
-        let p = tag_preamble(&[], &[]);
+        let p = tag_preamble(&[], &[], &[]);
         assert!(
             !p.contains("\"cmd\":\"send_message\""),
             "send_message example must be hidden: {p}"
@@ -569,7 +651,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_mentions_worker_create_when_allowed() {
-        let p = tag_preamble(&["coder"], &["researcher", "tester"]);
+        let p = tag_preamble(&["coder"], &["researcher", "tester"], &[]);
         assert!(
             p.contains("\"cmd\":\"worker_create\""),
             "missing worker_create example: {p}"
@@ -582,7 +664,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_hides_worker_create_when_empty() {
-        let p = tag_preamble(&["coder"], &[]);
+        let p = tag_preamble(&["coder"], &[], &[]);
         assert!(
             !p.contains("\"cmd\":\"worker_create\""),
             "worker_create must be hidden: {p}"
@@ -595,7 +677,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_never_mentions_worker_complete_for_plain_agents() {
-        let p = tag_preamble(&["coder"], &["researcher"]);
+        let p = tag_preamble(&["coder"], &["researcher"], &[]);
         assert!(
             !p.contains("worker_complete"),
             "plain agents must not see worker_complete: {p}"
@@ -604,7 +686,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_has_task_board_unconditionally() {
-        let p = tag_preamble(&[], &[]);
+        let p = tag_preamble(&[], &[], &[]);
         assert!(
             p.contains("task_add"),
             "task board must be unconditional: {p}"

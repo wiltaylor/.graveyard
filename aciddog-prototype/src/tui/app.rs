@@ -25,6 +25,7 @@ use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
 use crate::ai::{AICore, AIEvent, AciddogCliCtx, ClaudeCodeCore, PromptParts, WorkerCtx};
 use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::{AciddogConfig, AiCore, AiCoreKind};
+use crate::memory::MemoryRegistry;
 use crate::tasks::{Task, TaskFilter, TaskPatch, TaskStatus, TaskStore, TodoStatus};
 
 use super::tasks_view::{
@@ -103,6 +104,55 @@ fn build_team_block(cfg: &AciddogConfig, contactable: &[&str], creatable: &[&str
     }
 
     out
+}
+
+/// Format a list of memory-search hits as the plaintext body we return
+/// to the calling agent. Empty results get a short "(no matches)" line
+/// so the agent doesn't have to special-case empty strings.
+fn format_memory_hits(hits: &[crate::memory::Hit]) -> String {
+    if hits.is_empty() {
+        return "(no matches)".to_string();
+    }
+    let mut out = String::new();
+    for (i, h) in hits.iter().enumerate() {
+        let ts = h.created_at.format("%Y-%m-%d %H:%M");
+        out.push_str(&format!(
+            "{n}. [{id} · d={dist:.3} · {ts}] {body}\n",
+            n = i + 1,
+            id = short_uuid(h.id),
+            dist = h.distance,
+            ts = ts,
+            body = h.body
+        ));
+    }
+    out.trim_end().to_string()
+}
+
+/// Short 8-char prefix of a uuid for chat display.
+fn short_uuid(id: uuid::Uuid) -> String {
+    let s = id.to_string();
+    s[..8.min(s.len())].to_string()
+}
+
+/// Render the per-actor `<memory>` body: a short preamble plus one
+/// line per bank the actor is allowed to read/write, with the bank's
+/// description. Returns `None` when the actor has zero banks so the
+/// `<memory>` tag is omitted cleanly.
+fn build_memory_block(cfg: &AciddogConfig, actor_id: &str) -> Option<String> {
+    let banks = cfg.memory_banks_for(actor_id);
+    if banks.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    out.push_str(
+        "You have access to the following memory banks. Each bank is scoped to a topic — \
+         search it when you need context and store an entry when you learn something worth \
+         persisting. Entries are retrieved by semantic similarity.\n\n",
+    );
+    for bank in banks {
+        out.push_str(&format!("- {} — {}\n", bank.id, bank.description));
+    }
+    Some(out)
 }
 
 /// Render a dispatched `<aciddog-call>` (emitted by `ClaudeCodeCore`
@@ -249,6 +299,8 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             });
             ChatBlock::task_op(k, s, b)
         }
+        RequestCmd::MemorySearch { .. } => ChatBlock::from_tool_use("aciddog memory search", input),
+        RequestCmd::MemoryStore { .. } => ChatBlock::from_tool_use("aciddog memory store", input),
     }
 }
 
@@ -729,6 +781,12 @@ pub struct App {
     /// store rooted at `.aciddog/tasks.json` in the cwd so tasks
     /// survive restarts.
     pub tasks: TaskStore,
+    /// Disk-backed semantic memory banks. `App::new` leaves this unset;
+    /// `tui::run` constructs a registry rooted at `.aciddog/memory/`
+    /// before the TUI starts, so every agent that spawns afterwards
+    /// sees its banks. `None` ⇒ memory subcommands fail with a
+    /// "no memory registry" error.
+    pub memory: Option<std::sync::Arc<MemoryRegistry>>,
     /// Which content is rendered in the main (left) area.
     pub active_view: ActiveView,
     /// Which row of the right-column Views list is highlighted.
@@ -785,6 +843,7 @@ impl App {
             ai_tx: None,
             socket_events_tx: None,
             tasks: TaskStore::new(),
+            memory: None,
             active_view: ActiveView::default(),
             selected_view: 0,
             tasks_screen: TasksScreen::default(),
@@ -1142,6 +1201,12 @@ impl App {
             RequestCmd::TaskCommentRemove { task, id } => {
                 self.handle_task_comment_remove(idx, task, id, reply);
             }
+            RequestCmd::MemorySearch { bank, query, limit } => {
+                self.handle_memory_search(idx, bank, query, limit, reply);
+            }
+            RequestCmd::MemoryStore { bank, body } => {
+                self.handle_memory_store(idx, bank, body, reply);
+            }
         }
     }
 
@@ -1227,14 +1292,23 @@ impl App {
         let contactable_for_worker: Vec<&str> = vec![sender_display.as_str()];
         let team_block = build_team_block(&self.config, &contactable_for_worker, &creatable);
 
+        let memory_banks_for_worker: Vec<String> = worker
+            .memory_banks
+            .as_deref()
+            .map(|list| list.to_vec())
+            .unwrap_or_default();
+        let memory_block = build_memory_block(&self.config, &template);
+
         let parts = PromptParts {
             role: worker.role_description.clone(),
             team: Some(team_block),
+            memory: memory_block,
             instructions: worker.instructions.clone(),
             aciddog_cli: Some(AciddogCliCtx {
                 binary: self.aciddog_binary.clone(),
                 contactable: vec![sender_display.clone()],
                 creatable: creatable.iter().map(|s| s.to_string()).collect(),
+                memory_banks: memory_banks_for_worker,
                 worker: Some(WorkerCtx {
                     parent_id: sender_display.clone(),
                     task: task.clone(),
@@ -2046,6 +2120,110 @@ impl App {
                 let _ = reply.send(Response::err(e.to_string()));
             }
         }
+    }
+
+    /// Resolve the sender's template id for `memory_banks` allowlist
+    /// checks. Configured agents use their agent id; workers use their
+    /// spawn template id (the `memory_banks` list lives on the
+    /// template, not the running instance).
+    fn sender_template_id(&self, sender_idx: usize) -> Option<String> {
+        let chat = self.chats.get(sender_idx)?;
+        if let Some(tpl) = &chat.worker_template {
+            return Some(tpl.clone());
+        }
+        self.config.agents.get(sender_idx).map(|a| a.id.clone())
+    }
+
+    fn handle_memory_search(
+        &mut self,
+        sender_idx: usize,
+        bank: String,
+        query: String,
+        limit: Option<usize>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(template_id) = self.sender_template_id(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        if !self.config.can_access_bank(&template_id, &bank) {
+            let _ = reply.send(Response::err(format!(
+                "bank `{bank}` is not accessible to `{template_id}`"
+            )));
+            return;
+        }
+        let Some(bank_decl) = self.config.memory_bank(&bank).cloned() else {
+            let _ = reply.send(Response::err(format!("no memory bank `{bank}`")));
+            return;
+        };
+        let Some(registry) = self.memory.clone() else {
+            let _ = reply.send(Response::err(
+                "memory registry is not initialised on this orchestrator",
+            ));
+            return;
+        };
+
+        let cap = limit.unwrap_or(5).max(1);
+        tokio::spawn(async move {
+            let result =
+                tokio::task::spawn_blocking(move || registry.search(&bank_decl, &query, cap)).await;
+            match result {
+                Ok(Ok(hits)) => {
+                    let _ = reply.send(Response::ok(format_memory_hits(&hits)));
+                }
+                Ok(Err(e)) => {
+                    let _ = reply.send(Response::err(e.to_string()));
+                }
+                Err(join_err) => {
+                    let _ = reply.send(Response::err(format!("memory search task: {join_err}")));
+                }
+            }
+        });
+    }
+
+    fn handle_memory_store(
+        &mut self,
+        sender_idx: usize,
+        bank: String,
+        body: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(template_id) = self.sender_template_id(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        if !self.config.can_access_bank(&template_id, &bank) {
+            let _ = reply.send(Response::err(format!(
+                "bank `{bank}` is not accessible to `{template_id}`"
+            )));
+            return;
+        }
+        let Some(bank_decl) = self.config.memory_bank(&bank).cloned() else {
+            let _ = reply.send(Response::err(format!("no memory bank `{bank}`")));
+            return;
+        };
+        let Some(registry) = self.memory.clone() else {
+            let _ = reply.send(Response::err(
+                "memory registry is not initialised on this orchestrator",
+            ));
+            return;
+        };
+
+        tokio::spawn(async move {
+            let result =
+                tokio::task::spawn_blocking(move || registry.store(&bank_decl, &body)).await;
+            match result {
+                Ok(Ok(id)) => {
+                    let _ = reply.send(Response::ok(format!("stored entry {id}")));
+                }
+                Ok(Err(e)) => {
+                    let _ = reply.send(Response::err(e.to_string()));
+                }
+                Err(join_err) => {
+                    let _ = reply.send(Response::err(format!("memory store task: {join_err}")));
+                }
+            }
+        });
     }
 
     /// Push a passive `system_info` block into the assignee's chat so
@@ -3691,6 +3869,19 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         }
     }
 
+    // Construct the semantic-memory registry rooted at `.aciddog/memory/`.
+    // Banks open lazily on first use, so this is just a handle creation —
+    // no disk or model download cost unless an agent actually invokes
+    // `memory search` / `memory store`.
+    let memory_root = std::path::PathBuf::from(".aciddog").join("memory");
+    let memory = std::sync::Arc::new(MemoryRegistry::new(memory_root.clone()));
+    info!(
+        path = %memory_root.display(),
+        banks = app.config.memory_banks.len(),
+        "memory registry ready"
+    );
+    app.memory = Some(memory);
+
     // Bind the agent IPC socket for this team before spawning cores, so its
     // path can be injected into each claude child's environment.
     let team_id = app.config.team.id.clone();
@@ -3766,15 +3957,23 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             .unwrap_or_default();
 
         let team_block = build_team_block(&app.config, &contactable, &creatable);
+        let memory_block = build_memory_block(&app.config, &agent.id);
+        let memory_banks_for_agent: Vec<String> = agent
+            .memory_banks
+            .as_deref()
+            .map(|list| list.to_vec())
+            .unwrap_or_default();
 
         let parts = PromptParts {
             role: agent.role_description.clone(),
             team: Some(team_block),
+            memory: memory_block,
             instructions: agent.instructions.clone(),
             aciddog_cli: Some(AciddogCliCtx {
                 binary: aciddog_binary_str.clone(),
                 contactable: contactable.iter().map(|s| s.to_string()).collect(),
                 creatable: creatable.iter().map(|s| s.to_string()).collect(),
+                memory_banks: memory_banks_for_agent,
                 worker: None,
             }),
         };
@@ -3957,6 +4156,7 @@ mod tests {
                     can_create_workers: None,
                     tools: None,
                     ai_core: None,
+                    memory_banks: None,
                 },
                 Agent {
                     id: "b".into(),
@@ -3968,6 +4168,7 @@ mod tests {
                     can_create_workers: None,
                     tools: None,
                     ai_core: None,
+                    memory_banks: None,
                 },
                 Agent {
                     id: "c".into(),
@@ -3979,6 +4180,7 @@ mod tests {
                     can_create_workers: None,
                     tools: None,
                     ai_core: None,
+                    memory_banks: None,
                 },
             ],
             workers: vec![],
@@ -3989,6 +4191,7 @@ mod tests {
                     default_tools: None,
                 },
             }],
+            memory_banks: vec![],
             thinking_messages: vec!["thinking".into()],
         }
     }
@@ -5273,6 +5476,7 @@ mod tests {
                     can_create_workers: Some(vec!["researcher".into()]),
                     tools: None,
                     ai_core: None,
+                    memory_banks: None,
                 },
                 Agent {
                     id: "planner".into(),
@@ -5284,6 +5488,7 @@ mod tests {
                     can_create_workers: None,
                     tools: None,
                     ai_core: None,
+                    memory_banks: None,
                 },
             ],
             workers: vec![
@@ -5296,6 +5501,7 @@ mod tests {
                     tools: None,
                     can_create_workers: None,
                     ai_core: None,
+                    memory_banks: None,
                 },
                 Worker {
                     id: "fetcher".into(),
@@ -5306,6 +5512,7 @@ mod tests {
                     tools: None,
                     can_create_workers: None,
                     ai_core: None,
+                    memory_banks: None,
                 },
             ],
             ai_cores: vec![crate::config::AiCore {
@@ -5315,6 +5522,7 @@ mod tests {
                     default_tools: None,
                 },
             }],
+            memory_banks: vec![],
             thinking_messages: vec!["thinking".into()],
         }
     }

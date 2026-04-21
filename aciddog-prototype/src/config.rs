@@ -44,6 +44,10 @@ pub struct Agent {
     /// Optional ai_core id override. `None` falls back to
     /// `Team::default_ai_core`.
     pub ai_core: Option<String>,
+    /// Allowlist of memory bank ids this agent may read from and write
+    /// to. `None` ⇒ no memory access; `Some(list)` grants read+write on
+    /// each listed bank.
+    pub memory_banks: Option<Vec<String>>,
 }
 
 /// A template for an ephemeral worker. Unlike `Agent`, a `Worker` is not
@@ -69,6 +73,23 @@ pub struct Worker {
     /// Optional ai_core id override. `None` falls back to
     /// `Team::default_ai_core`.
     pub ai_core: Option<String>,
+    /// Allowlist of memory bank ids this worker template may read from
+    /// and write to. Same semantics as `Agent::memory_banks`.
+    pub memory_banks: Option<Vec<String>>,
+}
+
+/// A named, persistent memory bank. Declared at the fleet level and
+/// referenced by agents/workers via their `memory_banks` allowlist.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryBank {
+    pub id: String,
+    /// Human-readable description of what this bank stores. Surfaced to
+    /// agents in the `<memory>` block of their first-turn prompt so the
+    /// model can decide when each bank is relevant.
+    pub description: String,
+    /// fastembed model id to use for embeddings in this bank. `None`
+    /// resolves to the built-in default (BGE-small-en-v1.5).
+    pub embed_model: Option<String>,
 }
 
 /// Configuration for a named AI runtime. The `kind` field is a
@@ -112,6 +133,9 @@ pub struct AciddogConfig {
     pub agents: Vec<Agent>,
     pub workers: Vec<Worker>,
     pub ai_cores: Vec<AiCore>,
+    /// Named memory banks available to this team. Agents/workers opt in
+    /// to specific banks via their `memory_banks` allowlist.
+    pub memory_banks: Vec<MemoryBank>,
     /// Final pool of messages shown by the thinking indicator while an
     /// agent is `Working`. Already merged with built-ins per
     /// `team.replace_thinking_messages`; guaranteed non-empty.
@@ -222,6 +246,9 @@ pub enum ConfigError {
 
     #[error("ai_core `{core}` has unknown type `{type_name}`")]
     UnknownAiCoreType { core: String, type_name: String },
+
+    #[error("`{from}` references unknown memory bank `{to}` in `memory_banks`")]
+    UnknownMemoryBankRef { from: String, to: String },
 }
 
 pub fn load_config(path: &Path) -> Result<AciddogConfig, ConfigError> {
@@ -272,6 +299,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 can_create_workers: optional_string_list(b, "can_create_workers")?,
                 tools: optional_string_list(b, "tools")?,
                 ai_core: optional_string(b, "ai_core"),
+                memory_banks: optional_string_list(b, "memory_banks")?,
             })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -289,6 +317,19 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 tools: optional_string_list(b, "tools")?,
                 can_create_workers: optional_string_list(b, "can_create_workers")?,
                 ai_core: optional_string(b, "ai_core"),
+                memory_banks: optional_string_list(b, "memory_banks")?,
+            })
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+
+    let memory_banks = doc
+        .blocks_of_type_resolved("memory_bank")
+        .iter()
+        .map(|b| {
+            Ok(MemoryBank {
+                id: require_id(&b.id, &b.kind)?,
+                description: require_string(b, "description")?,
+                embed_model: optional_string(b, "embed_model"),
             })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -318,6 +359,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
     validate_agent_refs(&agents)?;
     validate_worker_refs(&agents, &workers)?;
     validate_ai_core_refs(&team, &agents, &workers, &ai_cores)?;
+    validate_memory_bank_refs(&agents, &workers, &memory_banks)?;
 
     let mut user_messages: Vec<String> = Vec::new();
     for block in doc.blocks_of_type_resolved("thinking_messages").iter() {
@@ -350,6 +392,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         agents,
         workers,
         ai_cores,
+        memory_banks,
         thinking_messages,
     })
 }
@@ -406,6 +449,38 @@ fn validate_ai_core_refs(
     for w in workers {
         if let Some(id) = &w.ai_core {
             check(&w.id, "ai_core", id)?;
+        }
+    }
+    Ok(())
+}
+
+/// Every id in an agent's or worker's `memory_banks` list must match a
+/// declared `memory_bank` block.
+fn validate_memory_bank_refs(
+    agents: &[Agent],
+    workers: &[Worker],
+    banks: &[MemoryBank],
+) -> Result<(), ConfigError> {
+    let known: std::collections::HashSet<&str> = banks.iter().map(|b| b.id.as_str()).collect();
+    let check = |from: &str, list: &[String]| -> Result<(), ConfigError> {
+        for id in list {
+            if !known.contains(id.as_str()) {
+                return Err(ConfigError::UnknownMemoryBankRef {
+                    from: from.to_string(),
+                    to: id.clone(),
+                });
+            }
+        }
+        Ok(())
+    };
+    for a in agents {
+        if let Some(list) = &a.memory_banks {
+            check(&a.id, list)?;
+        }
+    }
+    for w in workers {
+        if let Some(list) = &w.memory_banks {
+            check(&w.id, list)?;
         }
     }
     Ok(())
@@ -483,6 +558,45 @@ impl AciddogConfig {
 
     pub fn worker(&self, id: &str) -> Option<&Worker> {
         self.workers.iter().find(|w| w.id == id)
+    }
+
+    /// Look up a declared memory bank by id.
+    pub fn memory_bank(&self, id: &str) -> Option<&MemoryBank> {
+        self.memory_banks.iter().find(|b| b.id == id)
+    }
+
+    /// Return the memory banks accessible to `actor_template_id`.
+    /// `actor_template_id` is an agent config id for configured agents,
+    /// or a worker template id for workers spawned from that template.
+    /// Unknown ids and actors with no declared `memory_banks` list
+    /// return an empty vec.
+    pub fn memory_banks_for(&self, actor_template_id: &str) -> Vec<&MemoryBank> {
+        let list = if let Some(a) = self.agents.iter().find(|a| a.id == actor_template_id) {
+            a.memory_banks.as_deref()
+        } else if let Some(w) = self.workers.iter().find(|w| w.id == actor_template_id) {
+            w.memory_banks.as_deref()
+        } else {
+            return Vec::new();
+        };
+        let Some(list) = list else {
+            return Vec::new();
+        };
+        list.iter()
+            .filter_map(|id| self.memory_bank(id))
+            .collect()
+    }
+
+    /// True iff `actor_template_id` has `bank_id` in its `memory_banks`
+    /// allowlist. Unknown actor ids default to `false`.
+    pub fn can_access_bank(&self, actor_template_id: &str, bank_id: &str) -> bool {
+        let list = if let Some(a) = self.agents.iter().find(|a| a.id == actor_template_id) {
+            a.memory_banks.as_deref()
+        } else if let Some(w) = self.workers.iter().find(|w| w.id == actor_template_id) {
+            w.memory_banks.as_deref()
+        } else {
+            return false;
+        };
+        matches!(list, Some(l) if l.iter().any(|id| id == bank_id))
     }
 
     /// Resolve the tool allowlist for an agent or worker. Precedence:

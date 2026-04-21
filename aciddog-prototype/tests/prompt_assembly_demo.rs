@@ -72,11 +72,13 @@ fn planner_prompt_has_role_team_tag_tools_and_instructions() {
     let parts = PromptParts {
         role: planner.role_description.clone(),
         team: Some(team),
+        memory: None,
         instructions: planner.instructions.clone(),
         aciddog_cli: Some(AciddogCliCtx {
             binary: "/usr/local/bin/aciddog".into(),
             contactable: contactable.iter().map(|s| s.to_string()).collect(),
             creatable: creatable.iter().map(|s| s.to_string()).collect(),
+            memory_banks: vec![],
             worker: None,
         }),
     };
@@ -94,6 +96,9 @@ fn planner_prompt_has_role_team_tag_tools_and_instructions() {
     assert!(p.contains("<team>"), "missing team: {p}");
     assert!(p.contains("- coder — implementer"), "team listing missing: {p}");
     assert!(p.contains("- jokester — comedian"), "creatable listing missing: {p}");
+    // planner has no memory banks in this test setup (we pass `memory: None`);
+    // see the dedicated memory-block test below for the positive case.
+    assert!(!p.contains("<memory>"), "unexpected memory block: {p}");
     assert!(p.contains("<tools>"), "missing tools: {p}");
     assert!(p.contains("- `Read` —"), "missing built-in Read line: {p}");
     assert!(
@@ -134,11 +139,13 @@ fn coder_prompt_uses_cli_preamble_inside_tools() {
     let parts = PromptParts {
         role: coder.role_description.clone(),
         team: Some(build_team_block(&cfg, &contactable, &creatable)),
+        memory: None,
         instructions: coder.instructions.clone(),
         aciddog_cli: Some(AciddogCliCtx {
             binary: "/usr/local/bin/aciddog".into(),
             contactable: contactable.iter().map(|s| s.to_string()).collect(),
             creatable: creatable.iter().map(|s| s.to_string()).collect(),
+            memory_banks: vec![],
             worker: None,
         }),
     };
@@ -159,4 +166,71 @@ fn coder_prompt_uses_cli_preamble_inside_tools() {
         p.contains("- researcher — investigator"),
         "creatable researcher listing missing: {p}"
     );
+}
+
+/// The `<memory>` block lists each bank the actor can access, with its
+/// description. A separate CLI doc inside `<tools>` teaches the model
+/// how to call `memory search` / `memory store`.
+#[test]
+fn planner_prompt_includes_memory_block_and_cli_docs_for_allowed_banks() {
+    let cfg = demo_config();
+    let planner = cfg.agents.iter().find(|a| a.id == "planner").expect("planner");
+
+    // Build a memory block mirroring what the orchestrator does.
+    let banks = cfg.memory_banks_for("planner");
+    assert!(!banks.is_empty(), "demo should grant planner at least one bank");
+    let mut memory_body = String::new();
+    memory_body.push_str("You have access to the following memory banks.\n\n");
+    for bank in &banks {
+        memory_body.push_str(&format!("- {} — {}\n", bank.id, bank.description));
+    }
+
+    let bank_ids: Vec<String> = banks.iter().map(|b| b.id.clone()).collect();
+    let contactable: Vec<&str> = cfg
+        .agents
+        .iter()
+        .filter(|a| a.id != "planner")
+        .map(|a| a.id.as_str())
+        .collect();
+    let creatable: Vec<&str> = vec!["jokester"];
+
+    let parts = PromptParts {
+        role: planner.role_description.clone(),
+        team: Some(build_team_block(&cfg, &contactable, &creatable)),
+        memory: Some(memory_body),
+        instructions: planner.instructions.clone(),
+        aciddog_cli: Some(AciddogCliCtx {
+            binary: "/usr/local/bin/aciddog".into(),
+            contactable: contactable.iter().map(|s| s.to_string()).collect(),
+            creatable: creatable.iter().map(|s| s.to_string()).collect(),
+            memory_banks: bank_ids.clone(),
+            worker: None,
+        }),
+    };
+    let core = ClaudeCodeCore::new(
+        Uuid::new_v4(),
+        parts,
+        planner.tools.clone().unwrap_or_default(),
+        None,
+    );
+    let p = core.first_turn_prompt();
+
+    assert!(p.contains("<memory>"), "missing memory tag: {p}");
+    assert!(
+        p.contains("- project_context —"),
+        "bank listing missing: {p}"
+    );
+    // Planner has no Bash → tag preamble; look for tag-flavored docs.
+    assert!(
+        p.contains("\"cmd\":\"memory_search\""),
+        "memory_search tag example missing: {p}"
+    );
+    assert!(
+        p.contains("\"cmd\":\"memory_store\""),
+        "memory_store tag example missing: {p}"
+    );
+    // Memory tag should appear before the tools tag in reading order.
+    let mem_pos = p.find("<memory>").unwrap();
+    let tools_pos = p.find("<tools>").unwrap();
+    assert!(mem_pos < tools_pos, "memory should precede tools: {p}");
 }

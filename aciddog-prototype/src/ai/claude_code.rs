@@ -35,6 +35,11 @@ pub struct PromptParts {
     /// creatable workers). Emitted as `<team>...</team>`. `None` or
     /// whitespace-only → block omitted.
     pub team: Option<String>,
+    /// Per-actor memory-bank listing (name + description). Emitted as
+    /// `<memory>...</memory>`. `None` or whitespace-only → block
+    /// omitted. This section is purely informational; the operational
+    /// `memory search` / `memory store` docs go inside `<tools>`.
+    pub memory: Option<String>,
     /// The WCL `instructions` string. Always emitted inside
     /// `<instructions>...</instructions>`.
     pub instructions: String,
@@ -51,6 +56,10 @@ pub struct AciddogCliCtx {
     pub binary: String,
     pub contactable: Vec<String>,
     pub creatable: Vec<String>,
+    /// Bank ids the actor may search/store against. Rendered as the
+    /// `memory search` / `memory store` doc in the preamble. Empty ⇒
+    /// those subcommands are shown as disabled.
+    pub memory_banks: Vec<String>,
     /// `Some` for workers — adds the parent + task + `worker complete`
     /// preamble before the general CLI/tag commands.
     pub worker: Option<WorkerCtx>,
@@ -210,6 +219,15 @@ impl ClaudeCodeCore {
         {
             sections.push(format!("<team>\n{team}\n</team>"));
         }
+        if let Some(memory) = self
+            .prompt_parts
+            .memory
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            sections.push(format!("<memory>\n{memory}\n</memory>"));
+        }
         sections.push(self.build_tools_section());
         sections.push(format!(
             "<instructions>\n{}\n</instructions>",
@@ -233,18 +251,24 @@ impl ClaudeCodeCore {
             let has_bash = self.allowed_tools.iter().any(|t| t == "Bash");
             let contactable: Vec<&str> = cli.contactable.iter().map(String::as_str).collect();
             let creatable: Vec<&str> = cli.creatable.iter().map(String::as_str).collect();
+            let memory_banks: Vec<&str> = cli.memory_banks.iter().map(String::as_str).collect();
 
             body.push('\n');
             if has_bash {
                 if let Some(w) = &cli.worker {
                     body.push_str(&worker_preamble(&cli.binary, &w.parent_id, &w.task));
                 }
-                body.push_str(&cli_preamble(&cli.binary, &contactable, &creatable));
+                body.push_str(&cli_preamble(
+                    &cli.binary,
+                    &contactable,
+                    &creatable,
+                    &memory_banks,
+                ));
             } else {
                 if let Some(w) = &cli.worker {
                     body.push_str(&tag_worker_preamble(&w.parent_id, &w.task));
                 }
-                body.push_str(&tag_preamble(&contactable, &creatable));
+                body.push_str(&tag_preamble(&contactable, &creatable, &memory_banks));
             }
         }
 
@@ -708,6 +732,7 @@ mod tests {
         let parts = PromptParts {
             role: Some("be terse".into()),
             team: Some("you can message: bob".into()),
+            memory: None,
             instructions: "do the thing".into(),
             aciddog_cli: None,
         };
@@ -748,6 +773,7 @@ mod tests {
                 binary: "/usr/bin/aciddog".into(),
                 contactable: vec!["bob".into()],
                 creatable: vec![],
+                memory_banks: vec![],
                 worker: None,
             }),
             ..PromptParts::default()
@@ -773,6 +799,7 @@ mod tests {
                 binary: "/usr/bin/aciddog".into(),
                 contactable: vec!["bob".into()],
                 creatable: vec![],
+                memory_banks: vec![],
                 worker: None,
             }),
             ..PromptParts::default()
@@ -796,6 +823,7 @@ mod tests {
                 binary: "/a".into(),
                 contactable: vec!["coder".into()],
                 creatable: vec![],
+                memory_banks: vec![],
                 worker: Some(WorkerCtx {
                     parent_id: "coder".into(),
                     task: "find FOO".into(),

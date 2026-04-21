@@ -8,13 +8,25 @@ use uuid::Uuid;
 
 use aciddog::agent_ipc::{self, Request, RequestCmd};
 use aciddog::cli::{
-    AgentArgs, AgentCommand, Args, CommentCommand, TaskCommand, TodoCommand, WorkerCommand,
+    AgentArgs, AgentCommand, Args, CommentCommand, MemoryCommand, TaskCommand, TodoCommand,
+    WorkerCommand,
 };
 use aciddog::config::load_config;
 use aciddog::tui;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Load variables from a local `.env` if present. Absence is fine;
+    // we only ignore the not-found case so real parse errors still surface.
+    match dotenvy::dotenv() {
+        Ok(_) => {}
+        Err(e) if e.not_found() => {}
+        Err(e) => {
+            eprintln!("aciddog: failed to load .env: {e}");
+            return ExitCode::from(1);
+        }
+    }
+
     // Agent-mode dispatch: the parent aciddog process sets ACIDDOG_AGENT_ID
     // and ACIDDOG_AGENT_SOCKET on the claude child, and that child (and any
     // subprocess it spawns) inherits them. If either is set, run as the
@@ -206,6 +218,12 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
                     cmd: CommentCommand::Remove { task, id },
                 },
         } => RequestCmd::TaskCommentRemove { task, id },
+        AgentCommand::Memory {
+            cmd: MemoryCommand::Search { bank, query, limit },
+        } => RequestCmd::MemorySearch { bank, query, limit },
+        AgentCommand::Memory {
+            cmd: MemoryCommand::Store { bank, body },
+        } => RequestCmd::MemoryStore { bank, body },
     };
 
     let response = agent_ipc::client::send(&socket_path, &Request { agent_id, cmd })

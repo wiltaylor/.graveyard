@@ -65,6 +65,39 @@ pub enum AgentCommand {
         #[command(subcommand)]
         cmd: TaskCommand,
     },
+    /// Read and write semantic memory banks. Each bank is scoped by
+    /// its declaration in the WCL config; an agent can only touch a
+    /// bank that appears in its `memory_banks` allowlist.
+    Memory {
+        #[command(subcommand)]
+        cmd: MemoryCommand,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum MemoryCommand {
+    /// Search a memory bank by semantic similarity. Returns the top
+    /// hits as a plaintext list, one per line.
+    Search {
+        /// Bank id as declared by a `memory_bank <id> { ... }` block.
+        #[arg(long)]
+        bank: String,
+        /// Natural-language query text.
+        #[arg(long)]
+        query: String,
+        /// Maximum number of hits to return (default 5).
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Persist a new entry in a memory bank.
+    Store {
+        /// Bank id.
+        #[arg(long)]
+        bank: String,
+        /// Entry body.
+        #[arg(long)]
+        body: String,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]

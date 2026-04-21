@@ -27,3 +27,7 @@ similar = "2"
 base64 = "0.22"
 shlex = "1"
 tempfile = "3"
+dotenvy = "0.15"
+cozo = { version = "0.7", default-features = false, features = ["minimal", "rayon", "requests"] }
+fastembed = "5"
+chrono = { version = "0.4", features = ["serde"] }
