@@ -211,15 +211,25 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
             // role/model pair from an `agent` config block.
             if let Some(template) = &chat.worker_template {
                 if let Some(w) = app.config.worker(template) {
+                    let model = app
+                        .config
+                        .effective_ai_core(w.ai_core.as_deref())
+                        .and_then(|c| c.runtime_model())
+                        .unwrap_or(&w.model);
                     format!(
                         " {} · worker · {} · {} ",
-                        chat.display_name, w.role, w.model
+                        chat.display_name, w.role, model
                     )
                 } else {
                     format!(" {} · worker ", chat.display_name)
                 }
             } else if let Some(a) = app.config.agents.get(selected_agent) {
-                format!(" {} · {} · {} ", a.id, a.role, a.model)
+                let model = app
+                    .config
+                    .effective_ai_core(a.ai_core.as_deref())
+                    .and_then(|c| c.runtime_model())
+                    .unwrap_or(&a.model);
+                format!(" {} · {} · {} ", a.id, a.role, model)
             } else {
                 format!(" {} ", chat.display_name)
             }

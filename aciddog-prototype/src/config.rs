@@ -114,6 +114,28 @@ pub enum AiCoreKind {
         /// lives here rather than on the team.
         default_tools: Option<Vec<String>>,
     },
+    /// Generic Anthropic-Messages-API-compatible core. Speaks the wire
+    /// protocol directly, so the same variant targets api.anthropic.com
+    /// or any compatible endpoint (Z.ai, etc.); only `api_url`,
+    /// `api_key_env`, and `model` change between vendors.
+    AnthropicApi {
+        /// Base URL of the API (e.g. `https://api.anthropic.com` or
+        /// `https://api.z.ai/api/anthropic`). The core appends
+        /// `/v1/messages`.
+        api_url: String,
+        /// Name of the environment variable holding the API key.
+        /// Resolved at turn time so missing keys surface as an
+        /// `AIEvent::Error` rather than a startup failure.
+        api_key_env: String,
+        /// Model id sent in the `model` request field.
+        model: String,
+        /// Optional `system` field content. `None` ⇒ no system message
+        /// sent.
+        system_prompt: Option<String>,
+        /// Per-core default tool allowlist. Unknown names are rejected
+        /// at config parse time (see `validate_ai_core_tools`).
+        default_tools: Option<Vec<String>>,
+    },
 }
 
 impl AiCore {
@@ -122,7 +144,19 @@ impl AiCore {
     /// every caller.
     pub fn default_tools(&self) -> Option<&[String]> {
         match &self.kind {
-            AiCoreKind::ClaudeCode { default_tools, .. } => default_tools.as_deref(),
+            AiCoreKind::ClaudeCode { default_tools, .. }
+            | AiCoreKind::AnthropicApi { default_tools, .. } => default_tools.as_deref(),
+        }
+    }
+
+    /// Model id this core will send to the backend, if the variant
+    /// pins one. `ClaudeCode` returns `None` because the model is
+    /// chosen by the `claude` CLI itself; `AnthropicApi` returns the
+    /// configured `model` field.
+    pub fn runtime_model(&self) -> Option<&str> {
+        match &self.kind {
+            AiCoreKind::ClaudeCode { .. } => None,
+            AiCoreKind::AnthropicApi { model, .. } => Some(model.as_str()),
         }
     }
 }
@@ -249,6 +283,13 @@ pub enum ConfigError {
 
     #[error("`{from}` references unknown memory bank `{to}` in `memory_banks`")]
     UnknownMemoryBankRef { from: String, to: String },
+
+    #[error("ai_core `{core}` (type `{type_name}`) lists unknown built-in tool `{tool}` in `default_tools`")]
+    UnknownTool {
+        core: String,
+        type_name: String,
+        tool: String,
+    },
 }
 
 pub fn load_config(path: &Path) -> Result<AciddogConfig, ConfigError> {
@@ -345,6 +386,13 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                     system_prompt: optional_string(b, "systemPrompt"),
                     default_tools: optional_string_list(b, "default_tools")?,
                 },
+                "anthropicApi" => AiCoreKind::AnthropicApi {
+                    api_url: require_string(b, "apiUrl")?,
+                    api_key_env: require_string(b, "apiKeyEnv")?,
+                    model: require_string(b, "model")?,
+                    system_prompt: optional_string(b, "systemPrompt"),
+                    default_tools: optional_string_list(b, "default_tools")?,
+                },
                 other => {
                     return Err(ConfigError::UnknownAiCoreType {
                         core: id,
@@ -359,6 +407,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
     validate_agent_refs(&agents)?;
     validate_worker_refs(&agents, &workers)?;
     validate_ai_core_refs(&team, &agents, &workers, &ai_cores)?;
+    validate_ai_core_tools(&ai_cores)?;
     validate_memory_bank_refs(&agents, &workers, &memory_banks)?;
 
     let mut user_messages: Vec<String> = Vec::new();
@@ -449,6 +498,32 @@ fn validate_ai_core_refs(
     for w in workers {
         if let Some(id) = &w.ai_core {
             check(&w.id, "ai_core", id)?;
+        }
+    }
+    Ok(())
+}
+
+/// Ensure every tool name declared in an `AnthropicApi` core's
+/// `default_tools` resolves to a known built-in. `ClaudeCode` cores
+/// skip this check because tool names there are decided by the
+/// external `claude` binary.
+fn validate_ai_core_tools(cores: &[AiCore]) -> Result<(), ConfigError> {
+    let known: std::collections::HashSet<&str> =
+        crate::ai::tools::BUILT_IN_TOOL_NAMES.iter().copied().collect();
+    for core in cores {
+        let (type_name, defaults) = match &core.kind {
+            AiCoreKind::AnthropicApi { default_tools, .. } => ("anthropicApi", default_tools.as_deref()),
+            AiCoreKind::ClaudeCode { .. } => continue,
+        };
+        let Some(list) = defaults else { continue };
+        for name in list {
+            if !known.contains(name.as_str()) {
+                return Err(ConfigError::UnknownTool {
+                    core: core.id.clone(),
+                    type_name: type_name.to_string(),
+                    tool: name.clone(),
+                });
+            }
         }
     }
     Ok(())
@@ -1259,6 +1334,64 @@ mod tests {
             cfg.ai_cores[0].default_tools(),
             Some(&["Bash".into(), "Read".into()][..])
         );
+    }
+
+    #[test]
+    fn parses_ai_core_block_with_anthropic_api_variant() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core z_ai {
+                type = :anthropicApi
+                apiUrl = "https://api.z.ai/api/anthropic"
+                apiKeyEnv = "ZAI_API_KEY"
+                model = "glm-5.1"
+                default_tools = ["Bash", "Read", "WebFetch"]
+                systemPrompt = "be concise"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].kind,
+            AiCoreKind::AnthropicApi {
+                api_url: "https://api.z.ai/api/anthropic".into(),
+                api_key_env: "ZAI_API_KEY".into(),
+                model: "glm-5.1".into(),
+                system_prompt: Some("be concise".into()),
+                default_tools: Some(vec!["Bash".into(), "Read".into(), "WebFetch".into()]),
+            }
+        );
+    }
+
+    #[test]
+    fn anthropic_api_requires_api_url_key_env_and_model() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core z_ai { type = :anthropicApi }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(err, ConfigError::MissingAttribute { .. }));
+    }
+
+    #[test]
+    fn anthropic_api_rejects_unknown_tool_name() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core z_ai {
+                type = :anthropicApi
+                apiUrl = "http://x"
+                apiKeyEnv = "K"
+                model = "m"
+                default_tools = ["Read", "NotARealTool"]
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownTool { tool, .. } if tool == "NotARealTool"
+        ));
     }
 
     #[test]

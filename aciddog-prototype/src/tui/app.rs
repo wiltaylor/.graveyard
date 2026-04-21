@@ -22,7 +22,9 @@ use uuid::Uuid;
 use clap::Parser;
 
 use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
-use crate::ai::{AICore, AIEvent, AciddogCliCtx, ClaudeCodeCore, PromptParts, WorkerCtx};
+use crate::ai::{
+    AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, PromptParts, WorkerCtx,
+};
 use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::{AciddogConfig, AiCore, AiCoreKind};
 use crate::memory::MemoryRegistry;
@@ -49,22 +51,88 @@ use super::ui;
 
 const COPIED_TOAST_MS: u64 = 1500;
 
-/// Pull the `system_prompt` out of a resolved `AiCore` if the variant
-/// exposes one. Today every variant is ClaudeCode so this is effectively
-/// a field access; it becomes a real match once other variants land.
-fn claude_system_prompt(core: &AiCore) -> Option<&String> {
+/// Short label for the AgentInfo chat block. Format is
+/// `<variant> (<wcl-id>)` so the user can see both the runtime kind
+/// and which specific `ai_core` block in aciddog.wcl is backing this
+/// agent (e.g. `anthropic-api (z_ai)`).
+fn core_display_label(core: &AiCore) -> String {
+    let kind = match &core.kind {
+        AiCoreKind::ClaudeCode { .. } => "claude-code",
+        AiCoreKind::AnthropicApi { .. } => "anthropic-api",
+    };
+    format!("{kind} ({})", core.id)
+}
+
+/// Shell-tool name for this core variant. Kept config-side so the TUI
+/// can decide whether to enable tag-IPC *before* the core is built
+/// (and therefore before the trait-side `AICore::shell_tool_name` is
+/// available). Keep this in sync with each core's trait impl.
+fn shell_tool_name_for_core(core: &AiCore) -> Option<&'static str> {
     match &core.kind {
-        AiCoreKind::ClaudeCode { system_prompt, .. } => system_prompt.as_ref(),
+        AiCoreKind::ClaudeCode { .. } | AiCoreKind::AnthropicApi { .. } => Some("Bash"),
     }
 }
 
 /// Whether an agent with this core and tool set must use the tag-based
 /// IPC protocol (because it has no shell tool to call the aciddog CLI).
-/// ClaudeCode's shell tool is `"Bash"`; future cores can carry their
-/// own name via `AICore::shell_tool_name` on the trait side.
 fn uses_tag_ipc(tools: &[String], core: &AiCore) -> bool {
-    match &core.kind {
-        AiCoreKind::ClaudeCode { .. } => !tools.iter().any(|t| t == "Bash"),
+    match shell_tool_name_for_core(core) {
+        Some(name) => !tools.iter().any(|t| t == name),
+        None => true,
+    }
+}
+
+/// Construct a boxed `AICore` for the given config variant, wiring env
+/// and (optionally) the tag-IPC socket. `resume` tells the factory to
+/// skip the first-turn preamble — used by `resurrect_worker` so a
+/// hibernated worker resumes cleanly.
+fn build_core(
+    core_cfg: &AiCore,
+    session_id: Uuid,
+    parts: PromptParts,
+    tools: Vec<String>,
+    env: Vec<(String, String)>,
+    socket_tx: Option<mpsc::Sender<AgentSocketEvent>>,
+    resume: bool,
+) -> Box<dyn AICore> {
+    match &core_cfg.kind {
+        AiCoreKind::ClaudeCode { system_prompt, .. } => {
+            let mut cc = if resume {
+                ClaudeCodeCore::with_session_id(session_id, tools, system_prompt.clone())
+            } else {
+                ClaudeCodeCore::new(session_id, parts, tools, system_prompt.clone())
+            }
+            .with_env(env);
+            if let Some(tx) = socket_tx {
+                cc = cc.with_socket_tx(tx);
+            }
+            Box::new(cc)
+        }
+        AiCoreKind::AnthropicApi {
+            api_url,
+            api_key_env,
+            model,
+            system_prompt,
+            ..
+        } => {
+            let mut c = AnthropicApiCore::new(
+                session_id,
+                api_url.clone(),
+                api_key_env.clone(),
+                model.clone(),
+                parts,
+                tools,
+                system_prompt.clone(),
+            )
+            .with_env(env);
+            if resume {
+                c = c.mark_started();
+            }
+            if let Some(tx) = socket_tx {
+                c = c.with_socket_tx(tx);
+            }
+            Box::new(c)
+        }
     }
 }
 
@@ -878,11 +946,10 @@ impl App {
             .map(|agent| {
                 let core = config.effective_ai_core(agent.ai_core.as_deref());
                 let tools = config.effective_tools(agent.tools.as_deref(), core);
-                let info = ChatBlock::agent_info(
-                    "claude-code",
-                    tools,
-                    agent.instructions.clone(),
-                );
+                let label = core
+                    .map(core_display_label)
+                    .unwrap_or_else(|| "claude-code".to_string());
+                let info = ChatBlock::agent_info(label, tools, agent.instructions.clone());
                 AgentChat {
                     blocks: vec![info],
                     sticky_bottom: true,
@@ -1376,7 +1443,6 @@ impl App {
             }
         };
         let tools = self.config.effective_tools(worker.tools.as_deref(), Some(core));
-        let system_prompt = claude_system_prompt(core).cloned();
         let tag_mode = uses_tag_ipc(&tools, core);
 
         let creatable: Vec<&str> = worker
@@ -1425,9 +1491,37 @@ impl App {
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
         let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
 
-        let cc = ClaudeCodeCore::new(session_id, parts, tools.clone(), system_prompt);
-        let assembled_prompt = cc.first_turn_prompt();
-        let info_block = ChatBlock::agent_info("claude-code", tools.clone(), assembled_prompt);
+        let socket_tx_for_core = if tag_mode {
+            match self.socket_events_tx.clone() {
+                Some(tx) => Some(tx),
+                None => {
+                    tracing::warn!(
+                        %display_name,
+                        "tag-mode worker spawned before socket_events_tx was set; \
+                         aborting worker"
+                    );
+                    let _ = reply.send(Response::err(
+                        "orchestrator has no socket_events_tx; cannot spawn tag-mode worker",
+                    ));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
+        let core_label = core_display_label(core);
+        let built_core: Box<dyn AICore> = build_core(
+            core,
+            session_id,
+            parts,
+            tools.clone(),
+            env,
+            socket_tx_for_core,
+            false,
+        );
+        let assembled_prompt = built_core.first_turn_prompt();
+        let info_block = ChatBlock::agent_info(core_label, tools.clone(), assembled_prompt);
         let pool_len = self.config.thinking_messages.len();
         let mut chat = AgentChat {
             blocks: vec![info_block],
@@ -1457,24 +1551,7 @@ impl App {
             tracing::warn!(%display_name, "user_tx closed before initial task could be sent");
         }
 
-        let mut cc = cc.with_env(env);
-        if tag_mode {
-            if let Some(socket_tx) = self.socket_events_tx.clone() {
-                cc = cc.with_socket_tx(socket_tx);
-            } else {
-                tracing::warn!(
-                    %display_name,
-                    "tag-mode worker spawned before socket_events_tx was set; \
-                     falling back to CLI preamble would be wrong — aborting worker"
-                );
-                let _ = reply.send(Response::err(
-                    "orchestrator has no socket_events_tx; cannot spawn tag-mode worker",
-                ));
-                return;
-            }
-        }
-        let core: Box<dyn AICore> = Box::new(cc);
-        tokio::spawn(run_core(new_idx, core, user_rx, agent_rx, ai_tx));
+        tokio::spawn(run_core(new_idx, built_core, user_rx, agent_rx, ai_tx));
 
         // Surface the spawn on the parent pane so the user can see it.
         if let Some(parent) = self.chats.get_mut(sender_idx) {
@@ -1597,7 +1674,6 @@ impl App {
 
         let ai_core = self.config.effective_ai_core(worker.ai_core.as_deref());
         let tools = self.config.effective_tools(worker.tools.as_deref(), ai_core);
-        let system_prompt = ai_core.and_then(claude_system_prompt).cloned();
         let tag_mode = ai_core.map(|c| uses_tag_ipc(&tools, c)).unwrap_or(false);
 
         let env = vec![
@@ -1608,20 +1684,31 @@ impl App {
             ),
         ];
 
-        // `with_session_id` sets `started = true`, so the first turn
-        // after resurrection runs `claude --resume <uuid>` and does
-        // not re-prepend the worker preamble — that content already
-        // lives in the claude session's history.
-        let mut cc =
-            ClaudeCodeCore::with_session_id(session_id, tools, system_prompt).with_env(env);
-        if tag_mode {
-            if let Some(socket_tx) = self.socket_events_tx.clone() {
-                cc = cc.with_socket_tx(socket_tx);
-            } else {
-                return Err("orchestrator has no socket_events_tx".into());
+        let socket_tx_for_core = if tag_mode {
+            match self.socket_events_tx.clone() {
+                Some(tx) => Some(tx),
+                None => return Err("orchestrator has no socket_events_tx".into()),
             }
-        }
-        let core: Box<dyn AICore> = Box::new(cc);
+        } else {
+            None
+        };
+
+        // `resume = true` marks the core as "started" so the first
+        // turn after resurrection does not re-prepend the worker
+        // preamble. For ClaudeCode this also triggers `--resume`
+        // against the claude session store; for AnthropicApi it just
+        // skips the preamble (history is empty post-restart, which is
+        // the documented v1 limitation).
+        let ai_core = ai_core.ok_or_else(|| "worker has no resolvable ai_core".to_string())?;
+        let core: Box<dyn AICore> = build_core(
+            ai_core,
+            session_id,
+            PromptParts::default(),
+            tools,
+            env,
+            socket_tx_for_core,
+            true,
+        );
 
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
         let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
@@ -4159,7 +4246,6 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         let tools = app
             .config
             .effective_tools(agent.tools.as_deref(), Some(ai_core));
-        let system_prompt = claude_system_prompt(ai_core).cloned();
         let tag_mode = uses_tag_ipc(&tools, ai_core);
 
         let session_id = Uuid::new_v4();
@@ -4216,25 +4302,34 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             ),
         ];
 
-        let cc = ClaudeCodeCore::new(session_id, parts, tools, system_prompt);
+        let socket_tx_for_core = if tag_mode {
+            Some(
+                app.socket_events_tx
+                    .clone()
+                    .expect("socket_events_tx set immediately after socket.events_tx() above"),
+            )
+        } else {
+            None
+        };
+
+        let core: Box<dyn AICore> = build_core(
+            ai_core,
+            session_id,
+            parts,
+            tools,
+            env,
+            socket_tx_for_core,
+            false,
+        );
 
         // Reflect the assembled first-turn prompt in the top AgentInfo
         // block so the user can expand it and see exactly what the LLM
-        // receives (mirrors what `cc.build_prompt` produces on turn 1).
-        let assembled = cc.first_turn_prompt();
+        // receives (mirrors what the core will emit on turn 1).
+        let assembled = core.first_turn_prompt();
         if let Some(ChatBlock::AgentInfo { prompt, .. }) = app.chats[idx].blocks.first_mut() {
             *prompt = assembled;
         }
 
-        let mut cc = cc.with_env(env);
-        if tag_mode {
-            let socket_tx = app
-                .socket_events_tx
-                .clone()
-                .expect("socket_events_tx set immediately after socket.events_tx() above");
-            cc = cc.with_socket_tx(socket_tx);
-        }
-        let core: Box<dyn AICore> = Box::new(cc);
         tokio::spawn(run_core(idx, core, user_rx, agent_rx, ai_tx.clone()));
     }
     drop(ai_tx);
@@ -5241,7 +5336,7 @@ mod tests {
                     prompt,
                     collapsed,
                 } => {
-                    assert_eq!(core, "claude-code");
+                    assert_eq!(core, "claude-code (default)");
                     assert!(tools.contains(&"Bash".to_string()));
                     assert_eq!(prompt, &app.config.agents[i].instructions);
                     assert!(*collapsed, "prompt starts collapsed");

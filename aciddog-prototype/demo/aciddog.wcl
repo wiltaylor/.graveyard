@@ -63,6 +63,25 @@ schema "ai_core" {
     // which is why this default lives on the core.
     default_tools: list(string) @optional
   }
+
+  // Generic Anthropic-Messages-API-compatible core. Works against
+  // api.anthropic.com, Z.ai's Anthropic-compatible endpoint, or any
+  // other provider that speaks the Messages wire protocol.
+  variant "anthropicApi" {
+    // Base URL (e.g. `https://api.anthropic.com` or
+    // `https://api.z.ai/api/anthropic`). `/v1/messages` is appended.
+    apiUrl: string
+    // Name of the environment variable that holds the API key.
+    // Loaded from `.env` at startup; never commit keys to the config.
+    apiKeyEnv: string
+    // Model id sent in the `model` request field.
+    model: string
+    // Optional top-level `system` field for every request.
+    systemPrompt: string @optional
+    // Fallback tool allowlist — names must resolve to built-in native
+    // tools (Bash, Read, Write, Edit, Glob, Grep, WebFetch).
+    default_tools: list(string) @optional
+  }
 }
 
 ai_core default_core {
@@ -89,6 +108,23 @@ ai_core default_core {
     - For destructive operations (deleting files, dropping tables, force-pushing, rewriting history), confirm first unless already authorised.
     - No preamble, no restating the request. Report outcomes, not intentions.
     - Plain text output. No emoji unless the user uses them.
+  EOT
+}
+
+// Anthropic-Messages-API core targeting Z.ai with the GLM-5.1 model.
+// The same variant also works for api.anthropic.com — just point
+// `apiUrl` at it and change `apiKeyEnv`/`model`. Put `ZAI_API_KEY=...`
+// in `.env` so the key never lands in the committed config.
+ai_core z_ai {
+  type = :anthropicApi
+  apiUrl = "https://api.z.ai/api/anthropic"
+  apiKeyEnv = "ZAI_API_KEY"
+  model = "glm-5.1"
+  default_tools = ["Bash", "Read", "Write", "Edit", "Grep", "Glob", "WebFetch"]
+  systemPrompt = <<EOT
+    You are a code agent operating in a terminal. You help with software engineering tasks by reading, writing, and modifying code, and by executing commands.
+
+    Follow your first-turn `<role>` / `<team>` / `<tools>` / `<instructions>` sections. Prefer tool calls that actually inspect or change the workspace over reasoning about what files might contain.
   EOT
 }
 
@@ -131,6 +167,20 @@ agent coder {
   instructions = "Implement code changes requested by the planner. When you need to investigate something you don't have context for, spawn a `researcher` worker rather than doing the legwork inline."
   can_create_workers = ["researcher"]
   memory_banks = ["project_context"]
+}
+
+agent tester {
+  role = "verifier"
+  role_description = <<EOT
+    You are the team's verifier. Other agents send you a change or a claim, and you confirm it holds up by running tests, builds, or type checks and reading the relevant code. You do not edit code — if something is broken, report back with enough detail (failing test name, error output, file and line) for the `coder` to fix it. Keep findings crisp: what you ran, what passed, what failed, and the smallest reproduction.
+  EOT
+  instructions = "Verify changes requested by the planner or the coder. Run the appropriate tests or builds, read the output, and report pass/fail with the specific evidence. Do not attempt fixes yourself — route failures back through `send` with clear repro steps."
+  tools = ["Bash", "Read", "Grep", "Glob"]
+  memory_banks = ["project_context"]
+  // Runs on the Z.ai Anthropic-compatible endpoint with glm-5.1, same
+  // as `coder`, to keep the Anthropic-API code path exercised from a
+  // second agent with a distinct role.
+  ai_core = "z_ai"
 }
 
 // Workers are ephemeral agents. They are not spawned at startup;

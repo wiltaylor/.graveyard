@@ -21,6 +21,7 @@ use crate::agent_ipc::{AgentSocketEvent, Request, RequestCmd, Response};
 use super::core::{AICore, AIError};
 use super::event::{parse_line, AIEvent};
 use super::tag_call;
+use super::tools::docs::built_in_tool_doc;
 
 /// Structured first-turn prompt input for [`ClaudeCodeCore`]. The core
 /// owns the assembly so it can build the `<tools>` section from its own
@@ -276,24 +277,6 @@ impl ClaudeCodeCore {
     }
 }
 
-/// Short one-line description for the built-in tools the user is most
-/// likely to enable. Unknown names get a generic `enabled` line so the
-/// model still sees the tool surface even when the orchestrator adds
-/// new built-ins this lookup table doesn't know about.
-fn built_in_tool_doc(name: &str) -> &'static str {
-    match name {
-        "Bash" => "execute a shell command. Output is returned as text. Use absolute paths and quote spaces.",
-        "Read" => "read a file from disk by absolute path. Returns the file contents.",
-        "Edit" => "perform an exact-string replacement in a file. The `old_string` must be unique unless you set `replace_all`.",
-        "Write" => "write a file at an absolute path. Overwrites existing files; create only what's needed.",
-        "Grep" => "ripgrep-backed content search. Supports regex; filter by glob or file type.",
-        "Glob" => "fast file-pattern matching (e.g. `**/*.rs`). Use to discover files by name.",
-        "WebFetch" => "fetch a URL and return processed text content.",
-        "WebSearch" => "search the web and return result snippets.",
-        _ => "enabled",
-    }
-}
-
 #[async_trait]
 impl AICore for ClaudeCodeCore {
     async fn turn(&mut self, prompt: &str) -> Result<BoxStream<'static, AIEvent>, AIError> {
@@ -353,6 +336,10 @@ impl AICore for ClaudeCodeCore {
 
     fn shell_tool_name(&self) -> Option<&'static str> {
         Some("Bash")
+    }
+
+    fn first_turn_prompt(&self) -> String {
+        self.build_first_turn_prompt()
     }
 }
 

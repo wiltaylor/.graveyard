@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use aciddog::config::{load_config, parse_config, ConfigError};
+use aciddog::config::{load_config, parse_config, AiCoreKind, ConfigError};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -27,6 +27,53 @@ fn loads_demo_config_end_to_end() {
     assert!(cfg.can_create("coder", "researcher"));
     assert!(cfg.can_create("researcher", "fetcher"));
     assert!(!cfg.can_create("planner", "researcher"));
+}
+
+#[test]
+fn demo_declares_z_ai_anthropic_core_bound_to_tester() {
+    let path = repo_root().join("demo").join("aciddog.wcl");
+    let cfg = load_config(&path).expect("demo aciddog.wcl should parse");
+
+    let z = cfg
+        .ai_cores
+        .iter()
+        .find(|c| c.id == "z_ai")
+        .expect("z_ai core should be declared");
+    match &z.kind {
+        AiCoreKind::AnthropicApi { api_url, api_key_env, model, .. } => {
+            assert_eq!(api_url, "https://api.z.ai/api/anthropic");
+            assert_eq!(api_key_env, "ZAI_API_KEY");
+            assert_eq!(model, "glm-5.1");
+        }
+        other => panic!("expected AnthropicApi variant, got {other:?}"),
+    }
+
+    let tester = cfg
+        .agents
+        .iter()
+        .find(|a| a.id == "tester")
+        .expect("tester agent");
+    assert_eq!(tester.ai_core.as_deref(), Some("z_ai"));
+    assert_eq!(
+        tester.tools.as_deref(),
+        Some(
+            &[
+                "Bash".to_string(),
+                "Read".to_string(),
+                "Grep".to_string(),
+                "Glob".to_string(),
+            ][..]
+        )
+    );
+
+    // `coder` stays on the default (ClaudeCode) core so both code
+    // paths run side by side in the demo.
+    let coder = cfg
+        .agents
+        .iter()
+        .find(|a| a.id == "coder")
+        .expect("coder agent");
+    assert_eq!(coder.ai_core, None);
 }
 
 #[test]

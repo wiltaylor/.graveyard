@@ -21,6 +21,14 @@ pub trait AICore: Send + Sync {
     fn shell_tool_name(&self) -> Option<&'static str> {
         None
     }
+
+    /// Rendered first-turn prompt — used by the TUI to seed the
+    /// AgentInfo block so the user can see exactly what the model
+    /// receives. Default empty for cores that have no structured
+    /// preamble.
+    fn first_turn_prompt(&self) -> String {
+        String::new()
+    }
 }
 
 #[derive(Debug, Error)]
