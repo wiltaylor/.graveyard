@@ -15,15 +15,20 @@ the agent team you want, launch `aciddog`, and drive the team from a terminal UI
 
 ```sh
 just            # list every available recipe
-just run        # scaffold demo/ (if missing) and launch the TUI
+just run        # launch the TUI in demo/
 just ci         # fmt check + clippy + tests
 ```
 
 ## Config
 
 The TUI loads `aciddog.wcl` from the current working directory. See
-[`scaffold/demo/aciddog.wcl`](scaffold/demo/aciddog.wcl) for the template that
-gets copied into `demo/` on first `just run`.
+[`demo/aciddog.wcl`](demo/aciddog.wcl) for a working example.
+
+## Secrets
+
+Put secrets like `ANTHROPIC_API_KEY` in a `.env` file alongside `aciddog.wcl`
+(e.g. `demo/.env`). `.env` is gitignored and loaded at startup, so the vars
+are inherited by spawned agents automatically.
 
 A minimal config looks like:
 
@@ -48,13 +53,12 @@ spawns one by running `aciddog worker create --template <id> --task
 `aciddog worker complete --body "<findings>"`, which delivers its
 report to the parent and hibernates it. Hibernated workers keep their
 pane and history — sending them another message resumes the session.
-See [`scaffold/demo/aciddog.wcl`](scaffold/demo/aciddog.wcl) for a
-working example.
+See [`demo/aciddog.wcl`](demo/aciddog.wcl) for a working example.
 
 ## Layout
 
 - `src/` — Rust binary + library
-- `scaffold/demo/` — template copied into a gitignored `demo/` workspace on first run
+- `demo/` — committed demo workspace used by `just run`
 - `tests/` — integration tests
 - `justfile` — build, test, run recipes
 

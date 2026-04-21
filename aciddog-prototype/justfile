@@ -43,23 +43,9 @@ app-test-integration:
 [group('app')]
 app-test: app-test-unit app-test-integration
 
-[private]
-demo-ensure:
-	#!/usr/bin/env bash
-	set -euo pipefail
-	if [ ! -d demo ]; then
-		echo "scaffolding demo/ from scaffold/demo/"
-		cp -r scaffold/demo demo
-	fi
-
-# Remove the demo workspace
-[group('demo')]
-demo-clean:
-	rm -rf demo
-
-# Start the TUI in the demo workspace (scaffolds demo/ if missing)
+# Start the TUI in the demo workspace
 [group('run')]
-run: demo-ensure
+run:
 	cd demo && cargo run --manifest-path ../Cargo.toml
 
 # Build everything

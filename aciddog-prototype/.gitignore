@@ -1,4 +1,5 @@
 /target
-/demo
+.env
 *.log
+/demo/.aciddog/
 Cargo.lock
