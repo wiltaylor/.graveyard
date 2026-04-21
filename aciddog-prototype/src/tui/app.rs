@@ -173,6 +173,11 @@ pub struct AgentChat {
     /// Inner height of the input box at the last render, cached so
     /// Up/Down and scroll-follow math match what the user sees.
     pub input_visible_rows: u16,
+    /// Index into `AciddogConfig::thinking_messages` for the line shown
+    /// by the thinking indicator. `Some` whenever `status == Working`;
+    /// set once on entering `Working` and cleared on leaving so the
+    /// message stays stable for a whole turn.
+    pub thinking_message_idx: Option<usize>,
 }
 
 impl AgentChat {
@@ -229,6 +234,37 @@ impl AgentChat {
         let col = self.input[row_start..cursor].chars().count();
         (row_idx, row_start, col)
     }
+
+    /// Transition this chat into `Working`, picking a random thinking
+    /// message on the way in. A no-op (except for the status write) if
+    /// the chat is already `Working`, so the message stays stable for
+    /// the whole turn.
+    pub fn begin_working(&mut self, pool_len: usize) {
+        if self.status != AgentStatus::Working {
+            self.thinking_message_idx = Some(pseudo_random(pool_len));
+        }
+        self.status = AgentStatus::Working;
+    }
+
+    /// Leave the `Working` state (turn ended, error, hibernation) and
+    /// clear the thinking message so the indicator disappears. The
+    /// caller writes the new status explicitly.
+    pub fn end_working(&mut self) {
+        self.thinking_message_idx = None;
+    }
+}
+
+/// Pick an index in `[0, n)` from the current system clock. Good enough
+/// for picking a random thinking message; not cryptographic.
+fn pseudo_random(n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as usize)
+        .unwrap_or(0)
+        % n
 }
 
 /// Word-wrap `s` to `width` columns. Returns one `(start, end)` byte
@@ -496,6 +532,11 @@ pub struct App {
     /// double-clicks on task rows. A second click at the same
     /// (col,row) within `DOUBLE_CLICK_WINDOW` counts as double.
     pub last_click: Option<(u16, u16, Instant)>,
+    /// Monotonic counter driven by the 100ms ticker in `event_loop`.
+    /// Used solely to advance the thinking-indicator spinner; incremented
+    /// only when at least one chat is `Working`, so idle terminals don't
+    /// redraw.
+    pub frame_tick: u64,
 }
 
 /// Time window for detecting a double-click. Matches the typical
@@ -541,6 +582,7 @@ impl App {
             selected_view: 0,
             tasks_screen: TasksScreen::default(),
             last_click: None,
+            frame_tick: 0,
         }
     }
 
@@ -659,19 +701,21 @@ impl App {
             return;
         }
 
+        let pool_len = self.config.thinking_messages.len();
         let Some(chat) = self.chats.get_mut(selected) else {
             return;
         };
         if let Some(tx) = &chat.user_tx {
             match tx.send(content) {
                 Ok(()) => {
-                    chat.status = AgentStatus::Working;
+                    chat.begin_working(pool_len);
                 }
                 Err(_closed) => {
                     chat.push_block(ChatBlock::system_error(
                         "agent offline, message dropped".to_string(),
                     ));
                     chat.status = AgentStatus::Error;
+                    chat.end_working();
                 }
             }
         }
@@ -750,11 +794,13 @@ impl App {
                 }
                 if chat.status == AgentStatus::Working {
                     chat.status = AgentStatus::Ready;
+                    chat.end_working();
                 }
             }
             AIEvent::Error { message, .. } => {
                 chat.push_block(ChatBlock::system_error(message));
                 chat.status = AgentStatus::Error;
+                chat.end_working();
             }
             AIEvent::Other(v) => {
                 debug!(event = ?v, agent_idx = idx, "unhandled ai event");
@@ -973,6 +1019,7 @@ impl App {
         let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
 
         let info_block = ChatBlock::agent_info("claude-code", tools.clone(), instructions.clone());
+        let pool_len = self.config.thinking_messages.len();
         let mut chat = AgentChat {
             blocks: vec![info_block],
             sticky_bottom: true,
@@ -980,6 +1027,7 @@ impl App {
             agent_tx: Some(agent_tx),
             session_id: Some(session_id),
             status: AgentStatus::Working,
+            thinking_message_idx: Some(pseudo_random(pool_len)),
             parent_idx: Some(sender_idx),
             worker_template: Some(template.clone()),
             display_name: display_name.clone(),
@@ -1053,6 +1101,7 @@ impl App {
                 }
             });
         }
+        let pool_len = self.config.thinking_messages.len();
         if let Some(parent_chat) = self.chats.get_mut(parent_idx) {
             parent_chat.push_block(ChatBlock::mail_received(
                 sender_display.clone(),
@@ -1062,7 +1111,7 @@ impl App {
             // reflect that in the status icon. `TurnResult` resets to
             // `Ready`. Preserve existing `Error`.
             if parent_chat.status != AgentStatus::Error {
-                parent_chat.status = AgentStatus::Working;
+                parent_chat.begin_working(pool_len);
             }
         }
 
@@ -1080,6 +1129,7 @@ impl App {
             chat.agent_tx = None;
             chat.status = AgentStatus::Hibernated;
             chat.hibernated = true;
+            chat.end_working();
         }
 
         // A hibernated worker is hidden from the agent list. If the
@@ -1147,10 +1197,11 @@ impl App {
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
         let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
 
+        let pool_len = self.config.thinking_messages.len();
         if let Some(chat) = self.chats.get_mut(idx) {
             chat.user_tx = Some(user_tx);
             chat.agent_tx = Some(agent_tx);
-            chat.status = AgentStatus::Working;
+            chat.begin_working(pool_len);
             chat.hibernated = false;
         }
 
@@ -1239,6 +1290,7 @@ impl App {
         // body. The sender's chat already has a Mail block from the Bash
         // tool-call intercept in `handle_ai_event`, so no echo is needed
         // there.
+        let pool_len = self.config.thinking_messages.len();
         if let Some(chat) = self.chats.get_mut(recipient_idx) {
             chat.push_block(ChatBlock::mail_received(sender_id.clone(), body.clone()));
             // Recipient's AI turn is about to start — reflect that in
@@ -1246,7 +1298,7 @@ impl App {
             // idle while they're actually processing. `TurnResult`
             // flips it back to `Ready`. Preserve existing `Error`.
             if chat.status != AgentStatus::Error {
-                chat.status = AgentStatus::Working;
+                chat.begin_working(pool_len);
             }
         }
 
@@ -3536,7 +3588,14 @@ async fn event_loop<B: ratatui::backend::Backend>(
     let mut events = EventStream::new();
     terminal.draw(|f| ui::render(f, app))?;
 
+    // Drives the thinking-indicator spinner. Skip missed ticks so a
+    // long-running event-handler doesn't produce a burst of catch-up
+    // draws.
+    let mut spinner_tick = tokio::time::interval(Duration::from_millis(100));
+    spinner_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
+        let mut needs_redraw = true;
         tokio::select! {
             maybe_event = events.next() => {
                 match maybe_event {
@@ -3562,13 +3621,23 @@ async fn event_loop<B: ratatui::backend::Backend>(
             Some(event) = socket_rx.recv() => {
                 app.handle_agent_socket_event(event);
             }
+            _ = spinner_tick.tick() => {
+                // Only redraw when something is actually animating.
+                if app.chats.iter().any(|c| c.status == AgentStatus::Working) {
+                    app.frame_tick = app.frame_tick.wrapping_add(1);
+                } else {
+                    needs_redraw = false;
+                }
+            }
         }
 
         if app.should_quit {
             break;
         }
 
-        terminal.draw(|f| ui::render(f, app))?;
+        if needs_redraw {
+            terminal.draw(|f| ui::render(f, app))?;
+        }
     }
 
     Ok(())
@@ -3585,6 +3654,7 @@ mod tests {
             team: Team {
                 id: "t".into(),
                 description: "d".into(),
+                replace_thinking_messages: false,
             },
             agents: vec![
                 Agent {
@@ -3613,6 +3683,7 @@ mod tests {
                 },
             ],
             workers: vec![],
+            thinking_messages: vec!["thinking".into()],
         }
     }
 
@@ -4882,6 +4953,7 @@ mod tests {
             team: Team {
                 id: "t".into(),
                 description: "d".into(),
+                replace_thinking_messages: false,
             },
             agents: vec![
                 Agent {
@@ -4919,6 +4991,7 @@ mod tests {
                     can_create_workers: None,
                 },
             ],
+            thinking_messages: vec!["thinking".into()],
         }
     }
 

@@ -234,6 +234,7 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     f.render_widget(block, area);
 
     // Split borrows so we can mutate both the current chat and the button list.
+    let frame_tick = app.frame_tick;
     let App {
         chats,
         layout,
@@ -247,20 +248,30 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
         return inner;
     };
 
-    if chat.blocks.is_empty() {
+    // Append a virtual 1-row "thinking" entry after the real blocks
+    // while this chat is `Working`. Not inserted into `chat.blocks` so
+    // history, selection, and copy logic are untouched; anchor math
+    // treats it as a trailing block of height 1 so sticky-bottom works.
+    let thinking_visible =
+        chat.status == AgentStatus::Working && !config.thinking_messages.is_empty();
+
+    if chat.blocks.is_empty() && !thinking_visible {
         return inner;
     }
-    let _ = config;
 
     // Compute heights at the current viewport width.
-    let heights: Vec<u16> = chat
+    let mut heights: Vec<u16> = chat
         .blocks
         .iter()
         .map(|b| b.height(inner.width).max(1))
         .collect();
+    if thinking_visible {
+        heights.push(1);
+    }
 
     reconcile_anchor(chat, &heights, inner.height);
 
+    let real_block_count = chat.blocks.len();
     let start_idx = chat.anchor.block_idx;
     let mut y = inner.y;
     let end_y = inner.y.saturating_add(inner.height);
@@ -274,11 +285,58 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
             continue;
         }
         let rect = Rect::new(inner.x, y, inner.width, visible_h);
-        let selected = chat.selected_block == Some(i);
-        chat.blocks[i].render(f, rect, &mut layout.chat_buttons, i, selected);
+        if i < real_block_count {
+            let selected = chat.selected_block == Some(i);
+            chat.blocks[i].render(f, rect, &mut layout.chat_buttons, i, selected);
+        } else {
+            render_thinking_row(
+                f,
+                rect,
+                &config.thinking_messages,
+                chat.thinking_message_idx,
+                frame_tick,
+            );
+        }
         y = y.saturating_add(visible_h);
     }
     inner
+}
+
+const THINKING_SPINNER_FRAMES: &[&str] = &[
+    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+];
+
+fn render_thinking_row(
+    f: &mut Frame,
+    area: Rect,
+    pool: &[String],
+    idx: Option<usize>,
+    frame_tick: u64,
+) {
+    if pool.is_empty() || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let spinner = THINKING_SPINNER_FRAMES
+        [(frame_tick as usize) % THINKING_SPINNER_FRAMES.len()];
+    let message_idx = idx.unwrap_or(0).min(pool.len().saturating_sub(1));
+    let message = pool[message_idx].as_str();
+    let line = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            spinner,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{message}…"),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
 }
 
 /// Make sure the scroll anchor points somewhere sensible given the block

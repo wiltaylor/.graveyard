@@ -1,6 +1,11 @@
 schema "team" {
   id: identifier @inline(0)
   description: string
+  replace_thinking_messages: bool @optional @default(false)
+}
+
+schema "thinking_messages" {
+  messages: list(string)
 }
 
 schema "agent" {
@@ -62,3 +67,10 @@ worker jokester {
   role = "comedian"
   instructions = "Write one short, clean joke about the topic your parent gave you. Keep it to two or three lines at most. Deliver the finished joke as your completion report — no progress updates, no preamble, just the punchline."
 }
+
+// Optional: add your own messages to the thinking indicator that
+// appears while an agent is working. These are merged with the built-in
+// pool unless you set `replace_thinking_messages = true` on the team.
+// thinking_messages {
+//   messages = ["mulling it over", "putting the kettle on"]
+// }

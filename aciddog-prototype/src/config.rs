@@ -8,6 +8,10 @@ use wcl_lang::{parse, ParseOptions, Value};
 pub struct Team {
     pub id: String,
     pub description: String,
+    /// When `true`, user-declared `thinking_messages` blocks replace the
+    /// built-in pool entirely; when `false` (default) they are merged
+    /// with the built-ins.
+    pub replace_thinking_messages: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -49,7 +53,62 @@ pub struct AciddogConfig {
     pub team: Team,
     pub agents: Vec<Agent>,
     pub workers: Vec<Worker>,
+    /// Final pool of messages shown by the thinking indicator while an
+    /// agent is `Working`. Already merged with built-ins per
+    /// `team.replace_thinking_messages`; guaranteed non-empty.
+    pub thinking_messages: Vec<String>,
 }
+
+/// Default pool of whimsical thinking messages. Users can extend or
+/// replace this via `thinking_messages { messages = [...] }` blocks in
+/// their WCL config.
+pub const BUILT_IN_THINKING_MESSAGES: &[&str] = &[
+    "petting digital cats",
+    "asking the rubber duck",
+    "compiling witty remarks",
+    "reticulating splines",
+    "bribing the optimizer",
+    "untangling callback spaghetti",
+    "counting semicolons",
+    "negotiating with the type checker",
+    "feeding the hamster",
+    "teaching the linter manners",
+    "summoning stack overflow",
+    "yak shaving (it's fine)",
+    "mashing keys thoughtfully",
+    "locating the coffee",
+    "herding async cats",
+    "debating tabs vs spaces",
+    "rebooting the universe",
+    "decoding ancient regex",
+    "polishing edge cases",
+    "kissing the BIOS",
+    "consulting the oracle",
+    "rolling for initiative",
+    "greasing the pipeline",
+    "convincing the borrow checker",
+    "rewriting it in Rust",
+    "bartering with the GPU",
+    "chasing rogue pointers",
+    "sharpening the hash",
+    "rehydrating neurons",
+    "placating the kernel",
+    "inverting the binary tree",
+    "stirring the tensor soup",
+    "whispering to the daemon",
+    "refactoring my thoughts",
+    "booting the brain cell",
+    "warming up the neurons",
+    "aligning the bits",
+    "drawing the rest of the owl",
+    "blaming the cache",
+    "doing a barrel roll",
+    "calling my lawyer",
+    "lighting the incense",
+    "writing a haiku about it",
+    "pondering the orb",
+    "googling the answer, don't tell anyone",
+];
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -121,6 +180,8 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
     let team = Team {
         id: require_id(&team_block.id, &team_block.kind)?,
         description: require_string(team_block, "description")?,
+        replace_thinking_messages: optional_bool(team_block, "replace_thinking_messages")?
+            .unwrap_or(false),
     };
 
     let agents = doc
@@ -156,10 +217,37 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
     validate_agent_refs(&agents)?;
     validate_worker_refs(&agents, &workers)?;
 
+    let mut user_messages: Vec<String> = Vec::new();
+    for block in doc.blocks_of_type_resolved("thinking_messages").iter() {
+        if let Some(list) = optional_string_list(block, "messages")? {
+            user_messages.extend(list);
+        }
+    }
+
+    let mut thinking_messages: Vec<String> =
+        if team.replace_thinking_messages && !user_messages.is_empty() {
+            user_messages
+        } else {
+            let mut merged: Vec<String> = BUILT_IN_THINKING_MESSAGES
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect();
+            merged.extend(user_messages);
+            merged
+        };
+
+    // Guarantee the pool is never empty so the UI always has something
+    // to show. Only reachable if the built-ins are disabled via replace
+    // and the user supplied no messages.
+    if thinking_messages.is_empty() {
+        thinking_messages.push("thinking".to_string());
+    }
+
     Ok(AciddogConfig {
         team,
         agents,
         workers,
+        thinking_messages,
     })
 }
 
@@ -284,6 +372,17 @@ fn optional_string(block: &wcl_lang::BlockRef, attr: &str) -> Option<String> {
     match block.get(attr) {
         Some(Value::String(s)) | Some(Value::Identifier(s)) => Some(s.clone()),
         _ => None,
+    }
+}
+
+fn optional_bool(block: &wcl_lang::BlockRef, attr: &str) -> Result<Option<bool>, ConfigError> {
+    match block.get(attr) {
+        None => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(ConfigError::BadAttributeType {
+            kind: block.kind.clone(),
+            attr: attr.to_string(),
+        }),
     }
 }
 
@@ -691,5 +790,88 @@ mod tests {
     fn can_create_unknown_actor_is_denied() {
         let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
         assert!(!cfg.can_create("ghost", "alpha"));
+    }
+
+    #[test]
+    fn thinking_messages_default_to_built_ins() {
+        let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
+        assert_eq!(cfg.thinking_messages.len(), BUILT_IN_THINKING_MESSAGES.len());
+        assert!(!cfg.team.replace_thinking_messages);
+    }
+
+    #[test]
+    fn thinking_messages_merge_user_blocks_by_default() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            thinking_messages { messages = ["mine 1", "mine 2"] }
+            thinking_messages { messages = ["mine 3"] }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        // Built-ins first, then user-declared blocks in source order.
+        assert_eq!(
+            cfg.thinking_messages.len(),
+            BUILT_IN_THINKING_MESSAGES.len() + 3
+        );
+        let tail: Vec<&str> = cfg
+            .thinking_messages
+            .iter()
+            .rev()
+            .take(3)
+            .rev()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(tail, vec!["mine 1", "mine 2", "mine 3"]);
+    }
+
+    #[test]
+    fn thinking_messages_replace_when_flag_set_and_user_non_empty() {
+        let src = r#"
+            team default {
+                description = "t"
+                replace_thinking_messages = true
+            }
+            agent a { role = "r" instructions = "i" }
+            thinking_messages { messages = ["only mine"] }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert!(cfg.team.replace_thinking_messages);
+        assert_eq!(cfg.thinking_messages, vec!["only mine".to_string()]);
+    }
+
+    #[test]
+    fn thinking_messages_fall_back_to_built_ins_when_replace_but_no_user_messages() {
+        let src = r#"
+            team default {
+                description = "t"
+                replace_thinking_messages = true
+            }
+            agent a { role = "r" instructions = "i" }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.thinking_messages.len(), BUILT_IN_THINKING_MESSAGES.len());
+    }
+
+    #[test]
+    fn thinking_messages_pool_is_never_empty() {
+        let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
+        assert!(!cfg.thinking_messages.is_empty());
+    }
+
+    #[test]
+    fn replace_thinking_messages_must_be_bool() {
+        let src = r#"
+            team default {
+                description = "t"
+                replace_thinking_messages = "yes"
+            }
+            agent a { role = "r" instructions = "i" }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::BadAttributeType { attr, .. }
+                if attr == "replace_thinking_messages"
+        ));
     }
 }
