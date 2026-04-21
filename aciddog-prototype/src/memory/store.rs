@@ -169,33 +169,21 @@ impl MemoryStore {
         let title = title.map(str::trim).unwrap_or("").to_string();
         let tags = normalise_tags(tags);
 
-        // entries row — same as before, one write per store call.
         let mut params = BTreeMap::new();
         params.insert("id".into(), DataValue::Str(id.to_string().into()));
+        params.insert("title".into(), DataValue::Str(title.into()));
         params.insert("body".into(), DataValue::Str(trimmed.to_string().into()));
         params.insert("created_at".into(), DataValue::Num(Num::Int(ts)));
         params.insert("embedding".into(), list_of_floats(&embedding));
         self.db
             .run_script(
-                "?[id, body, created_at, embedding] <- [[$id, $body, $created_at, $embedding]] \
-                 :put entries {id => body, created_at, embedding}",
+                "?[id, title, body, created_at, embedding] <- \
+                   [[$id, $title, $body, $created_at, $embedding]] \
+                 :put entries {id => title, body, created_at, embedding}",
                 params,
                 ScriptMutability::Mutable,
             )
             .map_err(|e| MemoryError::Cozo(format!("store entries: {e}")))?;
-
-        // entry_meta row — always written, even with an empty title,
-        // so later joins can assume every entry has a meta row.
-        let mut meta_params = BTreeMap::new();
-        meta_params.insert("entry".into(), DataValue::Str(id.to_string().into()));
-        meta_params.insert("title".into(), DataValue::Str(title.into()));
-        self.db
-            .run_script(
-                "?[entry, title] <- [[$entry, $title]] :put entry_meta {entry => title}",
-                meta_params,
-                ScriptMutability::Mutable,
-            )
-            .map_err(|e| MemoryError::Cozo(format!("store entry_meta: {e}")))?;
 
         // entry_tags: one row per tag. Skip silently when empty.
         for tag in &tags {
@@ -229,7 +217,12 @@ impl MemoryStore {
         // 4× + 20 so we never unbounded-scan.
         let fetch_cap = limit.saturating_mul(4).saturating_add(20);
 
-        let ids = if let Some(query) = opts.query.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let candidates = if let Some(query) = opts
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             self.semantic_candidates(query, fetch_cap, &opts.tags)?
         } else {
             self.relational_candidates(fetch_cap, &opts.tags)?
@@ -242,9 +235,8 @@ impl MemoryStore {
             .filter(|s| !s.is_empty())
             .map(str::to_ascii_lowercase);
 
-        let mut out = Vec::with_capacity(limit.min(ids.len()));
-        for (id, dist, body, created_at) in ids {
-            let title = self.load_title(id)?;
+        let mut out = Vec::with_capacity(limit.min(candidates.len()));
+        for (id, dist, title, body, created_at) in candidates {
             if let Some(needle) = &needle {
                 if !title.to_ascii_lowercase().contains(needle) {
                     continue;
@@ -267,14 +259,14 @@ impl MemoryStore {
     }
 
     /// HNSW candidate fetch: up to `fetch_cap` nearest hits with tag
-    /// filters already applied. Returns `(id, distance, body,
+    /// filters already applied. Returns `(id, distance, title, body,
     /// created_at)` tuples in cozo row order (distance ascending).
     fn semantic_candidates(
         &self,
         query: &str,
         fetch_cap: usize,
         tags: &TagFilter,
-    ) -> Result<Vec<(Uuid, f32, String, DateTime<Utc>)>, MemoryError> {
+    ) -> Result<Vec<(Uuid, f32, String, String, DateTime<Utc>)>, MemoryError> {
         let embedding = self.embedder.embed(self.embed_model.as_deref(), query)?;
         if embedding.len() != self.dim {
             return Err(MemoryError::DimMismatch {
@@ -289,9 +281,9 @@ impl MemoryStore {
         let tag_clauses = build_tag_clauses(&mut params, tags, "id");
 
         let script = format!(
-            "?[dist, id, body, created_at] := \
+            "?[dist, id, title, body, created_at] := \
                q = vec($q), \
-               ~entries:vec{{id, body, created_at | query: q, k: $k, \
+               ~entries:vec{{id, title, body, created_at | query: q, k: $k, \
                              ef: 32, bind_distance: dist}}{tag_clauses}"
         );
 
@@ -311,16 +303,20 @@ impl MemoryStore {
                 .and_then(as_str)
                 .and_then(|s| Uuid::parse_str(&s).ok())
                 .ok_or_else(|| MemoryError::Cozo("search row missing/invalid id".into()))?;
-            let body = row
+            let title = row
                 .get(2)
+                .and_then(as_str)
+                .unwrap_or_default();
+            let body = row
+                .get(3)
                 .and_then(as_str)
                 .ok_or_else(|| MemoryError::Cozo("search row missing body".into()))?;
             let created_at = row
-                .get(3)
+                .get(4)
                 .and_then(as_i64)
                 .and_then(|ms| Utc.timestamp_millis_opt(ms).single())
                 .unwrap_or_else(Utc::now);
-            out.push((id, dist, body, created_at));
+            out.push((id, dist, title, body, created_at));
         }
         Ok(out)
     }
@@ -331,12 +327,13 @@ impl MemoryStore {
         &self,
         fetch_cap: usize,
         tags: &TagFilter,
-    ) -> Result<Vec<(Uuid, f32, String, DateTime<Utc>)>, MemoryError> {
+    ) -> Result<Vec<(Uuid, f32, String, String, DateTime<Utc>)>, MemoryError> {
         let mut params = BTreeMap::new();
         let tag_clauses = build_tag_clauses(&mut params, tags, "id");
 
         let script = format!(
-            "?[id, body, created_at] := *entries{{id, body, created_at}}{tag_clauses} \
+            "?[id, title, body, created_at] := \
+               *entries{{id, title, body, created_at}}{tag_clauses} \
              :order -created_at \
              :limit {fetch_cap}"
         );
@@ -353,39 +350,22 @@ impl MemoryStore {
                 .and_then(as_str)
                 .and_then(|s| Uuid::parse_str(&s).ok())
                 .ok_or_else(|| MemoryError::Cozo("list row missing/invalid id".into()))?;
-            let body = row
+            let title = row
                 .get(1)
+                .and_then(as_str)
+                .unwrap_or_default();
+            let body = row
+                .get(2)
                 .and_then(as_str)
                 .ok_or_else(|| MemoryError::Cozo("list row missing body".into()))?;
             let created_at = row
-                .get(2)
+                .get(3)
                 .and_then(as_i64)
                 .and_then(|ms| Utc.timestamp_millis_opt(ms).single())
                 .unwrap_or_else(Utc::now);
-            out.push((id, f32::NAN, body, created_at));
+            out.push((id, f32::NAN, title, body, created_at));
         }
         Ok(out)
-    }
-
-    fn load_title(&self, id: Uuid) -> Result<String, MemoryError> {
-        let mut params = BTreeMap::new();
-        params.insert("id".into(), DataValue::Str(id.to_string().into()));
-        let rows = self
-            .db
-            .run_script(
-                "?[title] := *entry_meta{entry: $id, title}",
-                params,
-                ScriptMutability::Immutable,
-            )
-            .map_err(|e| MemoryError::Cozo(format!("load title: {e}")))?;
-        Ok(rows
-            .rows
-            .into_iter()
-            .next()
-            .and_then(|row| row.into_iter().next())
-            .as_ref()
-            .and_then(as_str)
-            .unwrap_or_default())
     }
 
     fn load_tags(&self, id: Uuid) -> Result<Vec<String>, MemoryError> {
@@ -515,14 +495,16 @@ impl MemoryStore {
         // depending on whether we want outgoing or incoming neighbours.
         let base = match direction {
             LinkDirection::Out => {
-                "*links{from: $id, to: peer, kind, created_at}, *entries{id: peer, body}"
+                "*links{from: $id, to: peer, kind, created_at}, \
+                 *entries{id: peer, title, body}"
             }
             LinkDirection::In => {
-                "*links{from: peer, to: $id, kind, created_at}, *entries{id: peer, body}"
+                "*links{from: peer, to: $id, kind, created_at}, \
+                 *entries{id: peer, title, body}"
             }
             LinkDirection::Both => unreachable!("callers pass Out/In here"),
         };
-        let script = format!("?[peer, body, kind, created_at] := {base}{tag_clauses}");
+        let script = format!("?[peer, title, body, kind, created_at] := {base}{tag_clauses}");
 
         let rows = self
             .db
@@ -536,24 +518,27 @@ impl MemoryStore {
                 .and_then(as_str)
                 .and_then(|s| Uuid::parse_str(&s).ok())
                 .ok_or_else(|| MemoryError::Cozo("links row missing peer id".into()))?;
-            let body = row
+            let title = row
                 .get(1)
                 .and_then(as_str)
                 .unwrap_or_default();
-            let kind = row
+            let body = row
                 .get(2)
                 .and_then(as_str)
                 .unwrap_or_default();
-            let ts_ms = row.get(3).and_then(as_i64).unwrap_or_default();
+            let kind = row
+                .get(3)
+                .and_then(as_str)
+                .unwrap_or_default();
+            let ts_ms = row.get(4).and_then(as_i64).unwrap_or_default();
             let created_at = Utc
                 .timestamp_millis_opt(ts_ms)
                 .single()
                 .unwrap_or_else(Utc::now);
-            let peer_title = self.load_title(peer)?;
             let peer_tags = self.load_tags(peer)?;
             out.push(Link {
                 peer_id: peer,
-                peer_title,
+                peer_title: title,
                 peer_body: body,
                 peer_tags,
                 kind,
@@ -608,7 +593,8 @@ fn ensure_schema(db: &DbInstance, dim: usize) -> Result<(), MemoryError> {
 
     if !has("entries") {
         let create = format!(
-            ":create entries {{id: String => body: String, created_at: Int, embedding: <F32; {dim}>}}"
+            ":create entries {{id: String => title: String, body: String, \
+             created_at: Int, embedding: <F32; {dim}>}}"
         );
         db.run_script(&create, BTreeMap::new(), ScriptMutability::Mutable)
             .map_err(|e| MemoryError::Cozo(format!("create entries: {e}")))?;
@@ -631,18 +617,6 @@ fn ensure_schema(db: &DbInstance, dim: usize) -> Result<(), MemoryError> {
             ScriptMutability::Mutable,
         )
         .map_err(|e| MemoryError::Cozo(format!("create links: {e}")))?;
-    }
-    if !has("entry_meta") {
-        // Sidecar holding titles so `entries` stays back-compat with
-        // banks that predate titles/tags. Every entry (new or old) gets
-        // a row here at store time — empty-string title when the caller
-        // didn't supply one — so joins don't have to worry about gaps.
-        db.run_script(
-            ":create entry_meta {entry: String => title: String}",
-            BTreeMap::new(),
-            ScriptMutability::Mutable,
-        )
-        .map_err(|e| MemoryError::Cozo(format!("create entry_meta: {e}")))?;
     }
     if !has("entry_tags") {
         // One row per (entry, tag) pair. Composite-key design lets us
