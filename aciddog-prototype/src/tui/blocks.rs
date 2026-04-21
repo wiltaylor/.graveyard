@@ -36,6 +36,59 @@ pub enum MailDirection {
     Received,
 }
 
+/// Which `aciddog task …` CLI op produced a `TaskOp` block. A flat
+/// enum instead of a nested one keeps dispatch cheap; each variant
+/// is a single point in (top-level task, todo, comment) × (verb).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TaskOpKind {
+    Add,
+    List,
+    Show,
+    Update,
+    Remove,
+    Take,
+    Note,
+    TodoAdd,
+    TodoList,
+    TodoUpdate,
+    TodoRemove,
+    CommentAdd,
+    CommentList,
+    CommentUpdate,
+    CommentRemove,
+}
+
+impl TaskOpKind {
+    /// Glyph shown at the head of the block. Three groups — task /
+    /// todo / comment — so the operator can tell them apart at a
+    /// glance without reading the subject.
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Self::TodoAdd | Self::TodoList | Self::TodoUpdate | Self::TodoRemove => "☑",
+            Self::CommentAdd | Self::CommentList | Self::CommentUpdate | Self::CommentRemove => {
+                "💬"
+            }
+            _ => "📋",
+        }
+    }
+
+    /// Label shown above the body area when the block is expanded.
+    /// Conveys what the body contains ("task" for add, "note" for
+    /// notes, "filter" for list ops where the body is empty but
+    /// the reply is a table, etc).
+    pub fn body_label(&self) -> &'static str {
+        match self {
+            Self::Add | Self::Update => "task",
+            Self::List | Self::TodoList | Self::CommentList => "filter",
+            Self::Show => "task",
+            Self::Remove | Self::TodoRemove | Self::CommentRemove => "id",
+            Self::Take => "",
+            Self::Note | Self::CommentUpdate | Self::CommentAdd => "body",
+            Self::TodoAdd | Self::TodoUpdate => "todo",
+        }
+    }
+}
+
 /// A clickable hot rect registered during render.
 #[derive(Debug, Clone)]
 pub struct ChatButton {
@@ -152,6 +205,19 @@ pub enum ChatBlock {
         collapsed: bool,
         pending: bool,
     },
+    /// Replaces the raw Bash block for any `aciddog task …` call.
+    /// `subject` is the pre-formatted one-line header; `body` is
+    /// the payload the agent sent (if any); `reply` is populated on
+    /// `ToolResult` with the orchestrator's response.
+    TaskOp {
+        kind: TaskOpKind,
+        subject: String,
+        body: String,
+        reply: String,
+        is_error: bool,
+        collapsed: bool,
+        pending: bool,
+    },
 }
 
 impl ChatBlock {
@@ -168,6 +234,7 @@ impl ChatBlock {
                 | Self::Mail { .. }
                 | Self::WorkerSpawn { .. }
                 | Self::WorkerComplete { .. }
+                | Self::TaskOp { .. }
         )
     }
 
@@ -182,7 +249,8 @@ impl ChatBlock {
             | Self::GenericTool { collapsed, .. }
             | Self::Mail { collapsed, .. }
             | Self::WorkerSpawn { collapsed, .. }
-            | Self::WorkerComplete { collapsed, .. } => *collapsed = !*collapsed,
+            | Self::WorkerComplete { collapsed, .. }
+            | Self::TaskOp { collapsed, .. } => *collapsed = !*collapsed,
             _ => {}
         }
     }
@@ -204,6 +272,23 @@ impl ChatBlock {
             Self::Mail { body, .. } => Some(body.clone()),
             Self::WorkerSpawn { task, .. } => Some(task.clone()),
             Self::WorkerComplete { body, .. } => Some(body.clone()),
+            Self::TaskOp {
+                body,
+                reply,
+                subject,
+                ..
+            } => {
+                // Prefer the reply (the most useful content for
+                // `task show` / `task list`), fall back to the sent
+                // body, then to the subject line.
+                if !reply.is_empty() {
+                    Some(reply.clone())
+                } else if !body.is_empty() {
+                    Some(body.clone())
+                } else {
+                    Some(subject.clone())
+                }
+            }
         }
     }
 
@@ -292,6 +377,16 @@ impl ChatBlock {
             Self::WorkerComplete {
                 body, collapsed, ..
             } => tool_body_height("Final report", body, *collapsed, w),
+            Self::TaskOp {
+                subject,
+                body,
+                reply,
+                collapsed,
+                ..
+            } => {
+                let shown = task_op_shown_body(body, reply);
+                tool_body_height(subject, &shown, *collapsed, w)
+            }
         }
     }
 
@@ -618,6 +713,47 @@ impl ChatBlock {
                     Some(("copy".into(), body.clone())),
                 );
             }
+            Self::TaskOp {
+                kind,
+                subject,
+                body,
+                reply,
+                is_error,
+                collapsed,
+                pending,
+            } => {
+                let shown = task_op_shown_body(body, reply);
+                // Primary copy gives the reply when present (e.g.
+                // the full task body from `task show`); falls back
+                // to the sent body so Note / TodoAdd blocks copy
+                // what the user wrote.
+                let primary = if !reply.is_empty() {
+                    reply.clone()
+                } else {
+                    body.clone()
+                };
+                let body_copy = if !body.is_empty() {
+                    Some(("copy body".into(), body.clone()))
+                } else {
+                    None
+                };
+                render_tool_block(
+                    frame,
+                    body_rect,
+                    buttons,
+                    block_idx,
+                    kind.icon(),
+                    subject,
+                    kind.body_label(),
+                    &shown,
+                    *collapsed,
+                    *is_error,
+                    *pending,
+                    Some(primary),
+                    None,
+                    body_copy,
+                );
+            }
         }
     }
 
@@ -755,6 +891,19 @@ fn render_agent_info(
             .wrap(Wrap { trim: false }),
         body_rect,
     );
+}
+
+/// Build the combined display body for a `TaskOp` block. Shows the
+/// agent's sent payload, a `---` divider, and the orchestrator's
+/// reply when both are present. Falls back gracefully when either
+/// side is empty.
+fn task_op_shown_body(body: &str, reply: &str) -> String {
+    match (body.is_empty(), reply.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => body.to_string(),
+        (true, false) => reply.to_string(),
+        (false, false) => format!("{body}\n\n---\n{reply}"),
+    }
 }
 
 fn mail_subject(direction: MailDirection, counterpart: &str) -> String {
@@ -1293,6 +1442,23 @@ impl ChatBlock {
         }
     }
 
+    /// Block for any `aciddog task …` CLI call. The caller has
+    /// already parsed the argv into a `kind`, a subject (one-line
+    /// header) and a body (the payload the agent sent, or ""). The
+    /// reply slot starts empty and is filled by `apply_tool_result`
+    /// when the orchestrator responds.
+    pub fn task_op(kind: TaskOpKind, subject: impl Into<String>, body: impl Into<String>) -> Self {
+        Self::TaskOp {
+            kind,
+            subject: subject.into(),
+            body: body.into(),
+            reply: String::new(),
+            is_error: false,
+            collapsed: true,
+            pending: true,
+        }
+    }
+
     /// Build the right tool-call variant from a `ToolUse` event.
     pub fn from_tool_use(name: &str, input: &serde_json::Value) -> Self {
         use serde_json::Value;
@@ -1500,6 +1666,24 @@ impl ChatBlock {
                 pending,
                 ..
             } => {
+                *e = is_error;
+                *pending = false;
+                if is_error {
+                    *collapsed = false;
+                }
+            }
+            ChatBlock::TaskOp {
+                reply,
+                is_error: e,
+                collapsed,
+                pending,
+                ..
+            } => {
+                // The reply is whatever the orchestrator sent back.
+                // For read ops (show / list) this is the whole
+                // fetched content; for writes it's a short "task
+                // created: <uuid>"-style confirmation.
+                *reply = stringify_content(content);
                 *e = is_error;
                 *pending = false;
                 if is_error {
@@ -1851,5 +2035,96 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn task_op_constructor_defaults_to_pending_collapsed() {
+        let b = ChatBlock::task_op(TaskOpKind::Add, "Add: fix bug", "details here");
+        match b {
+            ChatBlock::TaskOp {
+                kind,
+                subject,
+                body,
+                reply,
+                is_error,
+                collapsed,
+                pending,
+            } => {
+                assert_eq!(kind, TaskOpKind::Add);
+                assert_eq!(subject, "Add: fix bug");
+                assert_eq!(body, "details here");
+                assert!(reply.is_empty());
+                assert!(!is_error);
+                assert!(collapsed);
+                assert!(pending);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn apply_tool_result_populates_task_op_reply_and_clears_pending() {
+        let mut b = ChatBlock::task_op(TaskOpKind::Show, "Show: 3a4f12ab", "");
+        b.apply_tool_result(&json!("Title: fix bug\nStatus: open"), false);
+        match b {
+            ChatBlock::TaskOp {
+                reply,
+                pending,
+                is_error,
+                collapsed,
+                ..
+            } => {
+                assert!(reply.contains("Title: fix bug"));
+                assert!(!pending);
+                assert!(!is_error);
+                assert!(collapsed, "success leaves the block collapsed");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn apply_tool_result_marks_task_op_errored_and_auto_expands() {
+        let mut b = ChatBlock::task_op(TaskOpKind::Show, "Show: ghost", "");
+        b.apply_tool_result(&json!("task 00000000-... not found"), true);
+        match b {
+            ChatBlock::TaskOp {
+                is_error,
+                collapsed,
+                ..
+            } => {
+                assert!(is_error);
+                assert!(!collapsed, "errors auto-expand");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn task_op_primary_copy_prefers_reply_then_body() {
+        let b = ChatBlock::task_op(TaskOpKind::Note, "Note on 3a4f12ab", "progress note");
+        assert_eq!(b.primary_copy_text(), Some("progress note".into()));
+
+        let mut b2 = ChatBlock::task_op(TaskOpKind::Show, "Show: 3a4f12ab", "");
+        b2.apply_tool_result(&json!("full task body"), false);
+        assert_eq!(b2.primary_copy_text(), Some("full task body".into()));
+    }
+
+    #[test]
+    fn task_op_icon_groups_by_category() {
+        assert_eq!(TaskOpKind::Add.icon(), "📋");
+        assert_eq!(TaskOpKind::Show.icon(), "📋");
+        assert_eq!(TaskOpKind::TodoAdd.icon(), "☑");
+        assert_eq!(TaskOpKind::TodoList.icon(), "☑");
+        assert_eq!(TaskOpKind::CommentAdd.icon(), "💬");
+        assert_eq!(TaskOpKind::CommentList.icon(), "💬");
+    }
+
+    #[test]
+    fn task_op_shown_body_combines_sent_and_reply_with_divider() {
+        assert_eq!(task_op_shown_body("", ""), "");
+        assert_eq!(task_op_shown_body("sent", ""), "sent");
+        assert_eq!(task_op_shown_body("", "reply"), "reply");
+        assert_eq!(task_op_shown_body("sent", "reply"), "sent\n\n---\nreply");
     }
 }

@@ -420,6 +420,9 @@ impl App {
                         ChatBlock::worker_spawn(template, task)
                     } else if let Some(body) = try_parse_aciddog_worker_complete(cmd, &binary) {
                         ChatBlock::worker_complete(body)
+                    } else if let Some(task_cmd) = try_parse_aciddog_task(cmd, &binary) {
+                        let (kind, subject, body) = task_op_summary(&task_cmd);
+                        ChatBlock::task_op(kind, subject, body)
                     } else {
                         ChatBlock::from_tool_use(&name, &input)
                     }
@@ -2774,6 +2777,191 @@ fn try_parse_aciddog_worker_complete(cmd: &str, binary: &str) -> Option<String> 
     }
 }
 
+/// Parse any `aciddog task …` CLI invocation (including nested
+/// `task todo …` / `task comment …`) back into the `TaskCommand`
+/// clap parsed. Returns `None` for commands that aren't task ops.
+fn try_parse_aciddog_task(cmd: &str, binary: &str) -> Option<crate::cli::TaskCommand> {
+    match try_parse_aciddog(cmd, binary)? {
+        AgentCommand::Task { cmd: task_cmd } => Some(task_cmd),
+        _ => None,
+    }
+}
+
+/// Short-form UUID used in block subjects — first 8 chars of the
+/// UUID matches the ids in `format_task_detail` output so the
+/// operator can cross-reference at a glance.
+fn short_id(id: uuid::Uuid) -> String {
+    let s = id.to_string();
+    s.get(..8).unwrap_or(&s).to_string()
+}
+
+/// Convert a parsed `TaskCommand` into a `(kind, subject, body)`
+/// tuple for a `ChatBlock::TaskOp`. Pure — does no IO — so it's
+/// easy to unit-test per verb.
+pub(crate) fn task_op_summary(
+    cmd: &crate::cli::TaskCommand,
+) -> (crate::tui::blocks::TaskOpKind, String, String) {
+    use crate::cli::{CommentCommand, TaskCommand, TodoCommand};
+    use crate::tui::blocks::TaskOpKind;
+
+    match cmd {
+        TaskCommand::Add {
+            title,
+            description,
+            assignee,
+            blocked_by,
+        } => {
+            let mut subj = format!("Add: {title}");
+            let mut notes: Vec<String> = Vec::new();
+            if let Some(a) = assignee {
+                notes.push(format!("assigned: {a}"));
+            }
+            if !blocked_by.is_empty() {
+                notes.push(format!("{} deps", blocked_by.len()));
+            }
+            if !notes.is_empty() {
+                subj.push_str(&format!(" ({})", notes.join(", ")));
+            }
+            let body = description.clone().unwrap_or_default();
+            (TaskOpKind::Add, subj, body)
+        }
+        TaskCommand::List {
+            assignee,
+            status,
+            mine,
+            unassigned,
+        } => {
+            let mut filters: Vec<String> = Vec::new();
+            if *mine {
+                filters.push("--mine".into());
+            }
+            if *unassigned {
+                filters.push("--unassigned".into());
+            }
+            if let Some(a) = assignee {
+                filters.push(format!("assignee={a}"));
+            }
+            if let Some(s) = status {
+                filters.push(format!("status={s}"));
+            }
+            let subj = if filters.is_empty() {
+                "List".to_string()
+            } else {
+                format!("List ({})", filters.join(", "))
+            };
+            (TaskOpKind::List, subj, String::new())
+        }
+        TaskCommand::Show { id } => (
+            TaskOpKind::Show,
+            format!("Show: {}", short_id(*id)),
+            String::new(),
+        ),
+        TaskCommand::Update {
+            id,
+            title,
+            description: _,
+            status,
+            assignee,
+            unassign,
+            note,
+            add_blocked_by,
+            remove_blocked_by,
+        } => {
+            let mut changes: Vec<String> = Vec::new();
+            if title.is_some() {
+                changes.push("title".into());
+            }
+            if let Some(s) = status {
+                changes.push(format!("status: {s}"));
+            }
+            if let Some(a) = assignee {
+                changes.push(format!("assignee: {a}"));
+            }
+            if *unassign {
+                changes.push("unassign".into());
+            }
+            if !add_blocked_by.is_empty() {
+                changes.push(format!("+{} deps", add_blocked_by.len()));
+            }
+            if !remove_blocked_by.is_empty() {
+                changes.push(format!("-{} deps", remove_blocked_by.len()));
+            }
+            let mut subj = format!("Update: {}", short_id(*id));
+            if !changes.is_empty() {
+                subj.push_str(&format!(" ({})", changes.join(", ")));
+            }
+            let body = note.clone().unwrap_or_default();
+            (TaskOpKind::Update, subj, body)
+        }
+        TaskCommand::Remove { id } => (
+            TaskOpKind::Remove,
+            format!("Remove: {}", short_id(*id)),
+            String::new(),
+        ),
+        TaskCommand::Take => (TaskOpKind::Take, "Take".to_string(), String::new()),
+        TaskCommand::Note { id, body } => (
+            TaskOpKind::Note,
+            format!("Note on {}", short_id(*id)),
+            body.clone(),
+        ),
+        TaskCommand::Todo { cmd: todo_cmd } => match todo_cmd {
+            TodoCommand::Add { task, body } => (
+                TaskOpKind::TodoAdd,
+                format!("Todo add on {}", short_id(*task)),
+                body.clone(),
+            ),
+            TodoCommand::List { task } => (
+                TaskOpKind::TodoList,
+                format!("Todo list on {}", short_id(*task)),
+                String::new(),
+            ),
+            TodoCommand::Update {
+                task,
+                id: _,
+                status,
+                body,
+            } => {
+                let mut subj = format!("Todo update on {}", short_id(*task));
+                if let Some(s) = status {
+                    subj = format!("Todo {} on {}", s, short_id(*task));
+                }
+                (
+                    TaskOpKind::TodoUpdate,
+                    subj,
+                    body.clone().unwrap_or_default(),
+                )
+            }
+            TodoCommand::Remove { task, id: _ } => (
+                TaskOpKind::TodoRemove,
+                format!("Todo remove on {}", short_id(*task)),
+                String::new(),
+            ),
+        },
+        TaskCommand::Comment { cmd: comment_cmd } => match comment_cmd {
+            CommentCommand::Add { task, body } => (
+                TaskOpKind::CommentAdd,
+                format!("Comment on {}", short_id(*task)),
+                body.clone(),
+            ),
+            CommentCommand::List { task } => (
+                TaskOpKind::CommentList,
+                format!("Comment list on {}", short_id(*task)),
+                String::new(),
+            ),
+            CommentCommand::Update { task, id: _, body } => (
+                TaskOpKind::CommentUpdate,
+                format!("Comment edit on {}", short_id(*task)),
+                body.clone(),
+            ),
+            CommentCommand::Remove { task, id: _ } => (
+                TaskOpKind::CommentRemove,
+                format!("Comment remove on {}", short_id(*task)),
+                String::new(),
+            ),
+        },
+    }
+}
+
 fn try_parse_aciddog(cmd: &str, binary: &str) -> Option<AgentCommand> {
     if binary.is_empty() {
         return None;
@@ -2781,11 +2969,50 @@ fn try_parse_aciddog(cmd: &str, binary: &str) -> Option<AgentCommand> {
     let tokens = shlex::split(cmd)?;
     let mut iter = tokens.into_iter();
     let first = iter.next()?;
-    if first != binary {
+    if !is_aciddog_invocation(&first, binary) {
         return None;
     }
-    let argv: Vec<String> = std::iter::once("aciddog".to_string()).chain(iter).collect();
+    // Drop any shell-pipeline tail (`| jq .`, `&& echo ok`, `; …`,
+    // or a redirect). The aciddog portion is still a valid
+    // standalone invocation and we don't want clap to choke on the
+    // trailing operators.
+    let argv: Vec<String> = std::iter::once("aciddog".to_string())
+        .chain(iter.take_while(|t| !is_shell_pipeline_boundary(t)))
+        .collect();
     AgentArgs::try_parse_from(argv).ok().map(|p| p.cmd)
+}
+
+/// True for shell tokens that start a new pipeline stage or a
+/// redirect. shlex emits these as standalone tokens (it doesn't
+/// interpret them as punctuation), so we can slice the argv at
+/// the first occurrence.
+fn is_shell_pipeline_boundary(tok: &str) -> bool {
+    matches!(
+        tok,
+        "|" | "||" | "&" | "&&" | ";" | ";;" | ">" | ">>" | "<" | "<<" | "|&"
+    )
+}
+
+/// True when `first` names the running aciddog binary. Accepts:
+/// - The exact path configured on `App` (the canonical path the
+///   preamble hands to agents).
+/// - A relative or bare `aciddog` invocation — same basename — so
+///   that agents running `./aciddog …` from their cwd or relying
+///   on `$PATH` still surface as structured blocks.
+fn is_aciddog_invocation(first: &str, binary: &str) -> bool {
+    if first == binary {
+        return true;
+    }
+    let expected_base = std::path::Path::new(binary)
+        .file_name()
+        .and_then(|n| n.to_str());
+    let actual_base = std::path::Path::new(first)
+        .file_name()
+        .and_then(|n| n.to_str());
+    match (expected_base, actual_base) {
+        (Some(exp), Some(got)) => exp == got,
+        _ => false,
+    }
 }
 
 #[tracing::instrument(skip(config))]
@@ -3948,9 +4175,27 @@ mod tests {
     }
 
     #[test]
-    fn try_parse_aciddog_send_requires_matching_binary_path() {
-        let cmd = "/usr/local/bin/aciddog send --to coder --body hi";
-        assert!(try_parse_aciddog_send(cmd, "/opt/aciddog").is_none());
+    fn try_parse_aciddog_send_accepts_same_basename_across_paths() {
+        // Prior to the loosened matcher, only the exact configured
+        // path was accepted. In practice the agent's bash step
+        // sometimes invokes the binary by name (from `$PATH`) or
+        // by relative path (`./aciddog`). All of those resolve to
+        // the same binary in a real session, so we treat them as
+        // equivalent here — but a different basename still falls
+        // through to the generic Bash block.
+        assert!(try_parse_aciddog_send(
+            "/usr/local/bin/aciddog send --to coder --body hi",
+            "/opt/aciddog",
+        )
+        .is_some());
+        assert!(
+            try_parse_aciddog_send("aciddog send --to coder --body hi", "/opt/aciddog").is_some()
+        );
+        assert!(try_parse_aciddog_send(
+            "/opt/not-aciddog send --to coder --body hi",
+            "/opt/aciddog",
+        )
+        .is_none());
     }
 
     #[test]
@@ -4418,6 +4663,316 @@ mod tests {
                 assert_eq!(task, "find FOO");
             }
             other => panic!("expected WorkerSpawn, got {other:?}"),
+        }
+    }
+
+    // --------- TaskOp intercept ---------
+
+    fn fire_task_tool_use(app: &mut App, command: &str) {
+        app.aciddog_binary = "/opt/aciddog".into();
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolUse {
+                id: "t1".into(),
+                name: "Bash".into(),
+                input: json!({ "command": command }),
+                raw: serde_json::Value::Null,
+            },
+        );
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_add_becomes_task_op_block() {
+        let mut app = App::new(sample_config());
+        fire_task_tool_use(
+            &mut app,
+            r#"/opt/aciddog task add --title "smoke" --assignee coder"#,
+        );
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp {
+                kind,
+                subject,
+                pending,
+                ..
+            } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::Add);
+                assert!(subject.starts_with("Add: smoke"));
+                assert!(subject.contains("assigned: coder"));
+                assert!(*pending);
+            }
+            other => panic!("expected TaskOp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_show_becomes_task_op_block() {
+        let mut app = App::new(sample_config());
+        let id = Uuid::new_v4();
+        fire_task_tool_use(&mut app, &format!("/opt/aciddog task show --id {id}"));
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp { kind, subject, .. } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::Show);
+                assert!(subject.starts_with("Show:"));
+            }
+            other => panic!("expected TaskOp::Show, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_list_mine_captures_filter() {
+        let mut app = App::new(sample_config());
+        fire_task_tool_use(&mut app, "/opt/aciddog task list --mine");
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp { kind, subject, .. } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::List);
+                assert!(subject.contains("--mine"));
+            }
+            other => panic!("expected TaskOp::List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_update_captures_changes() {
+        let mut app = App::new(sample_config());
+        let id = Uuid::new_v4();
+        fire_task_tool_use(
+            &mut app,
+            &format!("/opt/aciddog task update --id {id} --status done"),
+        );
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp { kind, subject, .. } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::Update);
+                assert!(subject.contains("status: done"));
+            }
+            other => panic!("expected TaskOp::Update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_remove_becomes_remove_block() {
+        let mut app = App::new(sample_config());
+        let id = Uuid::new_v4();
+        fire_task_tool_use(&mut app, &format!("/opt/aciddog task remove --id {id}"));
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp { kind, .. } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::Remove);
+            }
+            other => panic!("expected TaskOp::Remove, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_take_becomes_take_block() {
+        let mut app = App::new(sample_config());
+        fire_task_tool_use(&mut app, "/opt/aciddog task take");
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp { kind, subject, .. } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::Take);
+                assert_eq!(subject, "Take");
+            }
+            other => panic!("expected TaskOp::Take, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_note_carries_body() {
+        let mut app = App::new(sample_config());
+        let id = Uuid::new_v4();
+        fire_task_tool_use(
+            &mut app,
+            &format!(r#"/opt/aciddog task note --id {id} --body "progress update""#),
+        );
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp {
+                kind,
+                subject,
+                body,
+                ..
+            } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::Note);
+                assert!(subject.starts_with("Note on"));
+                assert_eq!(body, "progress update");
+            }
+            other => panic!("expected TaskOp::Note, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_todo_update_in_pipeline_still_becomes_task_block() {
+        // Agents sometimes pipe aciddog output into jq, head, etc.
+        // The aciddog portion should still intercept cleanly.
+        let mut app = App::new(sample_config());
+        let task_id = Uuid::new_v4();
+        let todo_id = Uuid::new_v4();
+        let cmd = format!(
+            "/opt/aciddog task todo update --task {task_id} --id {todo_id} --status in_progress | head"
+        );
+        fire_task_tool_use(&mut app, &cmd);
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp { kind, .. } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::TodoUpdate);
+            }
+            other => panic!("expected TaskOp::TodoUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_add_with_redirect_still_becomes_task_block() {
+        let mut app = App::new(sample_config());
+        fire_task_tool_use(&mut app, r#"/opt/aciddog task add --title "x" > /tmp/out"#);
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp { kind, .. } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::Add);
+            }
+            other => panic!("expected TaskOp::Add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_todo_update_status_becomes_todo_update_block() {
+        let mut app = App::new(sample_config());
+        let task_id = Uuid::new_v4();
+        let todo_id = Uuid::new_v4();
+        let cmd = format!(
+            "/opt/aciddog task todo update --task {task_id} --id {todo_id} --status in_progress"
+        );
+        fire_task_tool_use(&mut app, &cmd);
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp { kind, subject, .. } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::TodoUpdate);
+                assert!(
+                    subject.contains("in_progress"),
+                    "subject should mention new status, got {subject}"
+                );
+            }
+            other => panic!("expected TaskOp::TodoUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_todo_update_body_becomes_todo_update_block() {
+        let mut app = App::new(sample_config());
+        let task_id = Uuid::new_v4();
+        let todo_id = Uuid::new_v4();
+        let cmd = format!(
+            r#"/opt/aciddog task todo update --task {task_id} --id {todo_id} --body "revised""#,
+        );
+        fire_task_tool_use(&mut app, &cmd);
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp { kind, body, .. } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::TodoUpdate);
+                assert_eq!(body, "revised");
+            }
+            other => panic!("expected TaskOp::TodoUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_todo_remove_becomes_todo_remove_block() {
+        let mut app = App::new(sample_config());
+        let task_id = Uuid::new_v4();
+        let todo_id = Uuid::new_v4();
+        let cmd = format!("/opt/aciddog task todo remove --task {task_id} --id {todo_id}");
+        fire_task_tool_use(&mut app, &cmd);
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp { kind, .. } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::TodoRemove);
+            }
+            other => panic!("expected TaskOp::TodoRemove, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_todo_list_becomes_todo_list_block() {
+        let mut app = App::new(sample_config());
+        let task_id = Uuid::new_v4();
+        let cmd = format!("/opt/aciddog task todo list --task {task_id}");
+        fire_task_tool_use(&mut app, &cmd);
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp { kind, .. } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::TodoList);
+            }
+            other => panic!("expected TaskOp::TodoList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_todo_add_uses_todo_icon_kind() {
+        let mut app = App::new(sample_config());
+        let id = Uuid::new_v4();
+        fire_task_tool_use(
+            &mut app,
+            &format!(r#"/opt/aciddog task todo add --task {id} --body "draft schema""#),
+        );
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp {
+                kind,
+                subject,
+                body,
+                ..
+            } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::TodoAdd);
+                assert!(subject.starts_with("Todo add on"));
+                assert_eq!(body, "draft schema");
+            }
+            other => panic!("expected TaskOp::TodoAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_task_comment_add_uses_comment_kind() {
+        let mut app = App::new(sample_config());
+        let id = Uuid::new_v4();
+        fire_task_tool_use(
+            &mut app,
+            &format!(r#"/opt/aciddog task comment add --task {id} --body "handoff ctx""#),
+        );
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp {
+                kind,
+                subject,
+                body,
+                ..
+            } => {
+                assert_eq!(*kind, super::super::blocks::TaskOpKind::CommentAdd);
+                assert!(subject.starts_with("Comment on"));
+                assert_eq!(body, "handoff ctx");
+            }
+            other => panic!("expected TaskOp::CommentAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_result_populates_task_op_reply_and_clears_pending() {
+        let mut app = App::new(sample_config());
+        fire_task_tool_use(&mut app, r#"/opt/aciddog task add --title "fix bug""#);
+        app.handle_ai_event(
+            0,
+            AIEvent::ToolResult {
+                tool_use_id: "t1".into(),
+                content: json!("task created: 3a4f..."),
+                is_error: false,
+                raw: serde_json::Value::Null,
+            },
+        );
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::TaskOp { reply, pending, .. } => {
+                assert!(reply.contains("task created"));
+                assert!(!*pending);
+            }
+            other => panic!("expected TaskOp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_tool_use_for_non_task_aciddog_still_falls_through_to_mail() {
+        // Double-check we haven't broken the existing send intercept
+        // now that the task branch sits above the fallthrough.
+        let mut app = App::new(sample_config());
+        fire_task_tool_use(&mut app, r#"/opt/aciddog send --to b --body "hi""#);
+        match app.chats[0].blocks.last().unwrap() {
+            ChatBlock::Mail { .. } => {}
+            other => panic!("expected Mail, got {other:?}"),
         }
     }
 
