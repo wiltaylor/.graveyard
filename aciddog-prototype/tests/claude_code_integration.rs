@@ -3,9 +3,16 @@
 //! Ignored by default so `cargo test` passes on machines without claude on PATH.
 //! Run explicitly with: `cargo test --test claude_code_integration -- --ignored`
 
-use aciddog::ai::{AICore, AIEvent, ClaudeCodeCore};
+use aciddog::ai::{AICore, AIEvent, ClaudeCodeCore, PromptParts};
 use futures::StreamExt;
 use uuid::Uuid;
+
+fn parts(instructions: &str) -> PromptParts {
+    PromptParts {
+        instructions: instructions.into(),
+        ..PromptParts::default()
+    }
+}
 
 #[tokio::test]
 #[ignore]
@@ -13,7 +20,7 @@ async fn live_turn_streams_events_and_reuses_session() {
     let expected_session = Uuid::new_v4();
     let mut core = ClaudeCodeCore::new(
         expected_session,
-        "Respond with a single word.".into(),
+        parts("Respond with a single word."),
         vec!["Read".into()],
         None,
     );
@@ -69,7 +76,7 @@ async fn missing_binary_yields_spawn_error_event() {
     // stream (the refactor for tag-chain mode moved child spawn into
     // the background task). The error wording must still reference the
     // failed spawn path.
-    let mut core = ClaudeCodeCore::new(Uuid::new_v4(), "i".into(), vec![], None)
+    let mut core = ClaudeCodeCore::new(Uuid::new_v4(), parts("i"), vec![], None)
         .with_binary("/no/such/path/claude");
     let mut stream = core
         .turn("hi")

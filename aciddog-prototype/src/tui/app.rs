@@ -22,7 +22,7 @@ use uuid::Uuid;
 use clap::Parser;
 
 use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
-use crate::ai::{AICore, AIEvent, ClaudeCodeCore};
+use crate::ai::{AICore, AIEvent, AciddogCliCtx, ClaudeCodeCore, PromptParts, WorkerCtx};
 use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::{AciddogConfig, AiCore, AiCoreKind};
 use crate::tasks::{Task, TaskFilter, TaskPatch, TaskStatus, TaskStore, TodoStatus};
@@ -65,6 +65,44 @@ fn uses_tag_ipc(tools: &[String], core: &AiCore) -> bool {
     match &core.kind {
         AiCoreKind::ClaudeCode { .. } => !tools.iter().any(|t| t == "Bash"),
     }
+}
+
+/// Render the per-actor `<team>` body: the team description plus the
+/// agents this actor may message and the worker templates it may
+/// spawn. Each section is omitted when its allowlist is empty so an
+/// isolated agent gets only the team description. Agent and worker
+/// short `role` strings are looked up against `cfg`.
+fn build_team_block(cfg: &AciddogConfig, contactable: &[&str], creatable: &[&str]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Team: {}\n", cfg.team.description));
+
+    if !contactable.is_empty() {
+        out.push_str("\nAgents you can message:\n");
+        for id in contactable {
+            let role = cfg
+                .agents
+                .iter()
+                .find(|a| a.id == *id)
+                .map(|a| a.role.as_str())
+                .unwrap_or("agent");
+            out.push_str(&format!("- {id} — {role}\n"));
+        }
+    }
+
+    if !creatable.is_empty() {
+        out.push_str("\nWorker templates you can spawn:\n");
+        for id in creatable {
+            let role = cfg
+                .workers
+                .iter()
+                .find(|w| w.id == *id)
+                .map(|w| w.role.as_str())
+                .unwrap_or("worker");
+            out.push_str(&format!("- {id} — {role}\n"));
+        }
+    }
+
+    out
 }
 
 /// Render a dispatched `<aciddog-call>` (emitted by `ClaudeCodeCore`
@@ -1184,24 +1222,24 @@ impl App {
             .map(|list| list.iter().map(String::as_str).collect())
             .unwrap_or_default();
 
-        let instructions = if tag_mode {
-            format!(
-                "{}\n\n{}\n\n{}",
-                agent_ipc::preamble::tag_worker_preamble(&sender_display, &task),
-                agent_ipc::preamble::tag_preamble(&[sender_display.as_str()], &creatable),
-                worker.instructions,
-            )
-        } else {
-            format!(
-                "{}\n\n{}\n\n{}",
-                agent_ipc::preamble::worker_preamble(&self.aciddog_binary, &sender_display, &task),
-                agent_ipc::preamble::cli_preamble(
-                    &self.aciddog_binary,
-                    &[sender_display.as_str()],
-                    &creatable,
-                ),
-                worker.instructions,
-            )
+        // A worker can only message the actor that spawned it; that
+        // single peer becomes its team listing.
+        let contactable_for_worker: Vec<&str> = vec![sender_display.as_str()];
+        let team_block = build_team_block(&self.config, &contactable_for_worker, &creatable);
+
+        let parts = PromptParts {
+            role: worker.role_description.clone(),
+            team: Some(team_block),
+            instructions: worker.instructions.clone(),
+            aciddog_cli: Some(AciddogCliCtx {
+                binary: self.aciddog_binary.clone(),
+                contactable: vec![sender_display.clone()],
+                creatable: creatable.iter().map(|s| s.to_string()).collect(),
+                worker: Some(WorkerCtx {
+                    parent_id: sender_display.clone(),
+                    task: task.clone(),
+                }),
+            }),
         };
 
         let env = vec![
@@ -1215,7 +1253,9 @@ impl App {
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
         let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
 
-        let info_block = ChatBlock::agent_info("claude-code", tools.clone(), instructions.clone());
+        let cc = ClaudeCodeCore::new(session_id, parts, tools.clone(), system_prompt);
+        let assembled_prompt = cc.first_turn_prompt();
+        let info_block = ChatBlock::agent_info("claude-code", tools.clone(), assembled_prompt);
         let pool_len = self.config.thinking_messages.len();
         let mut chat = AgentChat {
             blocks: vec![info_block],
@@ -1245,8 +1285,7 @@ impl App {
             tracing::warn!(%display_name, "user_tx closed before initial task could be sent");
         }
 
-        let mut cc =
-            ClaudeCodeCore::new(session_id, instructions, tools, system_prompt).with_env(env);
+        let mut cc = cc.with_env(env);
         if tag_mode {
             if let Some(socket_tx) = self.socket_events_tx.clone() {
                 cc = cc.with_socket_tx(socket_tx);
@@ -1402,8 +1441,7 @@ impl App {
         // not re-prepend the worker preamble — that content already
         // lives in the claude session's history.
         let mut cc =
-            ClaudeCodeCore::with_session_id(session_id, String::new(), tools, system_prompt)
-                .with_env(env);
+            ClaudeCodeCore::with_session_id(session_id, tools, system_prompt).with_env(env);
         if tag_mode {
             if let Some(socket_tx) = self.socket_events_tx.clone() {
                 cc = cc.with_socket_tx(socket_tx);
@@ -3727,26 +3765,19 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             .map(|list| list.iter().map(String::as_str).collect())
             .unwrap_or_default();
 
-        let instructions = if tag_mode {
-            format!(
-                "{}\n\n{}",
-                agent_ipc::preamble::tag_preamble(&contactable, &creatable),
-                agent.instructions,
-            )
-        } else {
-            format!(
-                "{}\n\n{}",
-                agent_ipc::preamble::cli_preamble(&aciddog_binary_str, &contactable, &creatable),
-                agent.instructions,
-            )
-        };
+        let team_block = build_team_block(&app.config, &contactable, &creatable);
 
-        // Reflect the full prompt (preamble + instructions) in the top
-        // AgentInfo block so the user can expand it and see exactly what
-        // the LLM receives.
-        if let Some(ChatBlock::AgentInfo { prompt, .. }) = app.chats[idx].blocks.first_mut() {
-            *prompt = instructions.clone();
-        }
+        let parts = PromptParts {
+            role: agent.role_description.clone(),
+            team: Some(team_block),
+            instructions: agent.instructions.clone(),
+            aciddog_cli: Some(AciddogCliCtx {
+                binary: aciddog_binary_str.clone(),
+                contactable: contactable.iter().map(|s| s.to_string()).collect(),
+                creatable: creatable.iter().map(|s| s.to_string()).collect(),
+                worker: None,
+            }),
+        };
 
         let env = vec![
             (agent_ipc::ENV_AGENT_ID.to_string(), session_id.to_string()),
@@ -3756,8 +3787,17 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             ),
         ];
 
-        let mut cc =
-            ClaudeCodeCore::new(session_id, instructions, tools, system_prompt).with_env(env);
+        let cc = ClaudeCodeCore::new(session_id, parts, tools, system_prompt);
+
+        // Reflect the assembled first-turn prompt in the top AgentInfo
+        // block so the user can expand it and see exactly what the LLM
+        // receives (mirrors what `cc.build_prompt` produces on turn 1).
+        let assembled = cc.first_turn_prompt();
+        if let Some(ChatBlock::AgentInfo { prompt, .. }) = app.chats[idx].blocks.first_mut() {
+            *prompt = assembled;
+        }
+
+        let mut cc = cc.with_env(env);
         if tag_mode {
             let socket_tx = app
                 .socket_events_tx
@@ -3910,6 +3950,7 @@ mod tests {
                 Agent {
                     id: "a".into(),
                     role: "r".into(),
+                    role_description: None,
                     model: "m".into(),
                     instructions: "i".into(),
                     can_message: None,
@@ -3920,6 +3961,7 @@ mod tests {
                 Agent {
                     id: "b".into(),
                     role: "r".into(),
+                    role_description: None,
                     model: "m".into(),
                     instructions: "i".into(),
                     can_message: None,
@@ -3930,6 +3972,7 @@ mod tests {
                 Agent {
                     id: "c".into(),
                     role: "r".into(),
+                    role_description: None,
                     model: "m".into(),
                     instructions: "i".into(),
                     can_message: None,
@@ -5223,6 +5266,7 @@ mod tests {
                 Agent {
                     id: "coder".into(),
                     role: "r".into(),
+                    role_description: None,
                     model: "m".into(),
                     instructions: "i".into(),
                     can_message: None,
@@ -5233,6 +5277,7 @@ mod tests {
                 Agent {
                     id: "planner".into(),
                     role: "r".into(),
+                    role_description: None,
                     model: "m".into(),
                     instructions: "i".into(),
                     can_message: None,
@@ -5245,6 +5290,7 @@ mod tests {
                 Worker {
                     id: "researcher".into(),
                     role: "investigator".into(),
+                    role_description: None,
                     model: "m".into(),
                     instructions: "look stuff up".into(),
                     tools: None,
@@ -5254,6 +5300,7 @@ mod tests {
                 Worker {
                     id: "fetcher".into(),
                     role: "fetcher".into(),
+                    role_description: None,
                     model: "m".into(),
                     instructions: "fetch".into(),
                     tools: None,

@@ -13,11 +13,54 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use crate::agent_ipc::preamble::{
+    cli_preamble, tag_preamble, tag_worker_preamble, worker_preamble,
+};
 use crate::agent_ipc::{AgentSocketEvent, Request, RequestCmd, Response};
 
 use super::core::{AICore, AIError};
 use super::event::{parse_line, AIEvent};
 use super::tag_call;
+
+/// Structured first-turn prompt input for [`ClaudeCodeCore`]. The core
+/// owns the assembly so it can build the `<tools>` section from its own
+/// knowledge of which built-in tools are enabled and which aciddog-CLI
+/// surface (CLI vs tag protocol) applies.
+#[derive(Debug, Clone, Default)]
+pub struct PromptParts {
+    /// Long-form behavioural guidance. Emitted as `<role>...</role>`.
+    /// `None` or whitespace-only → block omitted.
+    pub role: Option<String>,
+    /// Per-actor team listing (description + contactable peers +
+    /// creatable workers). Emitted as `<team>...</team>`. `None` or
+    /// whitespace-only → block omitted.
+    pub team: Option<String>,
+    /// The WCL `instructions` string. Always emitted inside
+    /// `<instructions>...</instructions>`.
+    pub instructions: String,
+    /// When `Some`, the `<tools>` section appends the aciddog CLI
+    /// (or tag-protocol) docs after the built-in tool list.
+    pub aciddog_cli: Option<AciddogCliCtx>,
+}
+
+/// Context the core needs to render the aciddog-CLI/tag section inside
+/// `<tools>`. The core picks CLI vs tag based on whether `Bash` is in
+/// `allowed_tools`.
+#[derive(Debug, Clone)]
+pub struct AciddogCliCtx {
+    pub binary: String,
+    pub contactable: Vec<String>,
+    pub creatable: Vec<String>,
+    /// `Some` for workers — adds the parent + task + `worker complete`
+    /// preamble before the general CLI/tag commands.
+    pub worker: Option<WorkerCtx>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkerCtx {
+    pub parent_id: String,
+    pub task: String,
+}
 
 const DEFAULT_BINARY: &str = "claude";
 
@@ -28,7 +71,10 @@ pub const MAX_TAG_CHAIN_ROUNDS: usize = 8;
 pub struct ClaudeCodeCore {
     binary: String,
     session_id: Uuid,
-    initial_instructions: String,
+    /// Structured first-turn prompt sources. Composed into the actual
+    /// XML-tagged prompt by `build_first_turn_prompt` on the first turn.
+    /// Ignored when `started` is true (resumed sessions).
+    prompt_parts: PromptParts,
     allowed_tools: Vec<String>,
     /// Content passed via `--system-prompt-file` on every turn. When
     /// `None`, no system prompt file is created and claude uses its
@@ -49,14 +95,14 @@ impl ClaudeCodeCore {
     /// layer before the first turn has run.
     pub fn new(
         session_id: Uuid,
-        initial_instructions: String,
+        prompt_parts: PromptParts,
         allowed_tools: Vec<String>,
         system_prompt: Option<String>,
     ) -> Self {
         Self {
             binary: DEFAULT_BINARY.to_string(),
             session_id,
-            initial_instructions,
+            prompt_parts,
             allowed_tools,
             system_prompt,
             env: Vec::new(),
@@ -65,17 +111,19 @@ impl ClaudeCodeCore {
         }
     }
 
-    /// Construct a core that resumes a pre-existing session by id.
+    /// Construct a core that resumes a pre-existing session by id. The
+    /// first-turn prompt has already been delivered to the previous
+    /// session, so no `PromptParts` are needed — `started` starts true
+    /// and every turn forwards the user prompt verbatim.
     pub fn with_session_id(
         session_id: Uuid,
-        initial_instructions: String,
         allowed_tools: Vec<String>,
         system_prompt: Option<String>,
     ) -> Self {
         Self {
             binary: DEFAULT_BINARY.to_string(),
             session_id,
-            initial_instructions,
+            prompt_parts: PromptParts::default(),
             allowed_tools,
             system_prompt,
             env: Vec::new(),
@@ -122,14 +170,103 @@ impl ClaudeCodeCore {
             user_prompt.to_string()
         } else {
             self.started = true;
-            if self.initial_instructions.is_empty() {
+            let preamble = self.build_first_turn_prompt();
+            if preamble.is_empty() {
                 user_prompt.to_string()
             } else if user_prompt.is_empty() {
-                self.initial_instructions.clone()
+                preamble
             } else {
-                format!("{}\n\n{}", self.initial_instructions, user_prompt)
+                format!("{preamble}\n\n{user_prompt}")
             }
         }
+    }
+
+    /// Assemble the structured first-turn prompt: `<role>`, `<team>`,
+    /// `<tools>`, `<instructions>`. `<role>` and `<team>` are skipped
+    /// when their `PromptParts` field is `None` or whitespace-only;
+    /// `<tools>` and `<instructions>` are always emitted (even when
+    /// empty) so the model always sees its tool inventory and brief.
+    pub fn first_turn_prompt(&self) -> String {
+        self.build_first_turn_prompt()
+    }
+
+    fn build_first_turn_prompt(&self) -> String {
+        let mut sections: Vec<String> = Vec::new();
+        if let Some(role) = self
+            .prompt_parts
+            .role
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            sections.push(format!("<role>\n{role}\n</role>"));
+        }
+        if let Some(team) = self
+            .prompt_parts
+            .team
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            sections.push(format!("<team>\n{team}\n</team>"));
+        }
+        sections.push(self.build_tools_section());
+        sections.push(format!(
+            "<instructions>\n{}\n</instructions>",
+            self.prompt_parts.instructions.trim()
+        ));
+        sections.join("\n\n")
+    }
+
+    fn build_tools_section(&self) -> String {
+        let mut body = String::new();
+        body.push_str("## Built-in tools enabled\n\n");
+        if self.allowed_tools.is_empty() {
+            body.push_str("(none)\n");
+        } else {
+            for name in &self.allowed_tools {
+                body.push_str(&format!("- `{name}` — {}\n", built_in_tool_doc(name)));
+            }
+        }
+
+        if let Some(cli) = &self.prompt_parts.aciddog_cli {
+            let has_bash = self.allowed_tools.iter().any(|t| t == "Bash");
+            let contactable: Vec<&str> = cli.contactable.iter().map(String::as_str).collect();
+            let creatable: Vec<&str> = cli.creatable.iter().map(String::as_str).collect();
+
+            body.push('\n');
+            if has_bash {
+                if let Some(w) = &cli.worker {
+                    body.push_str(&worker_preamble(&cli.binary, &w.parent_id, &w.task));
+                }
+                body.push_str(&cli_preamble(&cli.binary, &contactable, &creatable));
+            } else {
+                if let Some(w) = &cli.worker {
+                    body.push_str(&tag_worker_preamble(&w.parent_id, &w.task));
+                }
+                body.push_str(&tag_preamble(&contactable, &creatable));
+            }
+        }
+
+        format!("<tools>\n{}\n</tools>", body.trim_end())
+    }
+}
+
+/// Short one-line description for the built-in tools the user is most
+/// likely to enable. Unknown names get a generic `enabled` line so the
+/// model still sees the tool surface even when the orchestrator adds
+/// new built-ins this lookup table doesn't know about.
+fn built_in_tool_doc(name: &str) -> &'static str {
+    match name {
+        "Bash" => "execute a shell command. Output is returned as text. Use absolute paths and quote spaces.",
+        "Read" => "read a file from disk by absolute path. Returns the file contents.",
+        "Edit" => "perform an exact-string replacement in a file. The `old_string` must be unique unless you set `replace_all`.",
+        "Write" => "write a file at an absolute path. Overwrites existing files; create only what's needed.",
+        "Grep" => "ripgrep-backed content search. Supports regex; filter by glob or file type.",
+        "Glob" => "fast file-pattern matching (e.g. `**/*.rs`). Use to discover files by name.",
+        "WebFetch" => "fetch a URL and return processed text content.",
+        "WebSearch" => "search the web and return result snippets.",
+        _ => "enabled",
     }
 }
 
@@ -501,8 +638,15 @@ async fn dispatch_call(
 mod tests {
     use super::*;
 
+    fn parts(instructions: &str) -> PromptParts {
+        PromptParts {
+            instructions: instructions.into(),
+            ..PromptParts::default()
+        }
+    }
+
     fn fresh(instructions: &str, tools: Vec<String>) -> ClaudeCodeCore {
-        ClaudeCodeCore::new(Uuid::new_v4(), instructions.into(), tools, None)
+        ClaudeCodeCore::new(Uuid::new_v4(), parts(instructions), tools, None)
     }
 
     #[test]
@@ -539,10 +683,15 @@ mod tests {
     }
 
     #[test]
-    fn first_turn_prepends_instructions() {
-        let mut core = fresh("you are a helper", vec![]);
+    fn first_turn_wraps_instructions_in_xml_block() {
+        let mut core = fresh("be a helper", vec![]);
         let p = core.build_prompt("hello");
-        assert_eq!(p, "you are a helper\n\nhello");
+        // Instructions section is always emitted, even with no other parts.
+        assert!(
+            p.contains("<instructions>\nbe a helper\n</instructions>"),
+            "missing instructions block: {p}"
+        );
+        assert!(p.ends_with("\n\nhello"), "user prompt missing: {p}");
         assert!(core.started);
     }
 
@@ -555,9 +704,124 @@ mod tests {
     }
 
     #[test]
+    fn first_turn_prompt_emits_role_team_tools_instructions_in_order() {
+        let parts = PromptParts {
+            role: Some("be terse".into()),
+            team: Some("you can message: bob".into()),
+            instructions: "do the thing".into(),
+            aciddog_cli: None,
+        };
+        let core = ClaudeCodeCore::new(Uuid::new_v4(), parts, vec!["Read".into()], None);
+        let p = core.first_turn_prompt();
+        let role_pos = p.find("<role>").expect("role");
+        let team_pos = p.find("<team>").expect("team");
+        let tools_pos = p.find("<tools>").expect("tools");
+        let instr_pos = p.find("<instructions>").expect("instructions");
+        assert!(role_pos < team_pos && team_pos < tools_pos && tools_pos < instr_pos);
+        assert!(p.contains("- `Read` —"), "missing built-in Read line: {p}");
+    }
+
+    #[test]
+    fn role_block_omitted_when_role_is_none_or_blank() {
+        let core = ClaudeCodeCore::new(Uuid::new_v4(), parts("i"), vec![], None);
+        let p = core.first_turn_prompt();
+        assert!(!p.contains("<role>"), "no role block expected: {p}");
+
+        let core = ClaudeCodeCore::new(
+            Uuid::new_v4(),
+            PromptParts {
+                role: Some("   \n  ".into()),
+                instructions: "i".into(),
+                ..PromptParts::default()
+            },
+            vec![],
+            None,
+        );
+        assert!(!core.first_turn_prompt().contains("<role>"));
+    }
+
+    #[test]
+    fn tools_block_uses_cli_preamble_when_bash_present() {
+        let parts = PromptParts {
+            instructions: "i".into(),
+            aciddog_cli: Some(AciddogCliCtx {
+                binary: "/usr/bin/aciddog".into(),
+                contactable: vec!["bob".into()],
+                creatable: vec![],
+                worker: None,
+            }),
+            ..PromptParts::default()
+        };
+        let core = ClaudeCodeCore::new(
+            Uuid::new_v4(),
+            parts,
+            vec!["Bash".into(), "Read".into()],
+            None,
+        );
+        let p = core.first_turn_prompt();
+        assert!(p.contains("<tools>"), "missing tools open tag: {p}");
+        assert!(p.contains("- `Bash` —"), "missing Bash built-in line: {p}");
+        assert!(p.contains("/usr/bin/aciddog send --to"), "missing CLI preamble: {p}");
+        assert!(!p.contains("<aciddog-call>"), "should not include tag preamble: {p}");
+    }
+
+    #[test]
+    fn tools_block_uses_tag_preamble_when_bash_absent() {
+        let parts = PromptParts {
+            instructions: "i".into(),
+            aciddog_cli: Some(AciddogCliCtx {
+                binary: "/usr/bin/aciddog".into(),
+                contactable: vec!["bob".into()],
+                creatable: vec![],
+                worker: None,
+            }),
+            ..PromptParts::default()
+        };
+        let core = ClaudeCodeCore::new(
+            Uuid::new_v4(),
+            parts,
+            vec!["Read".into()],
+            None,
+        );
+        let p = core.first_turn_prompt();
+        assert!(p.contains("<aciddog-call>"), "missing tag preamble: {p}");
+        assert!(!p.contains("/usr/bin/aciddog send"), "CLI preamble leaked into tag mode: {p}");
+    }
+
+    #[test]
+    fn tools_block_includes_worker_preamble_when_worker_ctx_present() {
+        let parts = PromptParts {
+            instructions: "i".into(),
+            aciddog_cli: Some(AciddogCliCtx {
+                binary: "/a".into(),
+                contactable: vec!["coder".into()],
+                creatable: vec![],
+                worker: Some(WorkerCtx {
+                    parent_id: "coder".into(),
+                    task: "find FOO".into(),
+                }),
+            }),
+            ..PromptParts::default()
+        };
+        let core = ClaudeCodeCore::new(Uuid::new_v4(), parts, vec!["Bash".into()], None);
+        let p = core.first_turn_prompt();
+        assert!(p.contains("spawned by `coder`"), "missing worker preamble: {p}");
+        assert!(p.contains("find FOO"), "missing task line: {p}");
+        assert!(p.contains("/a worker complete --body"), "missing worker complete: {p}");
+    }
+
+    #[test]
+    fn tools_block_omits_aciddog_section_when_cli_ctx_none() {
+        let core = ClaudeCodeCore::new(Uuid::new_v4(), parts("i"), vec!["Read".into()], None);
+        let p = core.first_turn_prompt();
+        assert!(p.contains("<tools>"), "tools always emitted: {p}");
+        assert!(!p.contains("aciddog"), "no aciddog docs expected: {p}");
+    }
+
+    #[test]
     fn new_uses_caller_provided_session_id() {
         let id = Uuid::new_v4();
-        let core = ClaudeCodeCore::new(id, "i".into(), vec![], None);
+        let core = ClaudeCodeCore::new(id, parts("i"), vec![], None);
         assert_eq!(core.session_id(), Some(id));
         assert!(!core.started, "new() sessions have not started yet");
     }
@@ -565,7 +829,7 @@ mod tests {
     #[test]
     fn with_session_id_starts_as_already_started() {
         let id = Uuid::new_v4();
-        let mut core = ClaudeCodeCore::with_session_id(id, "ignored".into(), vec![], None);
+        let mut core = ClaudeCodeCore::with_session_id(id, vec![], None);
         assert_eq!(core.session_id(), Some(id));
         let p = core.build_prompt("hi");
         assert_eq!(p, "hi");
@@ -575,7 +839,7 @@ mod tests {
     fn system_prompt_is_stored_when_provided() {
         let core = ClaudeCodeCore::new(
             Uuid::new_v4(),
-            "i".into(),
+            parts("i"),
             vec![],
             Some("you are a helper".into()),
         );
@@ -627,7 +891,7 @@ mod tests {
         // hitting a missing binary must emit an error event.
         let mut core = ClaudeCodeCore::new(
             Uuid::new_v4(),
-            "i".into(),
+            parts("i"),
             vec![],
             Some("SYSTEM".into()),
         )

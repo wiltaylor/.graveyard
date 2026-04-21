@@ -22,6 +22,10 @@ pub struct Team {
 pub struct Agent {
     pub id: String,
     pub role: String,
+    /// Long-form persona/priorities/style guidance. Emitted inside a
+    /// `<role>...</role>` block on the first turn so the model can read
+    /// it as primary behavioural direction. `None` ⇒ no `<role>` block.
+    pub role_description: Option<String>,
     pub model: String,
     pub instructions: String,
     /// Allowlist of agent ids this agent may send messages to.
@@ -49,6 +53,10 @@ pub struct Agent {
 pub struct Worker {
     pub id: String,
     pub role: String,
+    /// Long-form persona/priorities/style guidance. Emitted inside a
+    /// `<role>...</role>` block on the first turn so the model can read
+    /// it as primary behavioural direction. `None` ⇒ no `<role>` block.
+    pub role_description: Option<String>,
     pub model: String,
     pub instructions: String,
     /// Optional per-template tool allowlist. `None` falls back to the
@@ -257,6 +265,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
             Ok(Agent {
                 id: require_id(&b.id, &b.kind)?,
                 role: require_string(b, "role")?,
+                role_description: optional_string(b, "role_description"),
                 model: optional_string(b, "model").unwrap_or_else(|| "claude-opus-4-7".to_string()),
                 instructions: require_string(b, "instructions")?,
                 can_message: optional_string_list(b, "can_message")?,
@@ -274,6 +283,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
             Ok(Worker {
                 id: require_id(&b.id, &b.kind)?,
                 role: require_string(b, "role")?,
+                role_description: optional_string(b, "role_description"),
                 model: optional_string(b, "model").unwrap_or_else(|| "claude-opus-4-7".to_string()),
                 instructions: require_string(b, "instructions")?,
                 tools: optional_string_list(b, "tools")?,
@@ -784,6 +794,38 @@ mod tests {
     fn can_send_unknown_sender_is_denied() {
         let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
         assert!(!cfg.can_send("ghost", "alpha"));
+    }
+
+    #[test]
+    fn role_description_defaults_to_none() {
+        let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
+        assert!(cfg.agents[0].role_description.is_none());
+    }
+
+    #[test]
+    fn parses_role_description_on_agent_and_worker() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha {
+                role = "planner"
+                role_description = "long form planner brief"
+                instructions = "i"
+            }
+            worker w {
+                role = "doer"
+                role_description = "long form worker brief"
+                instructions = "i"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.agents[0].role_description.as_deref(),
+            Some("long form planner brief")
+        );
+        assert_eq!(
+            cfg.workers[0].role_description.as_deref(),
+            Some("long form worker brief")
+        );
     }
 
     #[test]
