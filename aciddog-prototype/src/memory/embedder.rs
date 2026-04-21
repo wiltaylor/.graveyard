@@ -121,10 +121,7 @@ mod tests {
 
     #[test]
     fn resolve_model_defaults_to_bge_small() {
-        assert_eq!(
-            EmbedderPool::resolve_model_id(None),
-            DEFAULT_EMBED_MODEL
-        );
+        assert_eq!(EmbedderPool::resolve_model_id(None), DEFAULT_EMBED_MODEL);
         assert_eq!(
             EmbedderPool::resolve_model_id(Some("multilingual-e5-small")),
             "multilingual-e5-small"

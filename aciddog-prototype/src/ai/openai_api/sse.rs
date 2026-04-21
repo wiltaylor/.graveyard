@@ -90,8 +90,14 @@ fn find_event_boundary(buf: &[u8]) -> Option<EventEnd> {
         i += 1;
     }
     match (lf_lf, crlf_crlf) {
-        (Some(p), _) => Some(EventEnd { body_len: p, end: p + 2 }),
-        (None, Some(p)) => Some(EventEnd { body_len: p, end: p + 4 }),
+        (Some(p), _) => Some(EventEnd {
+            body_len: p,
+            end: p + 2,
+        }),
+        (None, Some(p)) => Some(EventEnd {
+            body_len: p,
+            end: p + 4,
+        }),
         (None, None) => None,
     }
 }
@@ -241,7 +247,12 @@ mod tests {
         assert_eq!(evs.len(), 1);
         match evs[0].as_ref().unwrap() {
             OpenAiSseEvent::Data(v) => {
-                assert_eq!(v.pointer("/choices").and_then(Value::as_array).map(Vec::len), Some(0));
+                assert_eq!(
+                    v.pointer("/choices")
+                        .and_then(Value::as_array)
+                        .map(Vec::len),
+                    Some(0)
+                );
             }
             other => panic!("expected Data, got {other:?}"),
         }

@@ -56,7 +56,11 @@ fn build_team_block(cfg: &AciddogConfig, contactable: &[&str], creatable: &[&str
 #[test]
 fn planner_prompt_has_role_team_tag_tools_and_instructions() {
     let cfg = demo_config();
-    let planner = cfg.agents.iter().find(|a| a.id == "planner").expect("planner");
+    let planner = cfg
+        .agents
+        .iter()
+        .find(|a| a.id == "planner")
+        .expect("planner");
 
     // Planner can message every other agent and spawn jokester. It has
     // no Bash tool, so the <tools> block must use the tag preamble.
@@ -92,10 +96,19 @@ fn planner_prompt_has_role_team_tag_tools_and_instructions() {
     eprintln!("───── PLANNER PROMPT ─────\n{p}\n──────────────────────────");
 
     assert!(p.contains("<role>"), "missing role: {p}");
-    assert!(p.contains("team coordinator"), "role_description missing: {p}");
+    assert!(
+        p.contains("team coordinator"),
+        "role_description missing: {p}"
+    );
     assert!(p.contains("<team>"), "missing team: {p}");
-    assert!(p.contains("- coder — implementer"), "team listing missing: {p}");
-    assert!(p.contains("- jokester — comedian"), "creatable listing missing: {p}");
+    assert!(
+        p.contains("- coder — implementer"),
+        "team listing missing: {p}"
+    );
+    assert!(
+        p.contains("- jokester — comedian"),
+        "creatable listing missing: {p}"
+    );
     // planner has no memory banks in this test setup (we pass `memory: None`);
     // see the dedicated memory-block test below for the positive case.
     assert!(!p.contains("<memory>"), "unexpected memory block: {p}");
@@ -174,11 +187,18 @@ fn coder_prompt_uses_cli_preamble_inside_tools() {
 #[test]
 fn planner_prompt_includes_memory_block_and_cli_docs_for_allowed_banks() {
     let cfg = demo_config();
-    let planner = cfg.agents.iter().find(|a| a.id == "planner").expect("planner");
+    let planner = cfg
+        .agents
+        .iter()
+        .find(|a| a.id == "planner")
+        .expect("planner");
 
     // Build a memory block mirroring what the orchestrator does.
     let banks = cfg.memory_banks_for("planner");
-    assert!(!banks.is_empty(), "demo should grant planner at least one bank");
+    assert!(
+        !banks.is_empty(),
+        "demo should grant planner at least one bank"
+    );
     let mut memory_body = String::new();
     memory_body.push_str("You have access to the following memory banks.\n\n");
     for bank in &banks {

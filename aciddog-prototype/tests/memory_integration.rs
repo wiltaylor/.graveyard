@@ -208,10 +208,8 @@ fn search_tag_filters_include_and_exclude() {
 fn search_without_query_lists_entries_filtered_by_tags() {
     let (_tmp, store) = open_tmp();
 
-    let a = store
-        .store("entry A", None, &["x".into()]).expect("a");
-    let _b = store
-        .store("entry B", None, &["y".into()]).expect("b");
+    let a = store.store("entry A", None, &["x".into()]).expect("a");
+    let _b = store.store("entry B", None, &["y".into()]).expect("b");
 
     // No --query, include-tag x: only A.
     let opts = SearchOptions {
@@ -264,11 +262,7 @@ fn links_roundtrip_between_two_entries() {
     let (_tmp, store) = open_tmp();
 
     let old_decision = store
-        .store(
-            "We used to require two approvals on every PR.",
-            None,
-            &[],
-        )
+        .store("We used to require two approvals on every PR.", None, &[])
         .expect("store old");
     let new_decision = store
         .store(

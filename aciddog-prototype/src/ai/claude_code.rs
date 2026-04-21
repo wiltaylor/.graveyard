@@ -304,9 +304,7 @@ impl AICore for ClaudeCodeCore {
             session_id: self.session_id,
             allowed_tools: self.allowed_tools.clone(),
             env: self.env.clone(),
-            system_prompt_path: system_prompt_file
-                .as_ref()
-                .map(|t| t.path().to_path_buf()),
+            system_prompt_path: system_prompt_file.as_ref().map(|t| t.path().to_path_buf()),
         });
 
         let (tx, rx) = mpsc::channel::<AIEvent>(64);
@@ -774,8 +772,14 @@ mod tests {
         let p = core.first_turn_prompt();
         assert!(p.contains("<tools>"), "missing tools open tag: {p}");
         assert!(p.contains("- `Bash` —"), "missing Bash built-in line: {p}");
-        assert!(p.contains("/usr/bin/aciddog send --to"), "missing CLI preamble: {p}");
-        assert!(!p.contains("<aciddog-call>"), "should not include tag preamble: {p}");
+        assert!(
+            p.contains("/usr/bin/aciddog send --to"),
+            "missing CLI preamble: {p}"
+        );
+        assert!(
+            !p.contains("<aciddog-call>"),
+            "should not include tag preamble: {p}"
+        );
     }
 
     #[test]
@@ -791,15 +795,13 @@ mod tests {
             }),
             ..PromptParts::default()
         };
-        let core = ClaudeCodeCore::new(
-            Uuid::new_v4(),
-            parts,
-            vec!["Read".into()],
-            None,
-        );
+        let core = ClaudeCodeCore::new(Uuid::new_v4(), parts, vec!["Read".into()], None);
         let p = core.first_turn_prompt();
         assert!(p.contains("<aciddog-call>"), "missing tag preamble: {p}");
-        assert!(!p.contains("/usr/bin/aciddog send"), "CLI preamble leaked into tag mode: {p}");
+        assert!(
+            !p.contains("/usr/bin/aciddog send"),
+            "CLI preamble leaked into tag mode: {p}"
+        );
     }
 
     #[test]
@@ -820,9 +822,15 @@ mod tests {
         };
         let core = ClaudeCodeCore::new(Uuid::new_v4(), parts, vec!["Bash".into()], None);
         let p = core.first_turn_prompt();
-        assert!(p.contains("spawned by `coder`"), "missing worker preamble: {p}");
+        assert!(
+            p.contains("spawned by `coder`"),
+            "missing worker preamble: {p}"
+        );
         assert!(p.contains("find FOO"), "missing task line: {p}");
-        assert!(p.contains("/a worker complete --body"), "missing worker complete: {p}");
+        assert!(
+            p.contains("/a worker complete --body"),
+            "missing worker complete: {p}"
+        );
     }
 
     #[test]
@@ -904,13 +912,9 @@ mod tests {
     async fn spawn_failure_with_system_prompt_still_surfaces_error() {
         // Exercises the tempfile path: even with a Some(system_prompt),
         // hitting a missing binary must emit an error event.
-        let mut core = ClaudeCodeCore::new(
-            Uuid::new_v4(),
-            parts("i"),
-            vec![],
-            Some("SYSTEM".into()),
-        )
-        .with_binary("/this/path/definitely/does/not/exist/claude");
+        let mut core =
+            ClaudeCodeCore::new(Uuid::new_v4(), parts("i"), vec![], Some("SYSTEM".into()))
+                .with_binary("/this/path/definitely/does/not/exist/claude");
         let mut stream = core.turn("hi").await.expect("turn returns ok");
         let mut saw_error = false;
         while let Some(ev) = stream.next().await {

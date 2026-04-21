@@ -923,11 +923,7 @@ mod tests {
             }),
             ..PromptParts::default()
         };
-        let core = CopilotCliCore::new(
-            Uuid::new_v4(),
-            parts,
-            vec!["Bash".into(), "Read".into()],
-        );
+        let core = CopilotCliCore::new(Uuid::new_v4(), parts, vec!["Bash".into(), "Read".into()]);
         let p = core.first_turn_prompt();
         assert!(p.contains("<tools>"), "missing tools open tag: {p}");
         assert!(p.contains("- `bash` —"), "missing bash builtin line: {p}");
@@ -935,7 +931,10 @@ mod tests {
             p.contains("/usr/bin/aciddog send --to"),
             "missing CLI preamble: {p}"
         );
-        assert!(!p.contains("<aciddog-call>"), "should not include tag preamble: {p}");
+        assert!(
+            !p.contains("<aciddog-call>"),
+            "should not include tag preamble: {p}"
+        );
     }
 
     #[test]
@@ -978,7 +977,10 @@ mod tests {
         };
         let core = CopilotCliCore::new(Uuid::new_v4(), parts, vec!["Bash".into()]);
         let p = core.first_turn_prompt();
-        assert!(p.contains("spawned by `coder`"), "missing worker preamble: {p}");
+        assert!(
+            p.contains("spawned by `coder`"),
+            "missing worker preamble: {p}"
+        );
         assert!(p.contains("find FOO"), "missing task line: {p}");
         assert!(
             p.contains("/a worker complete --body"),

@@ -146,10 +146,13 @@ impl AICore for AnthropicApiCore {
             prompt.to_string()
         };
 
-        self.history.lock().expect("history poisoned").push(Message {
-            role: Role::User,
-            content: vec![ContentBlock::Text { text: user_text }],
-        });
+        self.history
+            .lock()
+            .expect("history poisoned")
+            .push(Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: user_text }],
+            });
 
         let (registry, _resolved) = ToolRegistry::from_allowed_with(
             &self.allowed_tools,
@@ -438,13 +441,17 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                             .unwrap_or("");
                         match delta_type {
                             "text_delta" => {
-                                if let Some(t) = ev.data.pointer("/delta/text").and_then(Value::as_str) {
+                                if let Some(t) =
+                                    ev.data.pointer("/delta/text").and_then(Value::as_str)
+                                {
                                     pending_text.push_str(t);
                                 }
                             }
                             "input_json_delta" => {
-                                if let Some(t) =
-                                    ev.data.pointer("/delta/partial_json").and_then(Value::as_str)
+                                if let Some(t) = ev
+                                    .data
+                                    .pointer("/delta/partial_json")
+                                    .and_then(Value::as_str)
                                 {
                                     if let Some(p) = pending_tool.as_mut() {
                                         p.partial_json.push_str(t);
@@ -484,8 +491,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                                     let input = if p.partial_json.is_empty() {
                                         Value::Object(serde_json::Map::new())
                                     } else {
-                                        serde_json::from_str(&p.partial_json)
-                                            .unwrap_or(Value::Null)
+                                        serde_json::from_str(&p.partial_json).unwrap_or(Value::Null)
                                     };
                                     if ctx
                                         .tx
@@ -512,8 +518,10 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                         current_block_type = None;
                     }
                     "message_delta" => {
-                        if let Some(sr) =
-                            ev.data.pointer("/delta/stop_reason").and_then(Value::as_str)
+                        if let Some(sr) = ev
+                            .data
+                            .pointer("/delta/stop_reason")
+                            .and_then(Value::as_str)
                         {
                             stop_reason = Some(sr.to_string());
                         }
@@ -587,11 +595,9 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                     futures_vec.push(async move {
                         let output = match registry.get(&name_c) {
                             Some(tool) => tool.invoke(input_c).await,
-                            None => {
-                                crate::ai::tools::ToolOutput::error(format!(
-                                    "unknown tool `{name_c}`"
-                                ))
-                            }
+                            None => crate::ai::tools::ToolOutput::error(format!(
+                                "unknown tool `{name_c}`"
+                            )),
                         };
                         (id_c, output)
                     });
@@ -672,7 +678,11 @@ fn build_request_body(
         "stream": true,
         "messages": history,
     });
-    if let Some(sp) = system_prompt.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(sp) = system_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         body["system"] = Value::String(sp.to_string());
     }
     if !tools.is_empty() {
@@ -685,13 +695,28 @@ fn build_first_turn_prompt(parts: &PromptParts, allowed_tools: &[String]) -> Str
     // Reuse the same XML layout as claude_code so agents see an
     // identical preamble regardless of core.
     let mut sections: Vec<String> = Vec::new();
-    if let Some(role) = parts.role.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(role) = parts
+        .role
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         sections.push(format!("<role>\n{role}\n</role>"));
     }
-    if let Some(team) = parts.team.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(team) = parts
+        .team
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         sections.push(format!("<team>\n{team}\n</team>"));
     }
-    if let Some(mem) = parts.memory.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(mem) = parts
+        .memory
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         sections.push(format!("<memory>\n{mem}\n</memory>"));
     }
     sections.push(build_tools_section(parts, allowed_tools));
@@ -729,7 +754,12 @@ fn build_tools_section(parts: &PromptParts, allowed_tools: &[String]) -> String 
             if let Some(w) = &cli.worker {
                 body.push_str(&worker_preamble(&cli.binary, &w.parent_id, &w.task));
             }
-            body.push_str(&cli_preamble(&cli.binary, &contactable, &creatable, &memory_banks));
+            body.push_str(&cli_preamble(
+                &cli.binary,
+                &contactable,
+                &creatable,
+                &memory_banks,
+            ));
         } else {
             if let Some(w) = &cli.worker {
                 body.push_str(&tag_worker_preamble(&w.parent_id, &w.task));

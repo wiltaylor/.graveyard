@@ -40,7 +40,12 @@ fn demo_declares_z_ai_anthropic_core_bound_to_tester() {
         .find(|c| c.id == "z_ai")
         .expect("z_ai core should be declared");
     match &z.kind {
-        AiCoreKind::AnthropicApi { api_url, api_key_env, model, .. } => {
+        AiCoreKind::AnthropicApi {
+            api_url,
+            api_key_env,
+            model,
+            ..
+        } => {
             assert_eq!(api_url, "https://api.z.ai/api/anthropic");
             assert_eq!(api_key_env, "ZAI_API_KEY");
             assert_eq!(model, "glm-5.1");
@@ -87,7 +92,12 @@ fn demo_declares_openrouter_openai_core_bound_to_jokemaster() {
         .find(|c| c.id == "openrouter")
         .expect("openrouter core should be declared");
     match &openrouter.kind {
-        AiCoreKind::OpenAiApi { api_url, api_key_env, model, .. } => {
+        AiCoreKind::OpenAiApi {
+            api_url,
+            api_key_env,
+            model,
+            ..
+        } => {
             assert_eq!(api_url, "https://openrouter.ai/api/v1");
             assert_eq!(api_key_env, "OPENROUTER_API_KEY");
             assert_eq!(model, "openai/gpt-5.4");

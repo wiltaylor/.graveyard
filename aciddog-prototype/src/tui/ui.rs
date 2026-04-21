@@ -216,10 +216,7 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
                         .effective_ai_core(w.ai_core.as_deref())
                         .and_then(|c| c.runtime_model())
                         .unwrap_or(&w.model);
-                    format!(
-                        " {} · worker · {} · {} ",
-                        chat.display_name, w.role, model
-                    )
+                    format!(" {} · worker · {} · {} ", chat.display_name, w.role, model)
                 } else {
                     format!(" {} · worker ", chat.display_name)
                 }
@@ -312,9 +309,7 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     inner
 }
 
-const THINKING_SPINNER_FRAMES: &[&str] = &[
-    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
-];
+const THINKING_SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 fn render_thinking_row(
     f: &mut Frame,
@@ -326,8 +321,7 @@ fn render_thinking_row(
     if pool.is_empty() || area.width == 0 || area.height == 0 {
         return;
     }
-    let spinner = THINKING_SPINNER_FRAMES
-        [(frame_tick as usize) % THINKING_SPINNER_FRAMES.len()];
+    let spinner = THINKING_SPINNER_FRAMES[(frame_tick as usize) % THINKING_SPINNER_FRAMES.len()];
     let message_idx = idx.unwrap_or(0).min(pool.len().saturating_sub(1));
     let message = pool[message_idx].as_str();
     let line = Line::from(vec![

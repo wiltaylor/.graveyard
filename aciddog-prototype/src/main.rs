@@ -251,8 +251,19 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
             tags: tag,
         },
         AgentCommand::Memory {
-            cmd: MemoryCommand::Link { bank, from, to, kind },
-        } => RequestCmd::MemoryLink { bank, from, to, kind },
+            cmd:
+                MemoryCommand::Link {
+                    bank,
+                    from,
+                    to,
+                    kind,
+                },
+        } => RequestCmd::MemoryLink {
+            bank,
+            from,
+            to,
+            kind,
+        },
         AgentCommand::Memory {
             cmd: MemoryCommand::Unlink { bank, from, to },
         } => RequestCmd::MemoryUnlink { bank, from, to },

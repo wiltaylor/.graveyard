@@ -135,7 +135,9 @@ fn search_tree(
                 let name_str = name.to_string_lossy();
                 // Skip common noise directories so we don't descend
                 // into build output or VCS internals.
-                if current == root_path && matches!(name_str.as_ref(), ".git" | "target" | "node_modules") {
+                if current == root_path
+                    && matches!(name_str.as_ref(), ".git" | "target" | "node_modules")
+                {
                     continue;
                 }
                 stack.push(entry.path());

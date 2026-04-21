@@ -23,8 +23,8 @@ use clap::Parser;
 
 use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
 use crate::ai::{
-    AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, CopilotCliCore, OpenAiApiCore,
-    PromptParts, WorkerCtx,
+    AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, CopilotCliCore,
+    GeminiCliCore, OpenAiApiCore, PromptParts, WorkerCtx,
 };
 use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::{AciddogConfig, AiCore, AiCoreKind};
@@ -62,6 +62,7 @@ fn core_display_label(core: &AiCore) -> String {
         AiCoreKind::AnthropicApi { .. } => "anthropic-api",
         AiCoreKind::OpenAiApi { .. } => "openai-api",
         AiCoreKind::CopilotCli { .. } => "copilot-cli",
+        AiCoreKind::GeminiCli { .. } => "gemini-cli",
     };
     format!("{kind} ({})", core.id)
 }
@@ -75,7 +76,8 @@ fn shell_tool_name_for_core(core: &AiCore) -> Option<&'static str> {
         AiCoreKind::ClaudeCode { .. }
         | AiCoreKind::AnthropicApi { .. }
         | AiCoreKind::OpenAiApi { .. }
-        | AiCoreKind::CopilotCli { .. } => Some("Bash"),
+        | AiCoreKind::CopilotCli { .. }
+        | AiCoreKind::GeminiCli { .. } => Some("Bash"),
     }
 }
 
@@ -169,6 +171,27 @@ fn build_core(
                 CopilotCliCore::with_session_id(session_id, tools)
             } else {
                 CopilotCliCore::new(session_id, parts, tools)
+            }
+            .with_env(env);
+            if let Some(m) = model {
+                c = c.with_model(m.clone());
+            }
+            if let Some(tx) = socket_tx {
+                c = c.with_socket_tx(tx);
+            }
+            Box::new(c)
+        }
+        AiCoreKind::GeminiCli { model, .. } => {
+            // `resume = true` here means "the aciddog-side session was
+            // previously started" — for gemini that just skips the
+            // preamble. Gemini's own conversation history is not
+            // preserved across process restarts (same v1 limitation as
+            // AnthropicApi); the first post-resurrection turn starts a
+            // fresh gemini session under the covers.
+            let mut c = if resume {
+                GeminiCliCore::with_session_id(session_id, tools)
+            } else {
+                GeminiCliCore::new(session_id, parts, tools)
             }
             .with_env(env);
             if let Some(m) = model {
@@ -1403,7 +1426,12 @@ impl App {
             } => {
                 self.handle_memory_store(idx, bank, body, title, tags, reply);
             }
-            RequestCmd::MemoryLink { bank, from, to, kind } => {
+            RequestCmd::MemoryLink {
+                bank,
+                from,
+                to,
+                kind,
+            } => {
                 self.handle_memory_link(idx, bank, from, to, kind, reply);
             }
             RequestCmd::MemoryUnlink { bank, from, to } => {
@@ -1416,7 +1444,15 @@ impl App {
                 include_tags,
                 exclude_tags,
             } => {
-                self.handle_memory_links(idx, bank, id, direction, include_tags, exclude_tags, reply);
+                self.handle_memory_links(
+                    idx,
+                    bank,
+                    id,
+                    direction,
+                    include_tags,
+                    exclude_tags,
+                    reply,
+                );
             }
         }
     }
@@ -1488,7 +1524,9 @@ impl App {
                 return;
             }
         };
-        let tools = self.config.effective_tools(worker.tools.as_deref(), Some(core));
+        let tools = self
+            .config
+            .effective_tools(worker.tools.as_deref(), Some(core));
         let tag_mode = uses_tag_ipc(&tools, core);
 
         let creatable: Vec<&str> = worker
@@ -1719,7 +1757,9 @@ impl App {
             .ok_or_else(|| format!("worker template `{template_id}` no longer exists"))?;
 
         let ai_core = self.config.effective_ai_core(worker.ai_core.as_deref());
-        let tools = self.config.effective_tools(worker.tools.as_deref(), ai_core);
+        let tools = self
+            .config
+            .effective_tools(worker.tools.as_deref(), ai_core);
         let tag_mode = ai_core.map(|c| uses_tag_ipc(&tools, c)).unwrap_or(false);
 
         let env = vec![

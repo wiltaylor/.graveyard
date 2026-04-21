@@ -86,7 +86,11 @@ impl Tool for EditTool {
             Ok(()) => ToolOutput::ok(format!(
                 "edited {path} ({} replacement{})",
                 matches.min(if replace_all { matches } else { 1 }),
-                if matches == 1 || !replace_all { "" } else { "s" }
+                if matches == 1 || !replace_all {
+                    ""
+                } else {
+                    "s"
+                }
             )),
             Err(e) => ToolOutput::error(format!("Edit: write {path}: {e}")),
         }

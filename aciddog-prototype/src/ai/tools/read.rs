@@ -43,8 +43,14 @@ impl Tool for ReadTool {
             Some(p) => p.to_string(),
             None => return ToolOutput::error("Read: `file_path` is required"),
         };
-        let offset = input.get("offset").and_then(Value::as_u64).map(|v| v as usize);
-        let limit = input.get("limit").and_then(Value::as_u64).map(|v| v as usize);
+        let offset = input
+            .get("offset")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize);
+        let limit = input
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize);
 
         let contents = match tokio::fs::read_to_string(&path).await {
             Ok(s) => s,
@@ -86,9 +92,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_file_is_error() {
-        let out = ReadTool
-            .invoke(json!({"file_path": "/no/such/file"}))
-            .await;
+        let out = ReadTool.invoke(json!({"file_path": "/no/such/file"})).await;
         assert!(out.is_error);
     }
 

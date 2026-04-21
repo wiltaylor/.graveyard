@@ -118,10 +118,7 @@ impl Tool for BashTool {
         let (status, out_buf, err_buf) = match timeout(tmo, run).await {
             Ok(v) => v,
             Err(_) => {
-                return ToolOutput::error(format!(
-                    "Bash: timed out after {}ms",
-                    tmo.as_millis()
-                ))
+                return ToolOutput::error(format!("Bash: timed out after {}ms", tmo.as_millis()))
             }
         };
 

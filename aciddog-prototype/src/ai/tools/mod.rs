@@ -106,10 +106,7 @@ impl ToolRegistry {
 
     /// Same as `from_allowed` but lets the caller customise the tools
     /// that need per-core state (today only `Bash`'s env inheritance).
-    pub fn from_allowed_with(
-        allowed: &[String],
-        cfg: &RegistryConfig,
-    ) -> (Self, Vec<String>) {
+    pub fn from_allowed_with(allowed: &[String], cfg: &RegistryConfig) -> (Self, Vec<String>) {
         let mut tools: BTreeMap<String, Arc<dyn Tool>> = BTreeMap::new();
         let mut resolved: Vec<String> = Vec::new();
         for name in allowed {

@@ -250,11 +250,7 @@ fn push_section(out: &mut String, binary: &str, name: &str, description: &str) {
 /// intercepts and dispatches through the same handlers as CLI requests.
 /// Responses arrive on the next turn wrapped in
 /// `<aciddog-response index="N">{...}</aciddog-response>` blocks.
-pub fn tag_preamble(
-    contactable: &[&str],
-    creatable: &[&str],
-    memory_banks: &[&str],
-) -> String {
+pub fn tag_preamble(contactable: &[&str], creatable: &[&str], memory_banks: &[&str]) -> String {
     let mut out = String::new();
     push_line(&mut out, "## aciddog tag protocol");
     push_line(
@@ -394,10 +390,7 @@ fn push_tag_section(out: &mut String, name: &str, example: &str, description: &s
 }
 
 fn push_task_board_tag_docs(out: &mut String) {
-    push_line(
-        out,
-        "### Shared task board",
-    );
+    push_line(out, "### Shared task board");
     push_line(
         out,
         "The task board is team-wide (no allowlist). Use these commands to \
@@ -664,10 +657,7 @@ mod tests {
     fn tag_preamble_has_header_and_format_note() {
         let p = tag_preamble(&["coder"], &[], &[]);
         assert!(p.starts_with("## aciddog tag protocol"), "header: {p}");
-        assert!(
-            p.contains("<aciddog-call>"),
-            "must document call tag: {p}"
-        );
+        assert!(p.contains("<aciddog-call>"), "must document call tag: {p}");
         assert!(
             p.contains("<aciddog-response"),
             "must document response tag: {p}"

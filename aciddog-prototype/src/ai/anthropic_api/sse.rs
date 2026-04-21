@@ -191,9 +191,7 @@ mod tests {
     #[test]
     fn multiple_events_in_one_feed() {
         let mut d = SseDecoder::new();
-        let evs = d.feed(
-            b"event: a\ndata: 1\n\nevent: b\ndata: 2\n\nevent: c\ndata: 3\n\n",
-        );
+        let evs = d.feed(b"event: a\ndata: 1\n\nevent: b\ndata: 2\n\nevent: c\ndata: 3\n\n");
         assert_eq!(evs.len(), 3);
         assert_eq!(evs[0].as_ref().unwrap().event, "a");
         assert_eq!(evs[1].as_ref().unwrap().event, "b");

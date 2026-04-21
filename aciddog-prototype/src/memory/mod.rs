@@ -97,11 +97,7 @@ impl MemoryRegistry {
 
     /// Run a search with the combined filters in `opts`. Same
     /// access-control note as [`MemoryRegistry::store`].
-    pub fn search(
-        &self,
-        bank: &MemoryBank,
-        opts: SearchOptions,
-    ) -> Result<Vec<Hit>, MemoryError> {
+    pub fn search(&self, bank: &MemoryBank, opts: SearchOptions) -> Result<Vec<Hit>, MemoryError> {
         let store = self.open_bank(bank)?;
         store.search(opts)
     }
@@ -167,9 +163,7 @@ impl MemoryRegistry {
 
         let mut guard = self.stores.lock().expect("memory store map poisoned");
         Ok(Arc::clone(
-            guard
-                .entry(bank.id.clone())
-                .or_insert_with(|| arc.clone()),
+            guard.entry(bank.id.clone()).or_insert_with(|| arc.clone()),
         ))
     }
 }

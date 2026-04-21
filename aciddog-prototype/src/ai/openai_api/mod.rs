@@ -142,12 +142,15 @@ impl AICore for OpenAiApiCore {
             prompt.to_string()
         };
 
-        self.history.lock().expect("history poisoned").push(Message {
-            role: Role::User,
-            content: Some(user_text),
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        self.history
+            .lock()
+            .expect("history poisoned")
+            .push(Message {
+                role: Role::User,
+                content: Some(user_text),
+                tool_calls: None,
+                tool_call_id: None,
+            });
 
         let (registry, _resolved) = ToolRegistry::from_allowed_with(
             &self.allowed_tools,
@@ -172,9 +175,7 @@ impl AICore for OpenAiApiCore {
             let Some(api_key) = api_key else {
                 let _ = tx
                     .send(AIEvent::Error {
-                        message: format!(
-                            "openai_api: env var `{api_key_env}` is not set or empty"
-                        ),
+                        message: format!("openai_api: env var `{api_key_env}` is not set or empty"),
                         raw: None,
                     })
                     .await;
@@ -427,16 +428,15 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                             .and_then(Value::as_array)
                         {
                             for call in calls {
-                                let index = call
-                                    .get("index")
-                                    .and_then(Value::as_u64)
-                                    .unwrap_or(0) as u32;
-                                let entry =
-                                    tool_calls.entry(index).or_insert_with(|| AccumulatedToolCall {
+                                let index =
+                                    call.get("index").and_then(Value::as_u64).unwrap_or(0) as u32;
+                                let entry = tool_calls.entry(index).or_insert_with(|| {
+                                    AccumulatedToolCall {
                                         id: String::new(),
                                         name: String::new(),
                                         arguments: String::new(),
-                                    });
+                                    }
+                                });
                                 if let Some(id) = call.get("id").and_then(Value::as_str) {
                                     if !id.is_empty() {
                                         entry.id = id.to_string();
@@ -457,9 +457,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                             }
                         }
 
-                        if let Some(fr) =
-                            choice.get("finish_reason").and_then(Value::as_str)
-                        {
+                        if let Some(fr) = choice.get("finish_reason").and_then(Value::as_str) {
                             finish_reason = Some(fr.to_string());
                         }
 
@@ -541,7 +539,11 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
             };
             ctx.history.lock().expect("history poisoned").push(Message {
                 role: Role::Assistant,
-                content: if text_buf.is_empty() { None } else { Some(text_buf) },
+                content: if text_buf.is_empty() {
+                    None
+                } else {
+                    Some(text_buf)
+                },
                 tool_calls: tool_calls_field,
                 tool_call_id: None,
             });
@@ -645,7 +647,11 @@ fn build_request_body(
     tools: &[Value],
 ) -> Value {
     let mut messages: Vec<Value> = Vec::with_capacity(history.len() + 1);
-    if let Some(sp) = system_prompt.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(sp) = system_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         messages.push(json!({ "role": "system", "content": sp }));
     }
     for m in history {
@@ -721,13 +727,28 @@ fn render_message(m: &Message) -> Value {
 
 fn build_first_turn_prompt(parts: &PromptParts, allowed_tools: &[String]) -> String {
     let mut sections: Vec<String> = Vec::new();
-    if let Some(role) = parts.role.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(role) = parts
+        .role
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         sections.push(format!("<role>\n{role}\n</role>"));
     }
-    if let Some(team) = parts.team.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(team) = parts
+        .team
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         sections.push(format!("<team>\n{team}\n</team>"));
     }
-    if let Some(mem) = parts.memory.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(mem) = parts
+        .memory
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         sections.push(format!("<memory>\n{mem}\n</memory>"));
     }
     sections.push(build_tools_section(parts, allowed_tools));
@@ -765,7 +786,12 @@ fn build_tools_section(parts: &PromptParts, allowed_tools: &[String]) -> String 
             if let Some(w) = &cli.worker {
                 body.push_str(&worker_preamble(&cli.binary, &w.parent_id, &w.task));
             }
-            body.push_str(&cli_preamble(&cli.binary, &contactable, &creatable, &memory_banks));
+            body.push_str(&cli_preamble(
+                &cli.binary,
+                &contactable,
+                &creatable,
+                &memory_banks,
+            ));
         } else {
             if let Some(w) = &cli.worker {
                 body.push_str(&tag_worker_preamble(&w.parent_id, &w.task));

@@ -79,9 +79,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_content_is_error() {
-        let out = WriteTool
-            .invoke(json!({"file_path": "/tmp/x"}))
-            .await;
+        let out = WriteTool.invoke(json!({"file_path": "/tmp/x"})).await;
         assert!(out.is_error);
     }
 }

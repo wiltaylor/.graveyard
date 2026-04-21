@@ -169,8 +169,11 @@ fn fenced_ranges(text: &str) -> Vec<(usize, usize)> {
                 match fence_start {
                     None => {
                         // Content starts after the newline (or at EOF).
-                        let content_start =
-                            if line_end < bytes.len() { line_end + 1 } else { line_end };
+                        let content_start = if line_end < bytes.len() {
+                            line_end + 1
+                        } else {
+                            line_end
+                        };
                         fence_start = Some((content_start, run));
                         i = content_start;
                         continue;
@@ -179,7 +182,11 @@ fn fenced_ranges(text: &str) -> Vec<(usize, usize)> {
                         // Content ended at the start of this fence line (i).
                         ranges.push((start, i));
                         fence_start = None;
-                        i = if line_end < bytes.len() { line_end + 1 } else { line_end };
+                        i = if line_end < bytes.len() {
+                            line_end + 1
+                        } else {
+                            line_end
+                        };
                         continue;
                     }
                     _ => {}

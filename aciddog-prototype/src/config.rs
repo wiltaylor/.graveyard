@@ -152,6 +152,24 @@ pub enum AiCoreKind {
         /// Glob, Grep) — see `validate_ai_core_tools`.
         default_tools: Option<Vec<String>>,
     },
+    /// Google Gemini CLI core — drives the `gemini` binary (install
+    /// with `npm i -g @google/gemini-cli`). Gemini generates its own
+    /// per-session UUID and rejects seeded ones, so the core captures
+    /// gemini's id from its own `init` stream event to pass as
+    /// `--resume <uuid>` on subsequent turns. Tool names in
+    /// `default_tools` use the aciddog-side capitalized names; the
+    /// core translates them to gemini's native names at turn time and
+    /// restricts unmapped built-ins via a generated policy file.
+    GeminiCli {
+        /// Optional `--model <id>` passed on every turn. `None` lets
+        /// gemini pick its own default. Accepts gemini's native model
+        /// ids (e.g. `auto-gemini-3`, `gemini-2.5-flash-lite`).
+        model: Option<String>,
+        /// Per-core default tool allowlist. Limited to the six names
+        /// that map to gemini built-ins (Bash, Read, Write, Edit,
+        /// Glob, Grep) — see `validate_ai_core_tools`.
+        default_tools: Option<Vec<String>>,
+    },
     /// Generic OpenAI-chat-completions-compatible core. Works against
     /// api.openai.com, OpenRouter, Ollama's OpenAI-compatible endpoint,
     /// or any other vendor that implements `/chat/completions`.
@@ -185,7 +203,8 @@ impl AiCore {
             AiCoreKind::ClaudeCode { default_tools, .. }
             | AiCoreKind::AnthropicApi { default_tools, .. }
             | AiCoreKind::OpenAiApi { default_tools, .. }
-            | AiCoreKind::CopilotCli { default_tools, .. } => default_tools.as_deref(),
+            | AiCoreKind::CopilotCli { default_tools, .. }
+            | AiCoreKind::GeminiCli { default_tools, .. } => default_tools.as_deref(),
         }
     }
 
@@ -199,7 +218,9 @@ impl AiCore {
             AiCoreKind::AnthropicApi { model, .. } | AiCoreKind::OpenAiApi { model, .. } => {
                 Some(model.as_str())
             }
-            AiCoreKind::CopilotCli { model, .. } => model.as_deref(),
+            AiCoreKind::CopilotCli { model, .. } | AiCoreKind::GeminiCli { model, .. } => {
+                model.as_deref()
+            }
         }
     }
 }
@@ -447,6 +468,10 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                     model: optional_string(b, "model"),
                     default_tools: optional_string_list(b, "default_tools")?,
                 },
+                "geminiCli" => AiCoreKind::GeminiCli {
+                    model: optional_string(b, "model"),
+                    default_tools: optional_string_list(b, "default_tools")?,
+                },
                 other => {
                     return Err(ConfigError::UnknownAiCoreType {
                         core: id,
@@ -562,9 +587,16 @@ fn validate_ai_core_refs(
 /// skip this check because tool names there are decided by the
 /// external `claude` binary.
 fn validate_ai_core_tools(cores: &[AiCore]) -> Result<(), ConfigError> {
-    let api_known: std::collections::HashSet<&str> =
-        crate::ai::tools::BUILT_IN_TOOL_NAMES.iter().copied().collect();
-    let copilot_known: std::collections::HashSet<&str> = crate::ai::copilot_cli::COPILOT_ALLOWED_TOOLS
+    let api_known: std::collections::HashSet<&str> = crate::ai::tools::BUILT_IN_TOOL_NAMES
+        .iter()
+        .copied()
+        .collect();
+    let copilot_known: std::collections::HashSet<&str> =
+        crate::ai::copilot_cli::COPILOT_ALLOWED_TOOLS
+            .iter()
+            .copied()
+            .collect();
+    let gemini_known: std::collections::HashSet<&str> = crate::ai::gemini_cli::GEMINI_ALLOWED_TOOLS
         .iter()
         .copied()
         .collect();
@@ -578,6 +610,9 @@ fn validate_ai_core_tools(cores: &[AiCore]) -> Result<(), ConfigError> {
             }
             AiCoreKind::CopilotCli { default_tools, .. } => {
                 ("copilotCli", default_tools.as_deref(), &copilot_known)
+            }
+            AiCoreKind::GeminiCli { default_tools, .. } => {
+                ("geminiCli", default_tools.as_deref(), &gemini_known)
             }
             AiCoreKind::ClaudeCode { .. } => continue,
         };
@@ -722,9 +757,7 @@ impl AciddogConfig {
         let Some(list) = list else {
             return Vec::new();
         };
-        list.iter()
-            .filter_map(|id| self.memory_bank(id))
-            .collect()
+        list.iter().filter_map(|id| self.memory_bank(id)).collect()
     }
 
     /// True iff `actor_template_id` has `bank_id` in its `memory_banks`
@@ -1266,7 +1299,10 @@ mod tests {
     #[test]
     fn thinking_messages_default_to_built_ins() {
         let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
-        assert_eq!(cfg.thinking_messages.len(), BUILT_IN_THINKING_MESSAGES.len());
+        assert_eq!(
+            cfg.thinking_messages.len(),
+            BUILT_IN_THINKING_MESSAGES.len()
+        );
         assert!(!cfg.team.replace_thinking_messages);
     }
 
@@ -1320,7 +1356,10 @@ mod tests {
             agent a { role = "r" instructions = "i" }
         "#;
         let cfg = parse_config(src, &dummy_path()).unwrap();
-        assert_eq!(cfg.thinking_messages.len(), BUILT_IN_THINKING_MESSAGES.len());
+        assert_eq!(
+            cfg.thinking_messages.len(),
+            BUILT_IN_THINKING_MESSAGES.len()
+        );
     }
 
     #[test]
@@ -1531,10 +1570,7 @@ mod tests {
             }
         "#;
         let cfg = parse_config(src, &dummy_path()).unwrap();
-        assert_eq!(
-            cfg.ai_cores[0].runtime_model(),
-            Some("openai/gpt-5.4-mini")
-        );
+        assert_eq!(cfg.ai_cores[0].runtime_model(), Some("openai/gpt-5.4-mini"));
     }
 
     #[test]
@@ -1720,5 +1756,71 @@ mod tests {
     fn effective_ai_core_returns_none_when_nothing_configured() {
         let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
         assert!(cfg.effective_ai_core(None).is_none());
+    }
+
+    #[test]
+    fn parses_ai_core_block_with_gemini_cli_variant() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core gemini_flash {
+                type = :geminiCli
+                model = "auto-gemini-3"
+                default_tools = ["Read", "Grep"]
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].kind,
+            AiCoreKind::GeminiCli {
+                model: Some("auto-gemini-3".into()),
+                default_tools: Some(vec!["Read".into(), "Grep".into()]),
+            }
+        );
+    }
+
+    #[test]
+    fn gemini_cli_model_is_optional() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core bare { type = :geminiCli }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].kind,
+            AiCoreKind::GeminiCli {
+                model: None,
+                default_tools: None,
+            }
+        );
+    }
+
+    #[test]
+    fn gemini_cli_runtime_model_returns_configured_model() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core g { type = :geminiCli model = "auto-gemini-3" }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.ai_cores[0].runtime_model(), Some("auto-gemini-3"));
+    }
+
+    #[test]
+    fn gemini_cli_rejects_unknown_tool_name() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core g {
+                type = :geminiCli
+                default_tools = ["Read", "WebFetch"]
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownTool { tool, .. } if tool == "WebFetch"
+        ));
     }
 }

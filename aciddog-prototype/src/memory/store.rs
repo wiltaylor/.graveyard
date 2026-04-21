@@ -303,10 +303,7 @@ impl MemoryStore {
                 .and_then(as_str)
                 .and_then(|s| Uuid::parse_str(&s).ok())
                 .ok_or_else(|| MemoryError::Cozo("search row missing/invalid id".into()))?;
-            let title = row
-                .get(2)
-                .and_then(as_str)
-                .unwrap_or_default();
+            let title = row.get(2).and_then(as_str).unwrap_or_default();
             let body = row
                 .get(3)
                 .and_then(as_str)
@@ -350,10 +347,7 @@ impl MemoryStore {
                 .and_then(as_str)
                 .and_then(|s| Uuid::parse_str(&s).ok())
                 .ok_or_else(|| MemoryError::Cozo("list row missing/invalid id".into()))?;
-            let title = row
-                .get(1)
-                .and_then(as_str)
-                .unwrap_or_default();
+            let title = row.get(1).and_then(as_str).unwrap_or_default();
             let body = row
                 .get(2)
                 .and_then(as_str)
@@ -394,12 +388,7 @@ impl MemoryStore {
     /// optional free-text label; `None` or an empty string is stored as
     /// the empty string. Both endpoints must already exist in this
     /// bank — `MemoryError::UnknownEntry` is returned otherwise.
-    pub fn link(
-        &self,
-        from: Uuid,
-        to: Uuid,
-        kind: Option<&str>,
-    ) -> Result<(), MemoryError> {
+    pub fn link(&self, from: Uuid, to: Uuid, kind: Option<&str>) -> Result<(), MemoryError> {
         if from == to {
             return Err(MemoryError::SelfLink);
         }
@@ -518,18 +507,9 @@ impl MemoryStore {
                 .and_then(as_str)
                 .and_then(|s| Uuid::parse_str(&s).ok())
                 .ok_or_else(|| MemoryError::Cozo("links row missing peer id".into()))?;
-            let title = row
-                .get(1)
-                .and_then(as_str)
-                .unwrap_or_default();
-            let body = row
-                .get(2)
-                .and_then(as_str)
-                .unwrap_or_default();
-            let kind = row
-                .get(3)
-                .and_then(as_str)
-                .unwrap_or_default();
+            let title = row.get(1).and_then(as_str).unwrap_or_default();
+            let body = row.get(2).and_then(as_str).unwrap_or_default();
+            let kind = row.get(3).and_then(as_str).unwrap_or_default();
             let ts_ms = row.get(4).and_then(as_i64).unwrap_or_default();
             let created_at = Utc
                 .timestamp_millis_opt(ts_ms)
@@ -576,11 +556,7 @@ impl MemoryStore {
 /// checks the relation list first and skips the DDL per-relation.
 fn ensure_schema(db: &DbInstance, dim: usize) -> Result<(), MemoryError> {
     let rels = db
-        .run_script(
-            "::relations",
-            BTreeMap::new(),
-            ScriptMutability::Immutable,
-        )
+        .run_script("::relations", BTreeMap::new(), ScriptMutability::Immutable)
         .map_err(|e| MemoryError::Cozo(format!("list relations: {e}")))?;
     let has = |name: &str| -> bool {
         rels.rows.iter().any(|r| {
@@ -698,9 +674,7 @@ fn build_tag_clauses(
     for (i, tag) in include.iter().enumerate() {
         let key = format!("inc_tag_{i}");
         params.insert(key.clone(), DataValue::Str(tag.clone().into()));
-        out.push_str(&format!(
-            ", *entry_tags{{entry: {entry_var}, tag: ${key}}}"
-        ));
+        out.push_str(&format!(", *entry_tags{{entry: {entry_var}, tag: ${key}}}"));
     }
     for (i, tag) in exclude.iter().enumerate() {
         let key = format!("exc_tag_{i}");
