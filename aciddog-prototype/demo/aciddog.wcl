@@ -20,6 +20,7 @@ schema "agent" {
   tools: list(string) @optional
   ai_core: string @optional
   memory_banks: list(string) @optional
+  skills: list(string) @optional
 }
 
 schema "worker" {
@@ -32,6 +33,7 @@ schema "worker" {
   can_create_workers: list(string) @optional
   ai_core: string @optional
   memory_banks: list(string) @optional
+  skills: list(string) @optional
 }
 
 // Memory banks are semantic, embedding-indexed stores shared across a
@@ -275,6 +277,10 @@ agent tester {
   instructions = "Verify changes requested by the planner or the coder. Run the appropriate tests or builds, read the output, and report pass/fail with the specific evidence. Do not attempt fixes yourself — route failures back through `send` with clear repro steps."
   tools = ["Bash", "Read", "Grep", "Glob"]
   memory_banks = ["project_context"]
+  // Skills are prompt fragments kept in .aciddog/skills/<name>/SKILL.md.
+  // Listing one here pre-announces it in this agent's first-turn prompt;
+  // other skills in that folder remain discoverable via directory listing.
+  skills = ["code-review"]
   // Runs on the Z.ai Anthropic-compatible endpoint with glm-5.1, same
   // as `coder`, to keep the Anthropic-API code path exercised from a
   // second agent with a distinct role.

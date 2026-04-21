@@ -1,5 +1,6 @@
 /target
 .env
 *.log
-/demo/.aciddog/
+/demo/.aciddog/tasks.json
+/demo/.aciddog/memory/
 Cargo.lock

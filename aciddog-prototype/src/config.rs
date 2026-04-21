@@ -48,6 +48,11 @@ pub struct Agent {
     /// to. `None` ⇒ no memory access; `Some(list)` grants read+write on
     /// each listed bank.
     pub memory_banks: Option<Vec<String>>,
+    /// Skills pre-announced to this agent in its first-turn prompt. Each
+    /// id must match a directory in `.aciddog/skills/<id>/` containing a
+    /// `SKILL.md`. Unlisted skills remain discoverable by browsing the
+    /// folder. `None` ⇒ no skills section in the prompt.
+    pub skills: Option<Vec<String>>,
 }
 
 /// A template for an ephemeral worker. Unlike `Agent`, a `Worker` is not
@@ -76,6 +81,9 @@ pub struct Worker {
     /// Allowlist of memory bank ids this worker template may read from
     /// and write to. Same semantics as `Agent::memory_banks`.
     pub memory_banks: Option<Vec<String>>,
+    /// Skills pre-announced to instances of this worker template. Same
+    /// semantics as `Agent::skills`.
+    pub skills: Option<Vec<String>>,
 }
 
 /// A named, persistent memory bank. Declared at the fleet level and
@@ -354,6 +362,9 @@ pub enum ConfigError {
         type_name: String,
         tool: String,
     },
+
+    #[error("`{from}` references skill `{name}` whose id is not a valid identifier")]
+    InvalidSkillName { from: String, name: String },
 }
 
 pub fn load_config(path: &Path) -> Result<AciddogConfig, ConfigError> {
@@ -405,6 +416,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 tools: optional_string_list(b, "tools")?,
                 ai_core: optional_string(b, "ai_core"),
                 memory_banks: optional_string_list(b, "memory_banks")?,
+                skills: optional_string_list(b, "skills")?,
             })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -423,6 +435,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 can_create_workers: optional_string_list(b, "can_create_workers")?,
                 ai_core: optional_string(b, "ai_core"),
                 memory_banks: optional_string_list(b, "memory_banks")?,
+                skills: optional_string_list(b, "skills")?,
             })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -488,6 +501,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
     validate_ai_core_refs(&team, &agents, &workers, &ai_cores)?;
     validate_ai_core_tools(&ai_cores)?;
     validate_memory_bank_refs(&agents, &workers, &memory_banks)?;
+    validate_skill_names(&agents, &workers)?;
 
     let mut user_messages: Vec<String> = Vec::new();
     for block in doc.blocks_of_type_resolved("thinking_messages").iter() {
@@ -662,6 +676,36 @@ fn validate_memory_bank_refs(
     Ok(())
 }
 
+/// Every id in an agent's or worker's `skills` list must be a safe
+/// filesystem identifier (`is_valid_skill_name`). We don't require the
+/// skill folder to exist at config-load time — missing folders are
+/// rendered as a placeholder entry in the prompt so agents still boot
+/// when a skill is typo'd or not yet authored.
+fn validate_skill_names(agents: &[Agent], workers: &[Worker]) -> Result<(), ConfigError> {
+    let check = |from: &str, list: &[String]| -> Result<(), ConfigError> {
+        for name in list {
+            if !crate::skills::is_valid_skill_name(name) {
+                return Err(ConfigError::InvalidSkillName {
+                    from: from.to_string(),
+                    name: name.clone(),
+                });
+            }
+        }
+        Ok(())
+    };
+    for a in agents {
+        if let Some(list) = &a.skills {
+            check(&a.id, list)?;
+        }
+    }
+    for w in workers {
+        if let Some(list) = &w.skills {
+            check(&w.id, list)?;
+        }
+    }
+    Ok(())
+}
+
 /// Every id in an agent's or worker's `can_create_workers` list must
 /// match a declared worker template.
 fn validate_worker_refs(agents: &[Agent], workers: &[Worker]) -> Result<(), ConfigError> {
@@ -758,6 +802,22 @@ impl AciddogConfig {
             return Vec::new();
         };
         list.iter().filter_map(|id| self.memory_bank(id)).collect()
+    }
+
+    /// Return the skill ids pre-announced for `actor_template_id`.
+    /// `actor_template_id` is an agent config id for configured agents,
+    /// or a worker template id for workers spawned from that template.
+    /// Unknown ids and actors with no declared `skills` list return an
+    /// empty vec.
+    pub fn skills_for(&self, actor_template_id: &str) -> Vec<String> {
+        let list = if let Some(a) = self.agents.iter().find(|a| a.id == actor_template_id) {
+            a.skills.as_deref()
+        } else if let Some(w) = self.workers.iter().find(|w| w.id == actor_template_id) {
+            w.skills.as_deref()
+        } else {
+            return Vec::new();
+        };
+        list.map(|l| l.to_vec()).unwrap_or_default()
     }
 
     /// True iff `actor_template_id` has `bank_id` in its `memory_banks`
@@ -1822,5 +1882,70 @@ mod tests {
             err,
             ConfigError::UnknownTool { tool, .. } if tool == "WebFetch"
         ));
+    }
+
+    #[test]
+    fn config_parses_agent_skills_list() {
+        let src = r#"
+            team default { description = "t" }
+            agent one {
+                role = "a"
+                instructions = "b"
+                skills = ["research", "summariser"]
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        let skills = cfg.agents[0].skills.as_ref().unwrap();
+        assert_eq!(skills, &vec!["research".to_string(), "summariser".to_string()]);
+        assert_eq!(
+            cfg.skills_for("one"),
+            vec!["research".to_string(), "summariser".to_string()]
+        );
+    }
+
+    #[test]
+    fn config_parses_worker_skills_list() {
+        let src = r#"
+            team default { description = "t" }
+            agent one { role = "a" instructions = "b" }
+            worker fetcher {
+                role = "w"
+                instructions = "c"
+                skills = ["research"]
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.workers[0].skills.as_deref(), Some(&["research".to_string()][..]));
+        assert_eq!(cfg.skills_for("fetcher"), vec!["research".to_string()]);
+    }
+
+    #[test]
+    fn config_rejects_invalid_agent_skill_name() {
+        let src = r#"
+            team default { description = "t" }
+            agent one { role = "a" instructions = "b" skills = ["Bad Name!"] }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::InvalidSkillName { from, name }
+                if from == "one" && name == "Bad Name!"
+        ));
+    }
+
+    #[test]
+    fn config_rejects_path_traversal_skill_name() {
+        let src = r#"
+            team default { description = "t" }
+            agent one { role = "a" instructions = "b" skills = [".."] }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidSkillName { name, .. } if name == ".."));
+    }
+
+    #[test]
+    fn skills_for_unknown_actor_is_empty() {
+        let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
+        assert!(cfg.skills_for("ghost").is_empty());
     }
 }

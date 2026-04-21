@@ -907,6 +907,7 @@ mod tests {
             role: Some("be terse".into()),
             team: Some("you can message: bob".into()),
             memory: None,
+            skills: None,
             instructions: "do the thing".into(),
             aciddog_cli: None,
         };

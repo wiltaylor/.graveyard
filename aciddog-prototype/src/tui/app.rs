@@ -371,6 +371,44 @@ fn build_memory_block(cfg: &AciddogConfig, actor_id: &str) -> Option<String> {
     Some(out)
 }
 
+/// Build the per-actor `<skills>` block. Always returns `Some(...)` so
+/// every agent is told the `.aciddog/skills/` folder exists and how to
+/// load a skill from it, even when no specific skills have been
+/// pre-announced in the actor's WCL `skills = [...]` list. Missing or
+/// unreadable `SKILL.md` files warn and render a placeholder line
+/// rather than aborting — same warn-and-continue style used for the
+/// disk-backed task store.
+fn build_skills_block(cfg: &AciddogConfig, actor_id: &str) -> Option<String> {
+    let allowed = cfg.skills_for(actor_id);
+    let root = crate::skills::skills_root();
+    let mut out = String::new();
+    out.push_str(
+        "Skills are reusable prompt fragments kept in .aciddog/skills/<name>/SKILL.md. \
+         To load one, read its SKILL.md with your file tool and follow the instructions \
+         inside. Only load a skill when it clearly applies.",
+    );
+    if !allowed.is_empty() {
+        out.push_str("\n\nPre-announced skills for you:\n");
+        for id in &allowed {
+            match crate::skills::read_skill_description(&root, id) {
+                Ok(desc) => out.push_str(&format!("- {id} — {desc}\n")),
+                Err(e) => {
+                    warn!(skill = %id, actor = %actor_id, error = %e, "skill SKILL.md unreadable");
+                    out.push_str(&format!("- {id} — (SKILL.md unreadable)\n"));
+                }
+            }
+        }
+        out.push_str(
+            "\nYou can also list .aciddog/skills/ to discover any other skills not pre-announced here.",
+        );
+    } else {
+        out.push_str(
+            "\n\nList .aciddog/skills/ to see which skills are available in this project (the folder may not exist if none have been authored yet).",
+        );
+    }
+    Some(out)
+}
+
 /// Render a dispatched `<aciddog-call>` (emitted by `ClaudeCodeCore`
 /// in tag mode as a `ToolUse` event named `aciddog-call`) as one of
 /// the existing semantic chat blocks. `input` is the parsed
@@ -1651,11 +1689,13 @@ impl App {
             .map(|list| list.to_vec())
             .unwrap_or_default();
         let memory_block = build_memory_block(&self.config, &template);
+        let skills_block = build_skills_block(&self.config, &template);
 
         let parts = PromptParts {
             role: worker.role_description.clone(),
             team: Some(team_block),
             memory: memory_block,
+            skills: skills_block,
             instructions: worker.instructions.clone(),
             aciddog_cli: Some(AciddogCliCtx {
                 binary: self.aciddog_binary.clone(),
@@ -4470,6 +4510,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
 
         let team_block = build_team_block(&app.config, &contactable, &creatable);
         let memory_block = build_memory_block(&app.config, &agent.id);
+        let skills_block = build_skills_block(&app.config, &agent.id);
         let memory_banks_for_agent: Vec<String> = agent
             .memory_banks
             .as_deref()
@@ -4480,6 +4521,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             role: agent.role_description.clone(),
             team: Some(team_block),
             memory: memory_block,
+            skills: skills_block,
             instructions: agent.instructions.clone(),
             aciddog_cli: Some(AciddogCliCtx {
                 binary: aciddog_binary_str.clone(),
@@ -4678,6 +4720,7 @@ mod tests {
                     tools: None,
                     ai_core: None,
                     memory_banks: None,
+                    skills: None,
                 },
                 Agent {
                     id: "b".into(),
@@ -4690,6 +4733,7 @@ mod tests {
                     tools: None,
                     ai_core: None,
                     memory_banks: None,
+                    skills: None,
                 },
                 Agent {
                     id: "c".into(),
@@ -4702,6 +4746,7 @@ mod tests {
                     tools: None,
                     ai_core: None,
                     memory_banks: None,
+                    skills: None,
                 },
             ],
             workers: vec![],
@@ -6000,6 +6045,7 @@ mod tests {
                     tools: None,
                     ai_core: None,
                     memory_banks: None,
+                    skills: None,
                 },
                 Agent {
                     id: "planner".into(),
@@ -6012,6 +6058,7 @@ mod tests {
                     tools: None,
                     ai_core: None,
                     memory_banks: None,
+                    skills: None,
                 },
             ],
             workers: vec![
@@ -6025,6 +6072,7 @@ mod tests {
                     can_create_workers: None,
                     ai_core: None,
                     memory_banks: None,
+                    skills: None,
                 },
                 Worker {
                     id: "fetcher".into(),
@@ -6036,6 +6084,7 @@ mod tests {
                     can_create_workers: None,
                     ai_core: None,
                     memory_banks: None,
+                    skills: None,
                 },
             ],
             ai_cores: vec![crate::config::AiCore {
