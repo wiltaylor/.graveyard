@@ -147,11 +147,20 @@ pub enum RequestCmd {
         task: Uuid,
         id: Uuid,
     },
-    /// Search a memory bank by semantic similarity. `limit` is the top-k
-    /// cap; handlers clamp it to at least 1.
+    /// Search a memory bank. When `query` is `Some`, the search runs
+    /// through the HNSW index; when `None`, results come from a pure
+    /// relational list (newest first). Tag and title filters apply in
+    /// both modes; `limit` is the top-k cap (default 5).
     MemorySearch {
         bank: String,
-        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title_contains: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        include_tags: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exclude_tags: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<usize>,
     },
@@ -159,6 +168,10 @@ pub enum RequestCmd {
     MemoryStore {
         bank: String,
         body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tags: Vec<String>,
     },
     /// Create a directed link between two entries in a memory bank.
     /// Both ids must name existing entries.
@@ -176,12 +189,17 @@ pub enum RequestCmd {
         to: Uuid,
     },
     /// List every link touching an entry. `direction` is one of
-    /// `out` / `in` / `both` (default `both`).
+    /// `out` / `in` / `both` (default `both`). `include_tags` /
+    /// `exclude_tags` filter the peers.
     MemoryLinks {
         bank: String,
         id: Uuid,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         direction: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        include_tags: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exclude_tags: Vec<String>,
     },
 }
 

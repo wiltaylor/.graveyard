@@ -21,7 +21,7 @@ use thiserror::Error;
 use crate::config::MemoryBank;
 
 pub use embedder::{EmbedderPool, DEFAULT_EMBED_MODEL};
-pub use store::{Hit, Link, LinkDirection, MemoryStore};
+pub use store::{Hit, Link, LinkDirection, MemoryStore, SearchOptions, TagFilter};
 
 /// Standard sub-path for the model cache, sibling to per-bank dbs.
 const MODEL_CACHE_SUBDIR: &str = "_models";
@@ -79,24 +79,31 @@ impl MemoryRegistry {
         }
     }
 
-    /// Embed `body` and persist it in `bank`. Returns the new entry id.
-    /// Callers must have already verified that the requesting actor is
-    /// allowed to touch `bank` — the registry does not enforce that.
-    pub fn store(&self, bank: &MemoryBank, body: &str) -> Result<uuid::Uuid, MemoryError> {
+    /// Embed `body` and persist it in `bank` with the given `title`
+    /// (optional) and `tags` (possibly empty). Returns the new entry
+    /// id. Callers must have already verified that the requesting
+    /// actor is allowed to touch `bank` — the registry does not enforce
+    /// that.
+    pub fn store(
+        &self,
+        bank: &MemoryBank,
+        body: &str,
+        title: Option<&str>,
+        tags: &[String],
+    ) -> Result<uuid::Uuid, MemoryError> {
         let store = self.open_bank(bank)?;
-        store.store(body)
+        store.store(body, title, tags)
     }
 
-    /// Embed `query` and return the top `limit` hits in `bank`. Same
+    /// Run a search with the combined filters in `opts`. Same
     /// access-control note as [`MemoryRegistry::store`].
     pub fn search(
         &self,
         bank: &MemoryBank,
-        query: &str,
-        limit: usize,
+        opts: SearchOptions,
     ) -> Result<Vec<Hit>, MemoryError> {
         let store = self.open_bank(bank)?;
-        store.search(query, limit)
+        store.search(opts)
     }
 
     /// Create a directed link between two entries in `bank`.
@@ -124,14 +131,17 @@ impl MemoryRegistry {
     }
 
     /// List every link touching `id` in the requested direction.
+    /// `tag_filter` restricts results to peers matching the include /
+    /// exclude tag sets.
     pub fn links(
         &self,
         bank: &MemoryBank,
         id: uuid::Uuid,
         direction: LinkDirection,
+        tag_filter: &TagFilter,
     ) -> Result<Vec<Link>, MemoryError> {
         let store = self.open_bank(bank)?;
-        store.links(id, direction)
+        store.links(id, direction, tag_filter)
     }
 
     /// Pre-open every bank in `banks` so the first real call doesn't

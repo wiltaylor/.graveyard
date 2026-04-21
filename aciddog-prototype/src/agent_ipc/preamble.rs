@@ -142,19 +142,24 @@ pub fn cli_preamble(
         push_section(
             &mut out,
             binary,
-            "memory search --bank <bank-id> --query \"<text>\" [--limit N]",
-            "semantic search over a memory bank. Returns up to `N` (default 5) hits, \
-             each prefixed with a short entry id and a distance score. Use this when \
-             you need context from prior sessions or work that others have recorded.",
+            "memory search --bank <bank-id> [--query \"<text>\"] [--title-contains \"<frag>\"] \
+             [--include-tag <tag>]... [--exclude-tag <tag>]... [--limit N]",
+            "search a memory bank. With `--query` the search runs through the semantic \
+             index (ranked by vector distance); without it, results come back newest-first. \
+             `--title-contains` matches the title case-insensitively, `--include-tag` \
+             (repeatable) requires the entry to carry every listed tag, `--exclude-tag` \
+             filters out any entry with that tag. Default `--limit` is 5.",
         );
         push_section(
             &mut out,
             binary,
-            "memory store --bank <bank-id> --body \"<text>\"",
-            "persist an entry in a memory bank so later search queries can retrieve it. \
-             Write one self-contained fact per call — the entry is embedded as a whole. \
-             Avoid storing ephemeral work-in-progress; entries are permanent. The reply \
-             carries the new entry's uuid — keep it if you plan to link from/to it.",
+            "memory store --bank <bank-id> --body \"<text>\" [--title \"<short label>\"] \
+             [--tag <tag>]...",
+            "persist an entry. `--title` is a short label you can search with \
+             `--title-contains`; `--tag` (repeatable) attaches labels you can later \
+             intersect or exclude. Tags are lower-cased and de-duplicated on store. \
+             The reply carries the new entry's uuid — keep it if you plan to link \
+             from/to it. Entries are permanent.",
         );
         push_section(
             &mut out,
@@ -167,10 +172,12 @@ pub fn cli_preamble(
         push_section(
             &mut out,
             binary,
-            "memory links --bank <bank-id> --id <entry-uuid> [--direction out|in|both]",
+            "memory links --bank <bank-id> --id <entry-uuid> [--direction out|in|both] \
+             [--include-tag <tag>]... [--exclude-tag <tag>]...",
             "list every link touching an entry. Default direction is `both`; use \
              `out` for entries this one points at and `in` for entries that point at it. \
-             Each line carries the peer's short id, optional kind, and body preview.",
+             `--include-tag` / `--exclude-tag` filter peers by their tag set. \
+             Each line carries the peer's full uuid, optional kind, title, tags, and body.",
         );
         push_section(
             &mut out,
@@ -455,16 +462,20 @@ fn push_memory_tag_docs(out: &mut String, memory_banks: &[&str]) {
     push_tag_section(
         out,
         "memory_search",
-        r#"{"cmd":"memory_search","bank":"<bank-id>","query":"<text>","limit":5}"#,
-        "search a bank. Returns up to `limit` hits (default 5), each with an id, \
-         distance score, and body text.",
+        r#"{"cmd":"memory_search","bank":"<bank-id>","query":"<text>","title_contains":"<frag>","include_tags":["<tag>"],"exclude_tags":["<tag>"],"limit":5}"#,
+        "search a bank. `query` triggers semantic search; omit it for a pure \
+         tag/title filter (newest first). `title_contains` is a case-insensitive \
+         substring. `include_tags` requires every listed tag on the entry; \
+         `exclude_tags` disqualifies entries with any listed tag. Any field \
+         may be omitted.",
     );
     push_tag_section(
         out,
         "memory_store",
-        r#"{"cmd":"memory_store","bank":"<bank-id>","body":"<text>"}"#,
-        "persist an entry. The success reply carries the new entry's uuid — keep \
-         it if you plan to link from/to it. Entries are permanent.",
+        r#"{"cmd":"memory_store","bank":"<bank-id>","body":"<text>","title":"<short label>","tags":["<tag>","<tag>"]}"#,
+        "persist an entry. `title` and `tags` are optional; tags are lower-cased \
+         and de-duplicated on store. The success reply carries the new entry's \
+         uuid — keep it if you plan to link from/to it.",
     );
     push_tag_section(
         out,
@@ -477,9 +488,10 @@ fn push_memory_tag_docs(out: &mut String, memory_banks: &[&str]) {
     push_tag_section(
         out,
         "memory_links",
-        r#"{"cmd":"memory_links","bank":"<bank-id>","id":"<uuid>","direction":"both"}"#,
+        r#"{"cmd":"memory_links","bank":"<bank-id>","id":"<uuid>","direction":"both","include_tags":["<tag>"],"exclude_tags":["<tag>"]}"#,
         "list every link touching an entry. `direction` is `out`, `in`, or `both` \
-         (default). Response lists peer id, optional kind, and body.",
+         (default). `include_tags` / `exclude_tags` filter peers by their tag set. \
+         Response lists peer id, optional kind, title, tags, and body.",
     );
     push_tag_section(
         out,

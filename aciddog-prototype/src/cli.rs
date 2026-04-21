@@ -76,15 +76,27 @@ pub enum AgentCommand {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum MemoryCommand {
-    /// Search a memory bank by semantic similarity. Returns the top
-    /// hits as a plaintext list, one per line.
+    /// Search a memory bank. Combine `--query` (semantic), `--title-contains`
+    /// (case-insensitive substring), and `--include-tag` / `--exclude-tag`
+    /// (repeatable) freely; omit `--query` for a tag/title-only list
+    /// ordered newest first.
     Search {
         /// Bank id as declared by a `memory_bank <id> { ... }` block.
         #[arg(long)]
         bank: String,
-        /// Natural-language query text.
+        /// Natural-language query text. Omit for a non-semantic list.
         #[arg(long)]
-        query: String,
+        query: Option<String>,
+        /// Case-insensitive substring the entry title must contain.
+        #[arg(long)]
+        title_contains: Option<String>,
+        /// Tag that every returned entry must carry. Repeatable;
+        /// multiple flags intersect (entry must have all of them).
+        #[arg(long = "include-tag")]
+        include_tag: Vec<String>,
+        /// Tag that disqualifies entries. Repeatable.
+        #[arg(long = "exclude-tag")]
+        exclude_tag: Vec<String>,
         /// Maximum number of hits to return (default 5).
         #[arg(long)]
         limit: Option<usize>,
@@ -97,6 +109,13 @@ pub enum MemoryCommand {
         /// Entry body.
         #[arg(long)]
         body: String,
+        /// Short title for the entry. Searchable via `--title-contains`.
+        #[arg(long)]
+        title: Option<String>,
+        /// Tag to attach to the entry (repeatable). Tags are
+        /// lower-cased and de-duplicated on store.
+        #[arg(long = "tag")]
+        tag: Vec<String>,
     },
     /// Create a directed link between two entries. Use `kind` to
     /// classify the relationship (e.g. "supersedes", "see_also").
@@ -123,7 +142,7 @@ pub enum MemoryCommand {
         to: Uuid,
     },
     /// List every link touching an entry. Each line is:
-    /// `<-out|in-> <peer-short-id> [<kind>] <peer-body>`.
+    /// `<-out|in-> <peer-uuid> [<kind>] <peer-body>`.
     Links {
         #[arg(long)]
         bank: String,
@@ -134,6 +153,12 @@ pub enum MemoryCommand {
         /// (default).
         #[arg(long)]
         direction: Option<String>,
+        /// Tag the peer entry must carry (repeatable; intersection).
+        #[arg(long = "include-tag")]
+        include_tag: Vec<String>,
+        /// Tag that disqualifies peer entries (repeatable).
+        #[arg(long = "exclude-tag")]
+        exclude_tag: Vec<String>,
     },
 }
 

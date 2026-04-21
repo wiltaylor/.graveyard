@@ -113,7 +113,8 @@ fn build_team_block(cfg: &AciddogConfig, contactable: &[&str], creatable: &[&str
 /// Uuids are printed in full so the agent can copy them straight into
 /// `memory link` / `memory unlink` / `memory links` calls — the short
 /// form would force them to re-run `memory store` just to recover the
-/// full id.
+/// full id. `distance` is elided when the search was non-semantic
+/// (no embedding → NaN).
 fn format_memory_hits(hits: &[crate::memory::Hit]) -> String {
     if hits.is_empty() {
         return "(no matches)".to_string();
@@ -121,12 +122,25 @@ fn format_memory_hits(hits: &[crate::memory::Hit]) -> String {
     let mut out = String::new();
     for (i, h) in hits.iter().enumerate() {
         let ts = h.created_at.format("%Y-%m-%d %H:%M");
+        let dist = if h.distance.is_nan() {
+            String::new()
+        } else {
+            format!(" · d={:.3}", h.distance)
+        };
+        let title = if h.title.is_empty() {
+            String::new()
+        } else {
+            format!(" · title={}", h.title)
+        };
+        let tags = if h.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" · tags=[{}]", h.tags.join(","))
+        };
         out.push_str(&format!(
-            "{n}. [{id} · d={dist:.3} · {ts}] {body}\n",
+            "{n}. [{id}{dist} · {ts}{title}{tags}] {body}\n",
             n = i + 1,
             id = h.id,
-            dist = h.distance,
-            ts = ts,
             body = h.body
         ));
     }
@@ -160,8 +174,18 @@ fn format_memory_links(id: uuid::Uuid, links: &[crate::memory::Link]) -> String 
         } else {
             format!(" [{}]", link.kind)
         };
+        let title = if link.peer_title.is_empty() {
+            String::new()
+        } else {
+            format!(" title={}", link.peer_title)
+        };
+        let tags = if link.peer_tags.is_empty() {
+            String::new()
+        } else {
+            format!(" tags=[{}]", link.peer_tags.join(","))
+        };
         out.push_str(&format!(
-            "{arrow} {peer}{kind} {body}\n",
+            "{arrow} {peer}{kind}{title}{tags} {body}\n",
             peer = link.peer_id,
             body = link.peer_body
         ));
@@ -1239,11 +1263,32 @@ impl App {
             RequestCmd::TaskCommentRemove { task, id } => {
                 self.handle_task_comment_remove(idx, task, id, reply);
             }
-            RequestCmd::MemorySearch { bank, query, limit } => {
-                self.handle_memory_search(idx, bank, query, limit, reply);
+            RequestCmd::MemorySearch {
+                bank,
+                query,
+                title_contains,
+                include_tags,
+                exclude_tags,
+                limit,
+            } => {
+                self.handle_memory_search(
+                    idx,
+                    bank,
+                    query,
+                    title_contains,
+                    include_tags,
+                    exclude_tags,
+                    limit,
+                    reply,
+                );
             }
-            RequestCmd::MemoryStore { bank, body } => {
-                self.handle_memory_store(idx, bank, body, reply);
+            RequestCmd::MemoryStore {
+                bank,
+                body,
+                title,
+                tags,
+            } => {
+                self.handle_memory_store(idx, bank, body, title, tags, reply);
             }
             RequestCmd::MemoryLink { bank, from, to, kind } => {
                 self.handle_memory_link(idx, bank, from, to, kind, reply);
@@ -1251,8 +1296,14 @@ impl App {
             RequestCmd::MemoryUnlink { bank, from, to } => {
                 self.handle_memory_unlink(idx, bank, from, to, reply);
             }
-            RequestCmd::MemoryLinks { bank, id, direction } => {
-                self.handle_memory_links(idx, bank, id, direction, reply);
+            RequestCmd::MemoryLinks {
+                bank,
+                id,
+                direction,
+                include_tags,
+                exclude_tags,
+            } => {
+                self.handle_memory_links(idx, bank, id, direction, include_tags, exclude_tags, reply);
             }
         }
     }
@@ -2185,35 +2236,33 @@ impl App {
         &mut self,
         sender_idx: usize,
         bank: String,
-        query: String,
+        query: Option<String>,
+        title_contains: Option<String>,
+        include_tags: Vec<String>,
+        exclude_tags: Vec<String>,
         limit: Option<usize>,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
-        let Some(template_id) = self.sender_template_id(sender_idx) else {
-            let _ = reply.send(Response::err("unknown sender"));
-            return;
-        };
-        if !self.config.can_access_bank(&template_id, &bank) {
-            let _ = reply.send(Response::err(format!(
-                "bank `{bank}` is not accessible to `{template_id}`"
-            )));
-            return;
-        }
-        let Some(bank_decl) = self.config.memory_bank(&bank).cloned() else {
-            let _ = reply.send(Response::err(format!("no memory bank `{bank}`")));
-            return;
-        };
-        let Some(registry) = self.memory.clone() else {
-            let _ = reply.send(Response::err(
-                "memory registry is not initialised on this orchestrator",
-            ));
-            return;
+        let (registry, bank_decl) = match self.resolve_memory(sender_idx, &bank) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+                return;
+            }
         };
 
-        let cap = limit.unwrap_or(5).max(1);
+        let opts = crate::memory::SearchOptions {
+            query,
+            title_contains,
+            tags: crate::memory::TagFilter {
+                include: include_tags,
+                exclude: exclude_tags,
+            },
+            limit: limit.unwrap_or(5).max(1),
+        };
         tokio::spawn(async move {
             let result =
-                tokio::task::spawn_blocking(move || registry.search(&bank_decl, &query, cap)).await;
+                tokio::task::spawn_blocking(move || registry.search(&bank_decl, opts)).await;
             match result {
                 Ok(Ok(hits)) => {
                     let _ = reply.send(Response::ok(format_memory_hits(&hits)));
@@ -2305,6 +2354,8 @@ impl App {
         bank: String,
         id: Uuid,
         direction: Option<String>,
+        include_tags: Vec<String>,
+        exclude_tags: Vec<String>,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
         let dir = match direction.as_deref() {
@@ -2326,7 +2377,11 @@ impl App {
                 return;
             }
         };
-        match registry.links(&bank_decl, id, dir) {
+        let tag_filter = crate::memory::TagFilter {
+            include: include_tags,
+            exclude: exclude_tags,
+        };
+        match registry.links(&bank_decl, id, dir, &tag_filter) {
             Ok(links) => {
                 let _ = reply.send(Response::ok(format_memory_links(id, &links)));
             }
@@ -2370,32 +2425,23 @@ impl App {
         sender_idx: usize,
         bank: String,
         body: String,
+        title: Option<String>,
+        tags: Vec<String>,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
-        let Some(template_id) = self.sender_template_id(sender_idx) else {
-            let _ = reply.send(Response::err("unknown sender"));
-            return;
-        };
-        if !self.config.can_access_bank(&template_id, &bank) {
-            let _ = reply.send(Response::err(format!(
-                "bank `{bank}` is not accessible to `{template_id}`"
-            )));
-            return;
-        }
-        let Some(bank_decl) = self.config.memory_bank(&bank).cloned() else {
-            let _ = reply.send(Response::err(format!("no memory bank `{bank}`")));
-            return;
-        };
-        let Some(registry) = self.memory.clone() else {
-            let _ = reply.send(Response::err(
-                "memory registry is not initialised on this orchestrator",
-            ));
-            return;
+        let (registry, bank_decl) = match self.resolve_memory(sender_idx, &bank) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+                return;
+            }
         };
 
         tokio::spawn(async move {
-            let result =
-                tokio::task::spawn_blocking(move || registry.store(&bank_decl, &body)).await;
+            let result = tokio::task::spawn_blocking(move || {
+                registry.store(&bank_decl, &body, title.as_deref(), &tags)
+            })
+            .await;
             match result {
                 Ok(Ok(id)) => {
                     let _ = reply.send(Response::ok(format!("stored entry {id}")));

@@ -219,11 +219,37 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
                 },
         } => RequestCmd::TaskCommentRemove { task, id },
         AgentCommand::Memory {
-            cmd: MemoryCommand::Search { bank, query, limit },
-        } => RequestCmd::MemorySearch { bank, query, limit },
+            cmd:
+                MemoryCommand::Search {
+                    bank,
+                    query,
+                    title_contains,
+                    include_tag,
+                    exclude_tag,
+                    limit,
+                },
+        } => RequestCmd::MemorySearch {
+            bank,
+            query,
+            title_contains,
+            include_tags: include_tag,
+            exclude_tags: exclude_tag,
+            limit,
+        },
         AgentCommand::Memory {
-            cmd: MemoryCommand::Store { bank, body },
-        } => RequestCmd::MemoryStore { bank, body },
+            cmd:
+                MemoryCommand::Store {
+                    bank,
+                    body,
+                    title,
+                    tag,
+                },
+        } => RequestCmd::MemoryStore {
+            bank,
+            body,
+            title,
+            tags: tag,
+        },
         AgentCommand::Memory {
             cmd: MemoryCommand::Link { bank, from, to, kind },
         } => RequestCmd::MemoryLink { bank, from, to, kind },
@@ -231,8 +257,21 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
             cmd: MemoryCommand::Unlink { bank, from, to },
         } => RequestCmd::MemoryUnlink { bank, from, to },
         AgentCommand::Memory {
-            cmd: MemoryCommand::Links { bank, id, direction },
-        } => RequestCmd::MemoryLinks { bank, id, direction },
+            cmd:
+                MemoryCommand::Links {
+                    bank,
+                    id,
+                    direction,
+                    include_tag,
+                    exclude_tag,
+                },
+        } => RequestCmd::MemoryLinks {
+            bank,
+            id,
+            direction,
+            include_tags: include_tag,
+            exclude_tags: exclude_tag,
+        },
     };
 
     let response = agent_ipc::client::send(&socket_path, &Request { agent_id, cmd })
