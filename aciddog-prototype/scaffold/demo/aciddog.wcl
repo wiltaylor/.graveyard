@@ -70,6 +70,9 @@ agent planner {
   // Omit `can_message` to allow messaging every other agent.
   // Example: restrict to a subset with `can_message = ["coder"]`.
   can_create_workers = ["jokester"]
+  // Planner can read and edit files but may not shell out — use `coder`
+  // (via `send`) whenever a command needs to run.
+  tools = ["Read", "Edit", "Grep", "Glob"]
 }
 
 agent coder {

@@ -175,6 +175,197 @@ fn push_section(out: &mut String, binary: &str, name: &str, description: &str) {
     push_line(out, &format!("- `{binary} {name}` — {description}"));
 }
 
+/// Tag-based variant of [`cli_preamble`], used when the agent has no
+/// shell tool available. Teaches the model to emit
+/// `<aciddog-call>{...json...}</aciddog-call>` blocks which the core
+/// intercepts and dispatches through the same handlers as CLI requests.
+/// Responses arrive on the next turn wrapped in
+/// `<aciddog-response index="N">{...}</aciddog-response>` blocks.
+pub fn tag_preamble(contactable: &[&str], creatable: &[&str]) -> String {
+    let mut out = String::new();
+    push_line(&mut out, "## aciddog tag protocol");
+    push_line(
+        &mut out,
+        "You do not have a shell tool, so you cannot invoke the aciddog CLI. \
+         Instead, to interact with the agent orchestrator running this session, \
+         emit one or more `<aciddog-call>` blocks inside your assistant message. \
+         Each block's body is a single JSON object whose `cmd` field names the \
+         command. After your turn ends, the orchestrator dispatches each call \
+         and the next user turn will contain one `<aciddog-response index=\"N\">` \
+         block per call, in the same order.",
+    );
+    push_line(
+        &mut out,
+        "**Format:** `<aciddog-call>{\"cmd\":\"<name>\", <fields...>}</aciddog-call>`. \
+         One JSON object per tag. Do not wrap tags in triple-backtick code fences \
+         — fenced content is ignored so you can quote examples safely.",
+    );
+    push_line(
+        &mut out,
+        "**Responses:** `<aciddog-response index=\"N\">{\"ok\":true,\"message\":\"...\"}</aciddog-response>` \
+         on success, `{\"ok\":false,\"error\":\"...\"}` on failure. Malformed JSON \
+         or unknown commands come back as `ok:false` errors — correct and retry \
+         on the next turn rather than abandoning the task.",
+    );
+    push_line(
+        &mut out,
+        "**Chain limit:** the call → response → call loop stops after 8 consecutive \
+         rounds per user turn. If you hit the cap, wait for the next user prompt \
+         instead of emitting more calls.",
+    );
+
+    push_line(&mut out, "### Commands");
+
+    push_tag_section(
+        &mut out,
+        "test",
+        r#"{"cmd":"test"}"#,
+        "verify connectivity to the agent orchestrator.",
+    );
+
+    if contactable.is_empty() {
+        push_line(
+            &mut out,
+            "- `send_message` — disabled: you may not message any other agent on this team.",
+        );
+    } else {
+        push_tag_section(
+            &mut out,
+            "send_message",
+            r#"{"cmd":"send_message","to":"<agent-id>","body":"<text>"}"#,
+            "send a chat message to another agent on the team.",
+        );
+        push_line(
+            &mut out,
+            &format!("  You are allowed to message: {}", contactable.join(", ")),
+        );
+        push_line(
+            &mut out,
+            "  Messages you receive from other agents arrive wrapped as \
+             `<Message from=\"sender-id\">body</Message>`. Plain text from the \
+             user does NOT have this wrapper.",
+        );
+        push_line(
+            &mut out,
+            "  If you are busy when a message arrives it is queued and delivered \
+             on your next turn. User messages always take priority over queued \
+             agent messages.",
+        );
+    }
+
+    if creatable.is_empty() {
+        push_line(
+            &mut out,
+            "- `worker_create` — disabled: you may not spawn workers.",
+        );
+    } else {
+        push_tag_section(
+            &mut out,
+            "worker_create",
+            r#"{"cmd":"worker_create","template":"<template-id>","task":"<initial task>"}"#,
+            "spawn an ephemeral worker from a declared template. The response \
+             message carries the new worker's display id and session UUID; use \
+             the display id with `send_message.to` to message the worker.",
+        );
+        push_line(
+            &mut out,
+            &format!("  You are allowed to spawn: {}", creatable.join(", ")),
+        );
+    }
+
+    push_task_board_tag_docs(&mut out);
+
+    out
+}
+
+/// Worker-only tag preamble — injected before `tag_preamble` when a
+/// worker spawns without a shell tool. Documents `worker_complete` so
+/// the worker can report its final result.
+pub fn tag_worker_preamble(parent_id: &str, task: &str) -> String {
+    let mut out = String::new();
+    push_line(&mut out, "## Worker assignment");
+    push_line(
+        &mut out,
+        &format!(
+            "You are an ephemeral worker spawned by `{parent_id}`. Your only job \
+             is to complete the task below and report back. You may only message \
+             `{parent_id}`; you cannot message anyone else on the team."
+        ),
+    );
+    push_line(&mut out, "### Your task");
+    push_line(&mut out, task);
+    push_line(&mut out, "### Reporting back");
+    push_line(
+        &mut out,
+        &format!(
+            "- Progress updates: emit `<aciddog-call>{{\"cmd\":\"send_message\",\"to\":\"{parent_id}\",\"body\":\"<text>\"}}</aciddog-call>`."
+        ),
+    );
+    push_line(
+        &mut out,
+        "- When finished, emit `<aciddog-call>{\"cmd\":\"worker_complete\",\"body\":\"<final report>\"}</aciddog-call>`. \
+         This delivers your final report to your parent and hibernates you. After \
+         that call, stop emitting further actions; your parent may resume the \
+         conversation later if they need more from you.",
+    );
+    out
+}
+
+fn push_tag_section(out: &mut String, name: &str, example: &str, description: &str) {
+    push_line(
+        out,
+        &format!("- `{name}` — {description}\n  Example: `<aciddog-call>{example}</aciddog-call>`"),
+    );
+}
+
+fn push_task_board_tag_docs(out: &mut String) {
+    push_line(
+        out,
+        "### Shared task board",
+    );
+    push_line(
+        out,
+        "The task board is team-wide (no allowlist). Use these commands to \
+         coordinate work and track progress:",
+    );
+    push_line(
+        out,
+        r#"- `task_add` — `<aciddog-call>{"cmd":"task_add","title":"<t>","description":"<optional>","assignee":"<optional agent id>","blocked_by":["<dep-uuid>", ...]}</aciddog-call>`. Create work; repeat blocked_by entries for multiple deps."#,
+    );
+    push_line(
+        out,
+        r#"- `task_list` — `<aciddog-call>{"cmd":"task_list","mine":true}</aciddog-call>` or pass `"assignee":"<id>"`, `"status":"<s>"`, `"unassigned":true`. The `deps` column shows `blocked(n)` / `ready(n)`."#,
+    );
+    push_line(
+        out,
+        r#"- `task_show` — `<aciddog-call>{"cmd":"task_show","id":"<uuid>"}</aciddog-call>`. Full body: description, deps with status, note log, TODOs, comments."#,
+    );
+    push_line(
+        out,
+        r#"- `task_update` — `<aciddog-call>{"cmd":"task_update","id":"<uuid>","title":"...","description":"...","status":"open|assigned|in_progress|done|cancelled","assignee":"<id>","unassign":true,"note":"<context>","add_blocked_by":["<uuid>"],"remove_blocked_by":["<uuid>"]}</aciddog-call>`. Omit fields you don't want to change. Always include `note` when reassigning."#,
+    );
+    push_line(
+        out,
+        r#"- `task_take` — `<aciddog-call>{"cmd":"task_take"}</aciddog-call>`. Atomically claim the oldest unblocked unassigned task; it moves to `in_progress` assigned to you."#,
+    );
+    push_line(
+        out,
+        r#"- `task_remove` — `<aciddog-call>{"cmd":"task_remove","id":"<uuid>"}</aciddog-call>`. Also prunes the id from any dependents' lists."#,
+    );
+    push_line(
+        out,
+        r#"- `task_note` — `<aciddog-call>{"cmd":"task_note","id":"<uuid>","body":"<text>"}</aciddog-call>`. Append a log entry."#,
+    );
+    push_line(
+        out,
+        r#"**TODOs** break a task into sub-items (flat checklist, no nesting): `task_todo_add`, `task_todo_list`, `task_todo_update` (status: `pending|in_progress|completed`), `task_todo_remove`. Each takes a `task` uuid plus the per-command fields."#,
+    );
+    push_line(
+        out,
+        r#"**Comments** are intentional messages for the next agent (distinct from `note`, the system's event log): `task_comment_add`, `task_comment_list`, `task_comment_update`, `task_comment_remove`. Each takes a `task` uuid plus its fields."#,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,6 +513,126 @@ mod tests {
         assert!(
             p.to_lowercase().contains("resume") || p.to_lowercase().contains("resurr"),
             "missing resume wording: {p}"
+        );
+    }
+
+    // ── tag_preamble ────────────────────────────────────────────────
+
+    #[test]
+    fn tag_preamble_has_header_and_format_note() {
+        let p = tag_preamble(&["coder"], &[]);
+        assert!(p.starts_with("## aciddog tag protocol"), "header: {p}");
+        assert!(
+            p.contains("<aciddog-call>"),
+            "must document call tag: {p}"
+        );
+        assert!(
+            p.contains("<aciddog-response"),
+            "must document response tag: {p}"
+        );
+    }
+
+    #[test]
+    fn tag_preamble_mentions_chain_cap() {
+        let p = tag_preamble(&["coder"], &[]);
+        assert!(
+            p.contains("8 consecutive"),
+            "must tell the model about the 8-round cap: {p}"
+        );
+    }
+
+    #[test]
+    fn tag_preamble_lists_contactable_ids() {
+        let p = tag_preamble(&["coder", "reviewer"], &[]);
+        assert!(
+            p.contains("coder, reviewer"),
+            "missing contactable ids: {p}"
+        );
+        assert!(
+            p.contains("\"cmd\":\"send_message\""),
+            "missing send_message example: {p}"
+        );
+    }
+
+    #[test]
+    fn tag_preamble_hides_send_when_allowlist_empty() {
+        let p = tag_preamble(&[], &[]);
+        assert!(
+            !p.contains("\"cmd\":\"send_message\""),
+            "send_message example must be hidden: {p}"
+        );
+        assert!(
+            p.contains("- `send_message` — disabled"),
+            "should note disabled: {p}"
+        );
+    }
+
+    #[test]
+    fn tag_preamble_mentions_worker_create_when_allowed() {
+        let p = tag_preamble(&["coder"], &["researcher", "tester"]);
+        assert!(
+            p.contains("\"cmd\":\"worker_create\""),
+            "missing worker_create example: {p}"
+        );
+        assert!(
+            p.contains("researcher, tester"),
+            "missing creatable ids: {p}"
+        );
+    }
+
+    #[test]
+    fn tag_preamble_hides_worker_create_when_empty() {
+        let p = tag_preamble(&["coder"], &[]);
+        assert!(
+            !p.contains("\"cmd\":\"worker_create\""),
+            "worker_create must be hidden: {p}"
+        );
+        assert!(
+            p.contains("- `worker_create` — disabled"),
+            "should note disabled: {p}"
+        );
+    }
+
+    #[test]
+    fn tag_preamble_never_mentions_worker_complete_for_plain_agents() {
+        let p = tag_preamble(&["coder"], &["researcher"]);
+        assert!(
+            !p.contains("worker_complete"),
+            "plain agents must not see worker_complete: {p}"
+        );
+    }
+
+    #[test]
+    fn tag_preamble_has_task_board_unconditionally() {
+        let p = tag_preamble(&[], &[]);
+        assert!(
+            p.contains("task_add"),
+            "task board must be unconditional: {p}"
+        );
+        assert!(p.contains("task_take"), "missing task_take: {p}");
+    }
+
+    #[test]
+    fn tag_worker_preamble_documents_worker_complete() {
+        let p = tag_worker_preamble("coder", "find FOO");
+        assert!(p.contains("spawned by `coder`"), "missing parent: {p}");
+        assert!(p.contains("find FOO"), "missing task: {p}");
+        assert!(
+            p.contains("\"cmd\":\"worker_complete\""),
+            "missing worker_complete example: {p}"
+        );
+        assert!(
+            p.contains("\"cmd\":\"send_message\""),
+            "missing progress send example: {p}"
+        );
+    }
+
+    #[test]
+    fn tag_worker_preamble_mentions_hibernation() {
+        let p = tag_worker_preamble("coder", "task");
+        assert!(
+            p.to_lowercase().contains("hibernate"),
+            "missing hibernate wording: {p}"
         );
     }
 }

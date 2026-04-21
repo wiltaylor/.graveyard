@@ -17,7 +17,21 @@ use super::{AgentSocketEvent, Request, Response};
 pub struct Bound {
     pub path: PathBuf,
     pub events: mpsc::Receiver<AgentSocketEvent>,
+    /// Clone source for the same channel `events` drains from. Kept so
+    /// in-process callers (e.g. the claude-code core's tag-dispatch
+    /// path) can inject `AgentSocketEvent`s that land in the same
+    /// handler pipeline as socket-borne requests.
+    events_tx: mpsc::Sender<AgentSocketEvent>,
     accept_handle: JoinHandle<()>,
+}
+
+impl Bound {
+    /// Clone of the channel sender feeding [`events`]. Use this to
+    /// dispatch IPC requests from inside the process without going
+    /// through the Unix socket.
+    pub fn events_tx(&self) -> mpsc::Sender<AgentSocketEvent> {
+        self.events_tx.clone()
+    }
 }
 
 impl Drop for Bound {
@@ -73,6 +87,7 @@ pub async fn bind_at(path: PathBuf) -> Result<Bound> {
         .with_context(|| format!("binding UnixListener at {}", path.display()))?;
 
     let (tx, events) = mpsc::channel::<AgentSocketEvent>(32);
+    let events_tx = tx.clone();
 
     let accept_handle = tokio::spawn(async move {
         accept_loop(listener, tx).await;
@@ -81,6 +96,7 @@ pub async fn bind_at(path: PathBuf) -> Result<Bound> {
     Ok(Bound {
         path,
         events,
+        events_tx,
         accept_handle,
     })
 }

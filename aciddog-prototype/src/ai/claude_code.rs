@@ -1,20 +1,29 @@
 use std::io::Write as _;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
+use serde_json::Value;
 use tempfile::NamedTempFile;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use crate::agent_ipc::{AgentSocketEvent, Request, RequestCmd, Response};
+
 use super::core::{AICore, AIError};
 use super::event::{parse_line, AIEvent};
+use super::tag_call;
 
 const DEFAULT_BINARY: &str = "claude";
+
+/// Maximum consecutive tag-protocol rounds the core will self-chain
+/// inside a single user turn before emitting an error and stopping.
+pub const MAX_TAG_CHAIN_ROUNDS: usize = 8;
 
 pub struct ClaudeCodeCore {
     binary: String,
@@ -26,6 +35,11 @@ pub struct ClaudeCodeCore {
     /// default system prompt.
     system_prompt: Option<String>,
     env: Vec<(String, String)>,
+    /// Set to `Some` only when the agent lacks a shell tool and must
+    /// coordinate through inline `<aciddog-call>` tags. When present,
+    /// `turn` runs the tag-chain loop; otherwise it runs the child once
+    /// and returns, matching the legacy behavior.
+    socket_tx: Option<mpsc::Sender<AgentSocketEvent>>,
     started: bool,
 }
 
@@ -46,6 +60,7 @@ impl ClaudeCodeCore {
             allowed_tools,
             system_prompt,
             env: Vec::new(),
+            socket_tx: None,
             started: false,
         }
     }
@@ -64,6 +79,7 @@ impl ClaudeCodeCore {
             allowed_tools,
             system_prompt,
             env: Vec::new(),
+            socket_tx: None,
             started: true,
         }
     }
@@ -79,6 +95,16 @@ impl ClaudeCodeCore {
     /// agent can call back into aciddog via the IPC socket.
     pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
         self.env = env;
+        self
+    }
+
+    /// Opt into the tag-protocol chain: the core intercepts
+    /// `<aciddog-call>` tags in assistant output and dispatches them
+    /// through the provided channel, injecting the responses as the
+    /// next turn's prompt. Only set this when the agent has no shell
+    /// tool available.
+    pub fn with_socket_tx(mut self, socket_tx: mpsc::Sender<AgentSocketEvent>) -> Self {
+        self.socket_tx = Some(socket_tx);
         self
     }
 
@@ -112,18 +138,8 @@ impl AICore for ClaudeCodeCore {
     async fn turn(&mut self, prompt: &str) -> Result<BoxStream<'static, AIEvent>, AIError> {
         self.validate_tools()?;
 
-        // First turn creates the session with `--session-id`; subsequent
-        // turns resume it with `--resume` (claude rejects reuse of
-        // `--session-id` for an existing session).
-        let is_first = !self.started;
-        let full_prompt = self.build_prompt(prompt);
-        let tools_arg = self.allowed_tools.join(",");
-        let session_id = self.session_id.to_string();
-
-        // Build --system-prompt-file backed by a tempfile. The file must
-        // live until the claude child has read it; we move ownership of
-        // the `NamedTempFile` into the exit-watcher task so the file is
-        // cleaned up exactly once (on drop after wait()).
+        // Create the system-prompt tempfile once per user turn. In tag
+        // mode it is reused across every chain round.
         let system_prompt_file = if let Some(content) = &self.system_prompt {
             let mut tmp = NamedTempFile::new().map_err(AIError::SystemPromptIo)?;
             tmp.write_all(content.as_bytes())
@@ -134,151 +150,35 @@ impl AICore for ClaudeCodeCore {
             None
         };
 
-        let mut cmd = Command::new(&self.binary);
-        cmd.arg("-p")
-            .arg("--dangerously-skip-permissions")
-            .arg("--output-format")
-            .arg("stream-json")
-            .arg("--verbose")
-            // Block online MCP servers: empty inline config + strict mode
-            // means only this (empty) MCP config is honored.
-            .arg("--strict-mcp-config")
-            .arg("--mcp-config")
-            .arg(r#"{"mcpServers":{}}"#);
+        // First-turn flag: determines --session-id vs --resume on the
+        // first child spawn of this user turn.
+        let is_first = !self.started;
+        let first_prompt = self.build_prompt(prompt);
 
-        if let Some(tmp) = &system_prompt_file {
-            cmd.arg("--system-prompt-file").arg(tmp.path());
-        }
-
-        if is_first {
-            cmd.arg("--session-id").arg(&session_id);
-        } else {
-            cmd.arg("--resume").arg(&session_id);
-        }
-
-        if !tools_arg.is_empty() {
-            cmd.arg("--tools").arg(&tools_arg);
-        }
-
-        if !self.env.is_empty() {
-            cmd.envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-        }
-
-        // Pipe the prompt via stdin rather than a positional CLI arg so
-        // the content doesn't appear in process listings or get mangled
-        // by shells/argv length limits.
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
-        debug!(binary = %self.binary, session_id = %session_id, "spawning claude");
-
-        let mut child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                AIError::NotFound
-            } else {
-                AIError::Spawn(e)
-            }
-        })?;
-
-        // Write the prompt and close stdin so claude sees EOF and starts
-        // working. If the write fails (e.g. claude exited before reading)
-        // we still continue — the exit watcher will surface the child's
-        // real error via stderr.
-        if let Some(mut stdin) = child.stdin.take() {
-            if let Err(e) = stdin.write_all(full_prompt.as_bytes()).await {
-                warn!(error = %e, "failed to write prompt to claude stdin");
-            }
-            // Dropping `stdin` closes the pipe; do it explicitly so the
-            // child observes EOF before we wait on it below.
-            drop(stdin);
-        }
-
-        let stdout = child
-            .stdout
-            .take()
-            .expect("stdout was piped, must be present");
-        let stderr = child
-            .stderr
-            .take()
-            .expect("stderr was piped, must be present");
+        let ctx = Arc::new(RoundCtx {
+            binary: self.binary.clone(),
+            session_id: self.session_id,
+            allowed_tools: self.allowed_tools.clone(),
+            env: self.env.clone(),
+            system_prompt_path: system_prompt_file
+                .as_ref()
+                .map(|t| t.path().to_path_buf()),
+        });
 
         let (tx, rx) = mpsc::channel::<AIEvent>(64);
+        let socket_tx = self.socket_tx.clone();
 
-        // Stdout reader: parse each line and forward events.
-        let stdout_tx = tx.clone();
         tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout).lines();
-            loop {
-                match reader.next_line().await {
-                    Ok(Some(line)) => {
-                        for ev in parse_line(&line) {
-                            if stdout_tx.send(ev).await.is_err() {
-                                return;
-                            }
-                        }
-                    }
-                    Ok(None) => return,
-                    Err(e) => {
-                        let _ = stdout_tx
-                            .send(AIEvent::Error {
-                                message: format!("stdout read error: {e}"),
-                                raw: None,
-                            })
-                            .await;
-                        return;
-                    }
+            // Hold the tempfile for the whole chain so every round can
+            // read it. Dropped here, AFTER all rounds complete.
+            let _tempfile_guard = system_prompt_file;
+
+            match socket_tx {
+                None => {
+                    let _ = run_round(&ctx, is_first, first_prompt, tx, None).await;
                 }
-            }
-        });
-
-        // Stderr reader: buffer into a String for the exit-watcher task.
-        let (stderr_tx, stderr_rx) = tokio::sync::oneshot::channel::<String>();
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr);
-            let mut buf = String::new();
-            let _ = reader.read_to_string(&mut buf).await;
-            if !buf.trim().is_empty() {
-                warn!(stderr = %buf, "claude stderr");
-            }
-            let _ = stderr_tx.send(buf);
-        });
-
-        // Exit watcher: wait for child, synthesize an Error event on
-        // failure. The optional `system_prompt_file` is moved into this
-        // task so it lives as long as the child process and is deleted
-        // via `NamedTempFile::drop` once `wait` returns.
-        let exit_tx = tx;
-        tokio::spawn(async move {
-            let status = child.wait().await;
-            let stderr_buf = stderr_rx.await.unwrap_or_default();
-            drop(system_prompt_file);
-            match status {
-                Ok(s) if s.success() => {}
-                Ok(s) => {
-                    let code = s
-                        .code()
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "signal".into());
-                    let msg = format!(
-                        "claude exited with status {code}; stderr: {}",
-                        stderr_buf.trim()
-                    );
-                    let _ = exit_tx
-                        .send(AIEvent::Error {
-                            message: msg,
-                            raw: None,
-                        })
-                        .await;
-                }
-                Err(e) => {
-                    let _ = exit_tx
-                        .send(AIEvent::Error {
-                            message: format!("failed to await claude child: {e}"),
-                            raw: None,
-                        })
-                        .await;
+                Some(socket_tx) => {
+                    run_chain(&ctx, is_first, first_prompt, tx, socket_tx).await;
                 }
             }
         });
@@ -288,6 +188,312 @@ impl AICore for ClaudeCodeCore {
 
     fn session_id(&self) -> Option<Uuid> {
         Some(self.session_id)
+    }
+
+    fn shell_tool_name(&self) -> Option<&'static str> {
+        Some("Bash")
+    }
+}
+
+/// Immutable per-turn snapshot used by the spawn task. Owning copies
+/// sidesteps the lifetime mismatch between `&mut self` and a task that
+/// outlives the `turn()` call frame.
+struct RoundCtx {
+    binary: String,
+    session_id: Uuid,
+    allowed_tools: Vec<String>,
+    env: Vec<(String, String)>,
+    system_prompt_path: Option<std::path::PathBuf>,
+}
+
+/// Spawn one claude child, pipe the prompt in on stdin, forward every
+/// parsed `AIEvent` from stdout to `tx`, await the child's exit. When
+/// `collect_text` is `Some`, every `AssistantText` event's text is also
+/// appended to the shared buffer so the caller can post-process for
+/// tag calls.
+///
+/// Returns `Err` only if the `tx` channel closes early (consumer gone).
+/// Child-spawn / stderr / non-zero-exit errors surface as
+/// `AIEvent::Error` through `tx` and the function returns `Ok(())`.
+async fn run_round(
+    ctx: &RoundCtx,
+    is_first: bool,
+    prompt: String,
+    tx: mpsc::Sender<AIEvent>,
+    collect_text: Option<Arc<Mutex<String>>>,
+) -> Result<(), ()> {
+    let tools_arg = ctx.allowed_tools.join(",");
+    let session_id = ctx.session_id.to_string();
+
+    let mut cmd = Command::new(&ctx.binary);
+    cmd.arg("-p")
+        .arg("--dangerously-skip-permissions")
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose")
+        // Block online MCP servers: empty inline config + strict mode
+        // means only this (empty) MCP config is honored.
+        .arg("--strict-mcp-config")
+        .arg("--mcp-config")
+        .arg(r#"{"mcpServers":{}}"#);
+
+    if let Some(path) = &ctx.system_prompt_path {
+        cmd.arg("--system-prompt-file").arg(path);
+    }
+
+    if is_first {
+        cmd.arg("--session-id").arg(&session_id);
+    } else {
+        cmd.arg("--resume").arg(&session_id);
+    }
+
+    if !tools_arg.is_empty() {
+        cmd.arg("--tools").arg(&tools_arg);
+    }
+
+    if !ctx.env.is_empty() {
+        cmd.envs(ctx.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    }
+
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    debug!(binary = %ctx.binary, session_id = %session_id, "spawning claude");
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let err = if e.kind() == std::io::ErrorKind::NotFound {
+                AIError::NotFound
+            } else {
+                AIError::Spawn(e)
+            };
+            let _ = tx
+                .send(AIEvent::Error {
+                    message: err.to_string(),
+                    raw: None,
+                })
+                .await;
+            return Ok(());
+        }
+    };
+
+    // Write the prompt and close stdin so claude sees EOF and starts
+    // working.
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Err(e) = stdin.write_all(prompt.as_bytes()).await {
+            warn!(error = %e, "failed to write prompt to claude stdin");
+        }
+        drop(stdin);
+    }
+
+    let stdout = child
+        .stdout
+        .take()
+        .expect("stdout was piped, must be present");
+    let stderr = child
+        .stderr
+        .take()
+        .expect("stderr was piped, must be present");
+
+    // Stderr is drained in parallel; we await it at the end to include
+    // its contents in any failure report.
+    let stderr_handle = tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr);
+        let mut buf = String::new();
+        let _ = reader.read_to_string(&mut buf).await;
+        if !buf.trim().is_empty() {
+            warn!(stderr = %buf, "claude stderr");
+        }
+        buf
+    });
+
+    // Stdout reader runs inline so this function only returns after
+    // claude has finished emitting for this round.
+    let mut reader = BufReader::new(stdout).lines();
+    loop {
+        match reader.next_line().await {
+            Ok(Some(line)) => {
+                for ev in parse_line(&line) {
+                    if let Some(buf) = collect_text.as_ref() {
+                        if let AIEvent::AssistantText { text, .. } = &ev {
+                            let mut guard = buf.lock().expect("collect_text poisoned");
+                            guard.push_str(text);
+                            guard.push('\n');
+                        }
+                    }
+                    if tx.send(ev).await.is_err() {
+                        let _ = child.start_kill();
+                        // Still await to clean up zombies.
+                        let _ = child.wait().await;
+                        let _ = stderr_handle.await;
+                        return Err(());
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                let _ = tx
+                    .send(AIEvent::Error {
+                        message: format!("stdout read error: {e}"),
+                        raw: None,
+                    })
+                    .await;
+                break;
+            }
+        }
+    }
+
+    let status = child.wait().await;
+    let stderr_buf = stderr_handle.await.unwrap_or_default();
+
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            let code = s
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into());
+            let msg = format!(
+                "claude exited with status {code}; stderr: {}",
+                stderr_buf.trim()
+            );
+            let _ = tx
+                .send(AIEvent::Error {
+                    message: msg,
+                    raw: None,
+                })
+                .await;
+        }
+        Err(e) => {
+            let _ = tx
+                .send(AIEvent::Error {
+                    message: format!("failed to await claude child: {e}"),
+                    raw: None,
+                })
+                .await;
+        }
+    }
+
+    Ok(())
+}
+
+/// Run the tag-protocol chain: repeatedly spawn claude, parse any
+/// `<aciddog-call>` tags out of its assistant text, dispatch them
+/// through the orchestrator socket channel, and feed the results back
+/// as the next round's prompt. Caps the loop at `MAX_TAG_CHAIN_ROUNDS`
+/// per user turn.
+async fn run_chain(
+    ctx: &RoundCtx,
+    mut is_first: bool,
+    first_prompt: String,
+    tx: mpsc::Sender<AIEvent>,
+    socket_tx: mpsc::Sender<AgentSocketEvent>,
+) {
+    let mut current_prompt = first_prompt;
+    for round in 0..MAX_TAG_CHAIN_ROUNDS {
+        let buf = Arc::new(Mutex::new(String::new()));
+        if run_round(
+            ctx,
+            is_first,
+            std::mem::take(&mut current_prompt),
+            tx.clone(),
+            Some(buf.clone()),
+        )
+        .await
+        .is_err()
+        {
+            // Consumer gone.
+            return;
+        }
+        is_first = false;
+
+        let assistant_text = {
+            let guard = buf.lock().expect("collect_text poisoned");
+            guard.clone()
+        };
+        let calls = tag_call::extract_calls(&assistant_text);
+        if calls.is_empty() {
+            return;
+        }
+
+        let mut responses: Vec<(usize, Response)> = Vec::with_capacity(calls.len());
+        for (i, call) in calls.iter().enumerate() {
+            // Synthesize a ToolUse event so the TUI can render the
+            // dispatched call as a first-class action block.
+            let input_json = match &call.parsed {
+                Ok(cmd) => serde_json::to_value(cmd).unwrap_or(Value::Null),
+                Err(_) => serde_json::from_str::<Value>(&call.raw_body)
+                    .unwrap_or_else(|_| Value::String(call.raw_body.clone())),
+            };
+            let call_id = format!("aciddog-call-{round}-{i}");
+            let _ = tx
+                .send(AIEvent::ToolUse {
+                    id: call_id.clone(),
+                    name: "aciddog-call".to_string(),
+                    input: input_json.clone(),
+                    raw: input_json,
+                })
+                .await;
+
+            let response = match &call.parsed {
+                Ok(cmd) => dispatch_call(cmd.clone(), ctx.session_id, &socket_tx).await,
+                Err(e) => Response::err(e.clone()),
+            };
+
+            // Mirror the response as a ToolResult so the TUI can
+            // correlate it with the preceding ToolUse via `call_id`.
+            let is_error = !response.ok;
+            let content_json = serde_json::to_value(&response).unwrap_or(Value::Null);
+            let _ = tx
+                .send(AIEvent::ToolResult {
+                    tool_use_id: call_id,
+                    content: content_json.clone(),
+                    is_error,
+                    raw: content_json,
+                })
+                .await;
+
+            responses.push((i, response));
+        }
+
+        current_prompt = tag_call::render_responses(&responses);
+    }
+
+    // Chain cap reached. Emit a visible error so the model can see on
+    // its next turn that aciddog stopped chaining.
+    let _ = tx
+        .send(AIEvent::Error {
+            message: format!(
+                "aciddog: tag-call chain exceeded {MAX_TAG_CHAIN_ROUNDS} rounds in a single \
+                 turn; stopping. Wait for the next user prompt instead of emitting more calls."
+            ),
+            raw: None,
+        })
+        .await;
+}
+
+/// Build an `AgentSocketEvent`, push it onto the orchestrator channel,
+/// and await the reply. Channel closure or dropped reply surface as
+/// synthesized error responses.
+async fn dispatch_call(
+    cmd: RequestCmd,
+    agent_id: Uuid,
+    socket_tx: &mpsc::Sender<AgentSocketEvent>,
+) -> Response {
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let event = AgentSocketEvent {
+        request: Request { agent_id, cmd },
+        reply: reply_tx,
+    };
+    if socket_tx.send(event).await.is_err() {
+        return Response::err("orchestrator channel closed");
+    }
+    match reply_rx.await {
+        Ok(r) => r,
+        Err(_) => Response::err("orchestrator dropped reply without responding"),
     }
 }
 
@@ -376,24 +582,6 @@ mod tests {
         assert_eq!(core.system_prompt.as_deref(), Some("you are a helper"));
     }
 
-    #[tokio::test]
-    async fn spawn_failure_with_system_prompt_still_surfaces_error() {
-        // Exercises the tempfile path: even with a Some(system_prompt),
-        // hitting a missing binary must yield an error rather than panic.
-        let mut core = ClaudeCodeCore::new(
-            Uuid::new_v4(),
-            "i".into(),
-            vec![],
-            Some("SYSTEM".into()),
-        )
-        .with_binary("/this/path/definitely/does/not/exist/claude");
-        let result = core.turn("hi").await;
-        assert!(matches!(
-            result,
-            Err(AIError::NotFound) | Err(AIError::Spawn(_))
-        ));
-    }
-
     #[test]
     fn with_env_stores_entries() {
         let core = fresh("i", vec![])
@@ -402,14 +590,56 @@ mod tests {
         assert_eq!(core.env[0], ("FOO".into(), "1".into()));
     }
 
+    #[test]
+    fn shell_tool_name_is_bash() {
+        let core = fresh("i", vec![]);
+        assert_eq!(core.shell_tool_name(), Some("Bash"));
+    }
+
+    #[test]
+    fn with_socket_tx_enables_tag_mode() {
+        let (tx, _rx) = mpsc::channel::<AgentSocketEvent>(1);
+        let core = fresh("i", vec![]).with_socket_tx(tx);
+        assert!(core.socket_tx.is_some());
+    }
+
     #[tokio::test]
-    async fn spawn_failure_surfaces_as_error() {
+    async fn spawn_failure_surfaces_as_error_event_in_stream() {
+        // Binary missing now fails inside the spawned task, which means
+        // turn() itself returns Ok and the error arrives as an AIEvent
+        // through the stream.
         let mut core =
             fresh("i", vec![]).with_binary("/this/path/definitely/does/not/exist/claude");
-        let result = core.turn("hi").await;
-        assert!(matches!(
-            result,
-            Err(AIError::NotFound) | Err(AIError::Spawn(_))
-        ));
+        let mut stream = core.turn("hi").await.expect("turn returns ok");
+        let mut saw_error = false;
+        while let Some(ev) = stream.next().await {
+            if matches!(ev, AIEvent::Error { .. }) {
+                saw_error = true;
+                break;
+            }
+        }
+        assert!(saw_error, "expected an AIEvent::Error in the stream");
+    }
+
+    #[tokio::test]
+    async fn spawn_failure_with_system_prompt_still_surfaces_error() {
+        // Exercises the tempfile path: even with a Some(system_prompt),
+        // hitting a missing binary must emit an error event.
+        let mut core = ClaudeCodeCore::new(
+            Uuid::new_v4(),
+            "i".into(),
+            vec![],
+            Some("SYSTEM".into()),
+        )
+        .with_binary("/this/path/definitely/does/not/exist/claude");
+        let mut stream = core.turn("hi").await.expect("turn returns ok");
+        let mut saw_error = false;
+        while let Some(ev) = stream.next().await {
+            if matches!(ev, AIEvent::Error { .. }) {
+                saw_error = true;
+                break;
+            }
+        }
+        assert!(saw_error, "expected AIEvent::Error in stream");
     }
 }

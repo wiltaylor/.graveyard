@@ -13,6 +13,14 @@ pub trait AICore: Send + Sync {
 
     /// The session id this core is bound to, if one has been assigned.
     fn session_id(&self) -> Option<Uuid>;
+
+    /// Name of the built-in tool that gives this core shell access, so
+    /// the TUI can decide whether the agent can invoke the aciddog CLI.
+    /// `None` means the core has no shell concept — agents using it
+    /// must always use tag-based IPC.
+    fn shell_tool_name(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 #[derive(Debug, Error)]

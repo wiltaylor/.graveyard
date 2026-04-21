@@ -64,14 +64,27 @@ async fn live_turn_streams_events_and_reuses_session() {
 }
 
 #[tokio::test]
-async fn missing_binary_yields_spawn_error() {
-    use aciddog::ai::AIError;
-
+async fn missing_binary_yields_spawn_error_event() {
+    // Spawn failures now surface as AIEvent::Error inside the returned
+    // stream (the refactor for tag-chain mode moved child spawn into
+    // the background task). The error wording must still reference the
+    // failed spawn path.
     let mut core = ClaudeCodeCore::new(Uuid::new_v4(), "i".into(), vec![], None)
         .with_binary("/no/such/path/claude");
-    match core.turn("hi").await {
-        Err(AIError::NotFound) | Err(AIError::Spawn(_)) => {}
-        Err(other) => panic!("expected NotFound/Spawn, got {other:?}"),
-        Ok(_) => panic!("expected spawn failure"),
+    let mut stream = core
+        .turn("hi")
+        .await
+        .expect("turn() now always returns Ok; errors arrive via stream");
+    let mut err_msg = None;
+    while let Some(ev) = stream.next().await {
+        if let AIEvent::Error { message, .. } = ev {
+            err_msg = Some(message);
+            break;
+        }
     }
+    let msg = err_msg.expect("expected AIEvent::Error in stream");
+    assert!(
+        msg.contains("not found") || msg.contains("spawn") || msg.contains("No such file"),
+        "unexpected error message: {msg}"
+    );
 }

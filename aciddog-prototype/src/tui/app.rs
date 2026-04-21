@@ -57,6 +57,163 @@ fn claude_system_prompt(core: &AiCore) -> Option<&String> {
     }
 }
 
+/// Whether an agent with this core and tool set must use the tag-based
+/// IPC protocol (because it has no shell tool to call the aciddog CLI).
+/// ClaudeCode's shell tool is `"Bash"`; future cores can carry their
+/// own name via `AICore::shell_tool_name` on the trait side.
+fn uses_tag_ipc(tools: &[String], core: &AiCore) -> bool {
+    match &core.kind {
+        AiCoreKind::ClaudeCode { .. } => !tools.iter().any(|t| t == "Bash"),
+    }
+}
+
+/// Render a dispatched `<aciddog-call>` (emitted by `ClaudeCodeCore`
+/// in tag mode as a `ToolUse` event named `aciddog-call`) as one of
+/// the existing semantic chat blocks. `input` is the parsed
+/// `RequestCmd` re-serialised to JSON; we deserialise it back into
+/// `RequestCmd` to match on the variant.
+fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
+    use crate::cli::{CommentCommand, TaskCommand, TodoCommand};
+
+    let cmd: Option<RequestCmd> = serde_json::from_value(input.clone()).ok();
+    let Some(cmd) = cmd else {
+        return ChatBlock::from_tool_use("aciddog-call", input);
+    };
+
+    match cmd {
+        RequestCmd::SendMessage { to, body } => ChatBlock::mail_sent(to, body),
+        RequestCmd::WorkerCreate { template, task } => ChatBlock::worker_spawn(template, task),
+        RequestCmd::WorkerComplete { body } => ChatBlock::worker_complete(body),
+        RequestCmd::Test => ChatBlock::from_tool_use("aciddog test", input),
+        RequestCmd::TaskAdd {
+            title,
+            description,
+            assignee,
+            blocked_by,
+        } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Add {
+                title,
+                description,
+                assignee,
+                blocked_by,
+            });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskList {
+            assignee,
+            status,
+            mine,
+            unassigned,
+        } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::List {
+                assignee,
+                status,
+                mine,
+                unassigned,
+            });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskShow { id } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Show { id });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskUpdate {
+            id,
+            title,
+            description,
+            status,
+            assignee,
+            unassign,
+            note,
+            add_blocked_by,
+            remove_blocked_by,
+        } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Update {
+                id,
+                title,
+                description,
+                status,
+                assignee,
+                unassign,
+                note,
+                add_blocked_by,
+                remove_blocked_by,
+            });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskRemove { id } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Remove { id });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskTake => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Take);
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskNote { id, body } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Note { id, body });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskTodoAdd { task, body } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Todo {
+                cmd: TodoCommand::Add { task, body },
+            });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskTodoList { task } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Todo {
+                cmd: TodoCommand::List { task },
+            });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskTodoUpdate {
+            task,
+            id,
+            status,
+            body,
+        } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Todo {
+                cmd: TodoCommand::Update {
+                    task,
+                    id,
+                    status,
+                    body,
+                },
+            });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskTodoRemove { task, id } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Todo {
+                cmd: TodoCommand::Remove { task, id },
+            });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskCommentAdd { task, body } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Comment {
+                cmd: CommentCommand::Add { task, body },
+            });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskCommentList { task } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Comment {
+                cmd: CommentCommand::List { task },
+            });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskCommentUpdate { task, id, body } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Comment {
+                cmd: CommentCommand::Update { task, id, body },
+            });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskCommentRemove { task, id } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Comment {
+                cmd: CommentCommand::Remove { task, id },
+            });
+            ChatBlock::task_op(k, s, b)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Agents,
@@ -525,6 +682,10 @@ pub struct App {
     /// so new worker spawns can route their stream into the same
     /// event loop that serves configured agents.
     pub ai_tx: Option<mpsc::Sender<(usize, AIEvent)>>,
+    /// Clone of the agent-IPC channel used for tag-protocol dispatch
+    /// (when an agent has no shell tool). When `None`, tag-mode cores
+    /// cannot be constructed. Populated by `run` alongside `ai_tx`.
+    pub socket_events_tx: Option<mpsc::Sender<AgentSocketEvent>>,
     /// Shared team task board. `App::new` initialises this ephemeral
     /// (in-memory only); `tui::run` replaces it with a disk-backed
     /// store rooted at `.aciddog/tasks.json` in the cwd so tasks
@@ -584,6 +745,7 @@ impl App {
             aciddog_binary: String::new(),
             socket_path: String::new(),
             ai_tx: None,
+            socket_events_tx: None,
             tasks: TaskStore::new(),
             active_view: ActiveView::default(),
             selected_view: 0,
@@ -763,6 +925,12 @@ impl App {
                     } else {
                         ChatBlock::from_tool_use(&name, &input)
                     }
+                } else if name == "aciddog-call" {
+                    // Tag-mode core synthesizes these for each
+                    // dispatched <aciddog-call>. Map by the parsed
+                    // RequestCmd to the same semantic blocks that
+                    // Bash-dispatched CLI calls use.
+                    block_for_aciddog_tag_call(&input)
                 } else {
                     ChatBlock::from_tool_use(&name, &input)
                 };
@@ -1000,6 +1168,7 @@ impl App {
         };
         let tools = self.config.effective_tools(worker.tools.as_deref(), Some(core));
         let system_prompt = claude_system_prompt(core).cloned();
+        let tag_mode = uses_tag_ipc(&tools, core);
 
         let creatable: Vec<&str> = worker
             .can_create_workers
@@ -1007,16 +1176,25 @@ impl App {
             .map(|list| list.iter().map(String::as_str).collect())
             .unwrap_or_default();
 
-        let instructions = format!(
-            "{}\n\n{}\n\n{}",
-            agent_ipc::preamble::worker_preamble(&self.aciddog_binary, &sender_display, &task),
-            agent_ipc::preamble::cli_preamble(
-                &self.aciddog_binary,
-                &[sender_display.as_str()],
-                &creatable,
-            ),
-            worker.instructions,
-        );
+        let instructions = if tag_mode {
+            format!(
+                "{}\n\n{}\n\n{}",
+                agent_ipc::preamble::tag_worker_preamble(&sender_display, &task),
+                agent_ipc::preamble::tag_preamble(&[sender_display.as_str()], &creatable),
+                worker.instructions,
+            )
+        } else {
+            format!(
+                "{}\n\n{}\n\n{}",
+                agent_ipc::preamble::worker_preamble(&self.aciddog_binary, &sender_display, &task),
+                agent_ipc::preamble::cli_preamble(
+                    &self.aciddog_binary,
+                    &[sender_display.as_str()],
+                    &creatable,
+                ),
+                worker.instructions,
+            )
+        };
 
         let env = vec![
             (agent_ipc::ENV_AGENT_ID.to_string(), session_id.to_string()),
@@ -1059,9 +1237,24 @@ impl App {
             tracing::warn!(%display_name, "user_tx closed before initial task could be sent");
         }
 
-        let core: Box<dyn AICore> = Box::new(
-            ClaudeCodeCore::new(session_id, instructions, tools, system_prompt).with_env(env),
-        );
+        let mut cc =
+            ClaudeCodeCore::new(session_id, instructions, tools, system_prompt).with_env(env);
+        if tag_mode {
+            if let Some(socket_tx) = self.socket_events_tx.clone() {
+                cc = cc.with_socket_tx(socket_tx);
+            } else {
+                tracing::warn!(
+                    %display_name,
+                    "tag-mode worker spawned before socket_events_tx was set; \
+                     falling back to CLI preamble would be wrong — aborting worker"
+                );
+                let _ = reply.send(Response::err(
+                    "orchestrator has no socket_events_tx; cannot spawn tag-mode worker",
+                ));
+                return;
+            }
+        }
+        let core: Box<dyn AICore> = Box::new(cc);
         tokio::spawn(run_core(new_idx, core, user_rx, agent_rx, ai_tx));
 
         // Surface the spawn on the parent pane so the user can see it.
@@ -1183,9 +1376,10 @@ impl App {
             .cloned()
             .ok_or_else(|| format!("worker template `{template_id}` no longer exists"))?;
 
-        let core = self.config.effective_ai_core(worker.ai_core.as_deref());
-        let tools = self.config.effective_tools(worker.tools.as_deref(), core);
-        let system_prompt = core.and_then(claude_system_prompt).cloned();
+        let ai_core = self.config.effective_ai_core(worker.ai_core.as_deref());
+        let tools = self.config.effective_tools(worker.tools.as_deref(), ai_core);
+        let system_prompt = ai_core.and_then(claude_system_prompt).cloned();
+        let tag_mode = ai_core.map(|c| uses_tag_ipc(&tools, c)).unwrap_or(false);
 
         let env = vec![
             (agent_ipc::ENV_AGENT_ID.to_string(), session_id.to_string()),
@@ -1199,10 +1393,17 @@ impl App {
         // after resurrection runs `claude --resume <uuid>` and does
         // not re-prepend the worker preamble — that content already
         // lives in the claude session's history.
-        let core: Box<dyn AICore> = Box::new(
+        let mut cc =
             ClaudeCodeCore::with_session_id(session_id, String::new(), tools, system_prompt)
-                .with_env(env),
-        );
+                .with_env(env);
+        if tag_mode {
+            if let Some(socket_tx) = self.socket_events_tx.clone() {
+                cc = cc.with_socket_tx(socket_tx);
+            } else {
+                return Err("orchestrator has no socket_events_tx".into());
+            }
+        }
+        let core: Box<dyn AICore> = Box::new(cc);
 
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
         let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
@@ -3453,6 +3654,10 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     info!(path = %socket.path.display(), "agent IPC socket bound");
     let socket_path_str = socket.path.display().to_string();
     app.socket_path = socket_path_str.clone();
+    // Clone the socket-events sender onto the App so tag-mode cores
+    // spawned at runtime (worker create / resurrect) can push directly
+    // into the same handler pipeline used by socket-borne requests.
+    app.socket_events_tx = Some(socket.events_tx());
 
     // Resolve our own binary path so agents can invoke aciddog without it
     // being on PATH (cargo run, dev installs, nix store, etc).
@@ -3488,6 +3693,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             .config
             .effective_tools(agent.tools.as_deref(), Some(ai_core));
         let system_prompt = claude_system_prompt(ai_core).cloned();
+        let tag_mode = uses_tag_ipc(&tools, ai_core);
 
         let session_id = Uuid::new_v4();
         app.chats[idx].session_id = Some(session_id);
@@ -3513,11 +3719,19 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             .map(|list| list.iter().map(String::as_str).collect())
             .unwrap_or_default();
 
-        let instructions = format!(
-            "{}\n\n{}",
-            agent_ipc::preamble::cli_preamble(&aciddog_binary_str, &contactable, &creatable),
-            agent.instructions,
-        );
+        let instructions = if tag_mode {
+            format!(
+                "{}\n\n{}",
+                agent_ipc::preamble::tag_preamble(&contactable, &creatable),
+                agent.instructions,
+            )
+        } else {
+            format!(
+                "{}\n\n{}",
+                agent_ipc::preamble::cli_preamble(&aciddog_binary_str, &contactable, &creatable),
+                agent.instructions,
+            )
+        };
 
         // Reflect the full prompt (preamble + instructions) in the top
         // AgentInfo block so the user can expand it and see exactly what
@@ -3534,9 +3748,16 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             ),
         ];
 
-        let core: Box<dyn AICore> = Box::new(
-            ClaudeCodeCore::new(session_id, instructions, tools, system_prompt).with_env(env),
-        );
+        let mut cc =
+            ClaudeCodeCore::new(session_id, instructions, tools, system_prompt).with_env(env);
+        if tag_mode {
+            let socket_tx = app
+                .socket_events_tx
+                .clone()
+                .expect("socket_events_tx set immediately after socket.events_tx() above");
+            cc = cc.with_socket_tx(socket_tx);
+        }
+        let core: Box<dyn AICore> = Box::new(cc);
         tokio::spawn(run_core(idx, core, user_rx, agent_rx, ai_tx.clone()));
     }
     drop(ai_tx);
