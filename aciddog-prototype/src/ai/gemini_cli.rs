@@ -345,6 +345,12 @@ impl AICore for GeminiCliCore {
         let policy_file =
             build_policy_tempfile(&self.allowed_tools).map_err(AIError::SystemPromptIo)?;
 
+        // Suppress GEMINI.md auto-loading (global, workspace, JIT) via
+        // a system-settings JSON pointing at a sentinel context
+        // filename. Using system settings keeps the user's
+        // `~/.gemini/settings.json` (and its OAuth token) untouched.
+        let settings_file = build_bare_settings_tempfile().map_err(AIError::SystemPromptIo)?;
+
         let is_first = !self.started;
         let first_prompt = self.build_prompt(prompt);
 
@@ -354,6 +360,7 @@ impl AICore for GeminiCliCore {
             model: self.model.clone(),
             env: self.env.clone(),
             policy_path: policy_file.as_ref().map(|t| t.path().to_path_buf()),
+            system_settings_path: settings_file.path().to_path_buf(),
             gemini_session_id: self.gemini_session_id.clone(),
         });
 
@@ -377,9 +384,10 @@ impl AICore for GeminiCliCore {
         }
 
         tokio::spawn(async move {
-            // Hold the tempfile for the whole chain so every round can
-            // read it.
+            // Hold the tempfiles for the whole chain so every round can
+            // read them.
             let _policy_guard = policy_file;
+            let _settings_guard = settings_file;
 
             match socket_tx {
                 None => {
@@ -422,6 +430,12 @@ struct RoundCtx {
     /// happens when `allowed_tools` is empty *and* no unmapped
     /// built-ins need denying — practically never).
     policy_path: Option<std::path::PathBuf>,
+    /// Path to a per-turn system-settings JSON, surfaced to gemini via
+    /// `GEMINI_CLI_SYSTEM_SETTINGS_PATH`. The file sets
+    /// `context.fileName` to a sentinel that never matches any real
+    /// file, which suppresses GEMINI.md auto-discovery without touching
+    /// the user's `~/.gemini/` (so OAuth stays intact).
+    system_settings_path: std::path::PathBuf,
     /// Shared with the owning `GeminiCliCore`. `run_round` writes here
     /// when it sees gemini's `init` event; subsequent rounds read it to
     /// build `--resume <uuid>`.
@@ -473,6 +487,24 @@ fn build_policy_tempfile(allowed: &[String]) -> std::io::Result<Option<NamedTemp
     Ok(Some(tmp))
 }
 
+/// Build a minimal gemini system-settings JSON that points
+/// `context.fileName` at a sentinel name. Gemini iterates this name
+/// for global, workspace, and JIT GEMINI.md discovery, so pinning it
+/// to a value that never matches any real file disables every branch
+/// in one shot. Routing through `GEMINI_CLI_SYSTEM_SETTINGS_PATH`
+/// keeps the user's `~/.gemini/settings.json` (and its OAuth token)
+/// untouched.
+fn build_bare_settings_tempfile() -> std::io::Result<NamedTempFile> {
+    let body = r#"{"context":{"fileName":"__aciddog_disabled_gemini_md__"}}"#;
+    let mut tmp = tempfile::Builder::new()
+        .prefix("aciddog-gemini-settings-")
+        .suffix(".json")
+        .tempfile()?;
+    tmp.write_all(body.as_bytes())?;
+    tmp.flush()?;
+    Ok(tmp)
+}
+
 /// Spawn one gemini child, forward every parsed `AIEvent` from stdout
 /// to `tx`, await the child's exit. When `collect_text` is `Some`,
 /// every `AssistantText` event's text is also appended to the shared
@@ -517,6 +549,10 @@ async fn run_round(
     if let Some(path) = &ctx.policy_path {
         cmd.arg("--policy").arg(path);
     }
+
+    // Point gemini at our bare system-settings file so GEMINI.md
+    // auto-loading is suppressed for this spawn only.
+    cmd.env("GEMINI_CLI_SYSTEM_SETTINGS_PATH", &ctx.system_settings_path);
 
     if !ctx.env.is_empty() {
         cmd.envs(ctx.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
