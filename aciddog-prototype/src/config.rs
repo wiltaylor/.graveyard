@@ -12,6 +12,14 @@ pub struct Team {
     /// built-in pool entirely; when `false` (default) they are merged
     /// with the built-ins.
     pub replace_thinking_messages: bool,
+    /// Fleet-wide default tool allowlist applied to agents and workers
+    /// that don't declare their own `tools`. `None` falls back further
+    /// to `DEFAULT_ALLOWED_TOOLS`.
+    pub default_tools: Option<Vec<String>>,
+    /// Fleet-wide default AI core id applied to agents/workers that
+    /// don't declare `ai_core`. Must resolve to a declared `ai_core`
+    /// block id.
+    pub default_ai_core: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,6 +37,12 @@ pub struct Agent {
     /// creation entirely; `Some(list)` is the set of permitted
     /// templates.
     pub can_create_workers: Option<Vec<String>>,
+    /// Optional per-agent tool allowlist. `None` falls back to
+    /// `Team::default_tools`, then the built-in default.
+    pub tools: Option<Vec<String>>,
+    /// Optional ai_core id override. `None` falls back to
+    /// `Team::default_ai_core`.
+    pub ai_core: Option<String>,
 }
 
 /// A template for an ephemeral worker. Unlike `Agent`, a `Worker` is not
@@ -46,6 +60,28 @@ pub struct Worker {
     /// Allowlist of worker template ids an instance of this template
     /// may itself spawn. Same semantics as `Agent::can_create_workers`.
     pub can_create_workers: Option<Vec<String>>,
+    /// Optional ai_core id override. `None` falls back to
+    /// `Team::default_ai_core`.
+    pub ai_core: Option<String>,
+}
+
+/// Configuration for a named AI runtime. The `kind` field is a
+/// tagged-union discriminator — each variant carries its own settings
+/// that the runtime reads when constructing a core for an agent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiCore {
+    pub id: String,
+    pub kind: AiCoreKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AiCoreKind {
+    ClaudeCode {
+        /// Content for `--system-prompt-file`. When `None`, the flag is
+        /// omitted and claude uses its default system prompt.
+        system_prompt: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,11 +89,16 @@ pub struct AciddogConfig {
     pub team: Team,
     pub agents: Vec<Agent>,
     pub workers: Vec<Worker>,
+    pub ai_cores: Vec<AiCore>,
     /// Final pool of messages shown by the thinking indicator while an
     /// agent is `Working`. Already merged with built-ins per
     /// `team.replace_thinking_messages`; guaranteed non-empty.
     pub thinking_messages: Vec<String>,
 }
+
+/// Built-in fallback tool allowlist used when neither the agent/worker
+/// nor the team declares a list.
+pub const DEFAULT_ALLOWED_TOOLS: &[&str] = &["Bash", "Read", "Edit", "Grep", "Glob"];
 
 /// Default pool of whimsical thinking messages. Users can extend or
 /// replace this via `thinking_messages { messages = [...] }` blocks in
@@ -149,6 +190,16 @@ pub enum ConfigError {
 
     #[error("`{from}` references unknown worker template `{to}` in `can_create_workers`")]
     UnknownWorkerRef { from: String, to: String },
+
+    #[error("`{from}` references unknown ai_core `{to}` in `{attr}`")]
+    UnknownAiCoreRef {
+        from: String,
+        attr: String,
+        to: String,
+    },
+
+    #[error("ai_core `{core}` has unknown type `{type_name}`")]
+    UnknownAiCoreType { core: String, type_name: String },
 }
 
 pub fn load_config(path: &Path) -> Result<AciddogConfig, ConfigError> {
@@ -182,6 +233,8 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         description: require_string(team_block, "description")?,
         replace_thinking_messages: optional_bool(team_block, "replace_thinking_messages")?
             .unwrap_or(false),
+        default_tools: optional_string_list(team_block, "default_tools")?,
+        default_ai_core: optional_string(team_block, "default_ai_core"),
     };
 
     let agents = doc
@@ -195,6 +248,8 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 instructions: require_string(b, "instructions")?,
                 can_message: optional_string_list(b, "can_message")?,
                 can_create_workers: optional_string_list(b, "can_create_workers")?,
+                tools: optional_string_list(b, "tools")?,
+                ai_core: optional_string(b, "ai_core"),
             })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -210,12 +265,35 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 instructions: require_string(b, "instructions")?,
                 tools: optional_string_list(b, "tools")?,
                 can_create_workers: optional_string_list(b, "can_create_workers")?,
+                ai_core: optional_string(b, "ai_core"),
             })
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+
+    let ai_cores = doc
+        .blocks_of_type_resolved("ai_core")
+        .iter()
+        .map(|b| {
+            let id = require_id(&b.id, &b.kind)?;
+            let type_name = require_symbol(b, "type")?;
+            let kind = match type_name.as_str() {
+                "claudeCode" => AiCoreKind::ClaudeCode {
+                    system_prompt: optional_string(b, "systemPrompt"),
+                },
+                other => {
+                    return Err(ConfigError::UnknownAiCoreType {
+                        core: id,
+                        type_name: other.to_string(),
+                    })
+                }
+            };
+            Ok(AiCore { id, kind })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
 
     validate_agent_refs(&agents)?;
     validate_worker_refs(&agents, &workers)?;
+    validate_ai_core_refs(&team, &agents, &workers, &ai_cores)?;
 
     let mut user_messages: Vec<String> = Vec::new();
     for block in doc.blocks_of_type_resolved("thinking_messages").iter() {
@@ -247,6 +325,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         team,
         agents,
         workers,
+        ai_cores,
         thinking_messages,
     })
 }
@@ -267,6 +346,42 @@ fn validate_agent_refs(agents: &[Agent]) -> Result<(), ConfigError> {
                     });
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// Every `ai_core` id referenced by the team default or an
+/// agent/worker override must resolve to a declared `ai_core` block.
+fn validate_ai_core_refs(
+    team: &Team,
+    agents: &[Agent],
+    workers: &[Worker],
+    cores: &[AiCore],
+) -> Result<(), ConfigError> {
+    let known: std::collections::HashSet<&str> = cores.iter().map(|c| c.id.as_str()).collect();
+    let check = |from: &str, attr: &str, id: &str| -> Result<(), ConfigError> {
+        if known.contains(id) {
+            Ok(())
+        } else {
+            Err(ConfigError::UnknownAiCoreRef {
+                from: from.to_string(),
+                attr: attr.to_string(),
+                to: id.to_string(),
+            })
+        }
+    };
+    if let Some(id) = &team.default_ai_core {
+        check(&team.id, "default_ai_core", id)?;
+    }
+    for a in agents {
+        if let Some(id) = &a.ai_core {
+            check(&a.id, "ai_core", id)?;
+        }
+    }
+    for w in workers {
+        if let Some(id) = &w.ai_core {
+            check(&w.id, "ai_core", id)?;
         }
     }
     Ok(())
@@ -345,6 +460,31 @@ impl AciddogConfig {
     pub fn worker(&self, id: &str) -> Option<&Worker> {
         self.workers.iter().find(|w| w.id == id)
     }
+
+    /// Resolve the tool allowlist for an agent or worker. Precedence:
+    /// per-agent/worker list → `team.default_tools` → built-in default.
+    pub fn effective_tools(&self, override_tools: Option<&[String]>) -> Vec<String> {
+        if let Some(list) = override_tools {
+            return list.to_vec();
+        }
+        if let Some(list) = &self.team.default_tools {
+            return list.clone();
+        }
+        DEFAULT_ALLOWED_TOOLS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    }
+
+    /// Resolve the AI core config for an agent or worker. Precedence:
+    /// per-agent/worker override id → `team.default_ai_core`. Returns
+    /// `None` if neither is set or the referenced id does not exist
+    /// (ref validation in `parse_config` catches the latter at load
+    /// time, so `None` in practice means "nothing configured").
+    pub fn effective_ai_core(&self, override_id: Option<&str>) -> Option<&AiCore> {
+        let id = override_id.or(self.team.default_ai_core.as_deref())?;
+        self.ai_cores.iter().find(|c| c.id == id)
+    }
 }
 
 fn require_id(id: &Option<String>, kind: &str) -> Result<String, ConfigError> {
@@ -372,6 +512,20 @@ fn optional_string(block: &wcl_lang::BlockRef, attr: &str) -> Option<String> {
     match block.get(attr) {
         Some(Value::String(s)) | Some(Value::Identifier(s)) => Some(s.clone()),
         _ => None,
+    }
+}
+
+fn require_symbol(block: &wcl_lang::BlockRef, attr: &str) -> Result<String, ConfigError> {
+    match block.get(attr) {
+        Some(Value::Symbol(s)) => Ok(s.clone()),
+        Some(_) => Err(ConfigError::BadAttributeType {
+            kind: block.kind.clone(),
+            attr: attr.to_string(),
+        }),
+        None => Err(ConfigError::MissingAttribute {
+            kind: block.kind.clone(),
+            attr: attr.to_string(),
+        }),
     }
 }
 
@@ -873,5 +1027,232 @@ mod tests {
             ConfigError::BadAttributeType { attr, .. }
                 if attr == "replace_thinking_messages"
         ));
+    }
+
+    #[test]
+    fn parses_ai_core_block_with_claude_code_variant() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core main {
+                type = :claudeCode
+                systemPrompt = "be concise"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.ai_cores.len(), 1);
+        assert_eq!(cfg.ai_cores[0].id, "main");
+        assert_eq!(
+            cfg.ai_cores[0].kind,
+            AiCoreKind::ClaudeCode {
+                system_prompt: Some("be concise".into())
+            }
+        );
+    }
+
+    #[test]
+    fn ai_core_system_prompt_is_optional() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core bare { type = :claudeCode }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].kind,
+            AiCoreKind::ClaudeCode {
+                system_prompt: None
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_ai_core_type() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core main { type = :mystery }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownAiCoreType { core, type_name }
+                if core == "main" && type_name == "mystery"
+        ));
+    }
+
+    #[test]
+    fn rejects_ai_core_missing_type() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core bad { }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::MissingAttribute { attr, .. } if attr == "type"
+        ));
+    }
+
+    #[test]
+    fn parses_agent_tools_and_ai_core_override() {
+        let src = r#"
+            team default { description = "t" }
+            ai_core main { type = :claudeCode }
+            agent alpha {
+                role = "r"
+                instructions = "i"
+                tools = ["Read", "Grep"]
+                ai_core = "main"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.agents[0].tools.as_deref(),
+            Some(&["Read".into(), "Grep".into()][..])
+        );
+        assert_eq!(cfg.agents[0].ai_core.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn parses_worker_ai_core_override() {
+        let src = r#"
+            team default { description = "t" }
+            ai_core main { type = :claudeCode }
+            agent a { role = "r" instructions = "i" }
+            worker researcher {
+                role = "r"
+                instructions = "i"
+                ai_core = "main"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.workers[0].ai_core.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn parses_team_default_tools_and_ai_core() {
+        let src = r#"
+            ai_core main { type = :claudeCode }
+            team default {
+                description = "t"
+                default_tools = ["Bash", "Read"]
+                default_ai_core = "main"
+            }
+            agent a { role = "r" instructions = "i" }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.team.default_tools.as_deref(),
+            Some(&["Bash".into(), "Read".into()][..])
+        );
+        assert_eq!(cfg.team.default_ai_core.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn rejects_agent_ai_core_referencing_unknown_id() {
+        let src = r#"
+            team default { description = "t" }
+            agent a {
+                role = "r"
+                instructions = "i"
+                ai_core = "ghost"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownAiCoreRef { from, attr, to }
+                if from == "a" && attr == "ai_core" && to == "ghost"
+        ));
+    }
+
+    #[test]
+    fn rejects_team_default_ai_core_referencing_unknown_id() {
+        let src = r#"
+            team default {
+                description = "t"
+                default_ai_core = "ghost"
+            }
+            agent a { role = "r" instructions = "i" }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownAiCoreRef { attr, to, .. }
+                if attr == "default_ai_core" && to == "ghost"
+        ));
+    }
+
+    #[test]
+    fn effective_tools_prefers_override_then_team_then_builtin() {
+        let src = r#"
+            ai_core main { type = :claudeCode }
+            team default {
+                description = "t"
+                default_tools = ["Bash"]
+                default_ai_core = "main"
+            }
+            agent a {
+                role = "r"
+                instructions = "i"
+                tools = ["Read"]
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        // Override wins.
+        assert_eq!(
+            cfg.effective_tools(cfg.agents[0].tools.as_deref()),
+            vec!["Read".to_string()]
+        );
+        // Falls back to team default when no override.
+        assert_eq!(
+            cfg.effective_tools(None),
+            vec!["Bash".to_string()]
+        );
+
+        // With no team default, the built-in fallback applies.
+        let cfg2 = parse_config(MINIMAL, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg2.effective_tools(None),
+            DEFAULT_ALLOWED_TOOLS
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn effective_ai_core_prefers_override_then_team_default() {
+        let src = r#"
+            ai_core primary { type = :claudeCode systemPrompt = "p" }
+            ai_core alt     { type = :claudeCode systemPrompt = "a" }
+            team default {
+                description = "t"
+                default_ai_core = "primary"
+            }
+            agent override_agent {
+                role = "r"
+                instructions = "i"
+                ai_core = "alt"
+            }
+            agent default_agent {
+                role = "r"
+                instructions = "i"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        let override_core = cfg.effective_ai_core(cfg.agents[0].ai_core.as_deref());
+        assert_eq!(override_core.map(|c| c.id.as_str()), Some("alt"));
+
+        let default_core = cfg.effective_ai_core(cfg.agents[1].ai_core.as_deref());
+        assert_eq!(default_core.map(|c| c.id.as_str()), Some("primary"));
+    }
+
+    #[test]
+    fn effective_ai_core_returns_none_when_nothing_configured() {
+        let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
+        assert!(cfg.effective_ai_core(None).is_none());
     }
 }

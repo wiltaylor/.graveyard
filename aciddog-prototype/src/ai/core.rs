@@ -25,6 +25,12 @@ pub enum AIError {
 
     #[error("invalid tool name `{0}` (must be non-empty, no commas or whitespace)")]
     InvalidToolName(String),
+
+    #[error("failed to prepare system prompt file: {0}")]
+    SystemPromptIo(#[source] std::io::Error),
+
+    #[error("failed to write prompt to claude stdin: {0}")]
+    StdinWrite(#[source] std::io::Error),
 }
 
 #[cfg(test)]

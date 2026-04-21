@@ -15,6 +15,7 @@ async fn live_turn_streams_events_and_reuses_session() {
         expected_session,
         "Respond with a single word.".into(),
         vec!["Read".into()],
+        None,
     );
     assert_eq!(core.session_id(), Some(expected_session));
 
@@ -66,8 +67,8 @@ async fn live_turn_streams_events_and_reuses_session() {
 async fn missing_binary_yields_spawn_error() {
     use aciddog::ai::AIError;
 
-    let mut core =
-        ClaudeCodeCore::new(Uuid::new_v4(), "i".into(), vec![]).with_binary("/no/such/path/claude");
+    let mut core = ClaudeCodeCore::new(Uuid::new_v4(), "i".into(), vec![], None)
+        .with_binary("/no/such/path/claude");
     match core.turn("hi").await {
         Err(AIError::NotFound) | Err(AIError::Spawn(_)) => {}
         Err(other) => panic!("expected NotFound/Spawn, got {other:?}"),

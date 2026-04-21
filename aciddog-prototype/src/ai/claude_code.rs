@@ -1,8 +1,10 @@
+use std::io::Write as _;
 use std::process::Stdio;
 
 use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tempfile::NamedTempFile;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -19,6 +21,10 @@ pub struct ClaudeCodeCore {
     session_id: Uuid,
     initial_instructions: String,
     allowed_tools: Vec<String>,
+    /// Content passed via `--system-prompt-file` on every turn. When
+    /// `None`, no system prompt file is created and claude uses its
+    /// default system prompt.
+    system_prompt: Option<String>,
     env: Vec<(String, String)>,
     started: bool,
 }
@@ -27,12 +33,18 @@ impl ClaudeCodeCore {
     /// Construct a core for a brand-new session. The caller owns the
     /// session id so it can be shared with the chat UI and the agent IPC
     /// layer before the first turn has run.
-    pub fn new(session_id: Uuid, initial_instructions: String, allowed_tools: Vec<String>) -> Self {
+    pub fn new(
+        session_id: Uuid,
+        initial_instructions: String,
+        allowed_tools: Vec<String>,
+        system_prompt: Option<String>,
+    ) -> Self {
         Self {
             binary: DEFAULT_BINARY.to_string(),
             session_id,
             initial_instructions,
             allowed_tools,
+            system_prompt,
             env: Vec::new(),
             started: false,
         }
@@ -43,12 +55,14 @@ impl ClaudeCodeCore {
         session_id: Uuid,
         initial_instructions: String,
         allowed_tools: Vec<String>,
+        system_prompt: Option<String>,
     ) -> Self {
         Self {
             binary: DEFAULT_BINARY.to_string(),
             session_id,
             initial_instructions,
             allowed_tools,
+            system_prompt,
             env: Vec::new(),
             started: true,
         }
@@ -106,6 +120,20 @@ impl AICore for ClaudeCodeCore {
         let tools_arg = self.allowed_tools.join(",");
         let session_id = self.session_id.to_string();
 
+        // Build --system-prompt-file backed by a tempfile. The file must
+        // live until the claude child has read it; we move ownership of
+        // the `NamedTempFile` into the exit-watcher task so the file is
+        // cleaned up exactly once (on drop after wait()).
+        let system_prompt_file = if let Some(content) = &self.system_prompt {
+            let mut tmp = NamedTempFile::new().map_err(AIError::SystemPromptIo)?;
+            tmp.write_all(content.as_bytes())
+                .map_err(AIError::SystemPromptIo)?;
+            tmp.flush().map_err(AIError::SystemPromptIo)?;
+            Some(tmp)
+        } else {
+            None
+        };
+
         let mut cmd = Command::new(&self.binary);
         cmd.arg("-p")
             .arg("--dangerously-skip-permissions")
@@ -118,6 +146,10 @@ impl AICore for ClaudeCodeCore {
             .arg("--mcp-config")
             .arg(r#"{"mcpServers":{}}"#);
 
+        if let Some(tmp) = &system_prompt_file {
+            cmd.arg("--system-prompt-file").arg(tmp.path());
+        }
+
         if is_first {
             cmd.arg("--session-id").arg(&session_id);
         } else {
@@ -128,16 +160,14 @@ impl AICore for ClaudeCodeCore {
             cmd.arg("--tools").arg(&tools_arg);
         }
 
-        // `--tools` takes a variadic list, so terminate options with `--`
-        // before the positional prompt to prevent the prompt being parsed as
-        // another tool name.
-        cmd.arg("--").arg(&full_prompt);
-
         if !self.env.is_empty() {
             cmd.envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         }
 
-        cmd.stdin(Stdio::null())
+        // Pipe the prompt via stdin rather than a positional CLI arg so
+        // the content doesn't appear in process listings or get mangled
+        // by shells/argv length limits.
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -151,6 +181,19 @@ impl AICore for ClaudeCodeCore {
                 AIError::Spawn(e)
             }
         })?;
+
+        // Write the prompt and close stdin so claude sees EOF and starts
+        // working. If the write fails (e.g. claude exited before reading)
+        // we still continue — the exit watcher will surface the child's
+        // real error via stderr.
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(e) = stdin.write_all(full_prompt.as_bytes()).await {
+                warn!(error = %e, "failed to write prompt to claude stdin");
+            }
+            // Dropping `stdin` closes the pipe; do it explicitly so the
+            // child observes EOF before we wait on it below.
+            drop(stdin);
+        }
 
         let stdout = child
             .stdout
@@ -202,11 +245,15 @@ impl AICore for ClaudeCodeCore {
             let _ = stderr_tx.send(buf);
         });
 
-        // Exit watcher: wait for child, synthesize an Error event on failure.
+        // Exit watcher: wait for child, synthesize an Error event on
+        // failure. The optional `system_prompt_file` is moved into this
+        // task so it lives as long as the child process and is deleted
+        // via `NamedTempFile::drop` once `wait` returns.
         let exit_tx = tx;
         tokio::spawn(async move {
             let status = child.wait().await;
             let stderr_buf = stderr_rx.await.unwrap_or_default();
+            drop(system_prompt_file);
             match status {
                 Ok(s) if s.success() => {}
                 Ok(s) => {
@@ -249,7 +296,7 @@ mod tests {
     use super::*;
 
     fn fresh(instructions: &str, tools: Vec<String>) -> ClaudeCodeCore {
-        ClaudeCodeCore::new(Uuid::new_v4(), instructions.into(), tools)
+        ClaudeCodeCore::new(Uuid::new_v4(), instructions.into(), tools, None)
     }
 
     #[test]
@@ -304,7 +351,7 @@ mod tests {
     #[test]
     fn new_uses_caller_provided_session_id() {
         let id = Uuid::new_v4();
-        let core = ClaudeCodeCore::new(id, "i".into(), vec![]);
+        let core = ClaudeCodeCore::new(id, "i".into(), vec![], None);
         assert_eq!(core.session_id(), Some(id));
         assert!(!core.started, "new() sessions have not started yet");
     }
@@ -312,10 +359,39 @@ mod tests {
     #[test]
     fn with_session_id_starts_as_already_started() {
         let id = Uuid::new_v4();
-        let mut core = ClaudeCodeCore::with_session_id(id, "ignored".into(), vec![]);
+        let mut core = ClaudeCodeCore::with_session_id(id, "ignored".into(), vec![], None);
         assert_eq!(core.session_id(), Some(id));
         let p = core.build_prompt("hi");
         assert_eq!(p, "hi");
+    }
+
+    #[test]
+    fn system_prompt_is_stored_when_provided() {
+        let core = ClaudeCodeCore::new(
+            Uuid::new_v4(),
+            "i".into(),
+            vec![],
+            Some("you are a helper".into()),
+        );
+        assert_eq!(core.system_prompt.as_deref(), Some("you are a helper"));
+    }
+
+    #[tokio::test]
+    async fn spawn_failure_with_system_prompt_still_surfaces_error() {
+        // Exercises the tempfile path: even with a Some(system_prompt),
+        // hitting a missing binary must yield an error rather than panic.
+        let mut core = ClaudeCodeCore::new(
+            Uuid::new_v4(),
+            "i".into(),
+            vec![],
+            Some("SYSTEM".into()),
+        )
+        .with_binary("/this/path/definitely/does/not/exist/claude");
+        let result = core.turn("hi").await;
+        assert!(matches!(
+            result,
+            Err(AIError::NotFound) | Err(AIError::Spawn(_))
+        ));
     }
 
     #[test]

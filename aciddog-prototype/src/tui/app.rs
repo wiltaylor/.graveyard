@@ -24,7 +24,7 @@ use clap::Parser;
 use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
 use crate::ai::{AICore, AIEvent, ClaudeCodeCore};
 use crate::cli::{AgentArgs, AgentCommand};
-use crate::config::AciddogConfig;
+use crate::config::{AciddogConfig, AiCore, AiCoreKind};
 use crate::tasks::{Task, TaskFilter, TaskPatch, TaskStatus, TaskStore, TodoStatus};
 
 use super::tasks_view::{
@@ -46,8 +46,16 @@ use super::clipboard;
 
 use super::ui;
 
-const DEFAULT_ALLOWED_TOOLS: &[&str] = &["Bash", "Read", "Edit", "Grep", "Glob"];
 const COPIED_TOAST_MS: u64 = 1500;
+
+/// Pull the `system_prompt` out of a resolved `AiCore` if the variant
+/// exposes one. Today every variant is ClaudeCode so this is effectively
+/// a field access; it becomes a real match once other variants land.
+fn claude_system_prompt(core: &AiCore) -> Option<&String> {
+    match &core.kind {
+        AiCoreKind::ClaudeCode { system_prompt } => system_prompt.as_ref(),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -549,12 +557,10 @@ impl App {
             .agents
             .iter()
             .map(|agent| {
+                let tools = config.effective_tools(agent.tools.as_deref());
                 let info = ChatBlock::agent_info(
                     "claude-code",
-                    DEFAULT_ALLOWED_TOOLS
-                        .iter()
-                        .map(|s| (*s).to_string())
-                        .collect(),
+                    tools,
                     agent.instructions.clone(),
                 );
                 AgentChat {
@@ -982,13 +988,17 @@ impl App {
         let session_id = Uuid::new_v4();
         let display_name = format!("{}#{}", template, &session_id.to_string()[..8]);
 
-        // Tool list: explicit template tools override the default.
-        let tools: Vec<String> = worker.tools.clone().unwrap_or_else(|| {
-            DEFAULT_ALLOWED_TOOLS
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect()
-        });
+        let tools = self.config.effective_tools(worker.tools.as_deref());
+
+        let system_prompt = match self.config.effective_ai_core(worker.ai_core.as_deref()) {
+            Some(core) => claude_system_prompt(core).cloned(),
+            None => {
+                let _ = reply.send(Response::err(format!(
+                    "worker template `{template}` has no ai_core (no override and no team default_ai_core)"
+                )));
+                return;
+            }
+        };
 
         let creatable: Vec<&str> = worker
             .can_create_workers
@@ -1048,8 +1058,9 @@ impl App {
             tracing::warn!(%display_name, "user_tx closed before initial task could be sent");
         }
 
-        let core: Box<dyn AICore> =
-            Box::new(ClaudeCodeCore::new(session_id, instructions, tools).with_env(env));
+        let core: Box<dyn AICore> = Box::new(
+            ClaudeCodeCore::new(session_id, instructions, tools, system_prompt).with_env(env),
+        );
         tokio::spawn(run_core(new_idx, core, user_rx, agent_rx, ai_tx));
 
         // Surface the spawn on the parent pane so the user can see it.
@@ -1171,12 +1182,12 @@ impl App {
             .cloned()
             .ok_or_else(|| format!("worker template `{template_id}` no longer exists"))?;
 
-        let tools: Vec<String> = worker.tools.clone().unwrap_or_else(|| {
-            DEFAULT_ALLOWED_TOOLS
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect()
-        });
+        let tools = self.config.effective_tools(worker.tools.as_deref());
+        let system_prompt = self
+            .config
+            .effective_ai_core(worker.ai_core.as_deref())
+            .and_then(claude_system_prompt)
+            .cloned();
 
         let env = vec![
             (agent_ipc::ENV_AGENT_ID.to_string(), session_id.to_string()),
@@ -1191,7 +1202,8 @@ impl App {
         // not re-prepend the worker preamble — that content already
         // lives in the claude session's history.
         let core: Box<dyn AICore> = Box::new(
-            ClaudeCodeCore::with_session_id(session_id, String::new(), tools).with_env(env),
+            ClaudeCodeCore::with_session_id(session_id, String::new(), tools, system_prompt)
+                .with_env(env),
         );
 
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
@@ -3465,10 +3477,17 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         app.chats[idx].user_tx = Some(user_tx);
         app.chats[idx].agent_tx = Some(agent_tx);
 
-        let tools: Vec<String> = DEFAULT_ALLOWED_TOOLS
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect();
+        let tools = app.config.effective_tools(agent.tools.as_deref());
+        let ai_core = app
+            .config
+            .effective_ai_core(agent.ai_core.as_deref())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "agent `{}` has no ai_core (no override and no team default_ai_core)",
+                    agent.id
+                )
+            })?;
+        let system_prompt = claude_system_prompt(ai_core).cloned();
 
         let session_id = Uuid::new_v4();
         app.chats[idx].session_id = Some(session_id);
@@ -3515,8 +3534,9 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             ),
         ];
 
-        let core: Box<dyn AICore> =
-            Box::new(ClaudeCodeCore::new(session_id, instructions, tools).with_env(env));
+        let core: Box<dyn AICore> = Box::new(
+            ClaudeCodeCore::new(session_id, instructions, tools, system_prompt).with_env(env),
+        );
         tokio::spawn(run_core(idx, core, user_rx, agent_rx, ai_tx.clone()));
     }
     drop(ai_tx);
@@ -3655,6 +3675,8 @@ mod tests {
                 id: "t".into(),
                 description: "d".into(),
                 replace_thinking_messages: false,
+                default_tools: None,
+                default_ai_core: Some("default".into()),
             },
             agents: vec![
                 Agent {
@@ -3664,6 +3686,8 @@ mod tests {
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: None,
+                    tools: None,
+                    ai_core: None,
                 },
                 Agent {
                     id: "b".into(),
@@ -3672,6 +3696,8 @@ mod tests {
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: None,
+                    tools: None,
+                    ai_core: None,
                 },
                 Agent {
                     id: "c".into(),
@@ -3680,9 +3706,15 @@ mod tests {
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: None,
+                    tools: None,
+                    ai_core: None,
                 },
             ],
             workers: vec![],
+            ai_cores: vec![crate::config::AiCore {
+                id: "default".into(),
+                kind: crate::config::AiCoreKind::ClaudeCode { system_prompt: None },
+            }],
             thinking_messages: vec!["thinking".into()],
         }
     }
@@ -4954,6 +4986,8 @@ mod tests {
                 id: "t".into(),
                 description: "d".into(),
                 replace_thinking_messages: false,
+                default_tools: None,
+                default_ai_core: Some("default".into()),
             },
             agents: vec![
                 Agent {
@@ -4963,6 +4997,8 @@ mod tests {
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: Some(vec!["researcher".into()]),
+                    tools: None,
+                    ai_core: None,
                 },
                 Agent {
                     id: "planner".into(),
@@ -4971,6 +5007,8 @@ mod tests {
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: None,
+                    tools: None,
+                    ai_core: None,
                 },
             ],
             workers: vec![
@@ -4981,6 +5019,7 @@ mod tests {
                     instructions: "look stuff up".into(),
                     tools: None,
                     can_create_workers: None,
+                    ai_core: None,
                 },
                 Worker {
                     id: "fetcher".into(),
@@ -4989,8 +5028,13 @@ mod tests {
                     instructions: "fetch".into(),
                     tools: None,
                     can_create_workers: None,
+                    ai_core: None,
                 },
             ],
+            ai_cores: vec![crate::config::AiCore {
+                id: "default".into(),
+                kind: crate::config::AiCoreKind::ClaudeCode { system_prompt: None },
+            }],
             thinking_messages: vec!["thinking".into()],
         }
     }
