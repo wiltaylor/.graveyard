@@ -77,6 +77,34 @@ fn demo_declares_z_ai_anthropic_core_bound_to_tester() {
 }
 
 #[test]
+fn demo_declares_openrouter_openai_core_bound_to_jokemaster() {
+    let path = repo_root().join("demo").join("aciddog.wcl");
+    let cfg = load_config(&path).expect("demo aciddog.wcl should parse");
+
+    let openrouter = cfg
+        .ai_cores
+        .iter()
+        .find(|c| c.id == "openrouter")
+        .expect("openrouter core should be declared");
+    match &openrouter.kind {
+        AiCoreKind::OpenAiApi { api_url, api_key_env, model, .. } => {
+            assert_eq!(api_url, "https://openrouter.ai/api/v1");
+            assert_eq!(api_key_env, "OPENROUTER_API_KEY");
+            assert_eq!(model, "openai/gpt-5.4");
+        }
+        other => panic!("expected OpenAiApi variant, got {other:?}"),
+    }
+
+    let jokemaster = cfg
+        .agents
+        .iter()
+        .find(|a| a.id == "jokemaster")
+        .expect("jokemaster agent");
+    assert_eq!(jokemaster.ai_core.as_deref(), Some("openrouter"));
+    assert_eq!(jokemaster.tools.as_deref(), Some(&["Read".to_string()][..]));
+}
+
+#[test]
 fn demo_declares_project_context_memory_bank_and_wires_it() {
     let path = repo_root().join("demo").join("aciddog.wcl");
     let cfg = load_config(&path).expect("demo aciddog.wcl should parse");

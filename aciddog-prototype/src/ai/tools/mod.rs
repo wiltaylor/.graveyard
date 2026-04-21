@@ -136,6 +136,27 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// OpenAI-shaped spec array for the `tools` request field:
+    /// `[{ "type": "function", "function": { "name": .., "description": .., "parameters": .. } }]`.
+    /// OpenAI calls the schema field `parameters` (Anthropic calls it
+    /// `input_schema`) and wraps each entry in a `type: "function"`
+    /// envelope to leave room for future non-function tool kinds.
+    pub fn openai_tools(&self) -> Vec<Value> {
+        self.tools
+            .values()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name(),
+                        "description": t.description(),
+                        "parameters": t.input_schema(),
+                    },
+                })
+            })
+            .collect()
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.get(name).cloned()
     }
@@ -190,5 +211,21 @@ mod tests {
         assert_eq!(t["name"], "Read");
         assert!(t["description"].is_string());
         assert!(t["input_schema"].is_object());
+    }
+
+    #[test]
+    fn openai_tools_emits_function_envelope() {
+        let (reg, _) = ToolRegistry::from_allowed(&["Read".to_string()]);
+        let tools = reg.openai_tools();
+        assert_eq!(tools.len(), 1);
+        let t = &tools[0];
+        assert_eq!(t["type"], "function");
+        assert_eq!(t["function"]["name"], "Read");
+        assert!(t["function"]["description"].is_string());
+        assert!(t["function"]["parameters"].is_object());
+        // No top-level name / description / input_schema fields at the
+        // outer level — those only appear on Anthropic's shape.
+        assert!(t.get("name").is_none());
+        assert!(t.get("input_schema").is_none());
     }
 }

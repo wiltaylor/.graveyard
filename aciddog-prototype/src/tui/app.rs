@@ -23,7 +23,8 @@ use clap::Parser;
 
 use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
 use crate::ai::{
-    AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, PromptParts, WorkerCtx,
+    AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, OpenAiApiCore, PromptParts,
+    WorkerCtx,
 };
 use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::{AciddogConfig, AiCore, AiCoreKind};
@@ -59,6 +60,7 @@ fn core_display_label(core: &AiCore) -> String {
     let kind = match &core.kind {
         AiCoreKind::ClaudeCode { .. } => "claude-code",
         AiCoreKind::AnthropicApi { .. } => "anthropic-api",
+        AiCoreKind::OpenAiApi { .. } => "openai-api",
     };
     format!("{kind} ({})", core.id)
 }
@@ -69,7 +71,9 @@ fn core_display_label(core: &AiCore) -> String {
 /// available). Keep this in sync with each core's trait impl.
 fn shell_tool_name_for_core(core: &AiCore) -> Option<&'static str> {
     match &core.kind {
-        AiCoreKind::ClaudeCode { .. } | AiCoreKind::AnthropicApi { .. } => Some("Bash"),
+        AiCoreKind::ClaudeCode { .. }
+        | AiCoreKind::AnthropicApi { .. }
+        | AiCoreKind::OpenAiApi { .. } => Some("Bash"),
     }
 }
 
@@ -116,6 +120,31 @@ fn build_core(
             ..
         } => {
             let mut c = AnthropicApiCore::new(
+                session_id,
+                api_url.clone(),
+                api_key_env.clone(),
+                model.clone(),
+                parts,
+                tools,
+                system_prompt.clone(),
+            )
+            .with_env(env);
+            if resume {
+                c = c.mark_started();
+            }
+            if let Some(tx) = socket_tx {
+                c = c.with_socket_tx(tx);
+            }
+            Box::new(c)
+        }
+        AiCoreKind::OpenAiApi {
+            api_url,
+            api_key_env,
+            model,
+            system_prompt,
+            ..
+        } => {
+            let mut c = OpenAiApiCore::new(
                 session_id,
                 api_url.clone(),
                 api_key_env.clone(),

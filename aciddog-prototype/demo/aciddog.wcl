@@ -82,6 +82,29 @@ schema "ai_core" {
     // tools (Bash, Read, Write, Edit, Glob, Grep, WebFetch).
     default_tools: list(string) @optional
   }
+
+  // Generic OpenAI-chat-completions-compatible core. Works against
+  // api.openai.com, OpenRouter, Ollama's OpenAI-compatible endpoint,
+  // or any other provider that implements `/chat/completions`.
+  variant "openAiApi" {
+    // **v1 base** URL — e.g. `https://api.openai.com/v1`,
+    // `https://openrouter.ai/api/v1`, `http://localhost:11434/v1`.
+    // `/chat/completions` is appended. Matches how every OpenAI-
+    // compatible vendor documents their endpoint.
+    apiUrl: string
+    // Name of the environment variable that holds the API key.
+    // Loaded from `.env` at startup; never commit keys to the config.
+    apiKeyEnv: string
+    // Model id sent in the `model` request field. OpenRouter uses
+    // vendor-prefixed ids (e.g. `openai/gpt-5.4-mini`); OpenAI proper
+    // uses bare ids (e.g. `gpt-4o-mini`).
+    model: string
+    // Optional system prompt; prepended as a `role: "system"` message.
+    systemPrompt: string @optional
+    // Fallback tool allowlist — names must resolve to built-in native
+    // tools (Bash, Read, Write, Edit, Glob, Grep, WebFetch).
+    default_tools: list(string) @optional
+  }
 }
 
 ai_core default_core {
@@ -128,6 +151,25 @@ ai_core z_ai {
   EOT
 }
 
+// OpenAI-chat-completions core targeting OpenRouter. The same variant
+// also works against api.openai.com (use `https://api.openai.com/v1`
+// and a bare model id) or Ollama's OpenAI-compatible endpoint (use
+// `http://localhost:11434/v1` and an empty apiKey). Put
+// `OPENROUTER_API_KEY=...` in `.env` so the key never lands in the
+// committed config.
+ai_core openrouter {
+  type = :openAiApi
+  apiUrl = "https://openrouter.ai/api/v1"
+  apiKeyEnv = "OPENROUTER_API_KEY"
+  model = "openai/gpt-5.4"
+  default_tools = ["Read"]
+  systemPrompt = <<EOT
+    You are a code agent operating in a terminal. You help with software engineering tasks by reading, writing, and modifying code, and by executing commands.
+
+    Follow your first-turn `<role>` / `<team>` / `<tools>` / `<instructions>` sections. Prefer tool calls that actually inspect or change the workspace over reasoning about what files might contain.
+  EOT
+}
+
 team default {
   description = "Default aciddog team"
   // Fleet-wide default core — agents and workers inherit this unless
@@ -149,7 +191,7 @@ agent planner {
   role_description = <<EOT
     You are the team coordinator. Understand what the user wants, decompose it into delegable units, and route each unit to the right teammate via `send`. Do not implement work yourself when you can route it. Spawn an ephemeral worker only when the job is genuinely throwaway (one question, one artifact, one joke). Confirm receipts and report final outcomes back to the user — nothing in between.
   EOT
-  instructions = "Break the user request into steps and delegate work to other agents. If the team needs a morale boost, spawn a `jokester` worker with a topic and wait for its punchline."
+  instructions = "Break the user request into steps and delegate work to other agents. If the team needs a morale boost, either `send` a topic to the `jokemaster` agent (if you want a cheap one-liner from the OpenRouter-backed agent) or spawn a `jokester` worker (if you want a single ephemeral joke and then cleanup). Both return their punchline and stop."
   // Omit `can_message` to allow messaging every other agent.
   // Example: restrict to a subset with `can_message = ["coder"]`.
   can_create_workers = ["jokester"]
@@ -181,6 +223,20 @@ agent tester {
   // as `coder`, to keep the Anthropic-API code path exercised from a
   // second agent with a distinct role.
   ai_core = "z_ai"
+}
+
+// Persistent humorist, wired to the OpenRouter core so the OpenAI-API
+// code path gets exercised by the demo. `tools = ["Read"]` (no Bash)
+// also keeps this agent on the tag-IPC protocol, so the new core is
+// tested on both native tool use (Read) and tag-based messaging.
+agent jokemaster {
+  role = "humorist"
+  role_description = <<EOT
+    You keep team morale up with a well-timed one-liner. When another agent pings you with a topic, deliver one short clean joke about it — two lines max, no preamble, no apologies, no explanation. The joke itself is the entire deliverable.
+  EOT
+  instructions = "When sent a topic, reply with exactly one short clean joke about it. No setup outside the joke, no commentary — just the punchline. Make sure to use the mailbox tool to send the joke back to the sender if you recieved the joke via your inbox instead of directly from a user."
+  tools = ["Read"]
+  ai_core = "openrouter"
 }
 
 // Workers are ephemeral agents. They are not spawned at startup;

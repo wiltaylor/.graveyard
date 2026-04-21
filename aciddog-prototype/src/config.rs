@@ -136,6 +136,28 @@ pub enum AiCoreKind {
         /// at config parse time (see `validate_ai_core_tools`).
         default_tools: Option<Vec<String>>,
     },
+    /// Generic OpenAI-chat-completions-compatible core. Works against
+    /// api.openai.com, OpenRouter, Ollama's OpenAI-compatible endpoint,
+    /// or any other vendor that implements `/chat/completions`.
+    OpenAiApi {
+        /// **v1 base** URL of the API (e.g. `https://api.openai.com/v1`,
+        /// `https://openrouter.ai/api/v1`, `http://localhost:11434/v1`).
+        /// The core appends `/chat/completions`. Matches how every
+        /// OpenAI-compatible vendor documents their endpoint.
+        api_url: String,
+        /// Name of the environment variable holding the API key.
+        /// Resolved at turn time, same as the Anthropic variant.
+        api_key_env: String,
+        /// Model id sent in the `model` request field (e.g.
+        /// `gpt-4o-mini`, `openai/gpt-5.4-mini` on OpenRouter).
+        model: String,
+        /// Optional system-prompt content; prepended as a
+        /// `role: "system"` message at request time.
+        system_prompt: Option<String>,
+        /// Per-core default tool allowlist. Unknown names are rejected
+        /// at config parse time (see `validate_ai_core_tools`).
+        default_tools: Option<Vec<String>>,
+    },
 }
 
 impl AiCore {
@@ -145,7 +167,8 @@ impl AiCore {
     pub fn default_tools(&self) -> Option<&[String]> {
         match &self.kind {
             AiCoreKind::ClaudeCode { default_tools, .. }
-            | AiCoreKind::AnthropicApi { default_tools, .. } => default_tools.as_deref(),
+            | AiCoreKind::AnthropicApi { default_tools, .. }
+            | AiCoreKind::OpenAiApi { default_tools, .. } => default_tools.as_deref(),
         }
     }
 
@@ -156,7 +179,9 @@ impl AiCore {
     pub fn runtime_model(&self) -> Option<&str> {
         match &self.kind {
             AiCoreKind::ClaudeCode { .. } => None,
-            AiCoreKind::AnthropicApi { model, .. } => Some(model.as_str()),
+            AiCoreKind::AnthropicApi { model, .. } | AiCoreKind::OpenAiApi { model, .. } => {
+                Some(model.as_str())
+            }
         }
     }
 }
@@ -393,6 +418,13 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                     system_prompt: optional_string(b, "systemPrompt"),
                     default_tools: optional_string_list(b, "default_tools")?,
                 },
+                "openAiApi" => AiCoreKind::OpenAiApi {
+                    api_url: require_string(b, "apiUrl")?,
+                    api_key_env: require_string(b, "apiKeyEnv")?,
+                    model: require_string(b, "model")?,
+                    system_prompt: optional_string(b, "systemPrompt"),
+                    default_tools: optional_string_list(b, "default_tools")?,
+                },
                 other => {
                     return Err(ConfigError::UnknownAiCoreType {
                         core: id,
@@ -513,6 +545,7 @@ fn validate_ai_core_tools(cores: &[AiCore]) -> Result<(), ConfigError> {
     for core in cores {
         let (type_name, defaults) = match &core.kind {
             AiCoreKind::AnthropicApi { default_tools, .. } => ("anthropicApi", default_tools.as_deref()),
+            AiCoreKind::OpenAiApi { default_tools, .. } => ("openAiApi", default_tools.as_deref()),
             AiCoreKind::ClaudeCode { .. } => continue,
         };
         let Some(list) = defaults else { continue };
@@ -1392,6 +1425,83 @@ mod tests {
             err,
             ConfigError::UnknownTool { tool, .. } if tool == "NotARealTool"
         ));
+    }
+
+    #[test]
+    fn parses_ai_core_block_with_openai_api_variant() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core openrouter {
+                type = :openAiApi
+                apiUrl = "https://openrouter.ai/api/v1"
+                apiKeyEnv = "OPENROUTER_API_KEY"
+                model = "openai/gpt-5.4-mini"
+                default_tools = ["Read", "WebFetch"]
+                systemPrompt = "be concise"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].kind,
+            AiCoreKind::OpenAiApi {
+                api_url: "https://openrouter.ai/api/v1".into(),
+                api_key_env: "OPENROUTER_API_KEY".into(),
+                model: "openai/gpt-5.4-mini".into(),
+                system_prompt: Some("be concise".into()),
+                default_tools: Some(vec!["Read".into(), "WebFetch".into()]),
+            }
+        );
+    }
+
+    #[test]
+    fn openai_api_requires_api_url_key_env_and_model() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core openrouter { type = :openAiApi }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(err, ConfigError::MissingAttribute { .. }));
+    }
+
+    #[test]
+    fn openai_api_rejects_unknown_tool_name() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core openrouter {
+                type = :openAiApi
+                apiUrl = "http://x"
+                apiKeyEnv = "K"
+                model = "m"
+                default_tools = ["Read", "NotARealTool"]
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownTool { tool, .. } if tool == "NotARealTool"
+        ));
+    }
+
+    #[test]
+    fn openai_api_runtime_model_returns_configured_model() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core openrouter {
+                type = :openAiApi
+                apiUrl = "http://x"
+                apiKeyEnv = "K"
+                model = "openai/gpt-5.4-mini"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].runtime_model(),
+            Some("openai/gpt-5.4-mini")
+        );
     }
 
     #[test]
