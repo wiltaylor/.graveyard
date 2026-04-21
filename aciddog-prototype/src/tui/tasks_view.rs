@@ -42,15 +42,19 @@ pub enum TaskFormKind {
     Edit(Uuid),
 }
 
-/// Fields in the modal form, laid out in tab order.
+/// Fields (and buttons) in the modal form, laid out in tab order.
+/// Buttons participate in Tab cycling and can also be clicked; they
+/// carry no editable value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormField {
     Title,
     Description,
     Assignee,
     Status,
-    BlockedByCsv,
-    RemoveBlockedByCsv,
+    /// Task-dependency list. Enter opens a multi-select picker.
+    BlockedBy,
+    Ok,
+    Cancel,
 }
 
 impl FormField {
@@ -60,9 +64,14 @@ impl FormField {
             Self::Description => "Description",
             Self::Assignee => "Assignee",
             Self::Status => "Status",
-            Self::BlockedByCsv => "Add blocked-by (CSV uuids)",
-            Self::RemoveBlockedByCsv => "Remove blocked-by (CSV uuids)",
+            Self::BlockedBy => "Blocked by",
+            Self::Ok => "OK",
+            Self::Cancel => "Cancel",
         }
+    }
+
+    pub fn is_button(self) -> bool {
+        matches!(self, Self::Ok | Self::Cancel)
     }
 }
 
@@ -79,15 +88,47 @@ pub struct DropdownPicker {
     pub selected: usize,
 }
 
+/// Multi-select popup for the `Blocked by` field. Each row shows a
+/// task title + status + short id with a checkbox; Space or click
+/// toggles a row; Enter commits the full set to the form.
+#[derive(Debug, Clone)]
+pub struct BlockedByPicker {
+    pub options: Vec<BlockedByRow>,
+    pub checked: Vec<bool>,
+    pub cursor: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockedByRow {
+    pub id: Uuid,
+    pub title: String,
+    pub status: TaskStatus,
+}
+
+/// Number of text-lines visible inside the Description sub-block.
+/// Rows on screen = this + 2 for the border.
+pub const DESCRIPTION_VISIBLE_LINES: u16 = 6;
+
 #[derive(Debug, Clone)]
 pub struct TaskForm {
     pub kind: TaskFormKind,
     pub title: String,
     pub description: String,
+    /// Byte offset of the insertion cursor inside `description`.
+    /// Kept in sync with edits so arrow-key movement works.
+    pub description_cursor: usize,
+    /// Scroll offset (in lines) hidden above the visible window.
+    pub description_scroll: u16,
     pub assignee: String,
     pub status: String,
-    pub blocked_by_csv: String,
-    pub remove_blocked_by_csv: String,
+    /// Current in-form blocked-by set. For Edit, seeded from the
+    /// task's existing deps at open time (also snapshotted into
+    /// `original_blocked_by` so `apply_form` can compute the diff).
+    /// For Add, starts empty.
+    pub blocked_by: Vec<Uuid>,
+    /// Snapshot of the task's blocked-by at edit-open time. Empty
+    /// for Add; used only for the diff on submit.
+    pub original_blocked_by: Vec<Uuid>,
     pub focused_field: FormField,
     pub error: Option<String>,
     /// Options offered by the Assignee dropdown. The empty string
@@ -95,10 +136,18 @@ pub struct TaskForm {
     /// the rest based on the team's chat display names at open
     /// time via [`set_assignee_options`].
     pub assignee_options: Vec<String>,
-    /// When `Some`, an option-picker popup is overlaid on the form
-    /// for the focused dropdown field. All form keys except picker
-    /// navigation are suspended while it's open.
+    /// When `Some`, a single-select dropdown picker is overlaid on
+    /// the form (assignee / status).
     pub picker: Option<DropdownPicker>,
+    /// When `Some`, the multi-select blocked-by picker is overlaid
+    /// on the form.
+    pub blocked_by_picker: Option<BlockedByPicker>,
+    /// Unused sink returned by `field_mut` for button variants so
+    /// the signature can stay `&mut String` without panics. Key
+    /// handlers gate character input on `FormField::is_button` so
+    /// this string is never actually written to in the happy path.
+    #[doc(hidden)]
+    pub _button_sink: String,
 }
 
 impl TaskForm {
@@ -107,30 +156,40 @@ impl TaskForm {
             kind: TaskFormKind::Add,
             title: String::new(),
             description: String::new(),
+            description_cursor: 0,
+            description_scroll: 0,
             assignee: String::new(),
             status: String::new(),
-            blocked_by_csv: String::new(),
-            remove_blocked_by_csv: String::new(),
+            blocked_by: Vec::new(),
+            original_blocked_by: Vec::new(),
             focused_field: FormField::Title,
             error: None,
             assignee_options: vec![String::new()],
             picker: None,
+            blocked_by_picker: None,
+            _button_sink: String::new(),
         }
     }
 
     pub fn new_edit(task: &Task) -> Self {
+        let desc = task.description.clone().unwrap_or_default();
+        let cursor = desc.len();
         Self {
             kind: TaskFormKind::Edit(task.id),
             title: task.title.clone(),
-            description: task.description.clone().unwrap_or_default(),
+            description: desc,
+            description_cursor: cursor,
+            description_scroll: 0,
             assignee: task.assignee.clone().unwrap_or_default(),
             status: task.status.as_str().to_string(),
-            blocked_by_csv: String::new(),
-            remove_blocked_by_csv: String::new(),
+            blocked_by: task.blocked_by.clone(),
+            original_blocked_by: task.blocked_by.clone(),
             focused_field: FormField::Title,
             error: None,
             assignee_options: vec![String::new()],
             picker: None,
+            blocked_by_picker: None,
+            _button_sink: String::new(),
         }
     }
 
@@ -210,23 +269,28 @@ impl TaskForm {
         }
     }
 
-    /// All fields in tab order. For Add, the Status and
-    /// Remove-blocked-by fields are skipped since they don't apply.
+    /// All fields in tab order. For Add, the Status field is
+    /// skipped since new tasks derive their status from whether an
+    /// assignee is set. Ok and Cancel buttons are always last so
+    /// Tabbing lands you on them before wrapping to Title.
     pub fn tab_order(&self) -> &'static [FormField] {
         match self.kind {
             TaskFormKind::Add => &[
                 FormField::Title,
                 FormField::Description,
                 FormField::Assignee,
-                FormField::BlockedByCsv,
+                FormField::BlockedBy,
+                FormField::Ok,
+                FormField::Cancel,
             ],
             TaskFormKind::Edit(_) => &[
                 FormField::Title,
                 FormField::Description,
                 FormField::Assignee,
                 FormField::Status,
-                FormField::BlockedByCsv,
-                FormField::RemoveBlockedByCsv,
+                FormField::BlockedBy,
+                FormField::Ok,
+                FormField::Cancel,
             ],
         }
     }
@@ -245,14 +309,18 @@ impl TaskForm {
         }
     }
 
+    /// Returns a mutable string ref for text-backed fields.
+    /// Non-text fields (buttons, the list-picker `BlockedBy`) have
+    /// no editable string value; callers must gate character input
+    /// before writing. The sink is returned for those variants to
+    /// keep the signature `&mut String` without panics.
     pub fn field_mut(&mut self, field: FormField) -> &mut String {
         match field {
             FormField::Title => &mut self.title,
             FormField::Description => &mut self.description,
             FormField::Assignee => &mut self.assignee,
             FormField::Status => &mut self.status,
-            FormField::BlockedByCsv => &mut self.blocked_by_csv,
-            FormField::RemoveBlockedByCsv => &mut self.remove_blocked_by_csv,
+            FormField::BlockedBy | FormField::Ok | FormField::Cancel => &mut self._button_sink,
         }
     }
 
@@ -262,8 +330,180 @@ impl TaskForm {
             FormField::Description => &self.description,
             FormField::Assignee => &self.assignee,
             FormField::Status => &self.status,
-            FormField::BlockedByCsv => &self.blocked_by_csv,
-            FormField::RemoveBlockedByCsv => &self.remove_blocked_by_csv,
+            FormField::BlockedBy | FormField::Ok | FormField::Cancel => "",
+        }
+    }
+
+    /// Open the multi-select picker for Blocked-by. `all_tasks` is
+    /// the full live task set; `self_id` (Some for Edit) is
+    /// excluded. Eligibility: rows already in `self.blocked_by` are
+    /// always included (so the user can uncheck them, even Done /
+    /// Cancelled ones); everything else is only shown if it's in
+    /// one of the still-active statuses.
+    pub fn open_blocked_by_picker(&mut self, all_tasks: &[Task], self_id: Option<Uuid>) {
+        let mut rows: Vec<BlockedByRow> = Vec::new();
+        let mut checked: Vec<bool> = Vec::new();
+
+        // Pass 1: entries already in blocked_by go first, checked.
+        for id in &self.blocked_by {
+            if Some(*id) == self_id {
+                continue;
+            }
+            if let Some(t) = all_tasks.iter().find(|t| t.id == *id) {
+                rows.push(BlockedByRow {
+                    id: t.id,
+                    title: t.title.clone(),
+                    status: t.status,
+                });
+                checked.push(true);
+            }
+        }
+        // Pass 2: active tasks not already in blocked_by, unchecked.
+        for t in all_tasks {
+            if Some(t.id) == self_id {
+                continue;
+            }
+            if rows.iter().any(|r| r.id == t.id) {
+                continue;
+            }
+            let eligible = matches!(
+                t.status,
+                TaskStatus::Open | TaskStatus::Assigned | TaskStatus::InProgress
+            );
+            if !eligible {
+                continue;
+            }
+            rows.push(BlockedByRow {
+                id: t.id,
+                title: t.title.clone(),
+                status: t.status,
+            });
+            checked.push(false);
+        }
+
+        self.blocked_by_picker = Some(BlockedByPicker {
+            options: rows,
+            checked,
+            cursor: 0,
+        });
+    }
+
+    pub fn close_blocked_by_picker(&mut self) {
+        self.blocked_by_picker = None;
+    }
+
+    pub fn blocked_by_picker_move(&mut self, delta: i32) {
+        if let Some(p) = self.blocked_by_picker.as_mut() {
+            if p.options.is_empty() {
+                return;
+            }
+            let len = p.options.len() as i32;
+            p.cursor = ((p.cursor as i32 + delta).rem_euclid(len)) as usize;
+        }
+    }
+
+    pub fn blocked_by_picker_toggle(&mut self) {
+        if let Some(p) = self.blocked_by_picker.as_mut() {
+            if let Some(c) = p.checked.get_mut(p.cursor) {
+                *c = !*c;
+            }
+        }
+    }
+
+    pub fn blocked_by_picker_toggle_at(&mut self, idx: usize) {
+        if let Some(p) = self.blocked_by_picker.as_mut() {
+            if let Some(c) = p.checked.get_mut(idx) {
+                *c = !*c;
+                p.cursor = idx;
+            }
+        }
+    }
+
+    /// Write the checked set of the blocked-by picker back into
+    /// `self.blocked_by`, preserving option order. Closes the
+    /// picker.
+    pub fn commit_blocked_by_picker(&mut self) {
+        let Some(p) = self.blocked_by_picker.take() else {
+            return;
+        };
+        self.blocked_by = p
+            .options
+            .iter()
+            .zip(p.checked.iter())
+            .filter_map(|(row, on)| if *on { Some(row.id) } else { None })
+            .collect();
+    }
+
+    // ---- Description text-editor helpers ----
+
+    /// Insert a character at the cursor. Newlines are accepted so
+    /// `\n` can be piped in from Enter.
+    pub fn description_insert(&mut self, c: char) {
+        let mut buf = [0u8; 4];
+        let s = c.encode_utf8(&mut buf);
+        self.description.insert_str(self.description_cursor, s);
+        self.description_cursor += s.len();
+    }
+
+    pub fn description_backspace(&mut self) {
+        if self.description_cursor == 0 {
+            return;
+        }
+        let n = utf8_char_len_prev(&self.description, self.description_cursor);
+        if n == 0 {
+            return;
+        }
+        let start = self.description_cursor - n;
+        self.description.drain(start..self.description_cursor);
+        self.description_cursor = start;
+    }
+
+    pub fn description_move_char(&mut self, delta: i32) {
+        if delta > 0 {
+            let n = utf8_char_len(&self.description, self.description_cursor);
+            self.description_cursor = (self.description_cursor + n).min(self.description.len());
+        } else if delta < 0 {
+            let n = utf8_char_len_prev(&self.description, self.description_cursor);
+            self.description_cursor = self.description_cursor.saturating_sub(n);
+        }
+    }
+
+    /// Move the cursor up/down one visual line, preserving column
+    /// as best effort. Returns false when the move would leave the
+    /// text (caller should tab to the next/prev field instead).
+    pub fn description_move_line(&mut self, delta: i32) -> bool {
+        let (line, col) = line_col_from_offset(&self.description, self.description_cursor);
+        let total = line_count(&self.description);
+        if delta < 0 {
+            if line == 0 {
+                return false;
+            }
+            let target_line = line - 1;
+            self.description_cursor = offset_from_line_col(&self.description, target_line, col);
+            true
+        } else if delta > 0 {
+            if line + 1 >= total {
+                return false;
+            }
+            let target_line = line + 1;
+            self.description_cursor = offset_from_line_col(&self.description, target_line, col);
+            true
+        } else {
+            true
+        }
+    }
+
+    /// Adjust `description_scroll` so the cursor's line is visible
+    /// inside a window of `visible_height` lines.
+    pub fn description_ensure_visible(&mut self, visible_height: u16) {
+        if visible_height == 0 {
+            return;
+        }
+        let (line, _) = line_col_from_offset(&self.description, self.description_cursor);
+        if line < self.description_scroll {
+            self.description_scroll = line;
+        } else if line >= self.description_scroll + visible_height {
+            self.description_scroll = line - visible_height + 1;
         }
     }
 }
@@ -277,12 +517,59 @@ pub enum TasksPrompt {
     ConfirmDelete { task_id: Uuid, buffer: String },
 }
 
+/// The two sub-entity overlays (TODOs and Comments) that sit on top
+/// of the Tasks view and let the operator manage a single task's
+/// children. `Prompt` is a shared one-line text-input mode used for
+/// add / edit / delete-confirmation flows.
+#[derive(Debug, Clone)]
+pub enum ChildOverlay {
+    Todos {
+        task_id: Uuid,
+        cursor: usize,
+    },
+    Comments {
+        task_id: Uuid,
+        cursor: usize,
+    },
+    Prompt {
+        task_id: Uuid,
+        kind: ChildPromptKind,
+        buffer: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ChildPromptKind {
+    AddTodo,
+    EditTodo(Uuid),
+    ConfirmDeleteTodo(Uuid),
+    AddComment,
+    EditComment(Uuid),
+    ConfirmDeleteComment(Uuid),
+}
+
+impl ChildOverlay {
+    /// Which task this overlay belongs to, regardless of state.
+    pub fn task_id(&self) -> Uuid {
+        match self {
+            Self::Todos { task_id, .. }
+            | Self::Comments { task_id, .. }
+            | Self::Prompt { task_id, .. } => *task_id,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct TasksScreen {
     pub selected_row: usize,
     pub form: Option<TaskForm>,
     pub detail: Option<Uuid>,
     pub prompt: Option<TasksPrompt>,
+    /// The TODOs or Comments overlay for a task, when open.
+    /// Mutually exclusive with `form` / `detail` / `prompt` in
+    /// practice; the key handler gates on this field's presence
+    /// before routing any normal task-view keys.
+    pub child_overlay: Option<ChildOverlay>,
     /// Transient error/success message shown at the bottom of the
     /// task area. Cleared on next key press.
     pub status_msg: Option<String>,
@@ -378,6 +665,49 @@ impl TasksScreen {
         self.form = None;
         self.detail = None;
         self.prompt = None;
+        self.child_overlay = None;
+    }
+
+    // ---- Child overlays (TODOs + Comments) ----
+
+    pub fn open_todos(&mut self, task_id: Uuid) {
+        self.child_overlay = Some(ChildOverlay::Todos { task_id, cursor: 0 });
+    }
+
+    pub fn open_comments(&mut self, task_id: Uuid) {
+        self.child_overlay = Some(ChildOverlay::Comments { task_id, cursor: 0 });
+    }
+
+    /// Move the cursor in an open Browse overlay, clamped to the
+    /// count of rows available. No-op if the overlay is in a prompt
+    /// state or if there are no rows.
+    pub fn child_overlay_move(&mut self, delta: i32, row_count: usize) {
+        if row_count == 0 {
+            return;
+        }
+        let len = row_count as i32;
+        match self.child_overlay.as_mut() {
+            Some(ChildOverlay::Todos { cursor, .. })
+            | Some(ChildOverlay::Comments { cursor, .. }) => {
+                *cursor = ((*cursor as i32 + delta).rem_euclid(len)) as usize;
+            }
+            _ => {}
+        }
+    }
+
+    /// Jump the Browse cursor to an absolute row (used by
+    /// click-to-select). No-op if the index is out of range.
+    pub fn child_overlay_set_cursor(&mut self, idx: usize, row_count: usize) {
+        if idx >= row_count {
+            return;
+        }
+        match self.child_overlay.as_mut() {
+            Some(ChildOverlay::Todos { cursor, .. })
+            | Some(ChildOverlay::Comments { cursor, .. }) => {
+                *cursor = idx;
+            }
+            _ => {}
+        }
     }
 
     /// Cycle a task's status to the next entry in `STATUS_ORDER`,
@@ -430,13 +760,12 @@ fn apply_form(form: &TaskForm, store: &mut TaskStore) -> Result<(), TaskError> {
             }
             let description = non_empty_owned(&form.description);
             let assignee = non_empty_owned(&form.assignee);
-            let blocked_by = parse_csv_uuids(&form.blocked_by_csv)?;
             store.add(
                 title,
                 description,
                 assignee,
                 OPERATOR.to_string(),
-                blocked_by,
+                form.blocked_by.clone(),
             )?;
             Ok(())
         }
@@ -446,8 +775,6 @@ fn apply_form(form: &TaskForm, store: &mut TaskStore) -> Result<(), TaskError> {
                 if t.is_empty() {
                     return Err(TaskError::EmptyTitle);
                 }
-                // Include only when changed — keeps updated_at_secs
-                // untouched if nothing substantive shifted.
                 match store.get(id) {
                     Some(existing) if existing.title == t => None,
                     _ => Some(t.to_string()),
@@ -460,7 +787,6 @@ fn apply_form(form: &TaskForm, store: &mut TaskStore) -> Result<(), TaskError> {
                     if current == new_val {
                         None
                     } else {
-                        // Empty string clears the description.
                         Some(new_val)
                     }
                 }
@@ -482,8 +808,19 @@ fn apply_form(form: &TaskForm, store: &mut TaskStore) -> Result<(), TaskError> {
             } else {
                 Some(TaskStatus::parse(&form.status)?)
             };
-            let add_deps = parse_csv_uuids(&form.blocked_by_csv)?;
-            let remove_deps = parse_csv_uuids(&form.remove_blocked_by_csv)?;
+            // Diff original vs current blocked-by.
+            let add_deps: Vec<Uuid> = form
+                .blocked_by
+                .iter()
+                .copied()
+                .filter(|id| !form.original_blocked_by.contains(id))
+                .collect();
+            let remove_deps: Vec<Uuid> = form
+                .original_blocked_by
+                .iter()
+                .copied()
+                .filter(|id| !form.blocked_by.contains(id))
+                .collect();
 
             store.update(
                 id,
@@ -512,28 +849,102 @@ fn non_empty_owned(s: &str) -> Option<String> {
     }
 }
 
-/// Parse a comma-separated list of UUIDs. Empty string → empty vec.
-/// Whitespace is trimmed around each entry. Malformed entries
-/// surface as `TaskError::UnknownDependency`-style failures — we
-/// wrap them as `InvalidStatus`-less parse errors; the UI layer
-/// just shows the message.
-pub fn parse_csv_uuids(s: &str) -> Result<Vec<Uuid>, TaskError> {
-    let mut out = Vec::new();
-    for raw in s.split(',') {
-        let t = raw.trim();
-        if t.is_empty() {
-            continue;
+/// Byte length in UTF-8 of the char starting at `offset`, or 0 if
+/// out of bounds.
+fn utf8_char_len(s: &str, offset: usize) -> usize {
+    if offset >= s.len() {
+        return 0;
+    }
+    let bytes = s.as_bytes();
+    let lead = bytes[offset];
+    if lead < 0x80 {
+        1
+    } else if lead < 0xC0 {
+        // Continuation byte; caller mispositioned. Treat as 1 so we
+        // don't infinite-loop.
+        1
+    } else if lead < 0xE0 {
+        2
+    } else if lead < 0xF0 {
+        3
+    } else {
+        4
+    }
+}
+
+/// Byte length of the char that *ends* at `offset` (i.e. the char
+/// immediately before cursor position `offset`). Returns 0 at the
+/// start of the string.
+fn utf8_char_len_prev(s: &str, offset: usize) -> usize {
+    if offset == 0 || offset > s.len() {
+        return 0;
+    }
+    let bytes = s.as_bytes();
+    let mut i = offset - 1;
+    while i > 0 && (bytes[i] & 0xC0) == 0x80 {
+        i -= 1;
+    }
+    offset - i
+}
+
+/// Convert a byte offset into (line_index, column_as_char_count).
+pub fn line_col_from_offset(s: &str, offset: usize) -> (u16, u16) {
+    let offset = offset.min(s.len());
+    let mut line: u16 = 0;
+    let mut col: u16 = 0;
+    let mut i = 0;
+    while i < offset {
+        let c_len = utf8_char_len(s, i);
+        let ch = s[i..i + c_len].chars().next().unwrap_or('\u{fffd}');
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
         }
-        match Uuid::parse_str(t) {
-            Ok(u) => out.push(u),
-            Err(_) => {
-                // Reuse UnknownDependency so the error surface stays
-                // small; the message makes the actual cause clear.
-                return Err(TaskError::UnknownDependency(Uuid::nil()));
+        i += c_len;
+    }
+    (line, col)
+}
+
+/// Inverse of `line_col_from_offset`, with column clamped to the
+/// line's length.
+pub fn offset_from_line_col(s: &str, line: u16, col: u16) -> usize {
+    let mut cur_line: u16 = 0;
+    let mut cur_col: u16 = 0;
+    let mut i = 0;
+    while i < s.len() {
+        if cur_line == line && cur_col == col {
+            return i;
+        }
+        let c_len = utf8_char_len(s, i);
+        let ch = s[i..i + c_len].chars().next().unwrap_or('\u{fffd}');
+        if ch == '\n' {
+            if cur_line == line {
+                return i;
             }
+            cur_line += 1;
+            cur_col = 0;
+        } else {
+            cur_col += 1;
+        }
+        i += c_len;
+    }
+    // Reached end: return the end offset (valid cursor position).
+    s.len()
+}
+
+pub fn line_count(s: &str) -> u16 {
+    if s.is_empty() {
+        return 1;
+    }
+    let mut n: u16 = 1;
+    for b in s.bytes() {
+        if b == b'\n' {
+            n += 1;
         }
     }
-    Ok(out)
+    n
 }
 
 pub fn next_status(s: TaskStatus) -> TaskStatus {
@@ -640,19 +1051,170 @@ mod tests {
     }
 
     #[test]
-    fn parse_csv_uuids_handles_whitespace_and_empty() {
-        assert!(parse_csv_uuids("").unwrap().is_empty());
-        assert!(parse_csv_uuids("  ,  ,  ").unwrap().is_empty());
-        let a = Uuid::new_v4();
-        let b = Uuid::new_v4();
-        let s = format!("  {a}  ,{b}");
-        let got = parse_csv_uuids(&s).unwrap();
-        assert_eq!(got, vec![a, b]);
+    fn description_line_col_and_back() {
+        let s = "hello\nworld\nfoo";
+        assert_eq!(line_col_from_offset(s, 0), (0, 0));
+        assert_eq!(line_col_from_offset(s, 5), (0, 5));
+        assert_eq!(line_col_from_offset(s, 6), (1, 0));
+        assert_eq!(line_col_from_offset(s, 11), (1, 5));
+        assert_eq!(line_col_from_offset(s, 12), (2, 0));
+        // Round trip roughly: col clamps to line length at end.
+        let off = offset_from_line_col(s, 1, 3);
+        assert_eq!(&s[..off], "hello\nwor");
     }
 
     #[test]
-    fn parse_csv_uuids_rejects_malformed() {
-        assert!(parse_csv_uuids("not-a-uuid").is_err());
+    fn description_line_count_counts_lines_and_empty() {
+        assert_eq!(line_count(""), 1);
+        assert_eq!(line_count("a"), 1);
+        assert_eq!(line_count("a\nb"), 2);
+        assert_eq!(line_count("a\nb\n"), 3);
+    }
+
+    #[test]
+    fn description_insert_and_backspace_maintain_cursor() {
+        let mut form = TaskForm::new_add();
+        form.description_insert('a');
+        form.description_insert('b');
+        form.description_insert('\n');
+        form.description_insert('c');
+        assert_eq!(form.description, "ab\nc");
+        assert_eq!(form.description_cursor, 4);
+        form.description_backspace();
+        assert_eq!(form.description, "ab\n");
+        assert_eq!(form.description_cursor, 3);
+        form.description_backspace();
+        assert_eq!(form.description, "ab");
+    }
+
+    #[test]
+    fn description_move_line_returns_false_when_past_edges() {
+        let mut form = TaskForm::new_add();
+        form.description = "one\ntwo".into();
+        form.description_cursor = 0;
+        assert!(!form.description_move_line(-1), "above top must tab off");
+        form.description_cursor = form.description.len();
+        assert!(!form.description_move_line(1), "below bottom must tab off");
+        // Middle row works.
+        form.description_cursor = 0;
+        assert!(form.description_move_line(1));
+    }
+
+    #[test]
+    fn description_ensure_visible_adjusts_scroll() {
+        let mut form = TaskForm::new_add();
+        form.description = "a\nb\nc\nd\ne\nf\ng\nh\n".into();
+        form.description_cursor = form.description.len();
+        form.description_ensure_visible(3);
+        // Cursor sits on the last (empty) line; scroll should push
+        // it into view.
+        let (cursor_line, _) = line_col_from_offset(&form.description, form.description_cursor);
+        assert!(cursor_line >= form.description_scroll);
+        assert!(cursor_line < form.description_scroll + 3);
+    }
+
+    #[test]
+    fn blocked_by_picker_filters_to_active_tasks() {
+        let mut s = TaskStore::new();
+        let a = s
+            .add("a".into(), None, None, "x".into(), Vec::new())
+            .unwrap()
+            .id;
+        let b = s
+            .add("b".into(), None, None, "x".into(), Vec::new())
+            .unwrap()
+            .id;
+        // Mark `b` as Done — it should NOT appear as an add
+        // candidate.
+        s.update(
+            b,
+            TaskPatch {
+                status: Some(TaskStatus::Done),
+                ..Default::default()
+            },
+            "x",
+        )
+        .unwrap();
+        let c = s
+            .add("c".into(), None, None, "x".into(), Vec::new())
+            .unwrap()
+            .id;
+
+        let mut form = TaskForm::new_add();
+        form.open_blocked_by_picker(s.all(), None);
+        let ids: Vec<Uuid> = form
+            .blocked_by_picker
+            .as_ref()
+            .unwrap()
+            .options
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        assert!(ids.contains(&a));
+        assert!(!ids.contains(&b), "Done task must not be an add candidate");
+        assert!(ids.contains(&c));
+    }
+
+    #[test]
+    fn blocked_by_picker_keeps_already_blocking_done_tasks_so_user_can_remove() {
+        let mut s = TaskStore::new();
+        let a = s
+            .add("a".into(), None, None, "x".into(), Vec::new())
+            .unwrap()
+            .id;
+        s.update(
+            a,
+            TaskPatch {
+                status: Some(TaskStatus::Done),
+                ..Default::default()
+            },
+            "x",
+        )
+        .unwrap();
+        let b = s
+            .add("b".into(), None, Some("x".into()), "x".into(), vec![a])
+            .unwrap()
+            .id;
+        let mut form = TaskForm::new_edit(s.get(b).unwrap());
+        form.open_blocked_by_picker(s.all(), Some(b));
+        let p = form.blocked_by_picker.as_ref().unwrap();
+        // `a` (Done) must be present AND checked.
+        let idx = p.options.iter().position(|r| r.id == a).unwrap();
+        assert!(p.checked[idx]);
+    }
+
+    #[test]
+    fn blocked_by_picker_excludes_self_task() {
+        let mut s = TaskStore::new();
+        let a = s
+            .add("a".into(), None, None, "x".into(), Vec::new())
+            .unwrap()
+            .id;
+        let mut form = TaskForm::new_edit(s.get(a).unwrap());
+        form.open_blocked_by_picker(s.all(), Some(a));
+        assert!(form
+            .blocked_by_picker
+            .as_ref()
+            .unwrap()
+            .options
+            .iter()
+            .all(|r| r.id != a));
+    }
+
+    #[test]
+    fn blocked_by_picker_toggle_and_commit_updates_form_list() {
+        let mut s = TaskStore::new();
+        let a = s
+            .add("a".into(), None, None, "x".into(), Vec::new())
+            .unwrap()
+            .id;
+        let mut form = TaskForm::new_add();
+        form.open_blocked_by_picker(s.all(), None);
+        // Move to `a` and check it.
+        form.blocked_by_picker_toggle();
+        form.commit_blocked_by_picker();
+        assert_eq!(form.blocked_by, vec![a]);
+        assert!(form.blocked_by_picker.is_none());
     }
 
     #[test]
@@ -672,14 +1234,18 @@ mod tests {
                 kind: TaskFormKind::Add,
                 title: "from ui".into(),
                 description: "".into(),
+                description_cursor: 0,
+                description_scroll: 0,
                 assignee: "coder".into(),
                 status: "".into(),
-                blocked_by_csv: "".into(),
-                remove_blocked_by_csv: "".into(),
+                blocked_by: Vec::new(),
+                original_blocked_by: Vec::new(),
                 focused_field: FormField::Title,
                 error: None,
                 assignee_options: vec!["".into(), "coder".into()],
                 picker: None,
+                blocked_by_picker: None,
+                _button_sink: String::new(),
             }),
             ..Default::default()
         };
@@ -723,7 +1289,7 @@ mod tests {
         let mut form = TaskForm::new_edit(&main_task);
         form.title = "main renamed".into();
         form.status = "in_progress".into();
-        form.blocked_by_csv = prereq.to_string();
+        form.blocked_by = vec![prereq];
         screen.form = Some(form);
 
         screen.submit_form(&mut s).unwrap();
@@ -754,16 +1320,23 @@ mod tests {
     }
 
     #[test]
-    fn form_tab_order_add_has_4_fields_edit_has_6() {
+    fn form_tab_order_includes_ok_and_cancel_at_the_end() {
         let add = TaskForm::new_add();
-        assert_eq!(add.tab_order().len(), 4);
+        // Add: Title, Description, Assignee, BlockedByCsv, Ok, Cancel.
+        assert_eq!(add.tab_order().len(), 6);
+        assert_eq!(add.tab_order()[4], FormField::Ok);
+        assert_eq!(add.tab_order()[5], FormField::Cancel);
+
         let mut s = TaskStore::new();
         let id = s
             .add("t".into(), None, None, "a".into(), Vec::new())
             .unwrap()
             .id;
         let edit = TaskForm::new_edit(s.get(id).unwrap());
-        assert_eq!(edit.tab_order().len(), 6);
+        // Edit: Title, Description, Assignee, Status, BlockedBy, Ok, Cancel.
+        assert_eq!(edit.tab_order().len(), 7);
+        assert_eq!(edit.tab_order()[5], FormField::Ok);
+        assert_eq!(edit.tab_order()[6], FormField::Cancel);
     }
 
     #[test]
@@ -844,6 +1417,8 @@ mod tests {
             updated_at_secs: 0,
             notes: vec![],
             blocked_by: vec![],
+            todos: vec![],
+            comments: vec![],
         });
         form.focused_field = FormField::Status;
         form.open_picker();
@@ -860,21 +1435,24 @@ mod tests {
         assert!(TaskForm::is_dropdown(FormField::Status));
         assert!(!TaskForm::is_dropdown(FormField::Title));
         assert!(!TaskForm::is_dropdown(FormField::Description));
-        assert!(!TaskForm::is_dropdown(FormField::BlockedByCsv));
+        assert!(!TaskForm::is_dropdown(FormField::BlockedBy));
     }
 
     #[test]
-    fn focus_next_wraps_in_add_form() {
+    fn focus_next_walks_all_controls_including_buttons() {
         let mut form = TaskForm::new_add();
-        assert_eq!(form.focused_field, FormField::Title);
-        form.focus_next();
-        assert_eq!(form.focused_field, FormField::Description);
-        form.focus_next();
-        assert_eq!(form.focused_field, FormField::Assignee);
-        form.focus_next();
-        assert_eq!(form.focused_field, FormField::BlockedByCsv);
-        form.focus_next();
-        // Wraps back to Title.
-        assert_eq!(form.focused_field, FormField::Title);
+        let sequence = [
+            FormField::Title,
+            FormField::Description,
+            FormField::Assignee,
+            FormField::BlockedBy,
+            FormField::Ok,
+            FormField::Cancel,
+            FormField::Title, // wraps
+        ];
+        for expected in sequence {
+            assert_eq!(form.focused_field, expected);
+            form.focus_next();
+        }
     }
 }

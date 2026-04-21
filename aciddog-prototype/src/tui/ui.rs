@@ -16,6 +16,10 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn render(f: &mut Frame, app: &mut App) {
     // Fresh frame: reset interactive regions.
     app.layout.chat_buttons.clear();
+    app.layout.task_form_fields.clear();
+    app.layout.task_form_picker_rows.clear();
+    app.layout.child_overlay_rows.clear();
+    app.layout.child_overlay_outer = None;
 
     let root = Layout::default()
         .direction(Direction::Vertical)
@@ -67,7 +71,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
         if app.tasks_screen.form.is_some() {
             render_task_form(f, main_area, app);
         } else if let Some(id) = app.tasks_screen.detail {
-            render_task_detail(f, main_area, app, id);
+            render_task_detail(f, main_area, &*app, id);
+        } else if app.tasks_screen.child_overlay.is_some() {
+            render_child_overlay(f, main_area, app);
         }
     }
 
@@ -382,8 +388,10 @@ fn render_tasks_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
     } else if let Some(form) = app.tasks_screen.form.as_ref() {
         let hint = if form.picker.is_some() {
             "↑/↓ nav · enter pick · esc cancel"
+        } else if form.blocked_by_picker.is_some() {
+            "↑/↓ nav · space toggle · enter save · esc cancel"
         } else {
-            "tab/↓ next · shift-tab/↑ prev · enter submit (or open dropdown) · esc cancel"
+            "tab/↓ next · shift-tab/↑ prev · enter submit (or open dropdown/list) · esc cancel"
         };
         (
             " form ".to_string(),
@@ -653,7 +661,7 @@ fn centered_rect(area: Rect, w: u16, h: u16) -> Rect {
     Rect::new(x, y, w, h)
 }
 
-fn render_task_form(f: &mut Frame, area: Rect, app: &App) {
+fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(form) = app.tasks_screen.form.as_ref() else {
         return;
     };
@@ -662,9 +670,28 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &App) {
         TaskFormKind::Edit(_) => " edit task ",
     };
     let order = form.tab_order();
-    // Allocate vertical space: 1 line per field label + 1 line for
-    // the value, plus top/bottom border, plus an error/footer line.
-    let h: u16 = (order.len() as u16 * 2 + 4).min(area.height.saturating_sub(2));
+
+    // Split the tab_order into editable fields (2 lines each) and
+    // the trailing button row (1 line).
+    let value_fields: Vec<FormField> = order.iter().copied().filter(|f| !f.is_button()).collect();
+    let button_fields: Vec<FormField> = order.iter().copied().filter(|f| f.is_button()).collect();
+
+    // Height: 2 per value field + 1 button row + 1 spacer + 1 error
+    // line + 2 for borders, clamped to area.
+    // Each value field uses 1 label + 1 value line by default.
+    // Description takes the scroll box's full 8 rows (6 visible +
+    // 2 border), and BlockedBy can grow to 5 rows (up to 4 entries
+    // + a "…N more" row). Pad generously so neither flows out.
+    let desc_extra: u16 = 7; // 8 rows - 1 baseline = +7
+    let blocked_by_extra: u16 = 4; // up to 5 rows - 1 baseline = +4
+    let raw_h = value_fields.len() as u16 * 2
+        + desc_extra
+        + blocked_by_extra
+        + 1 /* spacer */
+        + 1 /* buttons */
+        + 1 /* err */
+        + 2;
+    let h: u16 = raw_h.min(area.height.saturating_sub(2));
     let rect = centered_rect(area, 64.min(area.width), h);
     f.render_widget(Clear, rect);
     let block = Block::default()
@@ -674,10 +701,22 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    let mut lines: Vec<Line> = Vec::with_capacity(order.len() * 2 + 2);
-    for field in order {
+    // Collect field hit-rects into a local buffer so we can drop the
+    // immutable borrow on `app` before writing them back.
+    let mut hit_rects: Vec<(FormField, Rect)> = Vec::new();
+
+    // ---- Field rows ----
+    let mut y = inner.y;
+    for field in &value_fields {
+        if y >= inner.y + inner.height {
+            break;
+        }
         let is_focused = *field == form.focused_field;
         let is_dropdown = TaskForm::is_dropdown(*field);
+        let is_blocked_by = *field == FormField::BlockedBy;
+        let is_description = *field == FormField::Description;
+
+        // Label line.
         let label_style = if is_focused {
             Style::default()
                 .fg(Color::Cyan)
@@ -685,96 +724,199 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &App) {
         } else {
             Style::default().fg(Color::DarkGray)
         };
-        lines.push(Line::from(Span::styled(
-            format!("{}:", field.label()),
-            label_style,
-        )));
-        let raw_value = form.field(*field).to_string();
-        let display_value = if is_dropdown {
-            // Show empty assignee as a readable placeholder so the
-            // unassigned option doesn't look like an unset field.
-            if raw_value.is_empty() && *field == FormField::Assignee {
-                "(unassigned)".to_string()
-            } else if raw_value.is_empty() {
-                "-".to_string()
-            } else {
-                raw_value.clone()
-            }
-        } else {
-            raw_value.clone()
-        };
-        let value_line = if is_dropdown {
-            // Dropdown: boxed value with a ▾ hint; focused = bold
-            // cyan; a small "enter to pick" nudge when focused.
-            let value_style = if is_focused {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            let mut spans = vec![
-                Span::raw("  [ "),
-                Span::styled(display_value, value_style),
-                Span::raw(" ▾ ]"),
-            ];
-            if is_focused {
-                spans.push(Span::styled(
-                    "   enter to pick",
+        let label_spans = vec![
+            Span::styled(format!("{}:", field.label()), label_style),
+            if is_focused && is_blocked_by {
+                Span::styled(
+                    "   enter to manage",
                     Style::default()
                         .fg(Color::DarkGray)
                         .add_modifier(Modifier::ITALIC),
-                ));
-            }
-            Line::from(spans)
-        } else if is_focused {
-            Line::from(vec![
-                Span::raw(format!("  {display_value}")),
+                )
+            } else if is_focused && is_description {
                 Span::styled(
-                    "▏",
+                    "   enter for newline · tab next field",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                )
+            } else {
+                Span::raw("")
+            },
+        ];
+        let label_rect = Rect::new(inner.x, y, inner.width, 1);
+        f.render_widget(Paragraph::new(Line::from(label_spans)), label_rect);
+        y += 1;
+        if y >= inner.y + inner.height {
+            break;
+        }
+
+        // Row-height for this value block.
+        let start_y = y;
+        let rows_drawn: u16;
+
+        if is_description {
+            rows_drawn = render_description_scroll_box(f, inner, y, form, is_focused);
+            y += rows_drawn;
+        } else if is_blocked_by {
+            // Render each current dep on its own line (up to 4 before
+            // "…N more"). Each line looks up the task for its title
+            // + status so dropped tasks render as "(missing)".
+            rows_drawn = render_blocked_by_value_rows(f, inner, y, form, app.tasks.all());
+            y += rows_drawn;
+        } else {
+            rows_drawn = 1;
+            let raw_value = form.field(*field).to_string();
+            let display_value = if is_dropdown {
+                if raw_value.is_empty() && *field == FormField::Assignee {
+                    "(unassigned)".to_string()
+                } else if raw_value.is_empty() {
+                    "-".to_string()
+                } else {
+                    raw_value.clone()
+                }
+            } else {
+                raw_value.clone()
+            };
+            let value_line = if is_dropdown {
+                let value_style = if is_focused {
                     Style::default()
                         .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ])
-        } else if display_value.is_empty() {
-            Line::from(Span::styled(
-                "  (empty)",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            ))
-        } else {
-            Line::from(Span::raw(format!("  {display_value}")))
-        };
-        lines.push(value_line);
-    }
-    if let Some(err) = &form.error {
-        lines.push(Line::from(Span::styled(
-            format!("error: {err}"),
-            Style::default().fg(Color::Red),
-        )));
-    }
-    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
-    f.render_widget(para, inner);
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                let mut spans = vec![
+                    Span::raw("  [ "),
+                    Span::styled(display_value, value_style),
+                    Span::raw(" ▾ ]"),
+                ];
+                if is_focused {
+                    spans.push(Span::styled(
+                        "   enter to pick",
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC),
+                    ));
+                }
+                Line::from(spans)
+            } else if is_focused {
+                Line::from(vec![
+                    Span::raw(format!("  {display_value}")),
+                    Span::styled(
+                        "▏",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])
+            } else if display_value.is_empty() {
+                Line::from(Span::styled(
+                    "  (empty)",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ))
+            } else {
+                Line::from(Span::raw(format!("  {display_value}")))
+            };
+            let value_rect = Rect::new(inner.x, y, inner.width, 1);
+            f.render_widget(Paragraph::new(value_line), value_rect);
+            y += 1;
+        }
 
-    // Picker popup overlays the form when open.
-    if form.picker.is_some() {
-        render_dropdown_picker(f, area, form);
+        // Hit-rect covers label + all value rows.
+        hit_rects.push((
+            *field,
+            Rect::new(inner.x, start_y - 1, inner.width, rows_drawn + 1),
+        ));
+    }
+
+    // ---- Error line ----
+    if let Some(err) = form.error.as_deref() {
+        if y < inner.y + inner.height {
+            let err_rect = Rect::new(inner.x, y, inner.width, 1);
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("error: {err}"),
+                    Style::default().fg(Color::Red),
+                ))),
+                err_rect,
+            );
+            y += 1;
+        }
+    }
+
+    // ---- Button row ----
+    // Bottom-align the button row so it always sits at the last
+    // inner line regardless of how many fields we drew.
+    let button_y = inner.y + inner.height.saturating_sub(1);
+    let mut bx = inner.x + 2;
+    for field in &button_fields {
+        let label = format!(" {} ", field.label());
+        let is_focused = *field == form.focused_field;
+        let style = if is_focused {
+            Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        };
+        let btn_w = label.chars().count() as u16 + 2; // brackets
+        let btn_rect = Rect::new(bx, button_y, btn_w, 1);
+        let text = format!("[{label}]");
+        f.render_widget(Paragraph::new(Span::styled(text, style)), btn_rect);
+        hit_rects.push((*field, btn_rect));
+        bx += btn_w + 2;
+    }
+
+    let _ = y; // silence "assigned but never read" when err is absent.
+
+    // Commit hit rects.
+    app.layout.task_form_fields = hit_rects;
+
+    // Picker popup overlays the form when open. Single-select
+    // (assignee/status) uses the dropdown picker; BlockedBy uses
+    // the multi-select variant.
+    if app
+        .tasks_screen
+        .form
+        .as_ref()
+        .and_then(|f| f.picker.as_ref())
+        .is_some()
+    {
+        render_dropdown_picker(f, area, app);
+    } else if app
+        .tasks_screen
+        .form
+        .as_ref()
+        .and_then(|f| f.blocked_by_picker.as_ref())
+        .is_some()
+    {
+        render_blocked_by_picker(f, area, app);
     }
 }
 
-fn render_dropdown_picker(f: &mut Frame, area: Rect, form: &super::tasks_view::TaskForm) {
+fn render_dropdown_picker(f: &mut Frame, area: Rect, app: &mut App) {
+    let Some(form) = app.tasks_screen.form.as_ref() else {
+        return;
+    };
     let Some(picker) = form.picker.as_ref() else {
         return;
     };
+    let picker_field = picker.field;
+    let picker_selected = picker.selected;
+    let options = picker.options.clone();
+
     // Size: wide enough for the longest option + padding, tall
     // enough for all options + header + border (clamped to area).
-    let longest = picker
-        .options
+    let longest = options
         .iter()
         .map(|s| {
-            if s.is_empty() && picker.field == FormField::Assignee {
+            if s.is_empty() && picker_field == FormField::Assignee {
                 "(unassigned)".len()
             } else {
                 s.len()
@@ -783,11 +925,11 @@ fn render_dropdown_picker(f: &mut Frame, area: Rect, form: &super::tasks_view::T
         .max()
         .unwrap_or(0);
     let w = (longest as u16 + 8).clamp(24, area.width);
-    let h = (picker.options.len() as u16 + 4).clamp(6, area.height);
+    let h = (options.len() as u16 + 4).clamp(6, area.height);
     let rect = centered_rect(area, w, h);
     f.render_widget(Clear, rect);
 
-    let title = match picker.field {
+    let title = match picker_field {
         FormField::Assignee => " pick assignee ",
         FormField::Status => " pick status ",
         _ => " pick ",
@@ -799,11 +941,10 @@ fn render_dropdown_picker(f: &mut Frame, area: Rect, form: &super::tasks_view::T
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    let items: Vec<ListItem> = picker
-        .options
+    let items: Vec<ListItem> = options
         .iter()
         .map(|o| {
-            let label = if o.is_empty() && picker.field == FormField::Assignee {
+            let label = if o.is_empty() && picker_field == FormField::Assignee {
                 "(unassigned)".to_string()
             } else if o.is_empty() {
                 "-".to_string()
@@ -820,8 +961,20 @@ fn render_dropdown_picker(f: &mut Frame, area: Rect, form: &super::tasks_view::T
             .add_modifier(Modifier::BOLD),
     );
     let mut state = ListState::default();
-    state.select(Some(picker.selected));
+    state.select(Some(picker_selected));
     f.render_stateful_widget(list, inner, &mut state);
+
+    // Emit per-row hit rects so the mouse handler can find which
+    // option was clicked. Rows are 1-line tall and start at the top
+    // of the inner rect.
+    let mut rows: Vec<Rect> = Vec::with_capacity(options.len());
+    for i in 0..options.len() as u16 {
+        if i >= inner.height {
+            break;
+        }
+        rows.push(Rect::new(inner.x, inner.y + i, inner.width, 1));
+    }
+    app.layout.task_form_picker_rows = rows;
 }
 
 fn render_task_detail(f: &mut Frame, area: Rect, app: &App, id: uuid::Uuid) {
@@ -850,4 +1003,421 @@ fn render_task_detail(f: &mut Frame, area: Rect, app: &App, id: uuid::Uuid) {
         .collect();
     let para = Paragraph::new(lines).wrap(Wrap { trim: false });
     f.render_widget(para, inner);
+}
+
+/// Render the multi-line Description scroll box inside the form.
+/// Uses a bordered inner block; total screen rows = the visible
+/// text height + 2 for the border. The cursor is drawn as an
+/// inverted-cell span on the cursor's row when focused.
+fn render_description_scroll_box(
+    f: &mut Frame,
+    inner: Rect,
+    start_y: u16,
+    form: &super::tasks_view::TaskForm,
+    focused: bool,
+) -> u16 {
+    let visible = super::tasks_view::DESCRIPTION_VISIBLE_LINES;
+    let total_rows = visible + 2;
+    // Clamp to the form's remaining space.
+    let max_space = (inner.y + inner.height).saturating_sub(start_y);
+    let total_rows = total_rows.min(max_space);
+    if total_rows < 3 {
+        return 0;
+    }
+    let rect = Rect::new(
+        inner.x + 2,
+        start_y,
+        inner.width.saturating_sub(2),
+        total_rows,
+    );
+    let border_color = if focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    let box_inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let visible = box_inner.height;
+    let scroll = form.description_scroll;
+    let text_lines: Vec<&str> = form.description.split('\n').collect();
+
+    let (cursor_line, cursor_col) =
+        super::tasks_view::line_col_from_offset(&form.description, form.description_cursor);
+
+    for row in 0..visible {
+        let line_idx = scroll + row;
+        let y = box_inner.y + row;
+        let rect_row = Rect::new(box_inner.x, y, box_inner.width, 1);
+        let text = text_lines.get(line_idx as usize).copied().unwrap_or("");
+        if focused && line_idx == cursor_line {
+            // Split into before / cursor-char / after so we can
+            // invert the cursor cell.
+            let col = cursor_col as usize;
+            let chars: Vec<char> = text.chars().collect();
+            let before: String = chars.iter().take(col).collect();
+            let at: String = chars
+                .get(col)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| " ".into());
+            let after: String = chars.iter().skip(col + 1).collect();
+            let cursor_style = Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD);
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::raw(before),
+                    Span::styled(at, cursor_style),
+                    Span::raw(after),
+                ])),
+                rect_row,
+            );
+        } else if !text.is_empty() {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::raw(text.to_string()))),
+                rect_row,
+            );
+        }
+    }
+
+    // Scroll hints at top-right / bottom-right of the box.
+    let total_lines = super::tasks_view::line_count(&form.description);
+    if scroll > 0 {
+        let hint_rect = Rect::new(
+            box_inner.x + box_inner.width.saturating_sub(1),
+            box_inner.y,
+            1,
+            1,
+        );
+        f.render_widget(
+            Paragraph::new(Span::styled("▲", Style::default().fg(Color::DarkGray))),
+            hint_rect,
+        );
+    }
+    if scroll + box_inner.height < total_lines {
+        let hint_rect = Rect::new(
+            box_inner.x + box_inner.width.saturating_sub(1),
+            box_inner.y + box_inner.height.saturating_sub(1),
+            1,
+            1,
+        );
+        f.render_widget(
+            Paragraph::new(Span::styled("▼", Style::default().fg(Color::DarkGray))),
+            hint_rect,
+        );
+    }
+
+    total_rows
+}
+
+/// Render the value rows for the `Blocked by` field inside
+/// `render_task_form`. Returns the number of screen rows drawn so
+/// the caller can advance `y`. Shows up to 4 entries, then a
+/// "+N more" row, then an "(none)" placeholder if the list is
+/// empty.
+fn render_blocked_by_value_rows(
+    f: &mut Frame,
+    inner: Rect,
+    start_y: u16,
+    form: &super::tasks_view::TaskForm,
+    all_tasks: &[crate::tasks::Task],
+) -> u16 {
+    const MAX_VISIBLE: usize = 4;
+    let mut y = start_y;
+    let max_y = inner.y + inner.height;
+
+    if form.blocked_by.is_empty() {
+        if y < max_y {
+            let rect = Rect::new(inner.x, y, inner.width, 1);
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "  (none)",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ))),
+                rect,
+            );
+            y += 1;
+        }
+        return y - start_y;
+    }
+
+    let shown = form.blocked_by.len().min(MAX_VISIBLE);
+    for id in form.blocked_by.iter().take(shown) {
+        if y >= max_y {
+            break;
+        }
+        let (title, status_str) = match all_tasks.iter().find(|t| t.id == *id) {
+            Some(t) => (t.title.clone(), t.status.as_str().to_string()),
+            None => ("(missing)".to_string(), "-".to_string()),
+        };
+        let rect = Rect::new(inner.x, y, inner.width, 1);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::raw("  • "),
+                Span::raw(title),
+                Span::styled(
+                    format!("   [{}]", status_str),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])),
+            rect,
+        );
+        y += 1;
+    }
+    if form.blocked_by.len() > shown && y < max_y {
+        let extra = form.blocked_by.len() - shown;
+        let rect = Rect::new(inner.x, y, inner.width, 1);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("  …and {extra} more"),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ))),
+            rect,
+        );
+        y += 1;
+    }
+    y - start_y
+}
+
+/// Overlay that appears over the form when the multi-select
+/// blocked-by picker is open.
+fn render_blocked_by_picker(f: &mut Frame, area: Rect, app: &mut App) {
+    let Some(form) = app.tasks_screen.form.as_ref() else {
+        return;
+    };
+    let Some(picker) = form.blocked_by_picker.as_ref() else {
+        return;
+    };
+    // Snapshot for drawing.
+    let options = picker.options.clone();
+    let checked = picker.checked.clone();
+    let cursor = picker.cursor;
+
+    let h = (options.len() as u16 + 4).clamp(6, area.height);
+    let w = 72.min(area.width);
+    let rect = centered_rect(area, w, h);
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" blocked by (space toggle · enter save · esc cancel) ")
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let mut row_rects: Vec<Rect> = Vec::new();
+    let max_rows = inner.height as usize;
+    for (i, row) in options.iter().take(max_rows).enumerate() {
+        let y = inner.y + i as u16;
+        let rect_row = Rect::new(inner.x, y, inner.width, 1);
+        let is_cursor = i == cursor;
+        let box_glyph = if *checked.get(i).unwrap_or(&false) {
+            "[✓]"
+        } else {
+            "[ ]"
+        };
+        let style = if is_cursor {
+            Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let short = row.id.to_string();
+        let short = short.get(..8).unwrap_or(&short).to_string();
+        let line = Line::from(vec![Span::styled(
+            format!(
+                "  {box_glyph} {}  [{}]  ({})",
+                row.title,
+                row.status.as_str(),
+                short
+            ),
+            style,
+        )]);
+        f.render_widget(Paragraph::new(line), rect_row);
+        row_rects.push(rect_row);
+    }
+    app.layout.task_form_picker_rows = row_rects;
+}
+
+fn render_child_overlay(f: &mut Frame, area: Rect, app: &mut App) {
+    use super::tasks_view::{ChildOverlay, ChildPromptKind};
+
+    let Some(overlay) = app.tasks_screen.child_overlay.clone() else {
+        return;
+    };
+    let task_id = overlay.task_id();
+    let title_short = app
+        .tasks
+        .get(task_id)
+        .map(|t| t.title.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Decide how big the popup needs to be and collect the row
+    // content up front (so we don't re-borrow `app.tasks` while we
+    // populate the layout rects afterwards).
+    let (title, row_texts, cursor_opt, hint): (String, Vec<(String, Style)>, Option<usize>, &str) =
+        match &overlay {
+            ChildOverlay::Todos { cursor, .. } => {
+                let todos = app
+                    .tasks
+                    .todos_of(task_id)
+                    .map(|v| v.to_vec())
+                    .unwrap_or_default();
+                let rows: Vec<(String, Style)> = todos
+                    .iter()
+                    .map(|td| {
+                        let short = td.id.to_string();
+                        let short = short.get(..8).unwrap_or(&short).to_string();
+                        let line = format!("  [{}] {}  {}", td.status.glyph(), short, td.body);
+                        let style = if td.status == crate::tasks::TodoStatus::Completed {
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::CROSSED_OUT)
+                        } else {
+                            Style::default()
+                        };
+                        (line, style)
+                    })
+                    .collect();
+                let ttl = format!(" todos — {} ", title_short);
+                let hint = "a add · e edit · d del · space cycle status · esc close";
+                (ttl, rows, Some(*cursor), hint)
+            }
+            ChildOverlay::Comments { cursor, .. } => {
+                let comments = app
+                    .tasks
+                    .comments_of(task_id)
+                    .map(|v| v.to_vec())
+                    .unwrap_or_default();
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let rows: Vec<(String, Style)> = comments
+                    .iter()
+                    .map(|c| {
+                        let line = format!(
+                            "  [{} · {}] {}",
+                            super::app::format_age(now, c.timestamp_secs),
+                            c.author,
+                            c.body
+                        );
+                        (line, Style::default())
+                    })
+                    .collect();
+                let ttl = format!(" comments — {} ", title_short);
+                let hint = "a add · e edit · d del · esc close";
+                (ttl, rows, Some(*cursor), hint)
+            }
+            ChildOverlay::Prompt {
+                task_id: _,
+                kind,
+                buffer,
+            } => {
+                let (ttl, line) = match kind {
+                    ChildPromptKind::AddTodo => (
+                        format!(" new todo — {} ", title_short),
+                        format!("  {buffer}▏"),
+                    ),
+                    ChildPromptKind::EditTodo(_) => (
+                        format!(" edit todo — {} ", title_short),
+                        format!("  {buffer}▏"),
+                    ),
+                    ChildPromptKind::ConfirmDeleteTodo(_) => (
+                        format!(" delete todo — {} ", title_short),
+                        "  press y to delete, n or esc to cancel".to_string(),
+                    ),
+                    ChildPromptKind::AddComment => (
+                        format!(" new comment — {} ", title_short),
+                        format!("  {buffer}▏"),
+                    ),
+                    ChildPromptKind::EditComment(_) => (
+                        format!(" edit comment — {} ", title_short),
+                        format!("  {buffer}▏"),
+                    ),
+                    ChildPromptKind::ConfirmDeleteComment(_) => (
+                        format!(" delete comment — {} ", title_short),
+                        "  press y to delete, n or esc to cancel".to_string(),
+                    ),
+                };
+                let hint = "enter submit · esc cancel";
+                (ttl, vec![(line, Style::default())], None, hint)
+            }
+        };
+
+    // Figure out the popup size. Prompt forms are tight; browse
+    // forms want room for every row plus a hint line.
+    let content_rows = row_texts.len().max(1) as u16;
+    let h = (content_rows + 4).min(area.height.saturating_sub(2)).max(5);
+    let w = 72.min(area.width);
+    let rect = centered_rect(area, w, h);
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    // Draw rows + collect hit rects.
+    let mut overlay_rows: Vec<Rect> = Vec::new();
+    let list_area = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        inner.height.saturating_sub(1),
+    );
+    if row_texts.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  (none — press `a` to add one)",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ))),
+            list_area,
+        );
+    } else {
+        let max_rows = list_area.height as usize;
+        for (i, (text, base_style)) in row_texts.iter().take(max_rows).enumerate() {
+            let y = list_area.y + i as u16;
+            let rect_row = Rect::new(list_area.x, y, list_area.width, 1);
+            let is_cursor = Some(i) == cursor_opt;
+            let style = if is_cursor {
+                Style::default()
+                    .bg(Color::Cyan)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                *base_style
+            };
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(text.clone(), style))),
+                rect_row,
+            );
+            overlay_rows.push(rect_row);
+        }
+    }
+
+    // Hint line at the bottom of the inner rect.
+    let hint_y = inner.y + inner.height.saturating_sub(1);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(Color::DarkGray),
+        ))),
+        Rect::new(inner.x, hint_y, inner.width, 1),
+    );
+
+    app.layout.child_overlay_rows = overlay_rows;
+    app.layout.child_overlay_outer = Some(rect);
 }

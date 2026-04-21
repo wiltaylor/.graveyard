@@ -7,7 +7,9 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use aciddog::agent_ipc::{self, Request, RequestCmd};
-use aciddog::cli::{AgentArgs, AgentCommand, Args, TaskCommand, WorkerCommand};
+use aciddog::cli::{
+    AgentArgs, AgentCommand, Args, CommentCommand, TaskCommand, TodoCommand, WorkerCommand,
+};
 use aciddog::config::load_config;
 use aciddog::tui;
 
@@ -146,6 +148,64 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
         AgentCommand::Task {
             cmd: TaskCommand::Note { id, body },
         } => RequestCmd::TaskNote { id, body },
+        AgentCommand::Task {
+            cmd:
+                TaskCommand::Todo {
+                    cmd: TodoCommand::Add { task, body },
+                },
+        } => RequestCmd::TaskTodoAdd { task, body },
+        AgentCommand::Task {
+            cmd: TaskCommand::Todo {
+                cmd: TodoCommand::List { task },
+            },
+        } => RequestCmd::TaskTodoList { task },
+        AgentCommand::Task {
+            cmd:
+                TaskCommand::Todo {
+                    cmd:
+                        TodoCommand::Update {
+                            task,
+                            id,
+                            status,
+                            body,
+                        },
+                },
+        } => RequestCmd::TaskTodoUpdate {
+            task,
+            id,
+            status,
+            body,
+        },
+        AgentCommand::Task {
+            cmd:
+                TaskCommand::Todo {
+                    cmd: TodoCommand::Remove { task, id },
+                },
+        } => RequestCmd::TaskTodoRemove { task, id },
+        AgentCommand::Task {
+            cmd:
+                TaskCommand::Comment {
+                    cmd: CommentCommand::Add { task, body },
+                },
+        } => RequestCmd::TaskCommentAdd { task, body },
+        AgentCommand::Task {
+            cmd:
+                TaskCommand::Comment {
+                    cmd: CommentCommand::List { task },
+                },
+        } => RequestCmd::TaskCommentList { task },
+        AgentCommand::Task {
+            cmd:
+                TaskCommand::Comment {
+                    cmd: CommentCommand::Update { task, id, body },
+                },
+        } => RequestCmd::TaskCommentUpdate { task, id, body },
+        AgentCommand::Task {
+            cmd:
+                TaskCommand::Comment {
+                    cmd: CommentCommand::Remove { task, id },
+                },
+        } => RequestCmd::TaskCommentRemove { task, id },
     };
 
     let response = agent_ipc::client::send(&socket_path, &Request { agent_id, cmd })

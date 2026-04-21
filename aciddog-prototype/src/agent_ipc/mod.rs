@@ -104,6 +104,49 @@ pub enum RequestCmd {
         id: Uuid,
         body: String,
     },
+    /// Append a TODO to a task (starts `pending`).
+    TaskTodoAdd {
+        task: Uuid,
+        body: String,
+    },
+    /// List TODOs on a task (reply body is a plaintext table).
+    TaskTodoList {
+        task: Uuid,
+    },
+    /// Update a TODO's body and/or status.
+    TaskTodoUpdate {
+        task: Uuid,
+        id: Uuid,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        body: Option<String>,
+    },
+    /// Remove a TODO from a task.
+    TaskTodoRemove {
+        task: Uuid,
+        id: Uuid,
+    },
+    /// Post a comment on a task (intentional agent-to-agent note).
+    TaskCommentAdd {
+        task: Uuid,
+        body: String,
+    },
+    /// List comments on a task.
+    TaskCommentList {
+        task: Uuid,
+    },
+    /// Edit a comment's body.
+    TaskCommentUpdate {
+        task: Uuid,
+        id: Uuid,
+        body: String,
+    },
+    /// Remove a comment from a task.
+    TaskCommentRemove {
+        task: Uuid,
+        id: Uuid,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -435,6 +478,132 @@ mod tests {
                 assert_eq!(body, "see commit abc123");
             }
             other => panic!("expected TaskNote, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_todo_roundtrips() {
+        let task_id = Uuid::new_v4();
+        let todo_id = Uuid::new_v4();
+        for (variant, tag) in [
+            (
+                RequestCmd::TaskTodoAdd {
+                    task: task_id,
+                    body: "b".into(),
+                },
+                "task_todo_add",
+            ),
+            (RequestCmd::TaskTodoList { task: task_id }, "task_todo_list"),
+            (
+                RequestCmd::TaskTodoUpdate {
+                    task: task_id,
+                    id: todo_id,
+                    status: Some("in_progress".into()),
+                    body: None,
+                },
+                "task_todo_update",
+            ),
+            (
+                RequestCmd::TaskTodoRemove {
+                    task: task_id,
+                    id: todo_id,
+                },
+                "task_todo_remove",
+            ),
+        ] {
+            let req = Request {
+                agent_id: Uuid::nil(),
+                cmd: variant.clone(),
+            };
+            let s = serde_json::to_string(&req).unwrap();
+            assert!(
+                s.contains(&format!("\"cmd\":\"{tag}\"")),
+                "missing tag {tag} in {s}"
+            );
+            let back: Request = serde_json::from_str(&s).unwrap();
+            match (variant, back.cmd) {
+                (
+                    RequestCmd::TaskTodoAdd { task: a, .. },
+                    RequestCmd::TaskTodoAdd { task: b, .. },
+                ) => assert_eq!(a, b),
+                (RequestCmd::TaskTodoList { task: a }, RequestCmd::TaskTodoList { task: b }) => {
+                    assert_eq!(a, b)
+                }
+                (
+                    RequestCmd::TaskTodoUpdate { id: a, .. },
+                    RequestCmd::TaskTodoUpdate { id: b, .. },
+                ) => assert_eq!(a, b),
+                (
+                    RequestCmd::TaskTodoRemove { id: a, .. },
+                    RequestCmd::TaskTodoRemove { id: b, .. },
+                ) => assert_eq!(a, b),
+                (expected, got) => panic!("mismatch: {expected:?} vs {got:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn task_comment_roundtrips() {
+        let task_id = Uuid::new_v4();
+        let c_id = Uuid::new_v4();
+        for (variant, tag) in [
+            (
+                RequestCmd::TaskCommentAdd {
+                    task: task_id,
+                    body: "b".into(),
+                },
+                "task_comment_add",
+            ),
+            (
+                RequestCmd::TaskCommentList { task: task_id },
+                "task_comment_list",
+            ),
+            (
+                RequestCmd::TaskCommentUpdate {
+                    task: task_id,
+                    id: c_id,
+                    body: "b".into(),
+                },
+                "task_comment_update",
+            ),
+            (
+                RequestCmd::TaskCommentRemove {
+                    task: task_id,
+                    id: c_id,
+                },
+                "task_comment_remove",
+            ),
+        ] {
+            let req = Request {
+                agent_id: Uuid::nil(),
+                cmd: variant.clone(),
+            };
+            let s = serde_json::to_string(&req).unwrap();
+            assert!(
+                s.contains(&format!("\"cmd\":\"{tag}\"")),
+                "missing tag {tag} in {s}"
+            );
+            let back: Request = serde_json::from_str(&s).unwrap();
+            // Sanity: id/task survive.
+            match (variant, back.cmd) {
+                (
+                    RequestCmd::TaskCommentAdd { task: a, .. },
+                    RequestCmd::TaskCommentAdd { task: b, .. },
+                ) => assert_eq!(a, b),
+                (
+                    RequestCmd::TaskCommentList { task: a },
+                    RequestCmd::TaskCommentList { task: b },
+                ) => assert_eq!(a, b),
+                (
+                    RequestCmd::TaskCommentUpdate { id: a, .. },
+                    RequestCmd::TaskCommentUpdate { id: b, .. },
+                ) => assert_eq!(a, b),
+                (
+                    RequestCmd::TaskCommentRemove { id: a, .. },
+                    RequestCmd::TaskCommentRemove { id: b, .. },
+                ) => assert_eq!(a, b),
+                (expected, got) => panic!("mismatch: {expected:?} vs {got:?}"),
+            }
         }
     }
 

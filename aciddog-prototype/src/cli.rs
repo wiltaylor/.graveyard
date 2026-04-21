@@ -151,6 +151,87 @@ pub enum TaskCommand {
         #[arg(long)]
         body: String,
     },
+    /// Manage the TODO checklist inside a task. Agents use this to
+    /// break a task down into sub-items and track progress; the
+    /// items show up in `task show` with glyphs for state.
+    Todo {
+        #[command(subcommand)]
+        cmd: TodoCommand,
+    },
+    /// Manage agent-authored comments on a task. Comments are
+    /// intentional messages left for the next agent to read; the
+    /// system's event log lives under Notes (see `task note`).
+    Comment {
+        #[command(subcommand)]
+        cmd: CommentCommand,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum TodoCommand {
+    /// Append a TODO. Starts in the `pending` state.
+    Add {
+        #[arg(long)]
+        task: Uuid,
+        #[arg(long)]
+        body: String,
+    },
+    /// List the TODOs on a task.
+    List {
+        #[arg(long)]
+        task: Uuid,
+    },
+    /// Update a TODO's body, status, or both. Any omitted flag
+    /// leaves that field alone.
+    Update {
+        #[arg(long)]
+        task: Uuid,
+        #[arg(long)]
+        id: Uuid,
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long)]
+        body: Option<String>,
+    },
+    /// Remove a TODO.
+    Remove {
+        #[arg(long)]
+        task: Uuid,
+        #[arg(long)]
+        id: Uuid,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum CommentCommand {
+    /// Post a comment on a task. The author is the calling agent.
+    Add {
+        #[arg(long)]
+        task: Uuid,
+        #[arg(long)]
+        body: String,
+    },
+    /// List the comments on a task.
+    List {
+        #[arg(long)]
+        task: Uuid,
+    },
+    /// Edit a comment's body.
+    Update {
+        #[arg(long)]
+        task: Uuid,
+        #[arg(long)]
+        id: Uuid,
+        #[arg(long)]
+        body: String,
+    },
+    /// Remove a comment.
+    Remove {
+        #[arg(long)]
+        task: Uuid,
+        #[arg(long)]
+        id: Uuid,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -577,5 +658,210 @@ mod tests {
     #[test]
     fn agent_args_task_add_requires_title() {
         assert!(AgentArgs::try_parse_from(["aciddog", "task", "add"]).is_err());
+    }
+
+    #[test]
+    fn agent_args_parses_task_todo_add() {
+        let task_id = Uuid::new_v4();
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "task",
+            "todo",
+            "add",
+            "--task",
+            &task_id.to_string(),
+            "--body",
+            "draft schema",
+        ])
+        .unwrap();
+        match args.cmd {
+            AgentCommand::Task {
+                cmd:
+                    TaskCommand::Todo {
+                        cmd: TodoCommand::Add { task, body },
+                    },
+            } => {
+                assert_eq!(task, task_id);
+                assert_eq!(body, "draft schema");
+            }
+            other => panic!("expected Task::Todo::Add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_task_todo_update() {
+        let task_id = Uuid::new_v4();
+        let todo_id = Uuid::new_v4();
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "task",
+            "todo",
+            "update",
+            "--task",
+            &task_id.to_string(),
+            "--id",
+            &todo_id.to_string(),
+            "--status",
+            "in_progress",
+        ])
+        .unwrap();
+        match args.cmd {
+            AgentCommand::Task {
+                cmd:
+                    TaskCommand::Todo {
+                        cmd:
+                            TodoCommand::Update {
+                                task,
+                                id,
+                                status,
+                                body,
+                            },
+                    },
+            } => {
+                assert_eq!(task, task_id);
+                assert_eq!(id, todo_id);
+                assert_eq!(status.as_deref(), Some("in_progress"));
+                assert!(body.is_none());
+            }
+            other => panic!("expected Task::Todo::Update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_task_todo_list_and_remove() {
+        let task_id = Uuid::new_v4();
+        let todo_id = Uuid::new_v4();
+        let list = AgentArgs::try_parse_from([
+            "aciddog",
+            "task",
+            "todo",
+            "list",
+            "--task",
+            &task_id.to_string(),
+        ])
+        .unwrap();
+        assert!(matches!(
+            list.cmd,
+            AgentCommand::Task {
+                cmd: TaskCommand::Todo {
+                    cmd: TodoCommand::List { .. }
+                }
+            }
+        ));
+        let rm = AgentArgs::try_parse_from([
+            "aciddog",
+            "task",
+            "todo",
+            "remove",
+            "--task",
+            &task_id.to_string(),
+            "--id",
+            &todo_id.to_string(),
+        ])
+        .unwrap();
+        assert!(matches!(
+            rm.cmd,
+            AgentCommand::Task {
+                cmd: TaskCommand::Todo {
+                    cmd: TodoCommand::Remove { .. }
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn agent_args_parses_task_comment_add() {
+        let task_id = Uuid::new_v4();
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "task",
+            "comment",
+            "add",
+            "--task",
+            &task_id.to_string(),
+            "--body",
+            "heads up",
+        ])
+        .unwrap();
+        match args.cmd {
+            AgentCommand::Task {
+                cmd:
+                    TaskCommand::Comment {
+                        cmd: CommentCommand::Add { task, body },
+                    },
+            } => {
+                assert_eq!(task, task_id);
+                assert_eq!(body, "heads up");
+            }
+            other => panic!("expected Task::Comment::Add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_task_comment_update_list_remove() {
+        let task_id = Uuid::new_v4();
+        let c_id = Uuid::new_v4();
+        let upd = AgentArgs::try_parse_from([
+            "aciddog",
+            "task",
+            "comment",
+            "update",
+            "--task",
+            &task_id.to_string(),
+            "--id",
+            &c_id.to_string(),
+            "--body",
+            "revised",
+        ])
+        .unwrap();
+        match upd.cmd {
+            AgentCommand::Task {
+                cmd:
+                    TaskCommand::Comment {
+                        cmd: CommentCommand::Update { task, id, body },
+                    },
+            } => {
+                assert_eq!(task, task_id);
+                assert_eq!(id, c_id);
+                assert_eq!(body, "revised");
+            }
+            other => panic!("expected Task::Comment::Update, got {other:?}"),
+        }
+        let list = AgentArgs::try_parse_from([
+            "aciddog",
+            "task",
+            "comment",
+            "list",
+            "--task",
+            &task_id.to_string(),
+        ])
+        .unwrap();
+        assert!(matches!(
+            list.cmd,
+            AgentCommand::Task {
+                cmd: TaskCommand::Comment {
+                    cmd: CommentCommand::List { .. }
+                }
+            }
+        ));
+        let rm = AgentArgs::try_parse_from([
+            "aciddog",
+            "task",
+            "comment",
+            "remove",
+            "--task",
+            &task_id.to_string(),
+            "--id",
+            &c_id.to_string(),
+        ])
+        .unwrap();
+        assert!(matches!(
+            rm.cmd,
+            AgentCommand::Task {
+                cmd: TaskCommand::Comment {
+                    cmd: CommentCommand::Remove { .. }
+                }
+            }
+        ));
     }
 }

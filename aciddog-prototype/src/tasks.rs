@@ -64,6 +64,70 @@ pub struct Note {
     pub body: String,
 }
 
+/// Lifecycle of a single TODO inside a task. `Pending` is the default
+/// on add; agents walk through `InProgress` and land on `Completed`.
+/// There's no cancel state — remove the TODO if it no longer applies.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl TodoStatus {
+    pub fn parse(s: &str) -> Result<Self, TaskError> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "pending" | "todo" | "open" => Ok(Self::Pending),
+            "in_progress" | "in-progress" | "inprogress" | "wip" => Ok(Self::InProgress),
+            "completed" | "done" | "complete" => Ok(Self::Completed),
+            _ => Err(TaskError::InvalidTodoStatus(s.to_string())),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+        }
+    }
+
+    /// Renderer-friendly glyph for CLI tables and TUI overlays.
+    pub fn glyph(&self) -> char {
+        match self {
+            Self::Pending => '□',
+            Self::InProgress => '◧',
+            Self::Completed => '■',
+        }
+    }
+}
+
+/// A single sub-item on a task. Agents and workers use TODOs to
+/// decompose a task; supervising agents watch the list to gauge
+/// progress. TODOs are a flat checklist: no nesting, no dependencies
+/// between them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Todo {
+    pub id: Uuid,
+    pub body: String,
+    pub status: TodoStatus,
+    pub created_by: String,
+    pub created_at_secs: u64,
+    pub updated_at_secs: u64,
+}
+
+/// An intentional message an agent leaves on a task for the next
+/// agent to read. Distinct from `Note` (which is the system's
+/// event log — auto-written on take / handoff).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Comment {
+    pub id: Uuid,
+    pub author: String,
+    pub timestamp_secs: u64,
+    pub body: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Task {
     pub id: Uuid,
@@ -75,12 +139,9 @@ pub struct Task {
     pub created_at_secs: u64,
     pub updated_at_secs: u64,
     pub notes: Vec<Note>,
-    /// Ids of tasks that must reach `Done` before this task is
-    /// eligible for `take`. `#[serde(default)]` keeps older
-    /// `tasks.json` files (written before dependencies existed)
-    /// loadable without migration.
-    #[serde(default)]
     pub blocked_by: Vec<Uuid>,
+    pub todos: Vec<Todo>,
+    pub comments: Vec<Comment>,
 }
 
 #[derive(Debug, Error)]
@@ -105,6 +166,21 @@ pub enum TaskError {
 
     #[error("adding dependency {dep} to task {task} would create a cycle")]
     DependencyCycle { task: Uuid, dep: Uuid },
+
+    #[error("todo {0} not found")]
+    TodoNotFound(Uuid),
+
+    #[error("todo body must not be empty")]
+    EmptyTodoBody,
+
+    #[error("invalid todo status `{0}` (expected pending|in_progress|completed)")]
+    InvalidTodoStatus(String),
+
+    #[error("comment {0} not found")]
+    CommentNotFound(Uuid),
+
+    #[error("comment body must not be empty")]
+    EmptyCommentBody,
 
     #[error("task store I/O error at {path}: {source}")]
     Io {
@@ -227,6 +303,8 @@ impl TaskStore {
             updated_at_secs: now,
             notes: Vec::new(),
             blocked_by: deps,
+            todos: Vec::new(),
+            comments: Vec::new(),
         };
         self.tasks.push(task);
         self.persist()?;
@@ -463,6 +541,200 @@ impl TaskStore {
         }
         self.persist()?;
         Ok(&self.tasks[pos])
+    }
+
+    // ----- TODOs -----
+
+    /// Append a `Pending` TODO to `task_id`. Rejects empty bodies.
+    pub fn add_todo(
+        &mut self,
+        task_id: Uuid,
+        body: String,
+        author: String,
+    ) -> Result<&Todo, TaskError> {
+        let body = body.trim().to_string();
+        if body.is_empty() {
+            return Err(TaskError::EmptyTodoBody);
+        }
+        let now = now_secs();
+        let pos = self
+            .tasks
+            .iter()
+            .position(|t| t.id == task_id)
+            .ok_or(TaskError::NotFound(task_id))?;
+        let todo = Todo {
+            id: Uuid::new_v4(),
+            body,
+            status: TodoStatus::Pending,
+            created_by: author,
+            created_at_secs: now,
+            updated_at_secs: now,
+        };
+        {
+            let t = &mut self.tasks[pos];
+            t.todos.push(todo);
+            t.updated_at_secs = now;
+        }
+        self.persist()?;
+        Ok(self.tasks[pos].todos.last().unwrap())
+    }
+
+    pub fn update_todo(
+        &mut self,
+        task_id: Uuid,
+        todo_id: Uuid,
+        body: Option<String>,
+        status: Option<TodoStatus>,
+    ) -> Result<&Todo, TaskError> {
+        if let Some(ref b) = body {
+            if b.trim().is_empty() {
+                return Err(TaskError::EmptyTodoBody);
+            }
+        }
+        let now = now_secs();
+        let task_pos = self
+            .tasks
+            .iter()
+            .position(|t| t.id == task_id)
+            .ok_or(TaskError::NotFound(task_id))?;
+        let todo_pos = self.tasks[task_pos]
+            .todos
+            .iter()
+            .position(|td| td.id == todo_id)
+            .ok_or(TaskError::TodoNotFound(todo_id))?;
+        {
+            let t = &mut self.tasks[task_pos];
+            let td = &mut t.todos[todo_pos];
+            if let Some(b) = body {
+                td.body = b.trim().to_string();
+            }
+            if let Some(s) = status {
+                td.status = s;
+            }
+            td.updated_at_secs = now;
+            t.updated_at_secs = now;
+        }
+        self.persist()?;
+        Ok(&self.tasks[task_pos].todos[todo_pos])
+    }
+
+    pub fn remove_todo(&mut self, task_id: Uuid, todo_id: Uuid) -> Result<Todo, TaskError> {
+        let now = now_secs();
+        let task_pos = self
+            .tasks
+            .iter()
+            .position(|t| t.id == task_id)
+            .ok_or(TaskError::NotFound(task_id))?;
+        let todo_pos = self.tasks[task_pos]
+            .todos
+            .iter()
+            .position(|td| td.id == todo_id)
+            .ok_or(TaskError::TodoNotFound(todo_id))?;
+        let removed = self.tasks[task_pos].todos.remove(todo_pos);
+        self.tasks[task_pos].updated_at_secs = now;
+        self.persist()?;
+        Ok(removed)
+    }
+
+    pub fn todos_of(&self, task_id: Uuid) -> Option<&[Todo]> {
+        self.tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .map(|t| &t.todos[..])
+    }
+
+    // ----- Comments -----
+
+    pub fn add_comment(
+        &mut self,
+        task_id: Uuid,
+        body: String,
+        author: String,
+    ) -> Result<&Comment, TaskError> {
+        let body = body.trim().to_string();
+        if body.is_empty() {
+            return Err(TaskError::EmptyCommentBody);
+        }
+        let now = now_secs();
+        let pos = self
+            .tasks
+            .iter()
+            .position(|t| t.id == task_id)
+            .ok_or(TaskError::NotFound(task_id))?;
+        let comment = Comment {
+            id: Uuid::new_v4(),
+            author,
+            timestamp_secs: now,
+            body,
+        };
+        {
+            let t = &mut self.tasks[pos];
+            t.comments.push(comment);
+            t.updated_at_secs = now;
+        }
+        self.persist()?;
+        Ok(self.tasks[pos].comments.last().unwrap())
+    }
+
+    pub fn update_comment(
+        &mut self,
+        task_id: Uuid,
+        comment_id: Uuid,
+        body: String,
+    ) -> Result<&Comment, TaskError> {
+        let body = body.trim().to_string();
+        if body.is_empty() {
+            return Err(TaskError::EmptyCommentBody);
+        }
+        let now = now_secs();
+        let task_pos = self
+            .tasks
+            .iter()
+            .position(|t| t.id == task_id)
+            .ok_or(TaskError::NotFound(task_id))?;
+        let comment_pos = self.tasks[task_pos]
+            .comments
+            .iter()
+            .position(|c| c.id == comment_id)
+            .ok_or(TaskError::CommentNotFound(comment_id))?;
+        {
+            let t = &mut self.tasks[task_pos];
+            let c = &mut t.comments[comment_pos];
+            c.body = body;
+            c.timestamp_secs = now;
+            t.updated_at_secs = now;
+        }
+        self.persist()?;
+        Ok(&self.tasks[task_pos].comments[comment_pos])
+    }
+
+    pub fn remove_comment(
+        &mut self,
+        task_id: Uuid,
+        comment_id: Uuid,
+    ) -> Result<Comment, TaskError> {
+        let now = now_secs();
+        let task_pos = self
+            .tasks
+            .iter()
+            .position(|t| t.id == task_id)
+            .ok_or(TaskError::NotFound(task_id))?;
+        let comment_pos = self.tasks[task_pos]
+            .comments
+            .iter()
+            .position(|c| c.id == comment_id)
+            .ok_or(TaskError::CommentNotFound(comment_id))?;
+        let removed = self.tasks[task_pos].comments.remove(comment_pos);
+        self.tasks[task_pos].updated_at_secs = now;
+        self.persist()?;
+        Ok(removed)
+    }
+
+    pub fn comments_of(&self, task_id: Uuid) -> Option<&[Comment]> {
+        self.tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .map(|t| &t.comments[..])
     }
 
     pub fn len(&self) -> usize {
@@ -1075,9 +1347,10 @@ mod tests {
     }
 
     #[test]
-    fn loads_old_tasks_json_without_blocked_by_field() {
-        // Older format written before dependencies existed — no
-        // `blocked_by` key. `#[serde(default)]` should default it.
+    fn rejects_pre_release_json_missing_new_fields() {
+        // Pre-release schema (no `todos` / `comments` / `blocked_by`
+        // keys) must fail to load rather than silently defaulting —
+        // there's no migration path at this stage.
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("tasks.json");
         std::fs::write(
@@ -1095,8 +1368,174 @@ mod tests {
             }]"#,
         )
         .unwrap();
-        let s = TaskStore::load_or_init(path).unwrap();
-        assert_eq!(s.all().len(), 1);
-        assert!(s.all()[0].blocked_by.is_empty());
+        assert!(matches!(
+            TaskStore::load_or_init(path),
+            Err(TaskError::Parse { .. })
+        ));
+    }
+
+    // ----- TODOs + Comments -----
+
+    fn mk_disk_store() -> (TaskStore, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("tasks.json");
+        (TaskStore::load_or_init(path).unwrap(), tmp)
+    }
+
+    #[test]
+    fn add_todo_appends_pending_and_bumps_task_timestamp() {
+        let (mut s, _tmp) = mk_disk_store();
+        let id = s
+            .add("t".into(), None, None, "alice".into(), Vec::new())
+            .unwrap()
+            .id;
+        let before = s.get(id).unwrap().updated_at_secs;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let todo = s
+            .add_todo(id, "draft schema".into(), "coder".into())
+            .unwrap()
+            .clone();
+        assert_eq!(todo.status, TodoStatus::Pending);
+        assert_eq!(todo.body, "draft schema");
+        assert_eq!(todo.created_by, "coder");
+        let t = s.get(id).unwrap();
+        assert_eq!(t.todos.len(), 1);
+        assert!(t.updated_at_secs >= before);
+    }
+
+    #[test]
+    fn add_todo_rejects_empty_body() {
+        let (mut s, _tmp) = mk_disk_store();
+        let id = s
+            .add("t".into(), None, None, "alice".into(), Vec::new())
+            .unwrap()
+            .id;
+        assert!(matches!(
+            s.add_todo(id, "   ".into(), "coder".into()),
+            Err(TaskError::EmptyTodoBody)
+        ));
+    }
+
+    #[test]
+    fn update_todo_changes_status_and_body() {
+        let (mut s, _tmp) = mk_disk_store();
+        let tid = s
+            .add("t".into(), None, None, "alice".into(), Vec::new())
+            .unwrap()
+            .id;
+        let todo_id = s.add_todo(tid, "one".into(), "coder".into()).unwrap().id;
+        s.update_todo(tid, todo_id, None, Some(TodoStatus::InProgress))
+            .unwrap();
+        assert_eq!(s.todos_of(tid).unwrap()[0].status, TodoStatus::InProgress);
+        s.update_todo(
+            tid,
+            todo_id,
+            Some("revised".into()),
+            Some(TodoStatus::Completed),
+        )
+        .unwrap();
+        assert_eq!(s.todos_of(tid).unwrap()[0].body, "revised");
+        assert_eq!(s.todos_of(tid).unwrap()[0].status, TodoStatus::Completed);
+    }
+
+    #[test]
+    fn remove_todo_returns_and_drops() {
+        let (mut s, _tmp) = mk_disk_store();
+        let tid = s
+            .add("t".into(), None, None, "alice".into(), Vec::new())
+            .unwrap()
+            .id;
+        let todo_id = s.add_todo(tid, "one".into(), "coder".into()).unwrap().id;
+        let removed = s.remove_todo(tid, todo_id).unwrap();
+        assert_eq!(removed.id, todo_id);
+        assert!(s.todos_of(tid).unwrap().is_empty());
+        assert!(matches!(
+            s.remove_todo(tid, todo_id),
+            Err(TaskError::TodoNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn todo_status_parse_accepts_common_spellings() {
+        assert_eq!(TodoStatus::parse("pending").unwrap(), TodoStatus::Pending);
+        assert_eq!(
+            TodoStatus::parse("in_progress").unwrap(),
+            TodoStatus::InProgress
+        );
+        assert_eq!(
+            TodoStatus::parse("in-progress").unwrap(),
+            TodoStatus::InProgress
+        );
+        assert_eq!(
+            TodoStatus::parse("completed").unwrap(),
+            TodoStatus::Completed
+        );
+        assert_eq!(TodoStatus::parse("done").unwrap(), TodoStatus::Completed);
+        assert!(TodoStatus::parse("wat").is_err());
+    }
+
+    #[test]
+    fn add_comment_appends_with_author_and_timestamp() {
+        let (mut s, _tmp) = mk_disk_store();
+        let tid = s
+            .add("t".into(), None, None, "alice".into(), Vec::new())
+            .unwrap()
+            .id;
+        let c = s
+            .add_comment(tid, "heads up".into(), "coder".into())
+            .unwrap()
+            .clone();
+        assert_eq!(c.author, "coder");
+        assert_eq!(c.body, "heads up");
+        assert!(c.timestamp_secs > 0);
+        assert_eq!(s.comments_of(tid).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn update_comment_rejects_empty_body() {
+        let (mut s, _tmp) = mk_disk_store();
+        let tid = s
+            .add("t".into(), None, None, "alice".into(), Vec::new())
+            .unwrap()
+            .id;
+        let cid = s.add_comment(tid, "a".into(), "coder".into()).unwrap().id;
+        assert!(matches!(
+            s.update_comment(tid, cid, "   ".into()),
+            Err(TaskError::EmptyCommentBody)
+        ));
+    }
+
+    #[test]
+    fn remove_comment_returns_and_drops() {
+        let (mut s, _tmp) = mk_disk_store();
+        let tid = s
+            .add("t".into(), None, None, "alice".into(), Vec::new())
+            .unwrap()
+            .id;
+        let cid = s.add_comment(tid, "a".into(), "coder".into()).unwrap().id;
+        let removed = s.remove_comment(tid, cid).unwrap();
+        assert_eq!(removed.id, cid);
+        assert!(s.comments_of(tid).unwrap().is_empty());
+    }
+
+    #[test]
+    fn todos_comments_persist_across_reload() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("tasks.json");
+        let tid;
+        {
+            let mut s = TaskStore::load_or_init(path.clone()).unwrap();
+            tid = s
+                .add("t".into(), None, None, "alice".into(), Vec::new())
+                .unwrap()
+                .id;
+            s.add_todo(tid, "one".into(), "coder".into()).unwrap();
+            s.add_comment(tid, "note to self".into(), "coder".into())
+                .unwrap();
+        }
+        let s2 = TaskStore::load_or_init(path).unwrap();
+        let t = s2.get(tid).unwrap();
+        assert_eq!(t.todos.len(), 1);
+        assert_eq!(t.comments.len(), 1);
     }
 }

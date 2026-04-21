@@ -91,13 +91,13 @@ pub fn cli_preamble(binary: &str, contactable: &[&str], creatable: &[&str]) -> S
     push_section(
         &mut out,
         binary,
-        "task <add|list|show|update|remove|take|note>",
+        "task <add|list|show|update|remove|take|note|todo|comment>",
         "shared team task board. Use `task add --title \"<t>\" [--description ...] [--assignee <id>] \
          [--blocked-by <dep-uuid>]...` to create work (repeat `--blocked-by` for multiple deps), \
          `task list [--mine|--assignee <id>|--status <s>|--unassigned]` to see the table (the `deps` \
          column shows `blocked(n)` or `ready(n)` for tasks with dependencies), \
          `task show --id <uuid>` to print a task's full body — description, dependencies with their \
-         current status, and the complete note log with authors and ages, \
+         current status, the complete note log, the TODOs board, and any comments, \
          `task update --id <uuid> [--title ...] [--description ...] [--status open|assigned|in_progress|done|cancelled] \
          [--assignee <id>|--unassign] [--note \"<context>\"] [--add-blocked-by <uuid>]... [--remove-blocked-by <uuid>]...` \
          to change it or hand it off, `task take` to atomically claim the oldest unblocked unassigned task \
@@ -106,7 +106,25 @@ pub fn cli_preamble(binary: &str, contactable: &[&str], creatable: &[&str]) -> S
          dependents' lists), and `task note --id <uuid> --body \"<text>\"` to append a log entry. \
          The board is team-wide — there is no allowlist. Always attach a `--note` when reassigning so \
          the next owner sees context (e.g. \"ready for test, commit abc123\"); run `task show` when you \
-         pick up a handed-off task to read prior notes.",
+         pick up a handed-off task to read prior notes, TODOs, and comments.",
+    );
+    push_line(
+        &mut out,
+        "  **TODOs** (`task todo <add|list|update|remove>`) — break a task into sub-items and track \
+         progress. `task todo add --task <uuid> --body \"<step>\"` appends a pending item; `task todo list \
+         --task <uuid>` shows the board (glyphs: `□` pending · `◧` in-progress · `■` completed); \
+         `task todo update --task <uuid> --id <todo-uuid> --status in_progress|completed|pending \
+         [--body \"<revised>\"]` advances it; `task todo remove --task <uuid> --id <todo-uuid>` drops it. \
+         TODOs are a flat checklist — no nesting or dependencies between items. Use them to keep \
+         supervising agents in the loop on multi-step work.",
+    );
+    push_line(
+        &mut out,
+        "  **Comments** (`task comment <add|list|update|remove>`) — leave a message on a task for the \
+         next agent. Distinct from notes (the system's event log): comments are intentional messages \
+         authored by you for other agents. Use `task comment add --task <uuid> --body \"<text>\"` when \
+         you're handing work off and the next owner needs specific context (e.g. \"tests pass, but \
+         watch for flake X in CI\"). `update` / `remove` let you revise or withdraw your own comments.",
     );
     // add new subcommand sections above this line
 
@@ -276,7 +294,7 @@ mod tests {
     fn preamble_mentions_task_subcommand() {
         let p = cli_preamble("/a", &[], &[]);
         assert!(
-            p.contains("/a task <add|list|show|update|remove|take|note>"),
+            p.contains("/a task <add|list|show|update|remove|take|note|todo|comment>"),
             "missing task subcommand entry: {p}"
         );
         assert!(
