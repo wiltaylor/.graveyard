@@ -21,7 +21,7 @@ use thiserror::Error;
 use crate::config::MemoryBank;
 
 pub use embedder::{EmbedderPool, DEFAULT_EMBED_MODEL};
-pub use store::{Hit, MemoryStore};
+pub use store::{Hit, Link, LinkDirection, MemoryStore};
 
 /// Standard sub-path for the model cache, sibling to per-bank dbs.
 const MODEL_CACHE_SUBDIR: &str = "_models";
@@ -49,6 +49,12 @@ pub enum MemoryError {
 
     #[error("embedding dim mismatch: expected {expected}, got {actual}")]
     DimMismatch { expected: usize, actual: usize },
+
+    #[error("unknown memory entry `{0}`")]
+    UnknownEntry(uuid::Uuid),
+
+    #[error("cannot link an entry to itself")]
+    SelfLink,
 }
 
 /// Top-level handle wired onto the App. Holds the fleet root path, the
@@ -91,6 +97,41 @@ impl MemoryRegistry {
     ) -> Result<Vec<Hit>, MemoryError> {
         let store = self.open_bank(bank)?;
         store.search(query, limit)
+    }
+
+    /// Create a directed link between two entries in `bank`.
+    pub fn link(
+        &self,
+        bank: &MemoryBank,
+        from: uuid::Uuid,
+        to: uuid::Uuid,
+        kind: Option<&str>,
+    ) -> Result<(), MemoryError> {
+        let store = self.open_bank(bank)?;
+        store.link(from, to, kind)
+    }
+
+    /// Remove a directed link between two entries in `bank`. Returns
+    /// `true` when the edge existed.
+    pub fn unlink(
+        &self,
+        bank: &MemoryBank,
+        from: uuid::Uuid,
+        to: uuid::Uuid,
+    ) -> Result<bool, MemoryError> {
+        let store = self.open_bank(bank)?;
+        store.unlink(from, to)
+    }
+
+    /// List every link touching `id` in the requested direction.
+    pub fn links(
+        &self,
+        bank: &MemoryBank,
+        id: uuid::Uuid,
+        direction: LinkDirection,
+    ) -> Result<Vec<Link>, MemoryError> {
+        let store = self.open_bank(bank)?;
+        store.links(id, direction)
     }
 
     /// Pre-open every bank in `banks` so the first real call doesn't

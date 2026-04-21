@@ -134,6 +134,35 @@ fn short_uuid(id: uuid::Uuid) -> String {
     s[..8.min(s.len())].to_string()
 }
 
+/// Format a list of links from `memory links` as the plaintext body
+/// returned to the agent. Arrows reflect direction: `->` for outgoing,
+/// `<-` for incoming. An empty kind is omitted so short links don't
+/// carry dead brackets.
+fn format_memory_links(id: uuid::Uuid, links: &[crate::memory::Link]) -> String {
+    if links.is_empty() {
+        return format!("(no links on {})", short_uuid(id));
+    }
+    let mut out = String::new();
+    for link in links {
+        let arrow = match link.direction {
+            crate::memory::LinkDirection::Out => "->",
+            crate::memory::LinkDirection::In => "<-",
+            crate::memory::LinkDirection::Both => "<->",
+        };
+        let kind = if link.kind.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", link.kind)
+        };
+        out.push_str(&format!(
+            "{arrow} {peer}{kind} {body}\n",
+            peer = short_uuid(link.peer_id),
+            body = link.peer_body
+        ));
+    }
+    out.trim_end().to_string()
+}
+
 /// Render the per-actor `<memory>` body: a short preamble plus one
 /// line per bank the actor is allowed to read/write, with the bank's
 /// description. Returns `None` when the actor has zero banks so the
@@ -301,6 +330,9 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         }
         RequestCmd::MemorySearch { .. } => ChatBlock::from_tool_use("aciddog memory search", input),
         RequestCmd::MemoryStore { .. } => ChatBlock::from_tool_use("aciddog memory store", input),
+        RequestCmd::MemoryLink { .. } => ChatBlock::from_tool_use("aciddog memory link", input),
+        RequestCmd::MemoryUnlink { .. } => ChatBlock::from_tool_use("aciddog memory unlink", input),
+        RequestCmd::MemoryLinks { .. } => ChatBlock::from_tool_use("aciddog memory links", input),
     }
 }
 
@@ -1206,6 +1238,15 @@ impl App {
             }
             RequestCmd::MemoryStore { bank, body } => {
                 self.handle_memory_store(idx, bank, body, reply);
+            }
+            RequestCmd::MemoryLink { bank, from, to, kind } => {
+                self.handle_memory_link(idx, bank, from, to, kind, reply);
+            }
+            RequestCmd::MemoryUnlink { bank, from, to } => {
+                self.handle_memory_unlink(idx, bank, from, to, reply);
+            }
+            RequestCmd::MemoryLinks { bank, id, direction } => {
+                self.handle_memory_links(idx, bank, id, direction, reply);
             }
         }
     }
@@ -2179,6 +2220,143 @@ impl App {
                 }
             }
         });
+    }
+
+    fn handle_memory_link(
+        &mut self,
+        sender_idx: usize,
+        bank: String,
+        from: Uuid,
+        to: Uuid,
+        kind: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let (registry, bank_decl) = match self.resolve_memory(sender_idx, &bank) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+                return;
+            }
+        };
+        match registry.link(&bank_decl, from, to, kind.as_deref()) {
+            Ok(()) => {
+                let kind_note = match kind.as_deref().map(str::trim) {
+                    Some(k) if !k.is_empty() => format!(" [{k}]"),
+                    _ => String::new(),
+                };
+                let _ = reply.send(Response::ok(format!(
+                    "linked {} -> {}{}",
+                    short_uuid(from),
+                    short_uuid(to),
+                    kind_note
+                )));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
+    fn handle_memory_unlink(
+        &mut self,
+        sender_idx: usize,
+        bank: String,
+        from: Uuid,
+        to: Uuid,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let (registry, bank_decl) = match self.resolve_memory(sender_idx, &bank) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+                return;
+            }
+        };
+        match registry.unlink(&bank_decl, from, to) {
+            Ok(true) => {
+                let _ = reply.send(Response::ok(format!(
+                    "unlinked {} -> {}",
+                    short_uuid(from),
+                    short_uuid(to)
+                )));
+            }
+            Ok(false) => {
+                let _ = reply.send(Response::ok(format!(
+                    "no link {} -> {} (nothing to remove)",
+                    short_uuid(from),
+                    short_uuid(to)
+                )));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
+    fn handle_memory_links(
+        &mut self,
+        sender_idx: usize,
+        bank: String,
+        id: Uuid,
+        direction: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let dir = match direction.as_deref() {
+            None => crate::memory::LinkDirection::Both,
+            Some(s) => match crate::memory::LinkDirection::parse(s) {
+                Some(d) => d,
+                None => {
+                    let _ = reply.send(Response::err(format!(
+                        "unknown direction `{s}`; expected `out`, `in`, or `both`"
+                    )));
+                    return;
+                }
+            },
+        };
+        let (registry, bank_decl) = match self.resolve_memory(sender_idx, &bank) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+                return;
+            }
+        };
+        match registry.links(&bank_decl, id, dir) {
+            Ok(links) => {
+                let _ = reply.send(Response::ok(format_memory_links(id, &links)));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
+    /// Shared access-control + bank-lookup prelude for the link
+    /// handlers. On failure returns the error string the caller should
+    /// echo back to the agent; on success returns the registry handle
+    /// and a clone of the bank declaration.
+    fn resolve_memory(
+        &self,
+        sender_idx: usize,
+        bank: &str,
+    ) -> Result<(std::sync::Arc<MemoryRegistry>, crate::config::MemoryBank), String> {
+        let template_id = self
+            .sender_template_id(sender_idx)
+            .ok_or_else(|| "unknown sender".to_string())?;
+        if !self.config.can_access_bank(&template_id, bank) {
+            return Err(format!(
+                "bank `{bank}` is not accessible to `{template_id}`"
+            ));
+        }
+        let bank_decl = self
+            .config
+            .memory_bank(bank)
+            .cloned()
+            .ok_or_else(|| format!("no memory bank `{bank}`"))?;
+        let registry = self
+            .memory
+            .clone()
+            .ok_or_else(|| "memory registry is not initialised on this orchestrator".to_string())?;
+        Ok((registry, bank_decl))
     }
 
     fn handle_memory_store(

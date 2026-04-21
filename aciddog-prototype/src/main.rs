@@ -224,6 +224,15 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
         AgentCommand::Memory {
             cmd: MemoryCommand::Store { bank, body },
         } => RequestCmd::MemoryStore { bank, body },
+        AgentCommand::Memory {
+            cmd: MemoryCommand::Link { bank, from, to, kind },
+        } => RequestCmd::MemoryLink { bank, from, to, kind },
+        AgentCommand::Memory {
+            cmd: MemoryCommand::Unlink { bank, from, to },
+        } => RequestCmd::MemoryUnlink { bank, from, to },
+        AgentCommand::Memory {
+            cmd: MemoryCommand::Links { bank, id, direction },
+        } => RequestCmd::MemoryLinks { bank, id, direction },
     };
 
     let response = agent_ipc::client::send(&socket_path, &Request { agent_id, cmd })

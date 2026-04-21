@@ -98,6 +98,43 @@ pub enum MemoryCommand {
         #[arg(long)]
         body: String,
     },
+    /// Create a directed link between two entries. Use `kind` to
+    /// classify the relationship (e.g. "supersedes", "see_also").
+    Link {
+        #[arg(long)]
+        bank: String,
+        /// Source entry id (as returned by `memory store`).
+        #[arg(long)]
+        from: Uuid,
+        /// Target entry id.
+        #[arg(long)]
+        to: Uuid,
+        /// Optional free-text label describing the relationship.
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// Remove a directed link between two entries.
+    Unlink {
+        #[arg(long)]
+        bank: String,
+        #[arg(long)]
+        from: Uuid,
+        #[arg(long)]
+        to: Uuid,
+    },
+    /// List every link touching an entry. Each line is:
+    /// `<-out|in-> <peer-short-id> [<kind>] <peer-body>`.
+    Links {
+        #[arg(long)]
+        bank: String,
+        /// Entry whose links you want to see.
+        #[arg(long)]
+        id: Uuid,
+        /// Which direction to walk. One of `out`, `in`, `both`
+        /// (default).
+        #[arg(long)]
+        direction: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]

@@ -134,8 +134,9 @@ pub fn cli_preamble(
     if memory_banks.is_empty() {
         push_line(
             &mut out,
-            "- `memory search` / `memory store` — disabled: you have no memory banks \
-             allowlisted on your agent/worker config.",
+            "- `memory search` / `memory store` / `memory link` / `memory links` / \
+             `memory unlink` — disabled: you have no memory banks allowlisted on \
+             your agent/worker config.",
         );
     } else {
         push_section(
@@ -152,7 +153,31 @@ pub fn cli_preamble(
             "memory store --bank <bank-id> --body \"<text>\"",
             "persist an entry in a memory bank so later search queries can retrieve it. \
              Write one self-contained fact per call — the entry is embedded as a whole. \
-             Avoid storing ephemeral work-in-progress; entries are permanent.",
+             Avoid storing ephemeral work-in-progress; entries are permanent. The reply \
+             carries the new entry's uuid — keep it if you plan to link from/to it.",
+        );
+        push_section(
+            &mut out,
+            binary,
+            "memory link --bank <bank-id> --from <entry-uuid> --to <entry-uuid> [--kind <label>]",
+            "create a directed link between two existing entries. Use `--kind` to \
+             classify the relationship (e.g. `supersedes`, `see_also`, `contradicts`). \
+             Both ids must come from prior `memory store` / `memory search` calls.",
+        );
+        push_section(
+            &mut out,
+            binary,
+            "memory links --bank <bank-id> --id <entry-uuid> [--direction out|in|both]",
+            "list every link touching an entry. Default direction is `both`; use \
+             `out` for entries this one points at and `in` for entries that point at it. \
+             Each line carries the peer's short id, optional kind, and body preview.",
+        );
+        push_section(
+            &mut out,
+            binary,
+            "memory unlink --bank <bank-id> --from <entry-uuid> --to <entry-uuid>",
+            "remove a directed link. Idempotent — removing a missing link just reports \
+             that there was nothing to remove.",
         );
         push_line(
             &mut out,
@@ -413,17 +438,19 @@ fn push_memory_tag_docs(out: &mut String, memory_banks: &[&str]) {
     if memory_banks.is_empty() {
         push_line(
             out,
-            "- `memory_search` / `memory_store` — disabled: you have no memory banks \
-             allowlisted on your agent/worker config.",
+            "- `memory_search` / `memory_store` / `memory_link` / `memory_links` / \
+             `memory_unlink` — disabled: you have no memory banks allowlisted on \
+             your agent/worker config.",
         );
         return;
     }
     push_line(out, "### Semantic memory banks");
     push_line(
         out,
-        "Each bank is a persistent, embedding-indexed store of free-form entries. \
-         Search when you need context; store when you learn something worth persisting. \
-         Entries are retrieved by semantic similarity, not keyword match.",
+        "Each bank is a persistent, embedding-indexed store of free-form entries, \
+         plus a directed link graph between them. Search when you need context; \
+         store when you learn something worth persisting; link when two entries \
+         belong together (e.g. a follow-up fact superseding an older one).",
     );
     push_tag_section(
         out,
@@ -436,8 +463,29 @@ fn push_memory_tag_docs(out: &mut String, memory_banks: &[&str]) {
         out,
         "memory_store",
         r#"{"cmd":"memory_store","bank":"<bank-id>","body":"<text>"}"#,
-        "persist an entry. Write one self-contained fact per call — the entry \
-         is embedded as a whole. Entries are permanent.",
+        "persist an entry. The success reply carries the new entry's uuid — keep \
+         it if you plan to link from/to it. Entries are permanent.",
+    );
+    push_tag_section(
+        out,
+        "memory_link",
+        r#"{"cmd":"memory_link","bank":"<bank-id>","from":"<uuid>","to":"<uuid>","kind":"supersedes"}"#,
+        "create a directed link between two existing entries. `kind` is optional \
+         free text classifying the relationship (e.g. `supersedes`, `see_also`, \
+         `contradicts`).",
+    );
+    push_tag_section(
+        out,
+        "memory_links",
+        r#"{"cmd":"memory_links","bank":"<bank-id>","id":"<uuid>","direction":"both"}"#,
+        "list every link touching an entry. `direction` is `out`, `in`, or `both` \
+         (default). Response lists peer id, optional kind, and body.",
+    );
+    push_tag_section(
+        out,
+        "memory_unlink",
+        r#"{"cmd":"memory_unlink","bank":"<bank-id>","from":"<uuid>","to":"<uuid>"}"#,
+        "remove a directed link. Idempotent.",
     );
     push_line(
         out,

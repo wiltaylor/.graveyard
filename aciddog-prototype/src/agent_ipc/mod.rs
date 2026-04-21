@@ -160,6 +160,29 @@ pub enum RequestCmd {
         bank: String,
         body: String,
     },
+    /// Create a directed link between two entries in a memory bank.
+    /// Both ids must name existing entries.
+    MemoryLink {
+        bank: String,
+        from: Uuid,
+        to: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+    },
+    /// Remove a directed link between two entries.
+    MemoryUnlink {
+        bank: String,
+        from: Uuid,
+        to: Uuid,
+    },
+    /// List every link touching an entry. `direction` is one of
+    /// `out` / `in` / `both` (default `both`).
+    MemoryLinks {
+        bank: String,
+        id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
