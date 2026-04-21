@@ -67,6 +67,26 @@ fn core_display_label(core: &AiCore) -> String {
     format!("{kind} ({})", core.id)
 }
 
+/// Whether this core kind reports per-round token deltas (so we sum
+/// them) or cumulative session totals (so we replace).
+fn core_usage_mode(kind: &AiCoreKind) -> ContextUsageMode {
+    match kind {
+        AiCoreKind::AnthropicApi { .. } | AiCoreKind::OpenAiApi { .. } => ContextUsageMode::Add,
+        AiCoreKind::ClaudeCode { .. }
+        | AiCoreKind::CopilotCli { .. }
+        | AiCoreKind::GeminiCli { .. } => ContextUsageMode::Replace,
+    }
+}
+
+/// Mutate the seeded AgentInfo block (always at `blocks[0]`) so its
+/// `context_used` field reflects the chat's current running totals.
+/// No-op if the chat doesn't have a seeded AgentInfo block.
+fn refresh_agent_info_usage(chat: &mut AgentChat) {
+    if let Some(ChatBlock::AgentInfo { context_used, .. }) = chat.blocks.first_mut() {
+        *context_used = chat.context_used;
+    }
+}
+
 /// Shell-tool name for this core variant. Kept config-side so the TUI
 /// can decide whether to enable tag-IPC *before* the core is built
 /// (and therefore before the trait-side `AICore::shell_tool_name` is
@@ -632,6 +652,45 @@ pub struct AgentChat {
     /// set once on entering `Working` and cleared on leaving so the
     /// message stays stable for a whole turn.
     pub thinking_message_idx: Option<usize>,
+    /// Cumulative token usage across the whole session for this agent,
+    /// as reported by its core. `None` until the first TurnResult that
+    /// carries usage data — cores that never report it (e.g. copilot)
+    /// keep this at `None` for the entire session.
+    pub context_used: Option<crate::ai::TurnUsage>,
+    /// How `context_used` should be combined with each new TurnResult.
+    /// Cores that emit cumulative totals at end of turn (claude CLI,
+    /// gemini CLI) use `Replace`; cores that emit per-round deltas
+    /// (Anthropic API, OpenAI API) use `Add`. Set at agent spawn from
+    /// the core kind.
+    pub context_usage_mode: ContextUsageMode,
+    /// Maximum context window size for the model this agent runs on,
+    /// in tokens. `None` when the model is unknown or the core doesn't
+    /// expose a model id. Mirrored into the seeded `AgentInfo` block
+    /// at spawn — kept here too so resurrection paths and any future
+    /// status-bar consumers don't need to reach into `blocks[0]`.
+    #[allow(dead_code)]
+    pub context_window: Option<u32>,
+}
+
+/// How an agent's running token total should incorporate each new
+/// TurnResult's `usage`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextUsageMode {
+    /// Each new TurnResult carries the full cumulative session totals;
+    /// overwrite. Used by Claude Code CLI and Gemini CLI.
+    Replace,
+    /// Each new TurnResult carries the delta for that round; add to
+    /// the running total. Used by Anthropic API and OpenAI API cores.
+    Add,
+}
+
+impl Default for ContextUsageMode {
+    fn default() -> Self {
+        // Conservative default: most callers will overwrite this at
+        // spawn anyway. `Replace` means a stray usage event won't
+        // accumulate forever if the spawn path forgets to set the mode.
+        ContextUsageMode::Replace
+    }
 }
 
 impl AgentChat {
@@ -640,6 +699,32 @@ impl AgentChat {
         self.blocks.push(block);
         self.sticky_bottom = true;
         idx
+    }
+
+    /// Fold a fresh `TurnUsage` into the running session totals,
+    /// honouring the core's reporting style (cumulative vs per-round).
+    pub fn apply_turn_usage(&mut self, u: crate::ai::TurnUsage) {
+        if u.is_zero() {
+            return;
+        }
+        match self.context_usage_mode {
+            ContextUsageMode::Replace => {
+                self.context_used = Some(u);
+            }
+            ContextUsageMode::Add => {
+                let prev = self.context_used.unwrap_or_default();
+                self.context_used = Some(crate::ai::TurnUsage {
+                    input_tokens: prev.input_tokens.saturating_add(u.input_tokens),
+                    output_tokens: prev.output_tokens.saturating_add(u.output_tokens),
+                    cache_read_input_tokens: prev
+                        .cache_read_input_tokens
+                        .saturating_add(u.cache_read_input_tokens),
+                    cache_creation_input_tokens: prev
+                        .cache_creation_input_tokens
+                        .saturating_add(u.cache_creation_input_tokens),
+                });
+            }
+        }
     }
 
     /// Clear the input buffer and any cursor/scroll state that references it.
@@ -1018,11 +1103,23 @@ impl App {
                 let label = core
                     .map(core_display_label)
                     .unwrap_or_else(|| "claude-code".to_string());
-                let info = ChatBlock::agent_info(label, tools, agent.instructions.clone());
+                let model = core.and_then(|c| c.runtime_model());
+                let context_window = model.and_then(crate::ai::model_context_window);
+                let context_usage_mode = core
+                    .map(|c| core_usage_mode(&c.kind))
+                    .unwrap_or(ContextUsageMode::Replace);
+                let info = ChatBlock::agent_info(
+                    label,
+                    tools,
+                    agent.instructions.clone(),
+                    context_window,
+                );
                 AgentChat {
                     blocks: vec![info],
                     sticky_bottom: true,
                     display_name: agent.id.clone(),
+                    context_window,
+                    context_usage_mode,
                     ..Default::default()
                 }
             })
@@ -1266,9 +1363,17 @@ impl App {
                     });
                 }
             }
-            AIEvent::TurnResult { total_cost_usd, .. } => {
+            AIEvent::TurnResult {
+                total_cost_usd,
+                usage,
+                ..
+            } => {
                 if let Some(cost) = total_cost_usd {
                     info!(cost_usd = cost, agent_idx = idx, "turn complete");
+                }
+                if let Some(u) = usage {
+                    chat.apply_turn_usage(u);
+                    refresh_agent_info_usage(chat);
                 }
                 if chat.status == AgentStatus::Working {
                     chat.status = AgentStatus::Ready;
@@ -1595,6 +1700,8 @@ impl App {
         };
 
         let core_label = core_display_label(core);
+        let context_window = core.runtime_model().and_then(crate::ai::model_context_window);
+        let context_usage_mode = core_usage_mode(&core.kind);
         let built_core: Box<dyn AICore> = build_core(
             core,
             session_id,
@@ -1605,7 +1712,8 @@ impl App {
             false,
         );
         let assembled_prompt = built_core.first_turn_prompt();
-        let info_block = ChatBlock::agent_info(core_label, tools.clone(), assembled_prompt);
+        let info_block =
+            ChatBlock::agent_info(core_label, tools.clone(), assembled_prompt, context_window);
         let pool_len = self.config.thinking_messages.len();
         let mut chat = AgentChat {
             blocks: vec![info_block],
@@ -1619,6 +1727,8 @@ impl App {
             worker_template: Some(template.clone()),
             display_name: display_name.clone(),
             hibernated: false,
+            context_window,
+            context_usage_mode,
             ..Default::default()
         };
         // Surface the initial task as a user message on the worker's
@@ -5206,6 +5316,7 @@ mod tests {
             AIEvent::TurnResult {
                 stop_reason: Some("end_turn".into()),
                 total_cost_usd: Some(0.01),
+                usage: None,
                 raw: serde_json::Value::Null,
             },
         );
@@ -5421,6 +5532,7 @@ mod tests {
                     tools,
                     prompt,
                     collapsed,
+                    ..
                 } => {
                     assert_eq!(core, "claude-code (default)");
                     assert!(tools.contains(&"Bash".to_string()));

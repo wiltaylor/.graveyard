@@ -40,7 +40,7 @@ use crate::agent_ipc::{AgentSocketEvent, Request, RequestCmd, Response};
 
 use super::claude_code::{PromptParts, MAX_TAG_CHAIN_ROUNDS};
 use super::core::{AICore, AIError};
-use super::event::AIEvent;
+use super::event::{AIEvent, TurnUsage};
 use super::tag_call;
 use super::tools::docs::built_in_tool_doc;
 
@@ -688,12 +688,57 @@ pub(crate) fn parse_copilot_line(line: &str) -> Vec<AIEvent> {
     match ty {
         "assistant.message" => parse_assistant_message(value),
         "tool.execution_complete" => parse_tool_complete(value),
-        "result" => vec![AIEvent::TurnResult {
-            stop_reason: None,
-            total_cost_usd: None,
-            raw: value,
-        }],
+        "result" => {
+            // Copilot's `usage` field is currently emitted as `{}`
+            // (see test fixture). Try to parse anyway in case the
+            // shape changes; an empty object yields `None`.
+            let usage = parse_copilot_usage(value.get("usage"));
+            vec![AIEvent::TurnResult {
+                stop_reason: None,
+                total_cost_usd: None,
+                usage,
+                raw: value,
+            }]
+        }
         _ => vec![AIEvent::Other(value)],
+    }
+}
+
+/// Best-effort extraction of token usage from copilot's `result.usage`.
+/// Copilot currently ships an empty object, but if/when it starts
+/// reporting we try OpenAI-style names first (`prompt_tokens` /
+/// `completion_tokens`) and fall back to Anthropic-style
+/// (`input_tokens` / `output_tokens`).
+fn parse_copilot_usage(usage: Option<&Value>) -> Option<TurnUsage> {
+    let obj = usage?.as_object()?;
+    let mut u = TurnUsage::default();
+    let mut any = false;
+    for (k, v) in obj {
+        let Some(n) = v.as_u64() else { continue };
+        match k.as_str() {
+            "prompt_tokens" | "input_tokens" => {
+                u.input_tokens = n;
+                any = true;
+            }
+            "completion_tokens" | "output_tokens" => {
+                u.output_tokens = n;
+                any = true;
+            }
+            "cache_read_input_tokens" | "cached_tokens" => {
+                u.cache_read_input_tokens = n;
+                any = true;
+            }
+            "cache_creation_input_tokens" => {
+                u.cache_creation_input_tokens = n;
+                any = true;
+            }
+            _ => {}
+        }
+    }
+    if any {
+        Some(u)
+    } else {
+        None
     }
 }
 

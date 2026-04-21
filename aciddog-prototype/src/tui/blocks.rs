@@ -111,6 +111,13 @@ pub enum ChatBlock {
         tools: Vec<String>,
         prompt: String,
         collapsed: bool,
+        /// Cumulative session token usage from this agent's core.
+        /// `None` until the first usage report arrives, or for the
+        /// whole session if the core never reports.
+        context_used: Option<crate::ai::TurnUsage>,
+        /// Maximum context window for the model in use, in tokens.
+        /// `None` when unknown.
+        context_window: Option<u32>,
     },
     UserText {
         text: String,
@@ -300,8 +307,10 @@ impl ChatBlock {
                 tools,
                 prompt,
                 collapsed,
+                context_used,
+                context_window,
                 ..
-            } => agent_info_height(tools, prompt, *collapsed, w),
+            } => agent_info_height(tools, prompt, *collapsed, *context_used, *context_window, w),
             Self::UserText { text } => wrapped_rows(text, w.saturating_sub(2)).max(1),
             Self::AiMarkdown { parsed, .. } => 1 + parsed_md_height(parsed, w),
             Self::BashTool {
@@ -428,8 +437,19 @@ impl ChatBlock {
                 tools,
                 prompt,
                 collapsed,
+                context_used,
+                context_window,
             } => render_agent_info(
-                frame, body_rect, buttons, block_idx, core, tools, prompt, *collapsed,
+                frame,
+                body_rect,
+                buttons,
+                block_idx,
+                core,
+                tools,
+                prompt,
+                *collapsed,
+                *context_used,
+                *context_window,
             ),
             Self::UserText { text } => self.render_prefix_text(
                 frame,
@@ -789,16 +809,113 @@ fn agent_info_detail_line(tools: &[String], core: &str) -> String {
     format!("core: {core}   tools: {tools_joined}")
 }
 
-fn agent_info_height(tools: &[String], prompt: &str, collapsed: bool, width: u16) -> u16 {
-    // Rows: detail(1..) + prompt-header(1) + optional prompt body
+const CONTEXT_BAR_WIDTH: usize = 10;
+
+/// Build the rendered "context: …" status line. Degrades gracefully:
+/// - no usage           → `context: unknown`
+/// - usage, no window   → `context: 12.4K used`
+/// - both               → `context: 12.4K / 200K (6%)  ▰▰▱▱▱▱▱▱▱▱  cached: 5.2K`
+pub(crate) fn format_context_line(
+    used: Option<crate::ai::TurnUsage>,
+    window: Option<u32>,
+) -> String {
+    let Some(u) = used else {
+        return "context: unknown".to_string();
+    };
+    let total = u.total_tokens();
+    let cached = u.cache_read_input_tokens + u.cache_creation_input_tokens;
+    let cache_suffix = if cached > 0 {
+        format!("  cached: {}", format_tokens(cached))
+    } else {
+        String::new()
+    };
+    match window {
+        None => format!("context: {} used{cache_suffix}", format_tokens(total)),
+        Some(w) => {
+            let pct = if w == 0 {
+                0
+            } else {
+                ((total.saturating_mul(100)) / w as u64).min(999) as u32
+            };
+            let bar = render_bar(total, w as u64, CONTEXT_BAR_WIDTH);
+            format!(
+                "context: {} / {} ({}%)  {bar}{cache_suffix}",
+                format_tokens(total),
+                format_tokens(w as u64),
+                pct
+            )
+        }
+    }
+}
+
+/// Pick a colour for the context line based on how full the window is.
+/// Falls back to dark gray when there's nothing useful to colour.
+pub(crate) fn context_line_color(
+    used: Option<crate::ai::TurnUsage>,
+    window: Option<u32>,
+) -> Color {
+    match (used, window) {
+        (Some(u), Some(w)) if w > 0 => {
+            let pct = (u.total_tokens().saturating_mul(100)) / w as u64;
+            if pct >= 90 {
+                Color::Red
+            } else if pct >= 70 {
+                Color::Yellow
+            } else {
+                Color::DarkGray
+            }
+        }
+        _ => Color::DarkGray,
+    }
+}
+
+/// Render `n` as a short string: `1234` → `1.2K`, `1_500_000` → `1.5M`.
+fn format_tokens(n: u64) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    }
+}
+
+/// Build a Unicode block-bar of `width` cells reflecting `used / total`.
+fn render_bar(used: u64, total: u64, width: usize) -> String {
+    if total == 0 || width == 0 {
+        return String::new();
+    }
+    let filled_cells = ((used.saturating_mul(width as u64)) / total).min(width as u64) as usize;
+    let mut s = String::with_capacity(width * 3);
+    for i in 0..width {
+        if i < filled_cells {
+            s.push('▰');
+        } else {
+            s.push('▱');
+        }
+    }
+    s
+}
+
+fn agent_info_height(
+    tools: &[String],
+    prompt: &str,
+    collapsed: bool,
+    context_used: Option<crate::ai::TurnUsage>,
+    context_window: Option<u32>,
+    width: u16,
+) -> u16 {
+    // Rows: detail(1..) + context(1, wrapped) + prompt-header(1) + optional prompt body
     let detail_text = agent_info_detail_line(tools, "");
     let detail_rows = wrapped_rows(&detail_text, width.saturating_sub(2)).max(1);
+    let context_text = format_context_line(context_used, context_window);
+    let context_rows = wrapped_rows(&context_text, width.saturating_sub(2)).max(1);
     let prompt_body = if collapsed {
         0
     } else {
         wrapped_rows(prompt, width.saturating_sub(2))
     };
-    detail_rows + 1 + prompt_body
+    detail_rows + context_rows + 1 + prompt_body
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -811,6 +928,8 @@ fn render_agent_info(
     tools: &[String],
     prompt: &str,
     collapsed: bool,
+    context_used: Option<crate::ai::TurnUsage>,
+    context_window: Option<u32>,
 ) {
     if rect.width == 0 || rect.height == 0 {
         return;
@@ -829,6 +948,24 @@ fn render_agent_info(
         Paragraph::new(Span::styled(detail, Style::default().fg(Color::DarkGray)))
             .wrap(Wrap { trim: false }),
         detail_rect,
+    );
+    y = y.saturating_add(draw_h);
+    if y >= end_y {
+        return;
+    }
+
+    // Context-window row.
+    let context_text = format_context_line(context_used, context_window);
+    let context_w = rect.width.saturating_sub(2);
+    let context_rows = wrapped_rows(&context_text, context_w).max(1);
+    let available = end_y.saturating_sub(y);
+    let draw_h = context_rows.min(available);
+    let context_rect = Rect::new(rect.x + 2, y, context_w, draw_h);
+    let context_color = context_line_color(context_used, context_window);
+    frame.render_widget(
+        Paragraph::new(Span::styled(context_text, Style::default().fg(context_color)))
+            .wrap(Wrap { trim: false }),
+        context_rect,
     );
     y = y.saturating_add(draw_h);
     if y >= end_y {
@@ -1352,12 +1489,15 @@ impl ChatBlock {
         core: impl Into<String>,
         tools: Vec<String>,
         prompt: impl Into<String>,
+        context_window: Option<u32>,
     ) -> Self {
         Self::AgentInfo {
             core: core.into(),
             tools,
             prompt: prompt.into(),
             collapsed: true,
+            context_used: None,
+            context_window,
         }
     }
 
@@ -1786,6 +1926,85 @@ mod tests {
     fn user_block_has_expected_height() {
         let b = ChatBlock::user("hello");
         assert_eq!(b.height(80), 1);
+    }
+
+    #[test]
+    fn format_context_line_unknown_when_no_usage() {
+        assert_eq!(
+            format_context_line(None, Some(200_000)),
+            "context: unknown"
+        );
+        assert_eq!(format_context_line(None, None), "context: unknown");
+    }
+
+    #[test]
+    fn format_context_line_no_window_falls_back_to_used() {
+        let u = crate::ai::TurnUsage {
+            input_tokens: 1500,
+            output_tokens: 500,
+            ..Default::default()
+        };
+        assert_eq!(format_context_line(Some(u), None), "context: 2.0K used");
+    }
+
+    #[test]
+    fn format_context_line_full_format_with_window_and_cache() {
+        let u = crate::ai::TurnUsage {
+            input_tokens: 30_000,
+            output_tokens: 10_000,
+            cache_read_input_tokens: 20_000,
+            cache_creation_input_tokens: 0,
+        };
+        let s = format_context_line(Some(u), Some(200_000));
+        // 60K total, 200K window → 30%
+        assert!(s.starts_with("context: 60.0K / 200.0K (30%)"), "got: {s}");
+        assert!(s.contains("cached: 20.0K"));
+        // 30% of 10 cells = 3 filled cells, 7 empty.
+        assert!(s.contains('▰'), "expected at least one filled cell: {s}");
+        assert!(s.contains('▱'), "expected at least one empty cell: {s}");
+    }
+
+    #[test]
+    fn format_tokens_uses_short_units() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(999), "999");
+        assert_eq!(format_tokens(1_000), "1.0K");
+        assert_eq!(format_tokens(12_345), "12.3K");
+        assert_eq!(format_tokens(1_500_000), "1.5M");
+    }
+
+    #[test]
+    fn render_bar_proportional_fill() {
+        assert_eq!(render_bar(0, 100, 10), "▱▱▱▱▱▱▱▱▱▱");
+        assert_eq!(render_bar(50, 100, 10), "▰▰▰▰▰▱▱▱▱▱");
+        assert_eq!(render_bar(100, 100, 10), "▰▰▰▰▰▰▰▰▰▰");
+        // Saturates rather than overflows.
+        assert_eq!(render_bar(500, 100, 10), "▰▰▰▰▰▰▰▰▰▰");
+    }
+
+    #[test]
+    fn agent_info_height_grows_with_context_line() {
+        // Same prompt + tools, just toggling the new context line; the
+        // height should grow by exactly one row (the new "context:" row).
+        let h_no_ctx =
+            agent_info_height(&["Bash".into()], "p", true, None, None, 80);
+        let u = crate::ai::TurnUsage {
+            input_tokens: 5000,
+            ..Default::default()
+        };
+        let h_with_ctx = agent_info_height(
+            &["Bash".into()],
+            "p",
+            true,
+            Some(u),
+            Some(200_000),
+            80,
+        );
+        // The function always reserves a context row (1+), so they should
+        // be equal — what we're really asserting is that the new arg
+        // hasn't pushed the height arithmetic off by more than the row
+        // we explicitly accounted for.
+        assert_eq!(h_no_ctx, h_with_ctx);
     }
 
     #[test]

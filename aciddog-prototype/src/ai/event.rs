@@ -1,6 +1,37 @@
 use serde_json::Value;
 use uuid::Uuid;
 
+/// Token usage reported by a core for a single turn (or, where the core
+/// only reports cumulative totals, the running totals at end of turn).
+/// All counts are absolute — the consumer decides whether to add or
+/// replace based on what the core promises.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TurnUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+}
+
+impl TurnUsage {
+    /// Total tokens that count against the context window for this
+    /// turn. Cache reads are billed cheaper but still occupy context,
+    /// so they're included in the displayed "used" figure.
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.output_tokens)
+            .saturating_add(self.cache_read_input_tokens)
+            .saturating_add(self.cache_creation_input_tokens)
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.input_tokens == 0
+            && self.output_tokens == 0
+            && self.cache_read_input_tokens == 0
+            && self.cache_creation_input_tokens == 0
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum AIEvent {
     SystemInit {
@@ -28,6 +59,10 @@ pub enum AIEvent {
     TurnResult {
         stop_reason: Option<String>,
         total_cost_usd: Option<f64>,
+        /// Token usage for this turn. `None` when the core can't tell us.
+        /// For Claude Code CLI and Gemini CLI this is *cumulative* over the
+        /// whole session; for the API cores it's the *delta* for this turn.
+        usage: Option<TurnUsage>,
         raw: Value,
     },
     Error {
@@ -106,6 +141,40 @@ fn parse_system(raw: Value) -> Vec<AIEvent> {
         model,
         raw,
     }]
+}
+
+/// Pull a `TurnUsage` out of an Anthropic-style `usage` object. Returns
+/// `None` if the value isn't an object or has none of the expected
+/// fields. Used by the claude CLI's stream-json output (which mirrors
+/// the Anthropic wire format) and by the Anthropic API core itself.
+pub fn parse_usage_anthropic(usage: &Value) -> Option<TurnUsage> {
+    let obj = usage.as_object()?;
+    let mut u = TurnUsage::default();
+    let mut any = false;
+    if let Some(v) = obj.get("input_tokens").and_then(Value::as_u64) {
+        u.input_tokens = v;
+        any = true;
+    }
+    if let Some(v) = obj.get("output_tokens").and_then(Value::as_u64) {
+        u.output_tokens = v;
+        any = true;
+    }
+    if let Some(v) = obj.get("cache_read_input_tokens").and_then(Value::as_u64) {
+        u.cache_read_input_tokens = v;
+        any = true;
+    }
+    if let Some(v) = obj
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64)
+    {
+        u.cache_creation_input_tokens = v;
+        any = true;
+    }
+    if any {
+        Some(u)
+    } else {
+        None
+    }
 }
 
 fn parse_assistant(raw: Value) -> Vec<AIEvent> {
@@ -195,9 +264,12 @@ fn parse_result(raw: Value) -> Vec<AIEvent> {
         .and_then(Value::as_str)
         .map(str::to_string);
     let total_cost_usd = raw.get("total_cost_usd").and_then(Value::as_f64);
+    // claude CLI: cumulative usage at the top level of the result event.
+    let usage = raw.get("usage").and_then(parse_usage_anthropic);
     vec![AIEvent::TurnResult {
         stop_reason,
         total_cost_usd,
+        usage,
         raw,
     }]
 }
@@ -324,12 +396,57 @@ mod tests {
             AIEvent::TurnResult {
                 stop_reason,
                 total_cost_usd,
+                usage,
                 ..
             } => {
                 assert_eq!(stop_reason.as_deref(), Some("end_turn"));
                 assert_eq!(*total_cost_usd, Some(0.00042));
+                assert!(usage.is_none());
             }
             other => panic!("expected TurnResult, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_result_event_with_usage() {
+        let line = r#"{
+            "type":"result",
+            "subtype":"success",
+            "stop_reason":"end_turn",
+            "total_cost_usd":0.0042,
+            "usage":{
+                "input_tokens": 12,
+                "output_tokens": 34,
+                "cache_read_input_tokens": 100,
+                "cache_creation_input_tokens": 50
+            }
+        }"#;
+        let evs = parse_line(line);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            AIEvent::TurnResult { usage, .. } => {
+                let u = usage.expect("usage should be Some");
+                assert_eq!(u.input_tokens, 12);
+                assert_eq!(u.output_tokens, 34);
+                assert_eq!(u.cache_read_input_tokens, 100);
+                assert_eq!(u.cache_creation_input_tokens, 50);
+                assert_eq!(u.total_tokens(), 12 + 34 + 100 + 50);
+            }
+            other => panic!("expected TurnResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_usage_anthropic_returns_none_for_empty_object() {
+        let v = serde_json::json!({});
+        assert!(parse_usage_anthropic(&v).is_none());
+    }
+
+    #[test]
+    fn parse_usage_anthropic_handles_partial_fields() {
+        let v = serde_json::json!({"input_tokens": 5});
+        let u = parse_usage_anthropic(&v).expect("Some");
+        assert_eq!(u.input_tokens, 5);
+        assert_eq!(u.output_tokens, 0);
     }
 }

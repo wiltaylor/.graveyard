@@ -43,7 +43,7 @@ use uuid::Uuid;
 use crate::agent_ipc::{AgentSocketEvent, Request, RequestCmd, Response};
 use crate::ai::claude_code::{PromptParts, MAX_TAG_CHAIN_ROUNDS};
 use crate::ai::core::{AICore, AIError};
-use crate::ai::event::AIEvent;
+use crate::ai::event::{AIEvent, TurnUsage};
 use crate::ai::tag_call;
 use crate::ai::tools::{RegistryConfig, ToolRegistry};
 
@@ -376,6 +376,9 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
         let mut finish_reason: Option<String> = None;
         let mut final_raw: Value = Value::Null;
         let mut saw_done = false;
+        // OpenAI emits `usage` on the final chunk when
+        // `stream_options.include_usage = true` is set on the request.
+        let mut turn_usage: Option<TurnUsage> = None;
 
         let mut decoder = OpenAiSseDecoder::new();
         let mut stream = resp.bytes_stream();
@@ -409,6 +412,14 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                         break 'stream;
                     }
                     OpenAiSseEvent::Data(v) => {
+                        // The terminal usage chunk (when include_usage
+                        // is enabled) carries `choices: []` and a
+                        // top-level `usage` object. Capture it before
+                        // we skip the empty-choices early-return.
+                        if let Some(usage) = v.pointer("/usage").and_then(parse_usage_openai) {
+                            turn_usage = Some(usage);
+                        }
+
                         // Some vendors (OpenRouter) send a leading
                         // metadata chunk with `choices: []`. Skip those.
                         let Some(choice) = v.pointer("/choices/0") else {
@@ -554,6 +565,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
             .send(AIEvent::TurnResult {
                 stop_reason: finish_reason.clone(),
                 total_cost_usd: None,
+                usage: turn_usage,
                 raw: final_raw,
             })
             .await;
@@ -640,6 +652,39 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
 /// Build the `/chat/completions` request body from our in-memory
 /// history. The system prompt is prepended as a `role: "system"`
 /// message rather than a separate field (that's the Anthropic shape).
+/// Pull a `TurnUsage` out of an OpenAI-style `usage` object. OpenAI uses
+/// `prompt_tokens` / `completion_tokens` / `total_tokens`; some vendors
+/// also report `prompt_tokens_details.cached_tokens`. Returns `None`
+/// when the value isn't an object or has no recognisable fields.
+fn parse_usage_openai(usage: &Value) -> Option<TurnUsage> {
+    let obj = usage.as_object()?;
+    let mut u = TurnUsage::default();
+    let mut any = false;
+    if let Some(v) = obj.get("prompt_tokens").and_then(Value::as_u64) {
+        u.input_tokens = v;
+        any = true;
+    }
+    if let Some(v) = obj.get("completion_tokens").and_then(Value::as_u64) {
+        u.output_tokens = v;
+        any = true;
+    }
+    if let Some(v) = usage
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .and_then(Value::as_u64)
+    {
+        u.cache_read_input_tokens = v;
+        // Cached tokens are reported as part of prompt_tokens — subtract
+        // so we don't double-count when summing the four fields.
+        u.input_tokens = u.input_tokens.saturating_sub(v);
+        any = true;
+    }
+    if any {
+        Some(u)
+    } else {
+        None
+    }
+}
+
 fn build_request_body(
     model: &str,
     system_prompt: &Option<String>,
@@ -661,6 +706,7 @@ fn build_request_body(
     let mut body = json!({
         "model": model,
         "stream": true,
+        "stream_options": { "include_usage": true },
         "messages": messages,
     });
     if !tools.is_empty() {
@@ -867,6 +913,46 @@ mod tests {
         assert!(body.get("tools").is_none());
         assert_eq!(body["model"], "m");
         assert_eq!(body["stream"], true);
+    }
+
+    #[test]
+    fn request_body_opts_in_to_stream_usage() {
+        let body = build_request_body("m", &None, &[], &[]);
+        assert_eq!(body["stream_options"]["include_usage"], true);
+    }
+
+    #[test]
+    fn parse_usage_openai_basic_fields() {
+        let v = serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150
+        });
+        let u = parse_usage_openai(&v).expect("Some");
+        assert_eq!(u.input_tokens, 100);
+        assert_eq!(u.output_tokens, 50);
+        assert_eq!(u.cache_read_input_tokens, 0);
+    }
+
+    #[test]
+    fn parse_usage_openai_extracts_cached_tokens() {
+        let v = serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_tokens_details": { "cached_tokens": 30 }
+        });
+        let u = parse_usage_openai(&v).expect("Some");
+        // Cached are split out; remainder is the actual fresh input.
+        assert_eq!(u.input_tokens, 70);
+        assert_eq!(u.output_tokens, 20);
+        assert_eq!(u.cache_read_input_tokens, 30);
+        assert_eq!(u.total_tokens(), 70 + 20 + 30);
+    }
+
+    #[test]
+    fn parse_usage_openai_returns_none_for_empty() {
+        assert!(parse_usage_openai(&serde_json::json!({})).is_none());
+        assert!(parse_usage_openai(&serde_json::json!(null)).is_none());
     }
 
     #[test]

@@ -34,7 +34,7 @@ use uuid::Uuid;
 use crate::agent_ipc::{AgentSocketEvent, Request, RequestCmd, Response};
 use crate::ai::claude_code::{PromptParts, MAX_TAG_CHAIN_ROUNDS};
 use crate::ai::core::{AICore, AIError};
-use crate::ai::event::AIEvent;
+use crate::ai::event::{parse_usage_anthropic, AIEvent, TurnUsage};
 use crate::ai::tag_call;
 use crate::ai::tools::{RegistryConfig, ToolRegistry};
 
@@ -379,6 +379,10 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
         let mut current_block_type: Option<String> = None;
         let mut stop_reason: Option<String> = None;
         let mut final_raw: Value = Value::Null;
+        // Anthropic reports input/cache counts in `message_start.usage`
+        // and a final cumulative `output_tokens` in `message_delta.usage`.
+        // We merge them here and emit one TurnUsage at end of round.
+        let mut turn_usage: Option<TurnUsage> = None;
 
         let mut decoder = SseDecoder::new();
         let mut stream = resp.bytes_stream();
@@ -407,6 +411,15 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                     }
                 };
                 match ev.event.as_str() {
+                    "message_start" => {
+                        if let Some(u) = ev
+                            .data
+                            .pointer("/message/usage")
+                            .and_then(parse_usage_anthropic)
+                        {
+                            turn_usage = Some(merge_usage(turn_usage, u));
+                        }
+                    }
                     "content_block_start" => {
                         let kind = ev
                             .data
@@ -525,6 +538,13 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                         {
                             stop_reason = Some(sr.to_string());
                         }
+                        // Anthropic only puts the final cumulative
+                        // output_tokens count here (and sometimes
+                        // updated cache numbers). Merge into the
+                        // turn's running totals.
+                        if let Some(u) = ev.data.pointer("/usage").and_then(parse_usage_anthropic) {
+                            turn_usage = Some(merge_usage(turn_usage, u));
+                        }
                     }
                     "message_stop" => {
                         final_raw = ev.data.clone();
@@ -565,6 +585,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
             .send(AIEvent::TurnResult {
                 stop_reason: stop_reason.clone(),
                 total_cost_usd: None,
+                usage: turn_usage,
                 raw: final_raw,
             })
             .await;
@@ -794,6 +815,23 @@ async fn dispatch_call(
 #[allow(dead_code)]
 fn _compiler_hint_debug(_: &dyn std::fmt::Debug) {
     debug!("noop");
+}
+
+/// Merge a freshly-parsed `TurnUsage` into the running totals for the
+/// current turn. Anthropic emits `input_tokens` / cache numbers in
+/// `message_start` and the final `output_tokens` in `message_delta`,
+/// so we merge by taking the **maximum** of each field — the later
+/// event always carries equal or higher cumulative counts.
+fn merge_usage(prev: Option<TurnUsage>, next: TurnUsage) -> TurnUsage {
+    let p = prev.unwrap_or_default();
+    TurnUsage {
+        input_tokens: p.input_tokens.max(next.input_tokens),
+        output_tokens: p.output_tokens.max(next.output_tokens),
+        cache_read_input_tokens: p.cache_read_input_tokens.max(next.cache_read_input_tokens),
+        cache_creation_input_tokens: p
+            .cache_creation_input_tokens
+            .max(next.cache_creation_input_tokens),
+    }
 }
 
 #[cfg(test)]

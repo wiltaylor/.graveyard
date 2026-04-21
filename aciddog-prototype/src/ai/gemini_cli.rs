@@ -52,7 +52,7 @@ use crate::agent_ipc::{AgentSocketEvent, Request, RequestCmd, Response};
 
 use super::claude_code::{PromptParts, MAX_TAG_CHAIN_ROUNDS};
 use super::core::{AICore, AIError};
-use super::event::AIEvent;
+use super::event::{AIEvent, TurnUsage};
 use super::tag_call;
 use super::tools::docs::built_in_tool_doc;
 
@@ -957,14 +957,75 @@ pub(crate) fn parse_gemini_line(
         "result" => {
             let mut events = Vec::new();
             flush_pending(pending_text, pending_raw, &mut events);
+            // Gemini reports cumulative token usage in its result event;
+            // best-effort extraction tolerates several known shapes.
+            let usage = parse_gemini_usage(&value);
             events.push(AIEvent::TurnResult {
                 stop_reason: None,
                 total_cost_usd: None,
+                usage,
                 raw: value,
             });
             events
         }
         _ => vec![AIEvent::Other(value)],
+    }
+}
+
+/// Best-effort token-usage extraction from a gemini `result` event.
+/// Tolerates several shapes — gemini's CLI has used `stats.total_tokens`,
+/// nested `usage`/`tokens` objects, and Anthropic-style flat keys across
+/// versions. Returns `None` if no recognised numeric field is present.
+fn parse_gemini_usage(value: &Value) -> Option<TurnUsage> {
+    let mut u = TurnUsage::default();
+    let mut any = false;
+
+    // Probe a handful of plausible container locations.
+    let containers: [Option<&Value>; 4] = [
+        value.get("usage"),
+        value.get("stats"),
+        value.get("tokens"),
+        value.pointer("/data/usage"),
+    ];
+
+    for cont in containers.iter().flatten() {
+        let Some(obj) = cont.as_object() else { continue };
+        for (k, v) in obj {
+            let Some(n) = v.as_u64() else { continue };
+            match k.as_str() {
+                "prompt_tokens" | "input_tokens" | "tokens_in" | "input" => {
+                    u.input_tokens = u.input_tokens.max(n);
+                    any = true;
+                }
+                "completion_tokens" | "output_tokens" | "tokens_out" | "output" => {
+                    u.output_tokens = u.output_tokens.max(n);
+                    any = true;
+                }
+                "cache_read_input_tokens" | "cached_tokens" | "cached_input_tokens" => {
+                    u.cache_read_input_tokens = u.cache_read_input_tokens.max(n);
+                    any = true;
+                }
+                "cache_creation_input_tokens" => {
+                    u.cache_creation_input_tokens = u.cache_creation_input_tokens.max(n);
+                    any = true;
+                }
+                "total_tokens" | "total" => {
+                    // Only fall back to `total` when we have no other
+                    // signal; otherwise input+output is more accurate.
+                    if u.input_tokens == 0 && u.output_tokens == 0 {
+                        u.input_tokens = n;
+                        any = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if any {
+        Some(u)
+    } else {
+        None
     }
 }
 
