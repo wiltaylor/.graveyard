@@ -95,6 +95,15 @@ pub struct LayoutRects {
     /// clickable rect here. Populated by `render_dropdown_picker`
     /// and consumed by the mouse handler.
     pub task_form_picker_rows: Vec<Rect>,
+    /// Outer rect of the active picker overlay (single-select or
+    /// multi-select blocked-by). Used by the mouse handler to
+    /// distinguish "click outside the picker" (close) from "click
+    /// inside but not on an interactive element" (swallow).
+    pub task_form_picker_outer: Option<Rect>,
+    /// OK/Cancel button rects on the multi-select blocked-by
+    /// picker. Empty when no picker is open or when the picker
+    /// doesn't show buttons.
+    pub task_form_picker_buttons: Vec<(FormField, Rect)>,
     /// When a child overlay (TODOs or Comments) is open, each row
     /// gets a clickable rect here. The mouse handler uses it to
     /// jump the cursor to the clicked row.
@@ -1975,22 +1984,29 @@ impl App {
 
         // Description has its own text-editor key map.
         if on_description {
+            // The box's visible-row count is stored on the form by
+            // the renderer; fall back to the constant min when we
+            // haven't rendered yet (headless tests).
+            let vh = if form.last_visible_lines > 0 {
+                form.last_visible_lines
+            } else {
+                super::tasks_view::DESCRIPTION_MIN_VISIBLE_LINES
+            };
             match code {
                 KeyCode::Esc => self.tasks_screen.close_modal(),
                 KeyCode::Tab => form.focus_next(),
                 KeyCode::BackTab => form.focus_prev(),
                 KeyCode::Enter => {
-                    // Insert a newline at the cursor.
                     form.description_insert('\n');
-                    form.description_ensure_visible(super::tasks_view::DESCRIPTION_VISIBLE_LINES);
+                    form.description_ensure_visible(vh);
                 }
                 KeyCode::Char(c) => {
                     form.description_insert(c);
-                    form.description_ensure_visible(super::tasks_view::DESCRIPTION_VISIBLE_LINES);
+                    form.description_ensure_visible(vh);
                 }
                 KeyCode::Backspace => {
                     form.description_backspace();
-                    form.description_ensure_visible(super::tasks_view::DESCRIPTION_VISIBLE_LINES);
+                    form.description_ensure_visible(vh);
                 }
                 KeyCode::Left => form.description_move_char(-1),
                 KeyCode::Right => form.description_move_char(1),
@@ -1998,18 +2014,14 @@ impl App {
                     if !form.description_move_line(-1) {
                         form.focus_prev();
                     } else {
-                        form.description_ensure_visible(
-                            super::tasks_view::DESCRIPTION_VISIBLE_LINES,
-                        );
+                        form.description_ensure_visible(vh);
                     }
                 }
                 KeyCode::Down => {
                     if !form.description_move_line(1) {
                         form.focus_next();
                     } else {
-                        form.description_ensure_visible(
-                            super::tasks_view::DESCRIPTION_VISIBLE_LINES,
-                        );
+                        form.description_ensure_visible(vh);
                     }
                 }
                 _ => {}
@@ -2414,7 +2426,9 @@ impl App {
             return;
         }
 
-        // Multi-select blocked-by picker open? Click toggles a row.
+        // Multi-select blocked-by picker open? Click the OK/Cancel
+        // buttons first, then rows, then the outer rect (swallow),
+        // then outside → close discarding.
         let blocked_picker_open = self
             .tasks_screen
             .form
@@ -2422,21 +2436,52 @@ impl App {
             .map(|f| f.blocked_by_picker.is_some())
             .unwrap_or(false);
         if blocked_picker_open {
-            let hit_row = self
+            // 1. Button?
+            if let Some(btn) = self
+                .layout
+                .task_form_picker_buttons
+                .iter()
+                .find(|(_, r)| rect_contains(*r, pos))
+                .map(|(f, _)| *f)
+            {
+                match btn {
+                    FormField::Ok => {
+                        if let Some(form) = self.tasks_screen.form.as_mut() {
+                            form.commit_blocked_by_picker();
+                        }
+                    }
+                    FormField::Cancel => {
+                        if let Some(form) = self.tasks_screen.form.as_mut() {
+                            form.close_blocked_by_picker();
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            // 2. Row?
+            if let Some(idx) = self
                 .layout
                 .task_form_picker_rows
                 .iter()
-                .position(|r| rect_contains(*r, pos));
-            if let Some(idx) = hit_row {
+                .position(|r| rect_contains(*r, pos))
+            {
                 if let Some(form) = self.tasks_screen.form.as_mut() {
                     form.blocked_by_picker_toggle_at(idx);
                 }
-            } else {
-                // Click outside → close, discarding changes (matches
-                // Esc behaviour).
-                if let Some(form) = self.tasks_screen.form.as_mut() {
-                    form.close_blocked_by_picker();
+                return;
+            }
+            // 3. Click inside the picker frame but not on anything
+            //    interactive — swallow.
+            if let Some(outer) = self.layout.task_form_picker_outer {
+                if rect_contains(outer, pos) {
+                    return;
                 }
+            }
+            // 4. Click outside the picker entirely → close
+            //    discarding, matching Esc.
+            if let Some(form) = self.tasks_screen.form.as_mut() {
+                form.close_blocked_by_picker();
             }
             return;
         }
@@ -5312,6 +5357,99 @@ mod tests {
         let form = app.tasks_screen.form.as_ref().unwrap();
         assert!(form.blocked_by_picker.is_none(), "picker closes on Enter");
         assert_eq!(form.blocked_by, vec![dep]);
+    }
+
+    #[tokio::test]
+    async fn clicking_ok_button_in_blocked_by_picker_commits() {
+        let mut app = App::new(sample_config());
+        let dep = app
+            .tasks
+            .add("prereq".into(), None, None, "x".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        for _ in 0..3 {
+            app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        // Toggle the only option with Space so OK has something to commit.
+        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        // Inject an OK button rect and click it.
+        let ok_rect = Rect::new(10, 20, 8, 1);
+        app.layout.task_form_picker_buttons = vec![(FormField::Ok, ok_rect)];
+        app.layout.task_form_picker_outer = Some(Rect::new(0, 0, 100, 30));
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 12,
+            row: 20,
+            modifiers: KeyModifiers::NONE,
+        });
+        let form = app.tasks_screen.form.as_ref().unwrap();
+        assert!(form.blocked_by_picker.is_none(), "picker closed on OK");
+        assert_eq!(form.blocked_by, vec![dep]);
+    }
+
+    #[tokio::test]
+    async fn clicking_cancel_button_in_blocked_by_picker_discards() {
+        let mut app = App::new(sample_config());
+        app.tasks
+            .add("prereq".into(), None, None, "x".into(), Vec::new())
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        for _ in 0..3 {
+            app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        let cancel_rect = Rect::new(20, 20, 10, 1);
+        app.layout.task_form_picker_buttons = vec![(FormField::Cancel, cancel_rect)];
+        app.layout.task_form_picker_outer = Some(Rect::new(0, 0, 100, 30));
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 22,
+            row: 20,
+            modifiers: KeyModifiers::NONE,
+        });
+        let form = app.tasks_screen.form.as_ref().unwrap();
+        assert!(form.blocked_by_picker.is_none());
+        assert!(form.blocked_by.is_empty(), "cancel discards the toggle");
+    }
+
+    #[tokio::test]
+    async fn click_inside_blocked_by_picker_but_not_on_anything_is_swallowed() {
+        let mut app = App::new(sample_config());
+        app.tasks
+            .add("prereq".into(), None, None, "x".into(), Vec::new())
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        for _ in 0..3 {
+            app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.layout.task_form_picker_buttons = vec![];
+        app.layout.task_form_picker_rows = vec![Rect::new(10, 10, 40, 1)];
+        app.layout.task_form_picker_outer = Some(Rect::new(0, 0, 100, 30));
+        // Click somewhere inside the outer rect but not on a row.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 50,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        // Picker stays open.
+        assert!(app
+            .tasks_screen
+            .form
+            .as_ref()
+            .unwrap()
+            .blocked_by_picker
+            .is_some());
     }
 
     #[tokio::test]

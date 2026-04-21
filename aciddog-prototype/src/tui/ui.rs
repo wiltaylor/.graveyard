@@ -18,6 +18,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.layout.chat_buttons.clear();
     app.layout.task_form_fields.clear();
     app.layout.task_form_picker_rows.clear();
+    app.layout.task_form_picker_outer = None;
+    app.layout.task_form_picker_buttons.clear();
     app.layout.child_overlay_rows.clear();
     app.layout.child_overlay_outer = None;
 
@@ -662,7 +664,11 @@ fn centered_rect(area: Rect, w: u16, h: u16) -> Rect {
 }
 
 fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
-    let Some(form) = app.tasks_screen.form.as_ref() else {
+    // Clone the task slice upfront so we can mutably borrow the
+    // form without clashing with reads of the store. Tasks lists
+    // are small and this only runs while the modal is visible.
+    let all_tasks = app.tasks.all().to_vec();
+    let Some(form) = app.tasks_screen.form.as_mut() else {
         return;
     };
     let title = match form.kind {
@@ -671,28 +677,17 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
     };
     let order = form.tab_order();
 
-    // Split the tab_order into editable fields (2 lines each) and
-    // the trailing button row (1 line).
+    // Split the tab_order into editable fields and trailing buttons.
     let value_fields: Vec<FormField> = order.iter().copied().filter(|f| !f.is_button()).collect();
     let button_fields: Vec<FormField> = order.iter().copied().filter(|f| f.is_button()).collect();
 
-    // Height: 2 per value field + 1 button row + 1 spacer + 1 error
-    // line + 2 for borders, clamped to area.
-    // Each value field uses 1 label + 1 value line by default.
-    // Description takes the scroll box's full 8 rows (6 visible +
-    // 2 border), and BlockedBy can grow to 5 rows (up to 4 entries
-    // + a "…N more" row). Pad generously so neither flows out.
-    let desc_extra: u16 = 7; // 8 rows - 1 baseline = +7
-    let blocked_by_extra: u16 = 4; // up to 5 rows - 1 baseline = +4
-    let raw_h = value_fields.len() as u16 * 2
-        + desc_extra
-        + blocked_by_extra
-        + 1 /* spacer */
-        + 1 /* buttons */
-        + 1 /* err */
-        + 2;
-    let h: u16 = raw_h.min(area.height.saturating_sub(2));
-    let rect = centered_rect(area, 64.min(area.width), h);
+    // Near-fullscreen modal: 2-character margin on every side.
+    // Minimum width of 40 so the layout never collapses on a tiny
+    // terminal; if the area is smaller than that the caller gets a
+    // clamped rect via `centered_rect`.
+    let w = area.width.saturating_sub(4).max(40);
+    let h = area.height.saturating_sub(4).max(12);
+    let rect = centered_rect(area, w, h);
     f.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -704,6 +699,28 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
     // Collect field hit-rects into a local buffer so we can drop the
     // immutable borrow on `app` before writing them back.
     let mut hit_rects: Vec<(FormField, Rect)> = Vec::new();
+
+    // Compute how many rows to reserve for the Description scroll
+    // box. The box grows to use whatever vertical space is left
+    // after the simpler (single-line-value) fields + BlockedBy list
+    // + buttons + spacer + error line.
+    let simple_value_fields = value_fields
+        .iter()
+        .filter(|f| **f != FormField::Description && **f != FormField::BlockedBy)
+        .count() as u16;
+    let blocked_by_block_rows: u16 = {
+        // label + list (up to 4 entries + possible "…more", or the
+        // "(none)" placeholder). Always reserve 6 rows so the box
+        // doesn't bounce around on content change.
+        6
+    };
+    let overhead = simple_value_fields * 2
+        + blocked_by_block_rows
+        + 1 /* spacer */
+        + 1 /* err */
+        + 1 /* buttons */
+        + 1 /* description label */;
+    let desc_target_rows = inner.height.saturating_sub(overhead).max(8);
 
     // ---- Field rows ----
     let mut y = inner.y;
@@ -756,13 +773,14 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
         let rows_drawn: u16;
 
         if is_description {
-            rows_drawn = render_description_scroll_box(f, inner, y, form, is_focused);
+            rows_drawn =
+                render_description_scroll_box(f, inner, y, form, is_focused, desc_target_rows);
             y += rows_drawn;
         } else if is_blocked_by {
             // Render each current dep on its own line (up to 4 before
             // "…N more"). Each line looks up the task for its title
             // + status so dropped tasks render as "(missing)".
-            rows_drawn = render_blocked_by_value_rows(f, inner, y, form, app.tasks.all());
+            rows_drawn = render_blocked_by_value_rows(f, inner, y, &*form, &all_tasks);
             y += rows_drawn;
         } else {
             rows_drawn = 1;
@@ -1013,14 +1031,14 @@ fn render_description_scroll_box(
     f: &mut Frame,
     inner: Rect,
     start_y: u16,
-    form: &super::tasks_view::TaskForm,
+    form: &mut super::tasks_view::TaskForm,
     focused: bool,
+    target_rows: u16,
 ) -> u16 {
-    let visible = super::tasks_view::DESCRIPTION_VISIBLE_LINES;
-    let total_rows = visible + 2;
-    // Clamp to the form's remaining space.
+    // Use whatever vertical space the caller reserved, clamped to
+    // what's actually free on screen.
     let max_space = (inner.y + inner.height).saturating_sub(start_y);
-    let total_rows = total_rows.min(max_space);
+    let total_rows = target_rows.min(max_space);
     if total_rows < 3 {
         return 0;
     }
@@ -1042,20 +1060,41 @@ fn render_description_scroll_box(
     f.render_widget(block, rect);
 
     let visible = box_inner.height;
-    let scroll = form.description_scroll;
-    let text_lines: Vec<&str> = form.description.split('\n').collect();
+    let wrap_width = box_inner.width;
 
-    let (cursor_line, cursor_col) =
-        super::tasks_view::line_col_from_offset(&form.description, form.description_cursor);
+    // Keep the form's idea of wrap width / visible rows in sync
+    // with what we just drew so key handlers navigate correctly.
+    form.last_wrap_width = wrap_width;
+    form.last_visible_lines = visible;
+
+    // Clamp scroll once the box width changes so we don't end up
+    // with an orphaned offset.
+    let all_lines = super::tasks_view::wrap_description(&form.description, wrap_width);
+    let total_visual = all_lines.len() as u16;
+    let max_scroll = total_visual.saturating_sub(visible);
+    if form.description_scroll > max_scroll {
+        form.description_scroll = max_scroll;
+    }
+    let scroll = form.description_scroll;
+
+    // Figure out where the cursor sits in visual space so we can
+    // draw an inverted cell when focused.
+    let (cursor_v_idx, cursor_col) = super::tasks_view::cursor_visual_pos(
+        &form.description,
+        &all_lines,
+        form.description_cursor,
+    );
 
     for row in 0..visible {
-        let line_idx = scroll + row;
+        let v_idx = scroll as usize + row as usize;
+        if v_idx >= all_lines.len() {
+            break;
+        }
+        let seg = &all_lines[v_idx];
+        let text = &form.description[seg.byte_start..seg.byte_end];
         let y = box_inner.y + row;
         let rect_row = Rect::new(box_inner.x, y, box_inner.width, 1);
-        let text = text_lines.get(line_idx as usize).copied().unwrap_or("");
-        if focused && line_idx == cursor_line {
-            // Split into before / cursor-char / after so we can
-            // invert the cursor cell.
+        if focused && v_idx == cursor_v_idx {
             let col = cursor_col as usize;
             let chars: Vec<char> = text.chars().collect();
             let before: String = chars.iter().take(col).collect();
@@ -1085,7 +1124,6 @@ fn render_description_scroll_box(
     }
 
     // Scroll hints at top-right / bottom-right of the box.
-    let total_lines = super::tasks_view::line_count(&form.description);
     if scroll > 0 {
         let hint_rect = Rect::new(
             box_inner.x + box_inner.width.saturating_sub(1),
@@ -1098,7 +1136,7 @@ fn render_description_scroll_box(
             hint_rect,
         );
     }
-    if scroll + box_inner.height < total_lines {
+    if scroll + visible < total_visual {
         let hint_rect = Rect::new(
             box_inner.x + box_inner.width.saturating_sub(1),
             box_inner.y + box_inner.height.saturating_sub(1),
@@ -1190,33 +1228,61 @@ fn render_blocked_by_value_rows(
 /// Overlay that appears over the form when the multi-select
 /// blocked-by picker is open.
 fn render_blocked_by_picker(f: &mut Frame, area: Rect, app: &mut App) {
-    let Some(form) = app.tasks_screen.form.as_ref() else {
+    let Some(form) = app.tasks_screen.form.as_mut() else {
         return;
     };
-    let Some(picker) = form.blocked_by_picker.as_ref() else {
+    let Some(picker) = form.blocked_by_picker.as_mut() else {
         return;
     };
-    // Snapshot for drawing.
+    // Snapshot what we need for drawing before releasing the
+    // mutable borrow later.
     let options = picker.options.clone();
     let checked = picker.checked.clone();
     let cursor = picker.cursor;
 
-    let h = (options.len() as u16 + 4).clamp(6, area.height);
-    let w = 72.min(area.width);
+    // Near-fullscreen picker: 4-char horizontal + 3-row vertical
+    // margin from the area it overlays. Stays inside the parent
+    // form modal so the visual hierarchy is obvious.
+    let w = area.width.saturating_sub(8).max(50);
+    let h = area.height.saturating_sub(6).max(10);
     let rect = centered_rect(area, w, h);
     f.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" blocked by (space toggle · enter save · esc cancel) ")
+        .title(" blocked by ")
         .border_style(Style::default().fg(Color::Cyan));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
+    // Reserve: 1 row buttons + 1 row hint at the bottom, leaving
+    // the rest for the row list.
+    let list_height = inner.height.saturating_sub(2);
+    let list_area = Rect::new(inner.x, inner.y, inner.width, list_height);
+    let button_y = inner.y + list_height;
+    let hint_y = button_y + 1;
+
+    // Auto-clamp scroll so the cursor stays inside the visible
+    // window. Handles both "cursor moved below viewport" and
+    // "cursor jumped above viewport".
+    let visible = list_height as usize;
+    if cursor < picker.scroll {
+        picker.scroll = cursor;
+    } else if visible > 0 && cursor >= picker.scroll + visible {
+        picker.scroll = cursor + 1 - visible;
+    }
+    // Also clamp if the list shrank since last open.
+    let max_scroll = options.len().saturating_sub(visible);
+    if picker.scroll > max_scroll {
+        picker.scroll = max_scroll;
+    }
+    let scroll = picker.scroll;
+
+    // Render visible rows.
     let mut row_rects: Vec<Rect> = Vec::new();
-    let max_rows = inner.height as usize;
-    for (i, row) in options.iter().take(max_rows).enumerate() {
-        let y = inner.y + i as u16;
-        let rect_row = Rect::new(inner.x, y, inner.width, 1);
+    for (i, row) in options.iter().enumerate().skip(scroll).take(visible) {
+        let display_row = (i - scroll) as u16;
+        let y = list_area.y + display_row;
+        let rect_row = Rect::new(list_area.x, y, list_area.width, 1);
         let is_cursor = i == cursor;
         let box_glyph = if *checked.get(i).unwrap_or(&false) {
             "[✓]"
@@ -1245,7 +1311,66 @@ fn render_blocked_by_picker(f: &mut Frame, area: Rect, app: &mut App) {
         f.render_widget(Paragraph::new(line), rect_row);
         row_rects.push(rect_row);
     }
+
+    // Scroll indicators on the right edge.
+    if scroll > 0 {
+        let hint_rect = Rect::new(
+            list_area.x + list_area.width.saturating_sub(1),
+            list_area.y,
+            1,
+            1,
+        );
+        f.render_widget(
+            Paragraph::new(Span::styled("▲", Style::default().fg(Color::DarkGray))),
+            hint_rect,
+        );
+    }
+    if scroll + visible < options.len() {
+        let hint_rect = Rect::new(
+            list_area.x + list_area.width.saturating_sub(1),
+            list_area.y + list_area.height.saturating_sub(1),
+            1,
+            1,
+        );
+        f.render_widget(
+            Paragraph::new(Span::styled("▼", Style::default().fg(Color::DarkGray))),
+            hint_rect,
+        );
+    }
+
+    // Bottom hint line.
+    let hint = "↑/↓ nav · space toggle · enter/ok save · esc/cancel discard";
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(Color::DarkGray),
+        ))),
+        Rect::new(inner.x, hint_y, inner.width, 1),
+    );
+
+    // OK / Cancel buttons on the button row.
+    let ok_label = " OK ";
+    let cancel_label = " Cancel ";
+    let ok_w = ok_label.chars().count() as u16 + 2;
+    let cancel_w = cancel_label.chars().count() as u16 + 2;
+    let ok_rect = Rect::new(inner.x + 2, button_y, ok_w, 1);
+    let cancel_rect = Rect::new(inner.x + 2 + ok_w + 2, button_y, cancel_w, 1);
+    let btn_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    f.render_widget(
+        Paragraph::new(Span::styled(format!("[{ok_label}]"), btn_style)),
+        ok_rect,
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(format!("[{cancel_label}]"), btn_style)),
+        cancel_rect,
+    );
+
     app.layout.task_form_picker_rows = row_rects;
+    app.layout.task_form_picker_outer = Some(rect);
+    app.layout.task_form_picker_buttons =
+        vec![(FormField::Ok, ok_rect), (FormField::Cancel, cancel_rect)];
 }
 
 fn render_child_overlay(f: &mut Frame, area: Rect, app: &mut App) {

@@ -96,6 +96,9 @@ pub struct BlockedByPicker {
     pub options: Vec<BlockedByRow>,
     pub checked: Vec<bool>,
     pub cursor: usize,
+    /// Index of the first visible option. The renderer clamps this
+    /// each frame so the cursor stays inside the visible window.
+    pub scroll: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -105,9 +108,29 @@ pub struct BlockedByRow {
     pub status: TaskStatus,
 }
 
-/// Number of text-lines visible inside the Description sub-block.
-/// Rows on screen = this + 2 for the border.
-pub const DESCRIPTION_VISIBLE_LINES: u16 = 6;
+/// Default minimum number of text-lines visible inside the
+/// Description sub-block when the modal is cramped. The actual
+/// height expands to use whatever vertical space the full-screen
+/// modal has left over after the other fields.
+pub const DESCRIPTION_MIN_VISIBLE_LINES: u16 = 6;
+
+/// One visual segment of the description after word-wrap. When the
+/// wrap width is zero (caller doesn't want to wrap), one segment
+/// per logical line is emitted and `logical_col_start` is always 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisualLine {
+    /// Byte offset into the description where this segment begins.
+    pub byte_start: usize,
+    /// Byte offset where this segment ends (exclusive; does NOT
+    /// include a trailing `\n`).
+    pub byte_end: usize,
+    /// Index of the logical line (as split by `\n`) that this
+    /// segment belongs to.
+    pub logical_line: u16,
+    /// Column within the logical line where this visual segment
+    /// begins. 0 for the first segment of each line.
+    pub logical_col_start: u16,
+}
 
 #[derive(Debug, Clone)]
 pub struct TaskForm {
@@ -117,8 +140,18 @@ pub struct TaskForm {
     /// Byte offset of the insertion cursor inside `description`.
     /// Kept in sync with edits so arrow-key movement works.
     pub description_cursor: usize,
-    /// Scroll offset (in lines) hidden above the visible window.
+    /// Scroll offset (in visual lines, post-wrap) hidden above the
+    /// visible window. Zero means the top of the description.
     pub description_scroll: u16,
+    /// Wrap width the Description box was last rendered at. Key
+    /// handlers read this to keep cursor-move / scroll math
+    /// consistent with what's actually on screen. Zero means "no
+    /// wrap" / headless unit test.
+    pub last_wrap_width: u16,
+    /// Number of visible text rows inside the Description box as of
+    /// the last render. Used by key handlers to keep the cursor
+    /// onscreen after edits.
+    pub last_visible_lines: u16,
     pub assignee: String,
     pub status: String,
     /// Current in-form blocked-by set. For Edit, seeded from the
@@ -158,6 +191,8 @@ impl TaskForm {
             description: String::new(),
             description_cursor: 0,
             description_scroll: 0,
+            last_wrap_width: 0,
+            last_visible_lines: DESCRIPTION_MIN_VISIBLE_LINES,
             assignee: String::new(),
             status: String::new(),
             blocked_by: Vec::new(),
@@ -180,6 +215,8 @@ impl TaskForm {
             description: desc,
             description_cursor: cursor,
             description_scroll: 0,
+            last_wrap_width: 0,
+            last_visible_lines: DESCRIPTION_MIN_VISIBLE_LINES,
             assignee: task.assignee.clone().unwrap_or_default(),
             status: task.status.as_str().to_string(),
             blocked_by: task.blocked_by.clone(),
@@ -385,6 +422,7 @@ impl TaskForm {
             options: rows,
             checked,
             cursor: 0,
+            scroll: 0,
         });
     }
 
@@ -471,41 +509,98 @@ impl TaskForm {
     /// Move the cursor up/down one visual line, preserving column
     /// as best effort. Returns false when the move would leave the
     /// text (caller should tab to the next/prev field instead).
+    /// Move the cursor up/down one *visual* line (wrap-aware when
+    /// `self.last_wrap_width` is set). Returns false when the move
+    /// would leave the text — the caller should tab to the
+    /// next/prev field.
     pub fn description_move_line(&mut self, delta: i32) -> bool {
-        let (line, col) = line_col_from_offset(&self.description, self.description_cursor);
-        let total = line_count(&self.description);
+        let lines = wrap_description(&self.description, self.last_wrap_width);
+        let (v_idx, col_in_seg) =
+            cursor_visual_pos(&self.description, &lines, self.description_cursor);
         if delta < 0 {
-            if line == 0 {
+            if v_idx == 0 {
                 return false;
             }
-            let target_line = line - 1;
-            self.description_cursor = offset_from_line_col(&self.description, target_line, col);
+            let target = &lines[v_idx - 1];
+            let target_len = segment_char_count(&self.description, target);
+            let col = col_in_seg.min(target_len);
+            self.description_cursor = offset_at_col_in_segment(&self.description, target, col);
             true
         } else if delta > 0 {
-            if line + 1 >= total {
+            if v_idx + 1 >= lines.len() {
                 return false;
             }
-            let target_line = line + 1;
-            self.description_cursor = offset_from_line_col(&self.description, target_line, col);
+            let target = &lines[v_idx + 1];
+            let target_len = segment_char_count(&self.description, target);
+            let col = col_in_seg.min(target_len);
+            self.description_cursor = offset_at_col_in_segment(&self.description, target, col);
             true
         } else {
             true
         }
     }
 
-    /// Adjust `description_scroll` so the cursor's line is visible
-    /// inside a window of `visible_height` lines.
+    /// Adjust `description_scroll` so the cursor's visual line is
+    /// visible inside a window of `visible_height` rows. Uses
+    /// `self.last_wrap_width` for wrap math; when zero, each
+    /// logical line is one visual line.
     pub fn description_ensure_visible(&mut self, visible_height: u16) {
         if visible_height == 0 {
             return;
         }
-        let (line, _) = line_col_from_offset(&self.description, self.description_cursor);
-        if line < self.description_scroll {
-            self.description_scroll = line;
-        } else if line >= self.description_scroll + visible_height {
-            self.description_scroll = line - visible_height + 1;
+        let lines = wrap_description(&self.description, self.last_wrap_width);
+        let (v_idx_usize, _) =
+            cursor_visual_pos(&self.description, &lines, self.description_cursor);
+        let v_idx = v_idx_usize as u16;
+        if v_idx < self.description_scroll {
+            self.description_scroll = v_idx;
+        } else if v_idx >= self.description_scroll + visible_height {
+            self.description_scroll = v_idx - visible_height + 1;
         }
     }
+}
+
+/// Returns `(visual_line_index, col_in_segment)` for a byte offset
+/// into `s`. When the cursor sits on a wrap boundary (at a
+/// segment's `byte_end` AND the next segment starts there within
+/// the same logical line), the cursor is reported on the *next*
+/// segment so further typing continues on the wrapped row.
+pub fn cursor_visual_pos(s: &str, lines: &[VisualLine], cursor: usize) -> (usize, u16) {
+    if lines.is_empty() {
+        return (0, 0);
+    }
+    for (i, v) in lines.iter().enumerate() {
+        if cursor >= v.byte_start && cursor <= v.byte_end {
+            if cursor == v.byte_end {
+                if let Some(next) = lines.get(i + 1) {
+                    if next.logical_line == v.logical_line && next.byte_start == cursor {
+                        continue;
+                    }
+                }
+            }
+            let col = s[v.byte_start..cursor].chars().count() as u16;
+            return (i, col);
+        }
+    }
+    let last = lines.len() - 1;
+    let seg = &lines[last];
+    let count = s[seg.byte_start..seg.byte_end].chars().count() as u16;
+    (last, count)
+}
+
+fn segment_char_count(s: &str, v: &VisualLine) -> u16 {
+    s[v.byte_start..v.byte_end].chars().count() as u16
+}
+
+fn offset_at_col_in_segment(s: &str, segment: &VisualLine, col: u16) -> usize {
+    let mut remaining = col as usize;
+    let mut off = segment.byte_start;
+    while off < segment.byte_end && remaining > 0 {
+        let c_len = utf8_char_len(s, off);
+        off += c_len;
+        remaining -= 1;
+    }
+    off
 }
 
 /// One-shot prompts that piggy-back on the chat input bar.
@@ -888,6 +983,9 @@ fn utf8_char_len_prev(s: &str, offset: usize) -> usize {
 }
 
 /// Convert a byte offset into (line_index, column_as_char_count).
+/// Kept test-only for now; the production cursor path uses
+/// `cursor_visual_pos` which is wrap-aware.
+#[cfg(test)]
 pub fn line_col_from_offset(s: &str, offset: usize) -> (u16, u16) {
     let offset = offset.min(s.len());
     let mut line: u16 = 0;
@@ -908,7 +1006,8 @@ pub fn line_col_from_offset(s: &str, offset: usize) -> (u16, u16) {
 }
 
 /// Inverse of `line_col_from_offset`, with column clamped to the
-/// line's length.
+/// line's length. Test-only counterpart to `line_col_from_offset`.
+#[cfg(test)]
 pub fn offset_from_line_col(s: &str, line: u16, col: u16) -> usize {
     let mut cur_line: u16 = 0;
     let mut cur_col: u16 = 0;
@@ -934,6 +1033,125 @@ pub fn offset_from_line_col(s: &str, line: u16, col: u16) -> usize {
     s.len()
 }
 
+/// Split `s` into visual segments that fit inside a rendering
+/// window `width` characters wide. `\n` always starts a new logical
+/// line (and a new visual segment). If `width == 0`, one segment
+/// per logical line is emitted — no wrapping is applied.
+///
+/// Wrapping strategy:
+/// - Break at the last whitespace (` `) before the width limit so
+///   whole words stay together.
+/// - If there's no whitespace in the current segment (word longer
+///   than `width`), fall back to a character break so the rest of
+///   the line still fits on screen.
+/// - The space we break at is consumed into the preceding segment
+///   (segment's byte range ends *after* the space). This keeps the
+///   cursor byte offset continuously walkable across wrap
+///   boundaries — there's no byte that belongs to no segment.
+pub fn wrap_description(s: &str, width: u16) -> Vec<VisualLine> {
+    let mut out: Vec<VisualLine> = Vec::new();
+
+    // Build (start, end, logical_line) ranges — one per logical
+    // line separated by `\n`.
+    let mut logical_ranges: Vec<(usize, usize, u16)> = Vec::new();
+    {
+        let mut ls = 0;
+        let mut ll: u16 = 0;
+        for (i, b) in s.bytes().enumerate() {
+            if b == b'\n' {
+                logical_ranges.push((ls, i, ll));
+                ls = i + 1;
+                ll += 1;
+            }
+        }
+        logical_ranges.push((ls, s.len(), ll));
+    }
+
+    for (start, end, logical_line) in logical_ranges {
+        if start == end {
+            out.push(VisualLine {
+                byte_start: start,
+                byte_end: end,
+                logical_line,
+                logical_col_start: 0,
+            });
+            continue;
+        }
+        if width == 0 {
+            out.push(VisualLine {
+                byte_start: start,
+                byte_end: end,
+                logical_line,
+                logical_col_start: 0,
+            });
+            continue;
+        }
+
+        let w = width as usize;
+        let mut cur = start;
+
+        while cur < end {
+            let seg_start = cur;
+            let col_start = s[start..seg_start].chars().count() as u16;
+
+            // Scan up to `w` chars, remembering the most recent
+            // whitespace we pass so we can back up to it if we
+            // need to word-break.
+            let mut scan = cur;
+            let mut chars = 0usize;
+            let mut last_space_byte: Option<usize> = None;
+            while scan < end && chars < w {
+                let c = s[scan..].chars().next().unwrap();
+                let c_len = c.len_utf8();
+                if c == ' ' {
+                    last_space_byte = Some(scan);
+                }
+                scan += c_len;
+                chars += 1;
+            }
+
+            let seg_end: usize;
+            if scan >= end {
+                // Whole remainder of the logical line fits — emit it.
+                seg_end = scan;
+                cur = scan;
+            } else {
+                // We hit the width. Try to word-break.
+                let next_char = s[scan..].chars().next().unwrap();
+                if next_char == ' ' {
+                    // Perfect break: the char past our window IS a
+                    // space. Include the space in this segment and
+                    // start the next one after it.
+                    let sp_len = next_char.len_utf8();
+                    seg_end = scan + sp_len;
+                    cur = seg_end;
+                } else if let Some(sp) = last_space_byte {
+                    // Word-break at the last space in the segment.
+                    // Segment ends AFTER the space so no byte is
+                    // orphaned between segments.
+                    seg_end = sp + ' '.len_utf8();
+                    cur = seg_end;
+                } else {
+                    // No space found — the word is longer than the
+                    // wrap width. Char-break.
+                    seg_end = scan;
+                    cur = scan;
+                }
+            }
+
+            out.push(VisualLine {
+                byte_start: seg_start,
+                byte_end: seg_end,
+                logical_line,
+                logical_col_start: col_start,
+            });
+        }
+    }
+
+    out
+}
+
+#[cfg(test)]
 pub fn line_count(s: &str) -> u16 {
     if s.is_empty() {
         return 1;
@@ -1072,6 +1290,90 @@ mod tests {
     }
 
     #[test]
+    fn wrap_description_emits_one_segment_per_logical_line_when_width_is_zero() {
+        let lines = wrap_description("alpha\nbeta", 0);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            &"alpha\nbeta"[lines[0].byte_start..lines[0].byte_end],
+            "alpha"
+        );
+        assert_eq!(
+            &"alpha\nbeta"[lines[1].byte_start..lines[1].byte_end],
+            "beta"
+        );
+    }
+
+    #[test]
+    fn wrap_description_char_breaks_words_longer_than_width() {
+        // Single word with no spaces → falls back to char-break so
+        // the text still fits on screen.
+        let s = "abcdefghij";
+        let lines = wrap_description(s, 4);
+        let got: Vec<&str> = lines.iter().map(|v| &s[v.byte_start..v.byte_end]).collect();
+        assert_eq!(got, vec!["abcd", "efgh", "ij"]);
+        assert!(lines.iter().all(|v| v.logical_line == 0));
+        assert_eq!(lines[1].logical_col_start, 4);
+        assert_eq!(lines[2].logical_col_start, 8);
+    }
+
+    #[test]
+    fn wrap_description_word_breaks_at_spaces() {
+        let s = "hello world foo bar";
+        let lines = wrap_description(s, 8);
+        let got: Vec<&str> = lines.iter().map(|v| &s[v.byte_start..v.byte_end]).collect();
+        assert_eq!(got, vec!["hello ", "world ", "foo bar"]);
+    }
+
+    #[test]
+    fn wrap_description_mixes_word_and_char_break() {
+        // "abc defghijk" — first word fits, long word after breaks
+        // character-wise because there's no space inside it.
+        let s = "abc defghijk";
+        let lines = wrap_description(s, 5);
+        let got: Vec<&str> = lines.iter().map(|v| &s[v.byte_start..v.byte_end]).collect();
+        assert_eq!(got, vec!["abc ", "defgh", "ijk"]);
+    }
+
+    #[test]
+    fn wrap_description_does_not_orphan_bytes_between_segments() {
+        // Every byte in the source must belong to exactly one
+        // segment — cursor_visual_pos relies on this.
+        let s = "alpha beta gamma delta epsilon zeta";
+        let lines = wrap_description(s, 10);
+        let covered: usize = lines.iter().map(|v| v.byte_end - v.byte_start).sum();
+        assert_eq!(covered, s.len());
+        let mut prev_end = 0;
+        for l in &lines {
+            assert_eq!(
+                l.byte_start, prev_end,
+                "gap between segments at {}",
+                l.byte_start
+            );
+            prev_end = l.byte_end;
+        }
+    }
+
+    #[test]
+    fn wrap_description_preserves_logical_line_boundaries() {
+        let s = "hello world\nfoo bar";
+        let lines = wrap_description(s, 100);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].logical_line, 0);
+        assert_eq!(lines[1].logical_line, 1);
+    }
+
+    #[test]
+    fn cursor_visual_pos_at_end_of_wrap_continues_on_next_segment() {
+        let s = "abcdefgh";
+        let lines = wrap_description(s, 4);
+        // Cursor at byte offset 4 is the boundary — should report
+        // the *next* segment so typing continues there.
+        let (v_idx, col) = cursor_visual_pos(s, &lines, 4);
+        assert_eq!(v_idx, 1);
+        assert_eq!(col, 0);
+    }
+
+    #[test]
     fn description_insert_and_backspace_maintain_cursor() {
         let mut form = TaskForm::new_add();
         form.description_insert('a');
@@ -1085,6 +1387,24 @@ mod tests {
         assert_eq!(form.description_cursor, 3);
         form.description_backspace();
         assert_eq!(form.description, "ab");
+    }
+
+    #[test]
+    fn description_move_line_uses_wrap_width_when_set() {
+        // A single logical line wider than the wrap width; Up/Down
+        // between visual rows should work without leaving the field.
+        let mut form = TaskForm::new_add();
+        form.description = "abcdefghij".into();
+        form.description_cursor = 0;
+        form.last_wrap_width = 4;
+        // Down: cursor moves to visual row 1 (offset 4).
+        assert!(form.description_move_line(1));
+        assert_eq!(form.description_cursor, 4);
+        // Down again: visual row 2 (offset 8).
+        assert!(form.description_move_line(1));
+        assert_eq!(form.description_cursor, 8);
+        // Down again: no more visual rows → false.
+        assert!(!form.description_move_line(1));
     }
 
     #[test]
@@ -1202,6 +1522,18 @@ mod tests {
     }
 
     #[test]
+    fn blocked_by_picker_starts_with_scroll_at_zero() {
+        let mut s = TaskStore::new();
+        for i in 0..10 {
+            s.add(format!("t{i}"), None, None, "x".into(), Vec::new())
+                .unwrap();
+        }
+        let mut form = TaskForm::new_add();
+        form.open_blocked_by_picker(s.all(), None);
+        assert_eq!(form.blocked_by_picker.as_ref().unwrap().scroll, 0);
+    }
+
+    #[test]
     fn blocked_by_picker_toggle_and_commit_updates_form_list() {
         let mut s = TaskStore::new();
         let a = s
@@ -1236,6 +1568,8 @@ mod tests {
                 description: "".into(),
                 description_cursor: 0,
                 description_scroll: 0,
+                last_wrap_width: 0,
+                last_visible_lines: DESCRIPTION_MIN_VISIBLE_LINES,
                 assignee: "coder".into(),
                 status: "".into(),
                 blocked_by: Vec::new(),
