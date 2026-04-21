@@ -2,7 +2,6 @@ schema "team" {
   id: identifier @inline(0)
   description: string
   replace_thinking_messages: bool @optional @default(false)
-  default_tools: list(string) @optional
   default_ai_core: string @optional
 }
 
@@ -44,19 +43,24 @@ schema "ai_core" {
     // Written to a temporary file and passed to claude via
     // `--system-prompt-file` on every turn.
     systemPrompt: string @optional
+    // Fallback tool allowlist for agents/workers using this core that
+    // don't declare their own `tools`. Tool names are core-specific,
+    // which is why this default lives on the core.
+    default_tools: list(string) @optional
   }
 }
 
 ai_core default_core {
   type = :claudeCode
+  default_tools = ["Bash", "Read", "Edit", "Grep", "Glob"]
   systemPrompt = "You are part of the aciddog agent team. Be concise, direct, and collaborate with your teammates via the aciddog CLI."
 }
 
 team default {
   description = "Default aciddog team"
-  // Fleet-wide defaults — agents and workers inherit these unless they
-  // override `tools` / `ai_core` on their own block.
-  default_tools   = ["Bash", "Read", "Edit", "Grep", "Glob"]
+  // Fleet-wide default core — agents and workers inherit this unless
+  // they override `ai_core` on their own block. Default tool lists
+  // live on the core itself since valid tool names are core-specific.
   default_ai_core = "default_core"
 }
 

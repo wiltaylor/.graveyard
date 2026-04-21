@@ -53,7 +53,7 @@ const COPIED_TOAST_MS: u64 = 1500;
 /// a field access; it becomes a real match once other variants land.
 fn claude_system_prompt(core: &AiCore) -> Option<&String> {
     match &core.kind {
-        AiCoreKind::ClaudeCode { system_prompt } => system_prompt.as_ref(),
+        AiCoreKind::ClaudeCode { system_prompt, .. } => system_prompt.as_ref(),
     }
 }
 
@@ -557,7 +557,8 @@ impl App {
             .agents
             .iter()
             .map(|agent| {
-                let tools = config.effective_tools(agent.tools.as_deref());
+                let core = config.effective_ai_core(agent.ai_core.as_deref());
+                let tools = config.effective_tools(agent.tools.as_deref(), core);
                 let info = ChatBlock::agent_info(
                     "claude-code",
                     tools,
@@ -988,10 +989,8 @@ impl App {
         let session_id = Uuid::new_v4();
         let display_name = format!("{}#{}", template, &session_id.to_string()[..8]);
 
-        let tools = self.config.effective_tools(worker.tools.as_deref());
-
-        let system_prompt = match self.config.effective_ai_core(worker.ai_core.as_deref()) {
-            Some(core) => claude_system_prompt(core).cloned(),
+        let core = match self.config.effective_ai_core(worker.ai_core.as_deref()) {
+            Some(c) => c,
             None => {
                 let _ = reply.send(Response::err(format!(
                     "worker template `{template}` has no ai_core (no override and no team default_ai_core)"
@@ -999,6 +998,8 @@ impl App {
                 return;
             }
         };
+        let tools = self.config.effective_tools(worker.tools.as_deref(), Some(core));
+        let system_prompt = claude_system_prompt(core).cloned();
 
         let creatable: Vec<&str> = worker
             .can_create_workers
@@ -1182,12 +1183,9 @@ impl App {
             .cloned()
             .ok_or_else(|| format!("worker template `{template_id}` no longer exists"))?;
 
-        let tools = self.config.effective_tools(worker.tools.as_deref());
-        let system_prompt = self
-            .config
-            .effective_ai_core(worker.ai_core.as_deref())
-            .and_then(claude_system_prompt)
-            .cloned();
+        let core = self.config.effective_ai_core(worker.ai_core.as_deref());
+        let tools = self.config.effective_tools(worker.tools.as_deref(), core);
+        let system_prompt = core.and_then(claude_system_prompt).cloned();
 
         let env = vec![
             (agent_ipc::ENV_AGENT_ID.to_string(), session_id.to_string()),
@@ -3477,7 +3475,6 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         app.chats[idx].user_tx = Some(user_tx);
         app.chats[idx].agent_tx = Some(agent_tx);
 
-        let tools = app.config.effective_tools(agent.tools.as_deref());
         let ai_core = app
             .config
             .effective_ai_core(agent.ai_core.as_deref())
@@ -3487,6 +3484,9 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
                     agent.id
                 )
             })?;
+        let tools = app
+            .config
+            .effective_tools(agent.tools.as_deref(), Some(ai_core));
         let system_prompt = claude_system_prompt(ai_core).cloned();
 
         let session_id = Uuid::new_v4();
@@ -3675,7 +3675,6 @@ mod tests {
                 id: "t".into(),
                 description: "d".into(),
                 replace_thinking_messages: false,
-                default_tools: None,
                 default_ai_core: Some("default".into()),
             },
             agents: vec![
@@ -3713,7 +3712,10 @@ mod tests {
             workers: vec![],
             ai_cores: vec![crate::config::AiCore {
                 id: "default".into(),
-                kind: crate::config::AiCoreKind::ClaudeCode { system_prompt: None },
+                kind: crate::config::AiCoreKind::ClaudeCode {
+                    system_prompt: None,
+                    default_tools: None,
+                },
             }],
             thinking_messages: vec!["thinking".into()],
         }
@@ -4986,7 +4988,6 @@ mod tests {
                 id: "t".into(),
                 description: "d".into(),
                 replace_thinking_messages: false,
-                default_tools: None,
                 default_ai_core: Some("default".into()),
             },
             agents: vec![
@@ -5033,7 +5034,10 @@ mod tests {
             ],
             ai_cores: vec![crate::config::AiCore {
                 id: "default".into(),
-                kind: crate::config::AiCoreKind::ClaudeCode { system_prompt: None },
+                kind: crate::config::AiCoreKind::ClaudeCode {
+                    system_prompt: None,
+                    default_tools: None,
+                },
             }],
             thinking_messages: vec!["thinking".into()],
         }

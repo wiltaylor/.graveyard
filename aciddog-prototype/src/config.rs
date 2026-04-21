@@ -12,10 +12,6 @@ pub struct Team {
     /// built-in pool entirely; when `false` (default) they are merged
     /// with the built-ins.
     pub replace_thinking_messages: bool,
-    /// Fleet-wide default tool allowlist applied to agents and workers
-    /// that don't declare their own `tools`. `None` falls back further
-    /// to `DEFAULT_ALLOWED_TOOLS`.
-    pub default_tools: Option<Vec<String>>,
     /// Fleet-wide default AI core id applied to agents/workers that
     /// don't declare `ai_core`. Must resolve to a declared `ai_core`
     /// block id.
@@ -37,8 +33,9 @@ pub struct Agent {
     /// creation entirely; `Some(list)` is the set of permitted
     /// templates.
     pub can_create_workers: Option<Vec<String>>,
-    /// Optional per-agent tool allowlist. `None` falls back to
-    /// `Team::default_tools`, then the built-in default.
+    /// Optional per-agent tool allowlist. `None` falls back to the
+    /// resolved ai_core's own `default_tools`, then the built-in
+    /// `DEFAULT_ALLOWED_TOOLS`.
     pub tools: Option<Vec<String>>,
     /// Optional ai_core id override. `None` falls back to
     /// `Team::default_ai_core`.
@@ -55,7 +52,8 @@ pub struct Worker {
     pub model: String,
     pub instructions: String,
     /// Optional per-template tool allowlist. `None` falls back to the
-    /// default tool list used by configured agents.
+    /// resolved ai_core's own `default_tools`, then the built-in
+    /// `DEFAULT_ALLOWED_TOOLS`.
     pub tools: Option<Vec<String>>,
     /// Allowlist of worker template ids an instance of this template
     /// may itself spawn. Same semantics as `Agent::can_create_workers`.
@@ -81,7 +79,23 @@ pub enum AiCoreKind {
         /// Content for `--system-prompt-file`. When `None`, the flag is
         /// omitted and claude uses its default system prompt.
         system_prompt: Option<String>,
+        /// Per-core default tool allowlist applied when an agent or
+        /// worker using this core doesn't declare its own `tools`.
+        /// Tool names depend on the core, which is why the default
+        /// lives here rather than on the team.
+        default_tools: Option<Vec<String>>,
     },
+}
+
+impl AiCore {
+    /// Return the `default_tools` declared on this core's variant, if
+    /// any. Common accessor so `effective_tools` doesn't have to match
+    /// every caller.
+    pub fn default_tools(&self) -> Option<&[String]> {
+        match &self.kind {
+            AiCoreKind::ClaudeCode { default_tools, .. } => default_tools.as_deref(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -233,7 +247,6 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         description: require_string(team_block, "description")?,
         replace_thinking_messages: optional_bool(team_block, "replace_thinking_messages")?
             .unwrap_or(false),
-        default_tools: optional_string_list(team_block, "default_tools")?,
         default_ai_core: optional_string(team_block, "default_ai_core"),
     };
 
@@ -279,6 +292,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
             let kind = match type_name.as_str() {
                 "claudeCode" => AiCoreKind::ClaudeCode {
                     system_prompt: optional_string(b, "systemPrompt"),
+                    default_tools: optional_string_list(b, "default_tools")?,
                 },
                 other => {
                     return Err(ConfigError::UnknownAiCoreType {
@@ -462,13 +476,19 @@ impl AciddogConfig {
     }
 
     /// Resolve the tool allowlist for an agent or worker. Precedence:
-    /// per-agent/worker list → `team.default_tools` → built-in default.
-    pub fn effective_tools(&self, override_tools: Option<&[String]>) -> Vec<String> {
+    /// per-agent/worker list → resolved ai_core's `default_tools` →
+    /// built-in `DEFAULT_ALLOWED_TOOLS`. Tool names are core-specific,
+    /// so the per-core defaults live on the `ai_core` block itself.
+    pub fn effective_tools(
+        &self,
+        override_tools: Option<&[String]>,
+        core: Option<&AiCore>,
+    ) -> Vec<String> {
         if let Some(list) = override_tools {
             return list.to_vec();
         }
-        if let Some(list) = &self.team.default_tools {
-            return list.clone();
+        if let Some(list) = core.and_then(AiCore::default_tools) {
+            return list.to_vec();
         }
         DEFAULT_ALLOWED_TOOLS
             .iter()
@@ -1045,7 +1065,8 @@ mod tests {
         assert_eq!(
             cfg.ai_cores[0].kind,
             AiCoreKind::ClaudeCode {
-                system_prompt: Some("be concise".into())
+                system_prompt: Some("be concise".into()),
+                default_tools: None,
             }
         );
     }
@@ -1061,8 +1082,26 @@ mod tests {
         assert_eq!(
             cfg.ai_cores[0].kind,
             AiCoreKind::ClaudeCode {
-                system_prompt: None
+                system_prompt: None,
+                default_tools: None,
             }
+        );
+    }
+
+    #[test]
+    fn parses_ai_core_default_tools() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core main {
+                type = :claudeCode
+                default_tools = ["Bash", "Read"]
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].default_tools(),
+            Some(&["Bash".into(), "Read".into()][..])
         );
     }
 
@@ -1132,21 +1171,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_team_default_tools_and_ai_core() {
+    fn parses_team_default_ai_core() {
         let src = r#"
             ai_core main { type = :claudeCode }
             team default {
                 description = "t"
-                default_tools = ["Bash", "Read"]
                 default_ai_core = "main"
             }
             agent a { role = "r" instructions = "i" }
         "#;
         let cfg = parse_config(src, &dummy_path()).unwrap();
-        assert_eq!(
-            cfg.team.default_tools.as_deref(),
-            Some(&["Bash".into(), "Read".into()][..])
-        );
         assert_eq!(cfg.team.default_ai_core.as_deref(), Some("main"));
     }
 
@@ -1186,12 +1220,14 @@ mod tests {
     }
 
     #[test]
-    fn effective_tools_prefers_override_then_team_then_builtin() {
+    fn effective_tools_prefers_override_then_core_then_builtin() {
         let src = r#"
-            ai_core main { type = :claudeCode }
+            ai_core main {
+                type = :claudeCode
+                default_tools = ["Bash"]
+            }
             team default {
                 description = "t"
-                default_tools = ["Bash"]
                 default_ai_core = "main"
             }
             agent a {
@@ -1201,21 +1237,19 @@ mod tests {
             }
         "#;
         let cfg = parse_config(src, &dummy_path()).unwrap();
-        // Override wins.
+        let core = cfg.effective_ai_core(None);
+        // Override wins over the core's default_tools.
         assert_eq!(
-            cfg.effective_tools(cfg.agents[0].tools.as_deref()),
+            cfg.effective_tools(cfg.agents[0].tools.as_deref(), core),
             vec!["Read".to_string()]
         );
-        // Falls back to team default when no override.
-        assert_eq!(
-            cfg.effective_tools(None),
-            vec!["Bash".to_string()]
-        );
+        // Falls back to the core's default_tools when no override.
+        assert_eq!(cfg.effective_tools(None, core), vec!["Bash".to_string()]);
 
-        // With no team default, the built-in fallback applies.
+        // With no core default either, the built-in fallback applies.
         let cfg2 = parse_config(MINIMAL, &dummy_path()).unwrap();
         assert_eq!(
-            cfg2.effective_tools(None),
+            cfg2.effective_tools(None, None),
             DEFAULT_ALLOWED_TOOLS
                 .iter()
                 .map(|s| s.to_string())
