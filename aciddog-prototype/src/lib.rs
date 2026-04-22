@@ -8,3 +8,4 @@ pub mod memory;
 pub mod skills;
 pub mod tasks;
 pub mod tui;
+pub mod workflow;

@@ -99,6 +99,40 @@ pub enum AgentCommand {
         #[command(subcommand)]
         cmd: ChannelCommand,
     },
+    /// Workflow management subcommands. Agents with a non-empty
+    /// `can_run_workflows` allowlist in the config can trigger a new
+    /// workflow instance and monitor its progress from the TUI.
+    Workflow {
+        #[command(subcommand)]
+        cmd: WorkflowCommand,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum WorkflowCommand {
+    /// Start a new instance of a declared workflow. Properties are
+    /// supplied as `--property key=value` pairs (repeat for each). The
+    /// value is forwarded as a JSON string; the orchestrator coerces
+    /// it against the property's declared kind.
+    Run {
+        /// Id of the workflow to trigger (must match a `workflow
+        /// <id> { ... }` block in the WCL config).
+        #[arg(long)]
+        id: String,
+        /// `key=value` overrides. The value is treated as a bare
+        /// string; the orchestrator coerces to the declared property
+        /// kind (number/select/multiSelect). For multiSelect, supply
+        /// a comma-separated list (`--property suites=unit,integ`).
+        #[arg(long = "property", value_parser = parse_key_value)]
+        properties: Vec<(String, String)>,
+    },
+}
+
+fn parse_key_value(s: &str) -> Result<(String, String), String> {
+    let (k, v) = s
+        .split_once('=')
+        .ok_or_else(|| format!("expected KEY=VALUE, got `{s}`"))?;
+    Ok((k.to_string(), v.to_string()))
 }
 
 #[derive(Debug, Clone, Subcommand)]

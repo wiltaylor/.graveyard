@@ -37,6 +37,11 @@ pub struct Agent {
     /// creation entirely; `Some(list)` is the set of permitted
     /// templates.
     pub can_create_workers: Option<Vec<String>>,
+    /// Allowlist of workflow ids this agent may trigger via the
+    /// `aciddog workflow run` CLI. `None` (the default) disables
+    /// workflow triggering entirely; `Some(list)` is the set of
+    /// permitted workflows.
+    pub can_run_workflows: Option<Vec<String>>,
     /// Optional per-agent tool allowlist. `None` falls back to the
     /// resolved ai_core's own `default_tools`, then the built-in
     /// `DEFAULT_ALLOWED_TOOLS`.
@@ -79,6 +84,9 @@ pub struct Worker {
     /// Allowlist of worker template ids an instance of this template
     /// may itself spawn. Same semantics as `Agent::can_create_workers`.
     pub can_create_workers: Option<Vec<String>>,
+    /// Allowlist of workflow ids an instance of this template may
+    /// trigger. Same semantics as `Agent::can_run_workflows`.
+    pub can_run_workflows: Option<Vec<String>>,
     /// Optional ai_core id override. `None` falls back to
     /// `Team::default_ai_core`.
     pub ai_core: Option<String>,
@@ -314,7 +322,159 @@ impl CompactionStrategy {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// A named, repeatable procedure with typed properties and sequential
+/// steps. Declared at the fleet level; triggered on demand by a user
+/// (from the TUI) or an agent (via `aciddog workflow run`). Each trigger
+/// creates an ephemeral in-memory instance; nothing is persisted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Workflow {
+    pub id: String,
+    pub description: String,
+    /// Upper bound on the number of times `conditional` + `check` steps
+    /// may jump back to their `target` across a single instance. When
+    /// exceeded the instance fails.
+    pub max_retries: u32,
+    pub properties: Vec<WorkflowProperty>,
+    pub steps: Vec<WorkflowStep>,
+}
+
+/// A typed input to a workflow. User-visible kinds appear as fields in
+/// the property-entry form; `Hidden` is invisible and only mutated by
+/// workers via `workflow_set`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkflowProperty {
+    pub id: String,
+    /// Optional human-readable label for the form. Falls back to `id`
+    /// when absent.
+    pub label: Option<String>,
+    /// Required user inputs block form submission until populated.
+    /// `Hidden` properties ignore this flag (they never appear in the
+    /// form); `required` on them is accepted but has no effect.
+    pub required: bool,
+    pub kind: PropertyKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PropertyKind {
+    Text {
+        default: Option<String>,
+    },
+    Number {
+        default: Option<f64>,
+        min: Option<f64>,
+        max: Option<f64>,
+    },
+    Select {
+        options: Vec<String>,
+        default: Option<String>,
+    },
+    MultiSelect {
+        options: Vec<String>,
+        default: Option<Vec<String>>,
+    },
+    /// Never surfaced in the form. Seeded from `default` at instance
+    /// start, then mutated at runtime via the `workflow_set` tool.
+    /// Stored as a string (workers can coerce as needed).
+    Hidden {
+        default: Option<String>,
+    },
+}
+
+impl PropertyKind {
+    /// Whether this property appears in the property-entry form.
+    pub fn is_user_visible(&self) -> bool {
+        !matches!(self, PropertyKind::Hidden { .. })
+    }
+
+    /// Discriminator name matching the WCL `kind` symbol.
+    pub fn name(&self) -> &'static str {
+        match self {
+            PropertyKind::Text { .. } => "text",
+            PropertyKind::Number { .. } => "number",
+            PropertyKind::Select { .. } => "select",
+            PropertyKind::MultiSelect { .. } => "multiSelect",
+            PropertyKind::Hidden { .. } => "hidden",
+        }
+    }
+}
+
+/// A single step in a workflow. Steps are keyed by `id` so
+/// `Conditional.target` and `Check.target` can jump to one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkflowStep {
+    pub id: String,
+    pub kind: StepKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum StepKind {
+    /// Spawn a worker template with a rendered prompt. Step completes
+    /// when the worker calls `aciddog worker complete`.
+    Worker { worker: String, prompt: String },
+    /// Run `/bin/sh -c <rendered>`. Non-zero exit fails the instance.
+    Command { command: String, cwd: Option<String> },
+    /// Spawn a worker that must call `check_successful` to pass. Any
+    /// other outcome (pass=false, or hibernation without the call)
+    /// counts as a failure and jumps back to `target`, bounded by
+    /// `Workflow::max_retries`.
+    Conditional {
+        worker: String,
+        prompt: String,
+        target: String,
+    },
+    /// Pure variable predicate — no worker spawned. Same
+    /// retries-bounded jump semantics as `Conditional`.
+    Check {
+        variable: String,
+        op: CheckOp,
+        /// Required for `Equals` / `NotEquals` / `Contains`; rejected
+        /// for `Empty` / `NotEmpty`.
+        value: Option<String>,
+        target: String,
+    },
+}
+
+impl StepKind {
+    /// Discriminator name matching the WCL `kind` symbol.
+    pub fn name(&self) -> &'static str {
+        match self {
+            StepKind::Worker { .. } => "worker",
+            StepKind::Command { .. } => "command",
+            StepKind::Conditional { .. } => "conditional",
+            StepKind::Check { .. } => "check",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CheckOp {
+    Equals,
+    NotEquals,
+    Contains,
+    Empty,
+    NotEmpty,
+}
+
+impl CheckOp {
+    pub fn name(self) -> &'static str {
+        match self {
+            CheckOp::Equals => "equals",
+            CheckOp::NotEquals => "notEquals",
+            CheckOp::Contains => "contains",
+            CheckOp::Empty => "empty",
+            CheckOp::NotEmpty => "notEmpty",
+        }
+    }
+
+    pub fn needs_value(self) -> bool {
+        matches!(self, CheckOp::Equals | CheckOp::NotEquals | CheckOp::Contains)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AciddogConfig {
     pub team: Team,
     pub agents: Vec<Agent>,
@@ -330,6 +490,9 @@ pub struct AciddogConfig {
     /// participates in a channel iff its id appears in that channel's
     /// `members` list.
     pub channels: Vec<Channel>,
+    /// Named workflows declared at the fleet level. Agents opt in to
+    /// trigger a workflow via their `can_run_workflows` allowlist.
+    pub workflows: Vec<Workflow>,
     /// Final pool of messages shown by the thinking indicator while an
     /// agent is `Working`. Already merged with built-ins per
     /// `team.replace_thinking_messages`; guaranteed non-empty.
@@ -480,6 +643,77 @@ pub enum ConfigError {
         actor: String,
         core_type: String,
     },
+
+    #[error("workflow `{workflow}` has an unexpected child block `{child}` (only `property` and `step` are allowed)")]
+    UnknownWorkflowChildBlock { workflow: String, child: String },
+
+    #[error("property `{property}` has unknown kind `{kind}` (expected :text, :number, :select, :multiSelect, or :hidden)")]
+    UnknownPropertyKind { property: String, kind: String },
+
+    #[error("step `{step}` has unknown kind `{kind}` (expected :worker, :command, :conditional, or :check)")]
+    UnknownStepKind { step: String, kind: String },
+
+    #[error("check step `{step}` has unknown op `{op}` (expected :equals, :notEquals, :contains, :empty, or :notEmpty)")]
+    UnknownCheckOp { step: String, op: String },
+
+    #[error("workflow `{workflow}` has duplicate property id `{property}`")]
+    DuplicatePropertyId { workflow: String, property: String },
+
+    #[error("workflow `{workflow}` has duplicate step id `{step}`")]
+    DuplicateStepId { workflow: String, step: String },
+
+    #[error("workflow `{workflow}` property `{property}` default `{default}` is not in its options list")]
+    InvalidPropertyDefault {
+        workflow: String,
+        property: String,
+        default: String,
+    },
+
+    #[error("workflow `{workflow}` property `{property}` has min ({min}) greater than max ({max})")]
+    InvalidPropertyRange {
+        workflow: String,
+        property: String,
+        min: f64,
+        max: f64,
+    },
+
+    #[error("workflow `{workflow}` step `{step}` references unknown worker template `{worker}`")]
+    UnknownWorkflowWorkerRef {
+        workflow: String,
+        step: String,
+        worker: String,
+    },
+
+    #[error("workflow `{workflow}` step `{step}` targets unknown step id `{target}`")]
+    UnknownWorkflowStepTarget {
+        workflow: String,
+        step: String,
+        target: String,
+    },
+
+    #[error("workflow `{workflow}` check step `{step}` references unknown property `{variable}`")]
+    UnknownWorkflowVariable {
+        workflow: String,
+        step: String,
+        variable: String,
+    },
+
+    #[error("workflow `{workflow}` check step `{step}` op `{op}` requires a `value`")]
+    CheckMissingValue {
+        workflow: String,
+        step: String,
+        op: String,
+    },
+
+    #[error("workflow `{workflow}` check step `{step}` op `{op}` must not supply a `value`")]
+    CheckUnexpectedValue {
+        workflow: String,
+        step: String,
+        op: String,
+    },
+
+    #[error("`{from}` references unknown workflow `{to}` in `can_run_workflows`")]
+    UnknownWorkflowRef { from: String, to: String },
 }
 
 pub fn load_config(path: &Path) -> Result<AciddogConfig, ConfigError> {
@@ -528,6 +762,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 instructions: require_string(b, "instructions")?,
                 can_message: optional_string_list(b, "can_message")?,
                 can_create_workers: optional_string_list(b, "can_create_workers")?,
+                can_run_workflows: optional_string_list(b, "can_run_workflows")?,
                 tools: optional_string_list(b, "tools")?,
                 ai_core: optional_string(b, "ai_core"),
                 memory_banks: optional_string_list(b, "memory_banks")?,
@@ -549,6 +784,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 instructions: require_string(b, "instructions")?,
                 tools: optional_string_list(b, "tools")?,
                 can_create_workers: optional_string_list(b, "can_create_workers")?,
+                can_run_workflows: optional_string_list(b, "can_run_workflows")?,
                 ai_core: optional_string(b, "ai_core"),
                 memory_banks: optional_string_list(b, "memory_banks")?,
                 skills: optional_string_list(b, "skills")?,
@@ -663,6 +899,12 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
 
+    let workflows = doc
+        .blocks_of_type_resolved("workflow")
+        .iter()
+        .map(parse_workflow)
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+
     validate_agent_refs(&agents)?;
     validate_worker_refs(&agents, &workers)?;
     validate_ai_core_refs(&team, &agents, &workers, &ai_cores)?;
@@ -671,6 +913,8 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
     validate_skill_names(&agents, &workers)?;
     validate_compaction_refs(&team, &agents, &workers, &ai_cores, &compactions)?;
     validate_channel_refs(&agents, &channels)?;
+    validate_workflow_refs(&workflows, &workers)?;
+    validate_workflow_allowlists(&agents, &workers, &workflows)?;
 
     let mut user_messages: Vec<String> = Vec::new();
     for block in doc.blocks_of_type_resolved("thinking_messages").iter() {
@@ -706,8 +950,126 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         memory_banks,
         compactions,
         channels,
+        workflows,
         thinking_messages,
     })
+}
+
+fn parse_workflow(b: &wcl_lang::BlockRef) -> Result<Workflow, ConfigError> {
+    let id = require_id(&b.id, &b.kind)?;
+    let description = require_string(b, "description")?;
+    let max_retries = optional_u32(b, "max_retries")?.unwrap_or(5);
+
+    let mut properties: Vec<WorkflowProperty> = Vec::new();
+    let mut steps: Vec<WorkflowStep> = Vec::new();
+    for child in &b.children {
+        match child.kind.as_str() {
+            "property" => properties.push(parse_property(child)?),
+            "step" => steps.push(parse_step(child)?),
+            other => {
+                return Err(ConfigError::UnknownWorkflowChildBlock {
+                    workflow: id.clone(),
+                    child: other.to_string(),
+                })
+            }
+        }
+    }
+    Ok(Workflow {
+        id,
+        description,
+        max_retries,
+        properties,
+        steps,
+    })
+}
+
+fn parse_property(b: &wcl_lang::BlockRef) -> Result<WorkflowProperty, ConfigError> {
+    let id = require_id(&b.id, &b.kind)?;
+    let label = optional_string(b, "label");
+    let required = optional_bool(b, "required")?.unwrap_or(false);
+    let kind_name = require_symbol(b, "kind")?;
+    let kind = match kind_name.as_str() {
+        "text" => PropertyKind::Text {
+            default: optional_string(b, "default"),
+        },
+        "number" => PropertyKind::Number {
+            default: optional_f64(b, "default")?,
+            min: optional_f64(b, "min")?,
+            max: optional_f64(b, "max")?,
+        },
+        "select" => PropertyKind::Select {
+            options: require_string_list(b, "options")?,
+            default: optional_string(b, "default"),
+        },
+        "multiSelect" => PropertyKind::MultiSelect {
+            options: require_string_list(b, "options")?,
+            default: optional_string_list(b, "default")?,
+        },
+        "hidden" => PropertyKind::Hidden {
+            default: optional_string(b, "default"),
+        },
+        other => {
+            return Err(ConfigError::UnknownPropertyKind {
+                property: id,
+                kind: other.to_string(),
+            })
+        }
+    };
+    Ok(WorkflowProperty {
+        id,
+        label,
+        required,
+        kind,
+    })
+}
+
+fn parse_step(b: &wcl_lang::BlockRef) -> Result<WorkflowStep, ConfigError> {
+    let id = require_id(&b.id, &b.kind)?;
+    let kind_name = require_symbol(b, "kind")?;
+    let kind = match kind_name.as_str() {
+        "worker" => StepKind::Worker {
+            worker: require_string(b, "worker")?,
+            prompt: require_string(b, "prompt")?,
+        },
+        "command" => StepKind::Command {
+            command: require_string(b, "command")?,
+            cwd: optional_string(b, "cwd"),
+        },
+        "conditional" => StepKind::Conditional {
+            worker: require_string(b, "worker")?,
+            prompt: require_string(b, "prompt")?,
+            target: require_string(b, "target")?,
+        },
+        "check" => {
+            let op_name = require_symbol(b, "op")?;
+            let op = match op_name.as_str() {
+                "equals" => CheckOp::Equals,
+                "notEquals" => CheckOp::NotEquals,
+                "contains" => CheckOp::Contains,
+                "empty" => CheckOp::Empty,
+                "notEmpty" => CheckOp::NotEmpty,
+                other => {
+                    return Err(ConfigError::UnknownCheckOp {
+                        step: id,
+                        op: other.to_string(),
+                    })
+                }
+            };
+            StepKind::Check {
+                variable: require_string(b, "variable")?,
+                op,
+                value: optional_string(b, "value"),
+                target: require_string(b, "target")?,
+            }
+        }
+        other => {
+            return Err(ConfigError::UnknownStepKind {
+                step: id,
+                kind: other.to_string(),
+            })
+        }
+    };
+    Ok(WorkflowStep { id, kind })
 }
 
 /// Every id mentioned in a `can_message` list must correspond to a real
@@ -989,6 +1351,172 @@ fn validate_channel_refs(agents: &[Agent], channels: &[Channel]) -> Result<(), C
     Ok(())
 }
 
+/// Structural validation for declared workflows: unique ids within each
+/// workflow, resolvable worker refs and step targets, well-formed
+/// property defaults, and coherent `check` op/value combinations.
+fn validate_workflow_refs(workflows: &[Workflow], workers: &[Worker]) -> Result<(), ConfigError> {
+    let known_workers: std::collections::HashSet<&str> =
+        workers.iter().map(|w| w.id.as_str()).collect();
+    for wf in workflows {
+        // Property ids unique; defaults make sense.
+        let mut seen_props: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for p in &wf.properties {
+            if !seen_props.insert(p.id.as_str()) {
+                return Err(ConfigError::DuplicatePropertyId {
+                    workflow: wf.id.clone(),
+                    property: p.id.clone(),
+                });
+            }
+            match &p.kind {
+                PropertyKind::Number {
+                    min: Some(min),
+                    max: Some(max),
+                    ..
+                } if min > max => {
+                    return Err(ConfigError::InvalidPropertyRange {
+                        workflow: wf.id.clone(),
+                        property: p.id.clone(),
+                        min: *min,
+                        max: *max,
+                    })
+                }
+                PropertyKind::Select {
+                    options,
+                    default: Some(d),
+                } if !options.iter().any(|o| o == d) => {
+                    return Err(ConfigError::InvalidPropertyDefault {
+                        workflow: wf.id.clone(),
+                        property: p.id.clone(),
+                        default: d.clone(),
+                    })
+                }
+                PropertyKind::MultiSelect {
+                    options,
+                    default: Some(ds),
+                } => {
+                    for d in ds {
+                        if !options.iter().any(|o| o == d) {
+                            return Err(ConfigError::InvalidPropertyDefault {
+                                workflow: wf.id.clone(),
+                                property: p.id.clone(),
+                                default: d.clone(),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Step ids unique.
+        let mut seen_steps: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for s in &wf.steps {
+            if !seen_steps.insert(s.id.as_str()) {
+                return Err(ConfigError::DuplicateStepId {
+                    workflow: wf.id.clone(),
+                    step: s.id.clone(),
+                });
+            }
+        }
+
+        for s in &wf.steps {
+            match &s.kind {
+                StepKind::Worker { worker, .. } | StepKind::Conditional { worker, .. } => {
+                    if !known_workers.contains(worker.as_str()) {
+                        return Err(ConfigError::UnknownWorkflowWorkerRef {
+                            workflow: wf.id.clone(),
+                            step: s.id.clone(),
+                            worker: worker.clone(),
+                        });
+                    }
+                }
+                StepKind::Command { .. } | StepKind::Check { .. } => {}
+            }
+            if let StepKind::Conditional { target, .. } = &s.kind {
+                if !seen_steps.contains(target.as_str()) {
+                    return Err(ConfigError::UnknownWorkflowStepTarget {
+                        workflow: wf.id.clone(),
+                        step: s.id.clone(),
+                        target: target.clone(),
+                    });
+                }
+            }
+            if let StepKind::Check {
+                variable,
+                op,
+                value,
+                target,
+            } = &s.kind
+            {
+                if !seen_props.contains(variable.as_str()) {
+                    return Err(ConfigError::UnknownWorkflowVariable {
+                        workflow: wf.id.clone(),
+                        step: s.id.clone(),
+                        variable: variable.clone(),
+                    });
+                }
+                if !seen_steps.contains(target.as_str()) {
+                    return Err(ConfigError::UnknownWorkflowStepTarget {
+                        workflow: wf.id.clone(),
+                        step: s.id.clone(),
+                        target: target.clone(),
+                    });
+                }
+                match (op.needs_value(), value) {
+                    (true, None) => {
+                        return Err(ConfigError::CheckMissingValue {
+                            workflow: wf.id.clone(),
+                            step: s.id.clone(),
+                            op: op.name().to_string(),
+                        })
+                    }
+                    (false, Some(_)) => {
+                        return Err(ConfigError::CheckUnexpectedValue {
+                            workflow: wf.id.clone(),
+                            step: s.id.clone(),
+                            op: op.name().to_string(),
+                        })
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every id in an agent's or worker's `can_run_workflows` list must
+/// match a declared workflow.
+fn validate_workflow_allowlists(
+    agents: &[Agent],
+    workers: &[Worker],
+    workflows: &[Workflow],
+) -> Result<(), ConfigError> {
+    let known: std::collections::HashSet<&str> = workflows.iter().map(|w| w.id.as_str()).collect();
+    let check = |from: &str, list: &[String]| -> Result<(), ConfigError> {
+        for id in list {
+            if !known.contains(id.as_str()) {
+                return Err(ConfigError::UnknownWorkflowRef {
+                    from: from.to_string(),
+                    to: id.clone(),
+                });
+            }
+        }
+        Ok(())
+    };
+    for a in agents {
+        if let Some(list) = &a.can_run_workflows {
+            check(&a.id, list)?;
+        }
+    }
+    for w in workers {
+        if let Some(list) = &w.can_run_workflows {
+            check(&w.id, list)?;
+        }
+    }
+    Ok(())
+}
+
 /// Every id in an agent's or worker's `can_create_workers` list must
 /// match a declared worker template.
 fn validate_worker_refs(agents: &[Agent], workers: &[Worker]) -> Result<(), ConfigError> {
@@ -1174,6 +1702,31 @@ impl AciddogConfig {
             .unwrap_or(false)
     }
 
+    /// Look up a declared workflow by id.
+    pub fn workflow(&self, id: &str) -> Option<&Workflow> {
+        self.workflows.iter().find(|w| w.id == id)
+    }
+
+    /// Returns true if the actor identified by `actor_template_id` is
+    /// permitted to trigger the workflow `workflow_id`. Unknown actor
+    /// ids and actors without a `can_run_workflows` list default to
+    /// denied. Same semantics as `can_create`.
+    pub fn can_run_workflow(&self, actor_template_id: &str, workflow_id: &str) -> bool {
+        if let Some(a) = self.agents.iter().find(|a| a.id == actor_template_id) {
+            return match &a.can_run_workflows {
+                Some(list) => list.iter().any(|id| id == workflow_id),
+                None => false,
+            };
+        }
+        if let Some(w) = self.workers.iter().find(|w| w.id == actor_template_id) {
+            return match &w.can_run_workflows {
+                Some(list) => list.iter().any(|id| id == workflow_id),
+                None => false,
+            };
+        }
+        false
+    }
+
     /// Return the compaction policy attached to `actor_template_id`
     /// (an agent config id, or a worker template id), if any. Returns
     /// `None` when the actor is unknown, has no `compaction` attribute
@@ -1242,6 +1795,46 @@ fn optional_bool(block: &wcl_lang::BlockRef, attr: &str) -> Result<Option<bool>,
             attr: attr.to_string(),
         }),
     }
+}
+
+/// Read an optional integer attribute. Accepts `Value::Int` or the
+/// large-int variant `Value::BigInt` when it fits into `u32`.
+fn optional_u32(block: &wcl_lang::BlockRef, attr: &str) -> Result<Option<u32>, ConfigError> {
+    match block.get(attr) {
+        None => Ok(None),
+        Some(Value::Int(i)) if *i >= 0 && *i <= u32::MAX as i64 => Ok(Some(*i as u32)),
+        Some(Value::BigInt(i)) if *i >= 0 && *i <= u32::MAX as i128 => Ok(Some(*i as u32)),
+        Some(_) => Err(ConfigError::BadAttributeType {
+            kind: block.kind.clone(),
+            attr: attr.to_string(),
+        }),
+    }
+}
+
+/// Read an optional number (f64) attribute. Accepts `Value::Float`,
+/// `Value::Int`, and `Value::BigInt`.
+fn optional_f64(block: &wcl_lang::BlockRef, attr: &str) -> Result<Option<f64>, ConfigError> {
+    match block.get(attr) {
+        None => Ok(None),
+        Some(Value::Float(f)) => Ok(Some(*f)),
+        Some(Value::Int(i)) => Ok(Some(*i as f64)),
+        Some(Value::BigInt(i)) => Ok(Some(*i as f64)),
+        Some(_) => Err(ConfigError::BadAttributeType {
+            kind: block.kind.clone(),
+            attr: attr.to_string(),
+        }),
+    }
+}
+
+/// Required list-of-strings attribute: errors if missing OR wrong type.
+fn require_string_list(
+    block: &wcl_lang::BlockRef,
+    attr: &str,
+) -> Result<Vec<String>, ConfigError> {
+    optional_string_list(block, attr)?.ok_or_else(|| ConfigError::MissingAttribute {
+        kind: block.kind.clone(),
+        attr: attr.to_string(),
+    })
 }
 
 /// Read an optional list-of-strings attribute. Returns `Ok(None)` if the
@@ -2591,5 +3184,247 @@ mod tests {
         assert!(cfg.compaction_for("ghost").is_none());
         // Known agent, no compaction attribute set.
         assert!(cfg.compaction_for("alpha").is_none());
+    }
+
+    // --------- Workflows ----------
+
+    const WORKFLOW_BASE: &str = r#"
+        team default { description = "t" }
+        worker researcher {
+            role = "r"
+            instructions = "i"
+        }
+    "#;
+
+    fn parse_with_workflow(wf: &str) -> Result<AciddogConfig, ConfigError> {
+        let src = format!("{}{}", WORKFLOW_BASE, wf);
+        parse_config(&src, &dummy_path())
+    }
+
+    #[test]
+    fn parses_workflow_with_every_property_kind() {
+        let cfg = parse_with_workflow(
+            r#"
+            workflow sample {
+                description = "a demo"
+                property b1 { kind = :text default = "hi" }
+                property b2 { kind = :number default = 1 min = 0 max = 10 }
+                property b3 { kind = :select options = ["a","b"] default = "a" }
+                property b4 { kind = :multiSelect options = ["x","y"] default = ["x"] }
+                property b5 { kind = :hidden default = "secret" }
+
+                step only { kind = :command command = "echo $$b1$$" }
+            }
+        "#,
+        )
+        .expect("parse ok");
+        let wf = &cfg.workflows[0];
+        assert_eq!(wf.id, "sample");
+        assert_eq!(wf.max_retries, 5);
+        assert_eq!(wf.properties.len(), 5);
+        assert!(matches!(wf.properties[0].kind, PropertyKind::Text { .. }));
+        assert!(matches!(wf.properties[4].kind, PropertyKind::Hidden { .. }));
+        assert!(!wf.properties[4].kind.is_user_visible());
+    }
+
+    #[test]
+    fn parses_workflow_step_kinds() {
+        let cfg = parse_with_workflow(
+            r#"
+            workflow sample {
+                description = "d"
+                max_retries = 2
+                property coverage { kind = :hidden default = "0" }
+                step a { kind = :command command = "true" }
+                step b { kind = :worker worker = "researcher" prompt = "p" }
+                step c { kind = :conditional worker = "researcher" prompt = "p" target = "a" }
+                step d { kind = :check variable = "coverage" op = :equals value = "100" target = "a" }
+                step e { kind = :check variable = "coverage" op = :notEmpty target = "a" }
+            }
+        "#,
+        )
+        .expect("parse ok");
+        let wf = &cfg.workflows[0];
+        assert_eq!(wf.max_retries, 2);
+        assert_eq!(wf.steps.len(), 5);
+        assert!(matches!(wf.steps[0].kind, StepKind::Command { .. }));
+        assert!(matches!(wf.steps[1].kind, StepKind::Worker { .. }));
+        assert!(matches!(wf.steps[2].kind, StepKind::Conditional { .. }));
+        assert!(matches!(
+            wf.steps[3].kind,
+            StepKind::Check {
+                op: CheckOp::Equals,
+                ..
+            }
+        ));
+        assert!(matches!(
+            wf.steps[4].kind,
+            StepKind::Check {
+                op: CheckOp::NotEmpty,
+                ..
+            }
+        ));
+    }
+
+    // Note: wcl_lang merges child blocks that share an id (see
+    // merge_child_blocks_with_same_inline_id in wcl_lang), so duplicate
+    // property/step ids can't actually surface via the parser. The
+    // DuplicatePropertyId / DuplicateStepId variants remain as defence
+    // in depth against programmatic config construction.
+
+    #[test]
+    fn rejects_select_default_not_in_options() {
+        let err = parse_with_workflow(
+            r#"
+            workflow w {
+                description = "d"
+                property p { kind = :select options = ["a","b"] default = "c" }
+                step s { kind = :command command = "true" }
+            }
+        "#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::InvalidPropertyDefault { default, .. } if default == "c"
+        ));
+    }
+
+    #[test]
+    fn rejects_number_min_greater_than_max() {
+        let err = parse_with_workflow(
+            r#"
+            workflow w {
+                description = "d"
+                property p { kind = :number min = 5 max = 1 }
+                step s { kind = :command command = "true" }
+            }
+        "#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidPropertyRange { .. }));
+    }
+
+    #[test]
+    fn rejects_unknown_worker_ref_in_step() {
+        let err = parse_with_workflow(
+            r#"
+            workflow w {
+                description = "d"
+                step s { kind = :worker worker = "ghost" prompt = "p" }
+            }
+        "#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownWorkflowWorkerRef { worker, .. } if worker == "ghost"
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_step_target() {
+        let err = parse_with_workflow(
+            r#"
+            workflow w {
+                description = "d"
+                step s { kind = :conditional worker = "researcher" prompt = "p" target = "ghost" }
+            }
+        "#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownWorkflowStepTarget { target, .. } if target == "ghost"
+        ));
+    }
+
+    #[test]
+    fn rejects_check_with_unknown_variable() {
+        let err = parse_with_workflow(
+            r#"
+            workflow w {
+                description = "d"
+                step a { kind = :command command = "true" }
+                step b { kind = :check variable = "ghost" op = :notEmpty target = "a" }
+            }
+        "#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownWorkflowVariable { variable, .. } if variable == "ghost"
+        ));
+    }
+
+    #[test]
+    fn rejects_check_op_missing_required_value() {
+        let err = parse_with_workflow(
+            r#"
+            workflow w {
+                description = "d"
+                property c { kind = :hidden }
+                step a { kind = :command command = "true" }
+                step b { kind = :check variable = "c" op = :equals target = "a" }
+            }
+        "#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::CheckMissingValue { .. }));
+    }
+
+    #[test]
+    fn rejects_check_op_with_forbidden_value() {
+        let err = parse_with_workflow(
+            r#"
+            workflow w {
+                description = "d"
+                property c { kind = :hidden }
+                step a { kind = :command command = "true" }
+                step b { kind = :check variable = "c" op = :empty value = "x" target = "a" }
+            }
+        "#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::CheckUnexpectedValue { .. }));
+    }
+
+    #[test]
+    fn rejects_can_run_workflows_unknown_id() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha {
+                role = "r" instructions = "i"
+                can_run_workflows = ["ghost"]
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownWorkflowRef { to, .. } if to == "ghost"
+        ));
+    }
+
+    #[test]
+    fn can_run_workflow_helper_honours_allowlist() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha {
+                role = "r" instructions = "i"
+                can_run_workflows = ["wf1"]
+            }
+            agent beta {
+                role = "r" instructions = "i"
+            }
+            workflow wf1 {
+                description = "d"
+                step s { kind = :command command = "true" }
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert!(cfg.can_run_workflow("alpha", "wf1"));
+        assert!(!cfg.can_run_workflow("alpha", "wf2"));
+        assert!(!cfg.can_run_workflow("beta", "wf1"));
+        assert!(!cfg.can_run_workflow("ghost", "wf1"));
     }
 }

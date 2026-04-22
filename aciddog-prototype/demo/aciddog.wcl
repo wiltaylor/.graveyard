@@ -17,6 +17,7 @@ schema "agent" {
   instructions: string
   can_message: list(string) @optional
   can_create_workers: list(string) @optional
+  can_run_workflows: list(string) @optional
   tools: list(string) @optional
   ai_core: string @optional
   memory_banks: list(string) @optional
@@ -32,11 +33,24 @@ schema "worker" {
   instructions: string
   tools: list(string) @optional
   can_create_workers: list(string) @optional
+  can_run_workflows: list(string) @optional
   ai_core: string @optional
   memory_banks: list(string) @optional
   skills: list(string) @optional
   compaction: string @optional
 }
+
+// A reusable multi-step procedure declared at the fleet level. Each
+// workflow block contains nested `property` blocks (typed inputs) and
+// `step` blocks (one of command / worker / conditional / check, keyed
+// by the `kind` symbol). The nested blocks are parsed and validated
+// at config-load time by `validate_workflow_refs` in src/config.rs —
+// no WCL schema is declared here, so every workflow / property / step
+// remains unschemed at the wcl_lang level (child blocks with nested
+// tagged-union kinds are easier to validate in Rust than in schema).
+// Workflows are triggered from the TUI's Workflows panel or via
+// `aciddog workflow run --id <wf>` (agents need the workflow id in
+// their `can_run_workflows` allowlist).
 
 // Memory banks are semantic, embedding-indexed stores shared across a
 // subset of the team. Agents/workers opt in to specific banks via their
@@ -342,6 +356,10 @@ agent planner {
   // Omit `can_message` to allow messaging every other agent.
   // Example: restrict to a subset with `can_message = ["coder"]`.
   can_create_workers = ["jokester"]
+  // Permit the planner to trigger the `smoke` workflow via
+  // `aciddog workflow run --id smoke`. Omitted on every other agent,
+  // so they can't start workflows themselves.
+  can_run_workflows = ["smoke"]
   // Planner can read and edit files but may not shell out — use `coder`
   // (via `send`) whenever a command needs to run.
   tools = ["Read", "Edit", "Grep", "Glob"]
@@ -492,4 +510,36 @@ channel planning {
   description = "Shared planning and coordination for engineering work."
   welcome     = "Welcome to #planning. Keep messages terse and on-topic; don't reply just to ack."
   members     = ["planner", "coder", "tester"]
+}
+
+// A reusable procedure with typed inputs and sequential steps. Trigger
+// it from the TUI's Workflows panel (or via `/run <id>`) and the engine
+// spawns a per-instance task. Today only `command` and `check` steps
+// run; `worker` and `conditional` steps are wired in follow-up tasks.
+workflow smoke {
+  description = "Smoke-test the workflow engine with a command + gate."
+  max_retries = 2
+
+  // Visible inputs: the user fills these in the form (once shipped).
+  property branch { kind = :text default = "main" }
+  property suites { kind = :multiSelect options = ["unit","integ"] default = ["unit"] }
+
+  // Hidden variables are never shown in the form. They're seeded from
+  // `default` at instance start and mutated at runtime by workers via
+  // `workflow_set` (tool wiring ships in a later task).
+  property last_check { kind = :hidden default = "ok" }
+
+  // $$VAR$$ substitution fires at step start with a live snapshot of
+  // the variable map.
+  step echo  { kind = :command command = "echo ran on $$branch$$ suites=$$suites$$" }
+
+  // 30-second sleep so the instance is visible in the sidebar long
+  // enough to observe progress (echo + check + echo would otherwise
+  // finish in milliseconds and flash by).
+  step wait  { kind = :command command = "sleep 30" }
+
+  // Pure variable gate: pass ⇒ advance; fail ⇒ jump back to `echo`.
+  step gate  { kind = :check variable = "last_check" op = :equals value = "ok" target = "echo" }
+
+  step done  { kind = :command command = "echo all gates passed" }
 }

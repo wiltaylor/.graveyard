@@ -18,6 +18,10 @@ pub enum CommandOutcome {
     Sleep,
     /// Clear the asleep flag so the agent receives messages again.
     Awake,
+    /// `/run <workflow_id>` — kick off a workflow instance using
+    /// declared defaults (or empty where undeclared). Useful for
+    /// smoke-testing before the full property-entry form lands.
+    RunWorkflow { workflow_id: String },
     /// Input didn't match any known command.
     Unknown { name: String, hint: String },
 }
@@ -32,9 +36,10 @@ pub fn dispatch(input: &str) -> Option<CommandOutcome> {
     if trimmed.is_empty() {
         return None;
     }
-    let (name, _args) = trimmed
+    let (name, args) = trimmed
         .split_once(char::is_whitespace)
         .unwrap_or((trimmed, ""));
+    let args = args.trim();
 
     let outcome = match name {
         "version" => CommandOutcome::Message(format!("aciddog v{}", env!("CARGO_PKG_VERSION"))),
@@ -44,9 +49,24 @@ pub fn dispatch(input: &str) -> Option<CommandOutcome> {
         "stop" => CommandOutcome::Stop,
         "sleep" => CommandOutcome::Sleep,
         "awake" | "wake" => CommandOutcome::Awake,
+        "run" | "workflow" => {
+            if args.is_empty() {
+                CommandOutcome::Message(
+                    "usage: /run <workflow_id>  — kicks off a workflow with declared defaults"
+                        .into(),
+                )
+            } else {
+                // Only keep the first whitespace-delimited token; any
+                // further args are ignored for now (the full
+                // property-entry form lands with task #3).
+                let id = args.split_whitespace().next().unwrap_or("").to_string();
+                CommandOutcome::RunWorkflow { workflow_id: id }
+            }
+        }
         other => CommandOutcome::Unknown {
             name: other.to_string(),
-            hint: "try /version, /compact, /reset, /stop, /sleep, /awake or /exit".to_string(),
+            hint: "try /version, /compact, /reset, /stop, /sleep, /awake, /run <wf>, or /exit"
+                .to_string(),
         },
     };
     Some(outcome)

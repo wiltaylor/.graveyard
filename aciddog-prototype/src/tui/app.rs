@@ -123,6 +123,29 @@ pub(super) fn build_core(
     socket_tx: Option<mpsc::Sender<AgentSocketEvent>>,
     resume: bool,
 ) -> Box<dyn AICore> {
+    build_core_with_extras(core_cfg, session_id, parts, tools, env, socket_tx, resume, Vec::new())
+}
+
+/// Same as `build_core` but allows injecting additional tools into the
+/// core's `ToolRegistry`. Used by the workflow engine to hand a
+/// worker-step core the per-instance `check_successful` /
+/// `workflow_get` / `workflow_set` tools without adding them to
+/// `BUILT_IN_TOOL_NAMES`. Only the direct-API cores (AnthropicApi,
+/// OpenAiApi) honour `extra_tools`; CLI-harness cores (ClaudeCode,
+/// CopilotCli, GeminiCli) don't own their own tool registry (they
+/// delegate to the external binary), so extras are silently dropped
+/// for those variants — workflows targeting them fall back to plain
+/// worker execution.
+pub(super) fn build_core_with_extras(
+    core_cfg: &AiCore,
+    session_id: Uuid,
+    parts: PromptParts,
+    tools: Vec<String>,
+    env: Vec<(String, String)>,
+    socket_tx: Option<mpsc::Sender<AgentSocketEvent>>,
+    resume: bool,
+    extra_tools: Vec<std::sync::Arc<dyn crate::ai::tools::Tool>>,
+) -> Box<dyn AICore> {
     match &core_cfg.kind {
         AiCoreKind::ClaudeCode { system_prompt, .. } => {
             let mut cc = if resume {
@@ -152,7 +175,8 @@ pub(super) fn build_core(
                 tools,
                 system_prompt.clone(),
             )
-            .with_env(env);
+            .with_env(env)
+            .with_extra_tools(extra_tools);
             if resume {
                 c = c.mark_started();
             }
@@ -177,7 +201,8 @@ pub(super) fn build_core(
                 tools,
                 system_prompt.clone(),
             )
-            .with_env(env);
+            .with_env(env)
+            .with_extra_tools(extra_tools);
             if resume {
                 c = c.mark_started();
             }
@@ -439,6 +464,24 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         RequestCmd::SendMessage { to, body } => ChatBlock::mail_sent(to, body),
         RequestCmd::WorkerCreate { template, task } => ChatBlock::worker_spawn(template, task),
         RequestCmd::WorkerComplete { body } => ChatBlock::worker_complete(body),
+        RequestCmd::WorkflowRun {
+            workflow,
+            properties,
+        } => {
+            let summary = if properties.is_empty() {
+                format!("aciddog workflow run --id {workflow}")
+            } else {
+                let pairs: Vec<String> = properties
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect();
+                format!(
+                    "aciddog workflow run --id {workflow} {}",
+                    pairs.join(" ")
+                )
+            };
+            ChatBlock::from_tool_use(&summary, input)
+        }
         RequestCmd::Test => ChatBlock::from_tool_use("aciddog test", input),
         RequestCmd::TaskAdd {
             title,
@@ -755,9 +798,18 @@ pub enum Focus {
     /// Up/Down moves the selection, Enter sets the main area to
     /// `ActiveView::Channel(idx)`.
     Channels,
+    /// The right-column "Workflows" list (between agents and channels).
+    /// Up/Down moves the selection, Enter on a header opens the
+    /// property-entry form; Enter on an instance opens its progress
+    /// view.
+    Workflows,
     /// The main area while `active_view == Memory` — keyboard input
     /// goes to the memory-view handler.
     Memory,
+    /// The main area while a workflow-related view is active
+    /// (`WorkflowForm` or `WorkflowInstance`). Keyboard input is
+    /// routed to the workflow-view handler.
+    Workflow,
 }
 
 /// Which scrollable zone inside the Memory view the wheel cursor is
@@ -782,6 +834,17 @@ pub enum ActiveView {
     Tasks,
     Memory,
     Channel(usize),
+    /// Property-entry form for the workflow at
+    /// `config.workflows[workflow_idx]`.
+    WorkflowForm {
+        workflow_idx: usize,
+    },
+    /// Live progress view for the running or failed instance with id
+    /// `instance_id` (belonging to the workflow at `workflow_idx`).
+    WorkflowInstance {
+        workflow_idx: usize,
+        instance_id: u64,
+    },
 }
 
 /// Entries in the right-column Views list. Extend this array and add
@@ -801,6 +864,13 @@ pub struct LayoutRects {
     /// Inner rect of the "channels" panel on the right column.
     /// `None` if no channels are declared in the config.
     pub channels_list_inner: Option<Rect>,
+    /// Inner rect of the "workflows" panel on the right column.
+    /// `None` if no workflows are declared in the config.
+    pub workflows_list_inner: Option<Rect>,
+    /// Clickable Run/Cancel buttons on the workflow form view. Each
+    /// entry is `(which_button, rect)`. Cleared every frame by
+    /// `render_workflow_form` and populated when the form is drawn.
+    pub workflow_form_buttons: Vec<(super::workflow_view::FormButton, Rect)>,
     pub chat_buttons: Vec<ChatButton>,
     /// When a task form is open, every labelled field and button is
     /// given a clickable rect keyed by `FormField`. Populated each
@@ -1597,6 +1667,23 @@ pub struct App {
     /// (currently just the summarise strategy). Populated by `run`
     /// alongside `ai_tx`; drained in `event_loop`.
     pub compaction_tx: Option<mpsc::Sender<super::compaction::CompactionEvent>>,
+    /// Running and failed workflow instances as seen by the TUI.
+    /// Successful instances are removed on arrival of their `Finished`
+    /// event; failed ones stay until the user dismisses them.
+    pub workflow_instances: Vec<super::workflow_view::WorkflowInstanceView>,
+    /// Cursor into `config.workflows` for the workflows sidebar.
+    pub selected_workflow: usize,
+    /// Active property-entry form state, if the user is on a workflow
+    /// form view. `None` everywhere else.
+    pub workflow_form: Option<super::workflow_view::WorkflowFormState>,
+    /// Monotonic id generator for new instances. Handed out to the
+    /// backend at spawn time and echoed back on every `WorkflowEvent`.
+    pub next_instance_id: u64,
+    /// Owner of per-instance handles + the shared variable maps. Lives
+    /// on `App` so the IPC WorkflowRun handler can invoke it directly.
+    /// `None` means workflows are disabled for this session (early
+    /// bring-up or unit tests).
+    pub workflow_engine: Option<crate::workflow::WorkflowEngine>,
 }
 
 /// Time window for detecting a double-click. Matches the typical
@@ -1686,6 +1773,11 @@ impl App {
             last_click: None,
             frame_tick: 0,
             compaction_tx: None,
+            workflow_instances: Vec::new(),
+            selected_workflow: 0,
+            workflow_form: None,
+            next_instance_id: 1,
+            workflow_engine: None,
         }
     }
 
@@ -2033,6 +2125,12 @@ impl App {
             RequestCmd::WorkerComplete { body } => {
                 self.handle_worker_complete(idx, body, reply);
             }
+            RequestCmd::WorkflowRun {
+                workflow,
+                properties,
+            } => {
+                self.handle_workflow_run(idx, workflow, properties, reply);
+            }
             RequestCmd::TaskAdd {
                 title,
                 description,
@@ -2262,6 +2360,121 @@ impl App {
                 self.handle_channel_send_from_agent(idx, id, body, reply);
             }
         }
+    }
+
+    /// Handle a `WorkflowRun` IPC request: resolve the sender's
+    /// template id, check its `can_run_workflows` allowlist, coerce
+    /// properties, and hand off to the engine. Reply carries the new
+    /// instance id or a human-readable error.
+    fn handle_workflow_run(
+        &mut self,
+        sender_idx: usize,
+        workflow_id: String,
+        properties: std::collections::BTreeMap<String, serde_json::Value>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let sender_template = match self.chats.get(sender_idx) {
+            Some(c) if c.worker_template.is_some() => c.worker_template.clone().unwrap(),
+            Some(_) => match self.config.agents.get(sender_idx) {
+                Some(a) => a.id.clone(),
+                None => {
+                    let _ = reply.send(Response::err("unknown sender"));
+                    return;
+                }
+            },
+            None => {
+                let _ = reply.send(Response::err("unknown sender"));
+                return;
+            }
+        };
+        if !self.config.can_run_workflow(&sender_template, &workflow_id) {
+            let _ = reply.send(Response::err(format!(
+                "`{sender_template}` is not permitted to run workflow `{workflow_id}` (check can_run_workflows)"
+            )));
+            return;
+        }
+        let Some(workflow) = self.config.workflows.iter().find(|w| w.id == workflow_id).cloned()
+        else {
+            let _ = reply.send(Response::err(format!(
+                "no workflow `{workflow_id}` declared"
+            )));
+            return;
+        };
+        let workflow_idx = self
+            .config
+            .workflows
+            .iter()
+            .position(|w| w.id == workflow_id)
+            .expect("found above");
+
+        // Coerce every supplied property against its declared kind.
+        // Unsupplied properties fall through to declared defaults via
+        // `seed_vars`; required-with-no-value is caught below.
+        let mut user_inputs: std::collections::HashMap<String, crate::workflow::PropertyValue> =
+            std::collections::HashMap::new();
+        for (name, raw) in properties {
+            let Some(prop) = workflow.properties.iter().find(|p| p.id == name) else {
+                let _ = reply.send(Response::err(format!(
+                    "workflow `{workflow_id}` has no property `{name}`"
+                )));
+                return;
+            };
+            match crate::ai::tools::workflow_set::WorkflowSetTool::coerce(&prop.kind, &raw) {
+                Ok(v) => {
+                    user_inputs.insert(name, v);
+                }
+                Err(e) => {
+                    let _ = reply.send(Response::err(format!("`{name}`: {e}")));
+                    return;
+                }
+            }
+        }
+
+        // Enforce required-with-no-value: required property ids that
+        // aren't in user_inputs AND don't have a declared default.
+        for prop in &workflow.properties {
+            if !prop.required {
+                continue;
+            }
+            if user_inputs.contains_key(&prop.id) {
+                continue;
+            }
+            let has_default = match &prop.kind {
+                crate::config::PropertyKind::Text { default }
+                | crate::config::PropertyKind::Hidden { default } => default.is_some(),
+                crate::config::PropertyKind::Number { default, .. } => default.is_some(),
+                crate::config::PropertyKind::Select { default, .. } => default.is_some(),
+                crate::config::PropertyKind::MultiSelect { default, .. } => default.is_some(),
+            };
+            if !has_default {
+                let _ = reply.send(Response::err(format!(
+                    "required property `{}` not supplied and has no default",
+                    prop.id
+                )));
+                return;
+            }
+        }
+
+        let merged = crate::workflow::WorkflowEngine::seed_vars(&workflow, user_inputs);
+        let engine = match self.workflow_engine.as_mut() {
+            Some(e) => e,
+            None => {
+                let _ = reply.send(Response::err("workflow engine not initialized"));
+                return;
+            }
+        };
+        let instance_id = self.next_instance_id;
+        self.next_instance_id += 1;
+        engine.start_instance(instance_id, &workflow, merged);
+        self.workflow_instances
+            .push(super::workflow_view::WorkflowInstanceView::new(
+                instance_id,
+                workflow_idx,
+                &workflow,
+            ));
+        let _ = reply.send(Response::ok(format!(
+            "started workflow `{workflow_id}` as instance #{instance_id}"
+        )));
     }
 
     fn handle_worker_create(
@@ -4403,6 +4616,18 @@ impl App {
                     }
                 }
             }
+            CommandOutcome::RunWorkflow { workflow_id } => {
+                let result = self.start_workflow_with_defaults(&workflow_id);
+                if let Some(chat) = self.chats.get_mut(idx) {
+                    let msg = match result {
+                        Ok(id) => ChatBlock::system_info(format!(
+                            "workflow `{workflow_id}` started as instance #{id}"
+                        )),
+                        Err(m) => ChatBlock::system_warn(m),
+                    };
+                    chat.push_block(msg);
+                }
+            }
             CommandOutcome::Unknown { name, hint } => {
                 if let Some(chat) = self.chats.get_mut(idx) {
                     chat.push_block(ChatBlock::system_warn(format!(
@@ -4411,6 +4636,225 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Kick off a workflow instance using declared defaults for every
+    /// property. Surfaced via the `/run <wf>` command and the TUI
+    /// form's Run button. Returns the assigned instance id on success.
+    pub(crate) fn start_workflow_with_defaults(
+        &mut self,
+        workflow_id: &str,
+    ) -> Result<u64, String> {
+        let workflow_idx = match self
+            .config
+            .workflows
+            .iter()
+            .position(|w| w.id == workflow_id)
+        {
+            Some(i) => i,
+            None => return Err(format!("no workflow `{workflow_id}` declared")),
+        };
+        let engine = self
+            .workflow_engine
+            .as_mut()
+            .ok_or_else(|| "workflow engine not initialized in this session".to_string())?;
+
+        let workflow = self.config.workflows[workflow_idx].clone();
+        let instance_id = self.next_instance_id;
+        self.next_instance_id += 1;
+
+        // Seed every property from its declared default (user-visible
+        // + hidden). Required properties without a default are absent;
+        // step templates referencing them will fail the render, which
+        // is the right outcome for a "hit Enter on an incomplete form"
+        // smoke test.
+        let initial_vars = crate::workflow::WorkflowEngine::seed_vars(
+            &workflow,
+            std::collections::HashMap::new(),
+        );
+        engine.start_instance(instance_id, &workflow, initial_vars);
+
+        // TUI mirror: the real `Started` event will populate vars, but
+        // pushing the view eagerly means the sidebar shows the new
+        // instance without waiting for the event pump to tick.
+        self.workflow_instances
+            .push(super::workflow_view::WorkflowInstanceView::new(
+                instance_id,
+                workflow_idx,
+                &workflow,
+            ));
+        Ok(instance_id)
+    }
+
+    /// Consume one `WorkflowEvent` from the backend and update the
+    /// TUI's instance mirror. Successful instances are removed from
+    /// the sidebar; failed ones linger with a red icon until the user
+    /// dismisses them.
+    pub(crate) fn on_workflow_event(&mut self, ev: crate::workflow::WorkflowEvent) {
+        use crate::workflow::{InstanceStatus, StepStatus, WorkflowEvent};
+        match ev {
+            WorkflowEvent::Started {
+                instance_id, vars, ..
+            } => {
+                if let Some(view) = self
+                    .workflow_instances
+                    .iter_mut()
+                    .find(|i| i.id == instance_id)
+                {
+                    view.vars.extend(vars);
+                }
+            }
+            WorkflowEvent::StepStarted {
+                instance_id,
+                step_idx,
+            } => {
+                if let Some(view) = self
+                    .workflow_instances
+                    .iter_mut()
+                    .find(|i| i.id == instance_id)
+                {
+                    view.current_step = step_idx;
+                    if let Some(step) = view.steps.get_mut(step_idx) {
+                        step.status = StepStatus::Running;
+                    }
+                }
+            }
+            WorkflowEvent::StepOutput { instance_id, line } => {
+                if let Some(view) = self
+                    .workflow_instances
+                    .iter_mut()
+                    .find(|i| i.id == instance_id)
+                {
+                    view.push_output(line);
+                }
+            }
+            WorkflowEvent::VarChanged {
+                instance_id,
+                name,
+                value,
+            } => {
+                if let Some(view) = self
+                    .workflow_instances
+                    .iter_mut()
+                    .find(|i| i.id == instance_id)
+                {
+                    view.vars.insert(name, value);
+                }
+            }
+            WorkflowEvent::StepFinished {
+                instance_id,
+                step_idx,
+                outcome,
+            } => {
+                if let Some(view) = self
+                    .workflow_instances
+                    .iter_mut()
+                    .find(|i| i.id == instance_id)
+                {
+                    if let Some(step) = view.steps.get_mut(step_idx) {
+                        step.status = match &outcome {
+                            crate::workflow::StepOutcome::Ok => StepStatus::Succeeded,
+                            crate::workflow::StepOutcome::Failed { reason } => {
+                                step.reason = Some(reason.clone());
+                                StepStatus::Failed
+                            }
+                            crate::workflow::StepOutcome::Retry { reason } => {
+                                step.reason = Some(reason.clone());
+                                StepStatus::Retrying
+                            }
+                        };
+                    }
+                }
+            }
+            WorkflowEvent::Retrying {
+                instance_id,
+                target_step_idx,
+                attempt,
+            } => {
+                if let Some(view) = self
+                    .workflow_instances
+                    .iter_mut()
+                    .find(|i| i.id == instance_id)
+                {
+                    if let Some(step) = view.steps.get_mut(target_step_idx) {
+                        step.retry_count = attempt;
+                        step.status = StepStatus::Pending;
+                    }
+                    view.current_step = target_step_idx;
+                }
+            }
+            WorkflowEvent::Finished {
+                instance_id,
+                ok,
+                reason,
+            } => {
+                if ok {
+                    // Successful instances linger in the sidebar for
+                    // a few seconds with a green glyph so the operator
+                    // actually sees the completion; they're then
+                    // auto-removed by `prune_completed_workflows`.
+                    if let Some(view) = self
+                        .workflow_instances
+                        .iter_mut()
+                        .find(|i| i.id == instance_id)
+                    {
+                        view.status = InstanceStatus::Succeeded;
+                        view.remove_at = Some(
+                            std::time::Instant::now()
+                                + super::workflow_view::SUCCESS_LINGER,
+                        );
+                    }
+                } else if let Some(view) = self
+                    .workflow_instances
+                    .iter_mut()
+                    .find(|i| i.id == instance_id)
+                {
+                    view.status = InstanceStatus::Failed;
+                    view.failure_reason = reason;
+                }
+            }
+        }
+    }
+
+    /// Drop any workflow instance whose `remove_at` deadline has
+    /// passed. Called from the event loop's spinner tick so expired
+    /// successes leave the sidebar without needing a dedicated timer.
+    /// Running and failed instances ignore this (they have no
+    /// deadline); failed instances require explicit `d` dismissal.
+    pub(crate) fn prune_completed_workflows(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        let mut to_remove: Vec<u64> = Vec::new();
+        for inst in &self.workflow_instances {
+            if let Some(t) = inst.remove_at {
+                if now >= t {
+                    to_remove.push(inst.id);
+                }
+            }
+        }
+        if to_remove.is_empty() {
+            return false;
+        }
+        // Track whether the currently-viewed instance was pruned so
+        // we can snap the main view back to Chat.
+        let mut snap_back = false;
+        for id in &to_remove {
+            if matches!(
+                self.active_view,
+                ActiveView::WorkflowInstance { instance_id, .. } if instance_id == *id
+            ) {
+                snap_back = true;
+            }
+            if let Some(engine) = self.workflow_engine.as_mut() {
+                engine.forget(*id);
+            }
+        }
+        self.workflow_instances
+            .retain(|i| !to_remove.contains(&i.id));
+        if snap_back {
+            self.active_view = ActiveView::Chat;
+            self.focus = Focus::Chat;
+        }
+        true
     }
 
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) {
@@ -4438,12 +4882,25 @@ impl App {
                 ActiveView::Chat | ActiveView::Channel(_) => Focus::Chat,
                 ActiveView::Tasks => Focus::Tasks,
                 ActiveView::Memory => Focus::Memory,
+                ActiveView::WorkflowForm { .. } | ActiveView::WorkflowInstance { .. } => {
+                    Focus::Workflow
+                }
             };
             let has_channels = !self.channels.is_empty();
+            let has_workflows = !self.config.workflows.is_empty();
             self.focus = match self.focus {
                 f if f == main => Focus::Agents,
                 Focus::Agents => Focus::Views,
                 Focus::Views => {
+                    if has_workflows {
+                        Focus::Workflows
+                    } else if has_channels {
+                        Focus::Channels
+                    } else {
+                        main
+                    }
+                }
+                Focus::Workflows => {
                     if has_channels {
                         Focus::Channels
                     } else {
@@ -4466,6 +4923,8 @@ impl App {
             Focus::Tasks => self.handle_key_tasks(code, mods),
             Focus::Channels => self.handle_key_channels(code, mods),
             Focus::Memory => self.handle_key_memory(code, mods),
+            Focus::Workflows => self.handle_key_workflows(code, mods),
+            Focus::Workflow => self.handle_key_workflow_view(code, mods),
         }
     }
 
@@ -4513,7 +4972,266 @@ impl App {
             ActiveView::Channel(_) => {
                 self.active_view = ActiveView::Chat;
             }
+            ActiveView::WorkflowForm { .. } | ActiveView::WorkflowInstance { .. } => {
+                self.active_view = ActiveView::Chat;
+                self.workflow_form = None;
+            }
             ActiveView::Chat => {}
+        }
+    }
+
+    /// Handle a keypress while the Workflows sidebar list has focus.
+    /// j/k moves the row cursor across the flattened Header+Instance
+    /// list (so instances under the expanded workflow are reachable),
+    /// Enter activates the current row, `d` dismisses a failed
+    /// instance, Esc/q returns focus to Agents.
+    fn handle_key_workflows(&mut self, code: KeyCode, _mods: KeyModifiers) {
+        if self.config.workflows.is_empty() {
+            self.focus = Focus::Agents;
+            return;
+        }
+        match code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.focus = Focus::Agents;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.selected_workflow + 1 < self.config.workflows.len() {
+                    self.selected_workflow += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.selected_workflow > 0 {
+                    self.selected_workflow -= 1;
+                }
+            }
+            KeyCode::Enter => {
+                let idx = self.selected_workflow.min(self.config.workflows.len() - 1);
+                self.open_workflow_form(idx);
+            }
+            _ => {}
+        }
+    }
+
+    /// Open the property-entry form for the workflow at `idx`. The
+    /// form is seeded from declared defaults; hidden properties are
+    /// filtered out by `WorkflowFormState::new`.
+    pub(crate) fn open_workflow_form(&mut self, idx: usize) {
+        let Some(wf) = self.config.workflows.get(idx) else {
+            return;
+        };
+        self.workflow_form = Some(super::workflow_view::WorkflowFormState::new(idx, wf));
+        self.active_view = ActiveView::WorkflowForm { workflow_idx: idx };
+        self.focus = Focus::Workflow;
+    }
+
+    /// Open the live progress view for an existing instance.
+    pub(crate) fn open_workflow_instance(&mut self, workflow_idx: usize, instance_id: u64) {
+        self.active_view = ActiveView::WorkflowInstance {
+            workflow_idx,
+            instance_id,
+        };
+        self.focus = Focus::Workflow;
+    }
+
+    /// Handler for keys while a workflow form or progress view is
+    /// active. Dispatches to specialised handlers for the two views.
+    fn handle_key_workflow_view(&mut self, code: KeyCode, mods: KeyModifiers) {
+        match self.active_view {
+            ActiveView::WorkflowForm { workflow_idx } => {
+                self.handle_key_workflow_form(workflow_idx, code, mods)
+            }
+            ActiveView::WorkflowInstance {
+                workflow_idx,
+                instance_id,
+            } => self.handle_key_workflow_instance(workflow_idx, instance_id, code, mods),
+            _ => {
+                // Defensive: if focus drifted without a matching view,
+                // return to chat.
+                self.active_view = ActiveView::Chat;
+                self.focus = Focus::Chat;
+            }
+        }
+    }
+
+    fn handle_key_workflow_form(
+        &mut self,
+        workflow_idx: usize,
+        code: KeyCode,
+        mods: KeyModifiers,
+    ) {
+        use super::workflow_view::{FieldEditor, FormButton, FormFocus};
+        // Esc always closes the form without starting an instance.
+        if matches!(code, KeyCode::Esc) {
+            self.active_view = ActiveView::Chat;
+            self.focus = Focus::Chat;
+            self.workflow_form = None;
+            return;
+        }
+        let Some(form) = self.workflow_form.as_mut() else {
+            // Lost form state — rebuild or bail.
+            return;
+        };
+        // Any keypress clears a lingering validation error.
+        form.error = None;
+        match code {
+            KeyCode::Tab => {
+                if mods.contains(KeyModifiers::SHIFT) {
+                    form.focus_prev();
+                } else {
+                    form.focus_next();
+                }
+            }
+            KeyCode::BackTab => form.focus_prev(),
+            KeyCode::Enter => {
+                // Enter from a field advances focus when there are
+                // more fields; otherwise (last field or the Run
+                // button) it submits.
+                match form.focus {
+                    FormFocus::Field(i) if i + 1 < form.fields.len() => form.focus_next(),
+                    FormFocus::Field(_) | FormFocus::Button(FormButton::Run) => {
+                        self.submit_workflow_form(workflow_idx);
+                    }
+                }
+            }
+            KeyCode::Left => {
+                if let Some(field) = form.focused_field_mut() {
+                    field.move_left();
+                }
+            }
+            KeyCode::Right => {
+                if let Some(field) = form.focused_field_mut() {
+                    field.move_right();
+                }
+            }
+            KeyCode::Up | KeyCode::Down => {
+                // MultiSelect cursor navigation.
+                if let FormFocus::Field(i) = form.focus {
+                    if let Some(FieldEditor::MultiSelect { options, .. }) = form.fields.get(i) {
+                        let len = options.len();
+                        if len == 0 {
+                            return;
+                        }
+                        let cur = form.multi_cursor(i);
+                        let next = if matches!(code, KeyCode::Up) {
+                            cur.saturating_sub(1)
+                        } else {
+                            (cur + 1).min(len - 1)
+                        };
+                        form.set_multi_cursor(i, next);
+                    }
+                }
+            }
+            KeyCode::Char(' ') => {
+                // Space toggles the cursor option on a MultiSelect;
+                // typed as a literal space in Text fields.
+                if let FormFocus::Field(i) = form.focus {
+                    if let Some(FieldEditor::MultiSelect { .. }) = form.fields.get(i) {
+                        let cur = form.multi_cursor(i);
+                        if let Some(FieldEditor::MultiSelect { .. }) = form.fields.get_mut(i) {
+                            if let Some(FieldEditor::MultiSelect { chosen, .. }) =
+                                form.fields.get_mut(i)
+                            {
+                                if let Some(b) = chosen.get_mut(cur) {
+                                    *b = !*b;
+                                }
+                            }
+                        }
+                        return;
+                    }
+                }
+                if let Some(field) = form.focused_field_mut() {
+                    field.insert_char(' ');
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(field) = form.focused_field_mut() {
+                    field.backspace();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(field) = form.focused_field_mut() {
+                    field.insert_char(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Build the property map from the form and hand it to the engine.
+    /// Populates `form.error` on validation failure so the UI can
+    /// surface it without losing focus.
+    fn submit_workflow_form(&mut self, workflow_idx: usize) {
+        let workflow = match self.config.workflows.get(workflow_idx).cloned() {
+            Some(w) => w,
+            None => return,
+        };
+        let Some(form) = self.workflow_form.as_mut() else {
+            return;
+        };
+        let inputs = match form.submit_values(&workflow) {
+            Ok(m) => m,
+            Err(msg) => {
+                form.error = Some(msg);
+                return;
+            }
+        };
+        // Merge with declared defaults (for hidden properties).
+        let merged = crate::workflow::WorkflowEngine::seed_vars(&workflow, inputs);
+
+        let engine = match self.workflow_engine.as_mut() {
+            Some(e) => e,
+            None => {
+                form.error = Some("workflow engine not initialized".into());
+                return;
+            }
+        };
+        let instance_id = self.next_instance_id;
+        self.next_instance_id += 1;
+        engine.start_instance(instance_id, &workflow, merged);
+
+        self.workflow_instances
+            .push(super::workflow_view::WorkflowInstanceView::new(
+                instance_id,
+                workflow_idx,
+                &workflow,
+            ));
+
+        // Transition to the progress view.
+        self.active_view = ActiveView::WorkflowInstance {
+            workflow_idx,
+            instance_id,
+        };
+        self.workflow_form = None;
+    }
+
+    fn handle_key_workflow_instance(
+        &mut self,
+        _workflow_idx: usize,
+        instance_id: u64,
+        code: KeyCode,
+        _mods: KeyModifiers,
+    ) {
+        match code {
+            KeyCode::Esc => {
+                self.active_view = ActiveView::Chat;
+                self.focus = Focus::Chat;
+            }
+            KeyCode::Char('d') => {
+                // Only dismiss failed instances; running ones ignore
+                // the key so the user can't accidentally lose state.
+                if let Some(pos) = self.workflow_instances.iter().position(|i| {
+                    i.id == instance_id
+                        && matches!(i.status, crate::workflow::InstanceStatus::Failed)
+                }) {
+                    self.workflow_instances.remove(pos);
+                    if let Some(engine) = self.workflow_engine.as_mut() {
+                        engine.forget(instance_id);
+                    }
+                    self.active_view = ActiveView::Chat;
+                    self.focus = Focus::Chat;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -6586,6 +7304,16 @@ impl App {
                     "/stop, /sleep, /awake target agents — run them from an agent's pane",
                 ));
             }
+            CommandOutcome::RunWorkflow { workflow_id } => {
+                let result = self.start_workflow_with_defaults(&workflow_id);
+                let ch = self.channels.get_mut(idx).expect("checked above");
+                match result {
+                    Ok(id) => ch.blocks.push(ChatBlock::system_info(format!(
+                        "workflow `{workflow_id}` started as instance #{id}"
+                    ))),
+                    Err(msg) => ch.blocks.push(ChatBlock::system_warn(msg)),
+                }
+            }
             CommandOutcome::Unknown { name, hint } => {
                 ch.blocks.push(ChatBlock::system_warn(format!(
                     "unknown command: /{name} — {hint}"
@@ -6687,6 +7415,24 @@ impl App {
                     return;
                 }
 
+                // 1b. Workflow form Run button. Checked before every
+                //     sidebar hit-test so a click on the button wins
+                //     over any overlapping region.
+                if matches!(self.active_view, ActiveView::WorkflowForm { .. }) {
+                    let hit = self
+                        .layout
+                        .workflow_form_buttons
+                        .iter()
+                        .find(|(_, r)| rect_contains(*r, pos))
+                        .map(|(b, _)| *b);
+                    if let Some(super::workflow_view::FormButton::Run) = hit {
+                        if let ActiveView::WorkflowForm { workflow_idx } = self.active_view {
+                            self.submit_workflow_form(workflow_idx);
+                        }
+                        return;
+                    }
+                }
+
                 // 2. Views list: clicking any entry both focuses
                 //    the panel and activates that view (same as
                 //    Enter on the keyboard).
@@ -6752,6 +7498,32 @@ impl App {
                     }
                 }
 
+                if let Some(rect) = self.layout.workflows_list_inner {
+                    if rect_contains(rect, pos) {
+                        let row_in_list = ev.row.saturating_sub(rect.y) as usize;
+                        match super::ui::workflow_rows(self).get(row_in_list) {
+                            Some(super::ui::WorkflowRow::Header { workflow_idx }) => {
+                                let idx = *workflow_idx;
+                                self.selected_workflow = idx;
+                                self.open_workflow_form(idx);
+                            }
+                            Some(super::ui::WorkflowRow::Instance { instance_id, .. }) => {
+                                let id = *instance_id;
+                                if let Some(inst) =
+                                    self.workflow_instances.iter().find(|i| i.id == id)
+                                {
+                                    let wf_idx = inst.workflow_idx;
+                                    self.open_workflow_instance(wf_idx, id);
+                                }
+                            }
+                            None => {
+                                self.focus = Focus::Workflows;
+                            }
+                        }
+                        return;
+                    }
+                }
+
                 if let Some(rect) = self.layout.agent_list_inner {
                     if rect_contains(rect, pos) {
                         let row_in_list = ev.row.saturating_sub(rect.y) as usize;
@@ -6777,6 +7549,8 @@ impl App {
                             ActiveView::Chat | ActiveView::Channel(_) => Focus::Chat,
                             ActiveView::Tasks => Focus::Tasks,
                             ActiveView::Memory => Focus::Memory,
+                            ActiveView::WorkflowForm { .. }
+                            | ActiveView::WorkflowInstance { .. } => Focus::Workflow,
                         };
 
                         // Memory view: route row / search-box clicks to
@@ -6838,6 +7612,8 @@ impl App {
                             ActiveView::Chat | ActiveView::Channel(_) => Focus::Chat,
                             ActiveView::Tasks => Focus::Tasks,
                             ActiveView::Memory => Focus::Memory,
+                            ActiveView::WorkflowForm { .. }
+                            | ActiveView::WorkflowInstance { .. } => Focus::Workflow,
                         };
                     }
                 }
@@ -7954,6 +8730,15 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     let (compaction_tx, mut compaction_rx) =
         mpsc::channel::<super::compaction::CompactionEvent>(16);
     app.compaction_tx = Some(compaction_tx);
+    // Workflow event plumbing. The engine owns the tx side; the TUI
+    // drains the rx end in `event_loop`. Worker / Conditional steps
+    // execute inline inside the engine using a cloned `AciddogConfig`,
+    // so no further plumbing from App is needed.
+    let (wf_event_tx, mut wf_event_rx) = mpsc::unbounded_channel::<crate::workflow::WorkflowEvent>();
+    app.workflow_engine = Some(crate::workflow::WorkflowEngine::new(
+        std::sync::Arc::new(app.config.clone()),
+        wf_event_tx,
+    ));
     let all_ids: Vec<String> = app.config.agents.iter().map(|a| a.id.clone()).collect();
     for (idx, agent) in app.config.agents.iter().enumerate() {
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
@@ -8106,6 +8891,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         &mut socket.events,
         &mut compaction_rx,
         memory_event_rx,
+        &mut wf_event_rx,
     )
     .await;
 
@@ -8213,6 +8999,7 @@ async fn event_loop<B: ratatui::backend::Backend>(
     socket_rx: &mut mpsc::Receiver<AgentSocketEvent>,
     compaction_rx: &mut mpsc::Receiver<super::compaction::CompactionEvent>,
     mut memory_event_rx: tokio::sync::mpsc::UnboundedReceiver<super::memory_view::MemoryEvent>,
+    workflow_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::workflow::WorkflowEvent>,
 ) -> Result<()> {
     let mut events = EventStream::new();
     terminal.draw(|f| ui::render(f, app))?;
@@ -8264,11 +9051,17 @@ async fn event_loop<B: ratatui::backend::Backend>(
             Some(mem_ev) = memory_event_rx.recv() => {
                 app.on_memory_event(mem_ev);
             }
+            Some(wf_ev) = workflow_event_rx.recv() => {
+                app.on_workflow_event(wf_ev);
+            }
             _ = spinner_tick.tick() => {
+                // Workflow sidebar hygiene: drop any successful
+                // instance whose linger timer has elapsed.
+                let pruned = app.prune_completed_workflows();
                 // Only redraw when something is actually animating.
                 if app.chats.iter().any(|c| c.status == AgentStatus::Working) {
                     app.frame_tick = app.frame_tick.wrapping_add(1);
-                } else {
+                } else if !pruned && app.workflow_instances.iter().all(|i| i.remove_at.is_none()) {
                     needs_redraw = false;
                 }
             }
@@ -8327,6 +9120,7 @@ mod tests {
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: None,
+                    can_run_workflows: None,
                     tools: None,
                     ai_core: None,
                     memory_banks: None,
@@ -8341,6 +9135,7 @@ mod tests {
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: None,
+                    can_run_workflows: None,
                     tools: None,
                     ai_core: None,
                     memory_banks: None,
@@ -8355,6 +9150,7 @@ mod tests {
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: None,
+                    can_run_workflows: None,
                     tools: None,
                     ai_core: None,
                     memory_banks: None,
@@ -8373,6 +9169,7 @@ mod tests {
             memory_banks: vec![],
             compactions: vec![],
             channels: vec![],
+            workflows: vec![],
             thinking_messages: vec!["thinking".into()],
         }
     }
@@ -10010,6 +10807,7 @@ mod tests {
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: Some(vec!["researcher".into()]),
+                    can_run_workflows: None,
                     tools: None,
                     ai_core: None,
                     memory_banks: None,
@@ -10024,6 +10822,7 @@ mod tests {
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: None,
+                    can_run_workflows: None,
                     tools: None,
                     ai_core: None,
                     memory_banks: None,
@@ -10040,6 +10839,7 @@ mod tests {
                     instructions: "look stuff up".into(),
                     tools: None,
                     can_create_workers: None,
+                    can_run_workflows: None,
                     ai_core: None,
                     memory_banks: None,
                     skills: None,
@@ -10053,6 +10853,7 @@ mod tests {
                     instructions: "fetch".into(),
                     tools: None,
                     can_create_workers: None,
+                    can_run_workflows: None,
                     ai_core: None,
                     memory_banks: None,
                     skills: None,
@@ -10069,6 +10870,7 @@ mod tests {
             memory_banks: vec![],
             compactions: vec![],
             channels: vec![],
+            workflows: vec![],
             thinking_messages: vec!["thinking".into()],
         }
     }

@@ -10,12 +10,15 @@
 //! — `Result::Err` would abort the turn.
 
 pub mod bash;
+pub mod check_successful;
 pub mod docs;
 pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod read;
 pub mod web_fetch;
+pub mod workflow_get;
+pub mod workflow_set;
 pub mod write;
 
 use std::collections::BTreeMap;
@@ -93,6 +96,12 @@ pub struct ToolRegistry {
 #[derive(Default, Clone)]
 pub struct RegistryConfig {
     pub bash_env: Vec<(String, String)>,
+    /// Extra tools (beyond the built-in allowlist) to inject into this
+    /// registry. Used by the workflow engine to hand per-step tools —
+    /// `check_successful`, `workflow_get`, `workflow_set` — to a
+    /// worker spawned for a workflow step, without adding those names
+    /// to the global `BUILT_IN_TOOL_NAMES`.
+    pub extra_tools: Vec<Arc<dyn Tool>>,
 }
 
 impl ToolRegistry {
@@ -113,6 +122,17 @@ impl ToolRegistry {
             if let Some(tool) = construct_with(name, cfg) {
                 tools.insert(name.clone(), tool);
                 resolved.push(name.clone());
+            }
+        }
+        // Merge `extra_tools` after built-ins. If an extra tool's name
+        // collides with a built-in the extra wins — that's intentional
+        // so workflow-context tools can shadow a generic one if we
+        // ever need to. Duplicate extras overwrite each other too.
+        for tool in &cfg.extra_tools {
+            let name = tool.name().to_string();
+            tools.insert(name.clone(), Arc::clone(tool));
+            if !resolved.iter().any(|n| n == &name) {
+                resolved.push(name);
             }
         }
         (Self { tools }, resolved)

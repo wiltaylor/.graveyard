@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use aciddog::agent_ipc::{self, Request, RequestCmd};
 use aciddog::cli::{
-    AgentArgs, AgentCommand, Args, ChannelCommand, CommentCommand, CronCommand, MemoryCommand,
+    self, AgentArgs, AgentCommand, Args, ChannelCommand, CommentCommand, CronCommand, MemoryCommand,
     SkillCommand, TaskCommand, TodoCommand, WorkerCommand,
 };
 use aciddog::config::load_config;
@@ -382,6 +382,20 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
         AgentCommand::Channel {
             cmd: ChannelCommand::Send { id, body },
         } => RequestCmd::ChannelSend { id, body },
+        AgentCommand::Workflow {
+            cmd: cli::WorkflowCommand::Run { id, properties },
+        } => {
+            // Translate `--property k=v` into JSON. The orchestrator's
+            // WorkflowSetTool::coerce handles type-level conversion.
+            let props: std::collections::BTreeMap<String, serde_json::Value> = properties
+                .into_iter()
+                .map(|(k, v)| (k, serde_json::Value::String(v)))
+                .collect();
+            RequestCmd::WorkflowRun {
+                workflow: id,
+                properties: props,
+            }
+        }
     };
 
     let response = agent_ipc::client::send(&socket_path, &Request { agent_id, cmd })

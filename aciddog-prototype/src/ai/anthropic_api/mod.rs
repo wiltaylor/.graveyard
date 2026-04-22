@@ -64,6 +64,7 @@ pub struct AnthropicApiCore {
     allowed_tools: Vec<String>,
     system_prompt: Option<String>,
     env: Vec<(String, String)>,
+    extra_tools: Vec<Arc<dyn crate::ai::tools::Tool>>,
     socket_tx: Option<mpsc::Sender<AgentSocketEvent>>,
     http: reqwest::Client,
     started: bool,
@@ -89,6 +90,7 @@ impl AnthropicApiCore {
             allowed_tools,
             system_prompt,
             env: Vec::new(),
+            extra_tools: Vec::new(),
             socket_tx: None,
             http: reqwest::Client::new(),
             started: false,
@@ -98,6 +100,18 @@ impl AnthropicApiCore {
 
     pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
         self.env = env;
+        self
+    }
+
+    /// Inject additional tools into every turn's `ToolRegistry` on top
+    /// of the `allowed_tools` allowlist. Used to hand a workflow step's
+    /// worker the per-instance `check_successful` / `workflow_get` /
+    /// `workflow_set` tools without adding them to `BUILT_IN_TOOL_NAMES`.
+    pub fn with_extra_tools(
+        mut self,
+        tools: Vec<Arc<dyn crate::ai::tools::Tool>>,
+    ) -> Self {
+        self.extra_tools = tools;
         self
     }
 
@@ -158,6 +172,7 @@ impl AICore for AnthropicApiCore {
             &self.allowed_tools,
             &RegistryConfig {
                 bash_env: self.env.clone(),
+                extra_tools: self.extra_tools.clone(),
             },
         );
 

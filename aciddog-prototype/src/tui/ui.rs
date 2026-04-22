@@ -64,6 +64,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         }
         ActiveView::Tasks => 3,
         ActiveView::Memory => 3,
+        ActiveView::WorkflowForm { .. } | ActiveView::WorkflowInstance { .. } => 3,
     };
 
     let root = Layout::default()
@@ -89,11 +90,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let main_area = body_cols[0];
     let right_col = body_cols[1];
 
-    // Right column: Views list on top (small), Agents in the middle,
-    // Channels list at the bottom (if any channels are declared).
-    // Each list's height = border (2) + one line per entry. When a
-    // channel is active its members are nested beneath its row, so the
-    // panel can grow. Agents takes whatever's left.
+    // Right column (top → bottom): Views list, Agents, Workflows (if
+    // any workflows are declared), Channels (if any channels are
+    // declared). Each list's height = border (2) + one line per entry;
+    // Agents takes whatever's left. When a channel / workflow is
+    // selected its members (or instances) nest beneath its row, so the
+    // panel can grow dynamically.
     let views_height = (VIEW_ENTRIES.len() as u16).saturating_add(2).max(3);
     let channels_rows_len = channel_rows(app).len() as u16;
     let channels_height = if !app.channels.is_empty() {
@@ -101,25 +103,38 @@ pub fn render(f: &mut Frame, app: &mut App) {
     } else {
         0
     };
-    let right_rows = if channels_height > 0 {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(views_height),
-                Constraint::Min(5),
-                Constraint::Length(channels_height),
-            ])
-            .split(right_col)
+    let workflows_rows_len = workflow_rows(app).len() as u16;
+    let workflows_height = if !app.config.workflows.is_empty() {
+        workflows_rows_len.saturating_add(2).max(3)
     } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(views_height), Constraint::Min(5)])
-            .split(right_col)
+        0
     };
+
+    let mut constraints: Vec<Constraint> = Vec::with_capacity(4);
+    constraints.push(Constraint::Length(views_height));
+    constraints.push(Constraint::Min(5));
+    if workflows_height > 0 {
+        constraints.push(Constraint::Length(workflows_height));
+    }
+    if channels_height > 0 {
+        constraints.push(Constraint::Length(channels_height));
+    }
+    let right_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(right_col);
     let views_area = right_rows[0];
     let agents_area = right_rows[1];
+    let mut next_idx = 2;
+    let workflows_area = if workflows_height > 0 {
+        let r = right_rows[next_idx];
+        next_idx += 1;
+        Some(r)
+    } else {
+        None
+    };
     let channels_area = if channels_height > 0 {
-        Some(right_rows[2])
+        Some(right_rows[next_idx])
     } else {
         None
     };
@@ -131,9 +146,17 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ActiveView::Tasks => render_tasks_screen(f, main_area, app),
         ActiveView::Channel(idx) => render_channel_chat(f, main_area, app, idx),
         ActiveView::Memory => render_memory_screen(f, main_area, app),
+        ActiveView::WorkflowForm { workflow_idx } => {
+            render_workflow_form(f, main_area, app, workflow_idx)
+        }
+        ActiveView::WorkflowInstance {
+            workflow_idx,
+            instance_id,
+        } => render_workflow_instance(f, main_area, app, workflow_idx, instance_id),
     };
     let views_inner = render_views_list(f, views_area, app);
     let list_inner = render_agent_list(f, agents_area, app);
+    let workflows_inner = workflows_area.map(|a| render_workflows_list(f, a, app));
     let channels_inner = channels_area.map(|a| render_channels_list(f, a, app));
     let input_inner = render_chat_input(f, chat_input_area, app);
     render_status(f, status_area, app);
@@ -159,6 +182,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.layout.chat_input_inner = Some(input_inner);
     app.layout.views_list_inner = Some(views_inner);
     app.layout.channels_list_inner = channels_inner;
+    app.layout.workflows_list_inner = workflows_inner;
 }
 
 fn focus_border_style(focused: bool) -> Style {
@@ -1010,6 +1034,11 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
         Focus::Tasks => "tasks",
         Focus::Channels => "channels",
         Focus::Memory => "memory",
+        Focus::Workflows => "workflows",
+        Focus::Workflow => match app.active_view {
+            ActiveView::WorkflowForm { .. } => "workflow form",
+            _ => "workflow",
+        },
     };
     let mut hint_spans: Vec<Span> = match app.focus {
         Focus::Agents => vec![
@@ -1129,6 +1158,34 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             Span::raw(" links  "),
             Span::styled("⏎", Style::default().fg(Color::Cyan)),
             Span::raw(" detail  "),
+            Span::styled("esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" back"),
+        ],
+        Focus::Workflows => vec![
+            Span::styled(" focus: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                focus_label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("j/k", Style::default().fg(Color::Cyan)),
+            Span::raw(" nav  "),
+            Span::styled("⏎", Style::default().fg(Color::Cyan)),
+            Span::raw(" open  "),
+            Span::styled("tab", Style::default().fg(Color::Cyan)),
+            Span::raw(" next panel"),
+        ],
+        Focus::Workflow => vec![
+            Span::styled(" focus: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                focus_label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
             Span::styled("esc", Style::default().fg(Color::Cyan)),
             Span::raw(" back"),
         ],
@@ -3112,3 +3169,674 @@ fn render_memory_link_picker(
     );
 }
 
+
+
+// ---------------------------------------------------------------------
+// Workflows sidebar: rows, list renderer, and placeholder main-area
+// views. Form + progress view rendering is fleshed out in task #3.
+// ---------------------------------------------------------------------
+
+use crate::workflow::InstanceStatus as WfInstanceStatus;
+
+/// A single renderable row in the workflows panel. Instances appear
+/// only beneath the header of the currently-selected workflow — same
+/// pattern as channel members under the active channel.
+pub(super) enum WorkflowRow {
+    Header { workflow_idx: usize },
+    Instance { instance_id: u64, status: WfInstanceStatus },
+}
+
+pub(super) fn workflow_rows(app: &App) -> Vec<WorkflowRow> {
+    let mut rows: Vec<WorkflowRow> = Vec::with_capacity(app.config.workflows.len());
+    // A workflow always expands whenever it has at least one
+    // running / succeeded / failed instance — the operator should
+    // be able to click those rows from any view. Workflows with no
+    // live instances stay collapsed to keep the panel compact.
+    for (wi, _wf) in app.config.workflows.iter().enumerate() {
+        rows.push(WorkflowRow::Header { workflow_idx: wi });
+        for inst in app
+            .workflow_instances
+            .iter()
+            .filter(|i| i.workflow_idx == wi)
+        {
+            rows.push(WorkflowRow::Instance {
+                instance_id: inst.id,
+                status: inst.status,
+            });
+        }
+    }
+    rows
+}
+
+fn render_workflows_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
+    let focused = app.focus == Focus::Workflows;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" workflows ")
+        .border_style(focus_border_style(focused));
+    let inner = block.inner(area);
+    let rows = workflow_rows(app);
+    // Which instance (if any) is the current main-area view — drives
+    // both the persistent cursor highlight and the row style.
+    let active_instance = match app.active_view {
+        ActiveView::WorkflowInstance { instance_id, .. } => Some(instance_id),
+        _ => None,
+    };
+    // Whether a workflow form is the active view — keeps the header
+    // highlighted while the form is open, but not once we've moved
+    // on to an instance view.
+    let active_form_workflow = match app.active_view {
+        ActiveView::WorkflowForm { workflow_idx } => Some(workflow_idx),
+        _ => None,
+    };
+    let mut selected_row: Option<usize> = None;
+    let items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .map(|(row_idx, row)| match row {
+            WorkflowRow::Header { workflow_idx } => {
+                let i = *workflow_idx;
+                let wf = &app.config.workflows[i];
+                let highlight_header = active_form_workflow == Some(i)
+                    || (active_instance.is_none()
+                        && focused
+                        && i == app.selected_workflow);
+                let style = if highlight_header {
+                    Style::default()
+                        .bg(Color::Cyan)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                // Only anchor the ListState cursor on the header
+                // when there's no active instance — once we're
+                // viewing an instance, the cursor lives on its row
+                // instead (set below).
+                if active_instance.is_none()
+                    && !app.config.workflows.is_empty()
+                    && i == app.selected_workflow.min(app.config.workflows.len() - 1)
+                {
+                    selected_row = Some(row_idx);
+                }
+                ListItem::new(Line::from(Span::styled(
+                    format!("▶ {}", wf.id),
+                    style,
+                )))
+            }
+            WorkflowRow::Instance { instance_id, status } => {
+                let is_active = active_instance == Some(*instance_id);
+                if is_active {
+                    selected_row = Some(row_idx);
+                }
+                let dot = match status {
+                    WfInstanceStatus::Running => "🟡",
+                    WfInstanceStatus::Failed => "🔴",
+                    WfInstanceStatus::Succeeded => "🟢",
+                };
+                // Active instance: cyan-on-black bold so the cursor
+                // is unmistakable. Failed but inactive: red fg.
+                // Otherwise: default.
+                let id_style = if is_active {
+                    Style::default()
+                        .bg(Color::Cyan)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else if matches!(status, WfInstanceStatus::Failed) {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("↳ ", Style::default().fg(Color::DarkGray)),
+                    Span::raw(format!("{dot} ")),
+                    Span::styled(format!("#{instance_id}"), id_style),
+                ]))
+            }
+        })
+        .collect();
+    let list = List::new(items).block(block);
+    let mut state = ListState::default();
+    if let Some(r) = selected_row {
+        state.select(Some(r));
+    }
+    f.render_stateful_widget(list, area, &mut state);
+    inner
+}
+
+/// Full property-entry form. Renders one row per visible property
+/// (hidden ones are filtered at form construction), with Text/Number
+/// edit cursors, Select arrow cycling, and MultiSelect checkbox rows.
+/// Also shows a "Steps" preview so the operator can see what the
+/// workflow will do before hitting Run. Two buttons at the bottom:
+/// Run submits, Cancel returns to Chat.
+fn render_workflow_form(f: &mut Frame, area: Rect, app: &mut App, workflow_idx: usize) -> Rect {
+    use super::workflow_view::{FieldEditor, FormButton, FormFocus};
+
+    // Clear previous frame's button rects so we only ever hit-test
+    // against geometry from the current draw.
+    app.layout.workflow_form_buttons.clear();
+
+    let focused = app.focus == Focus::Workflow;
+    let Some(wf) = app.config.workflows.get(workflow_idx).cloned() else {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" workflow: (unknown) ")
+            .border_style(focus_border_style(focused));
+        let inner = block.inner(area);
+        f.render_widget(
+            Paragraph::new("no such workflow")
+                .style(Style::default().fg(Color::Red))
+                .block(block),
+            area,
+        );
+        return inner;
+    };
+
+    let title = format!(" workflow: {} ", wf.id);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(focus_border_style(focused));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let Some(form) = &app.workflow_form else {
+        f.render_widget(
+            Paragraph::new("(no form state — press /run to start with defaults)")
+                .style(Style::default().fg(Color::DarkGray)),
+            inner,
+        );
+        return inner;
+    };
+
+    // Reserve 4 rows at the bottom of the inner rect for:
+    //   row 0: (blank separator)
+    //   row 1: [ Run ]  [ Cancel ]
+    //   row 2: error message (if any) or blank
+    //   row 3: hint line
+    // Place the buttons at a fixed y so they're always visible, even
+    // when the content above overflows.
+    const FOOTER_ROWS: u16 = 4;
+    let content_height = inner.height.saturating_sub(FOOTER_ROWS);
+    let footer_y = inner.y + content_height;
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        wf.description.clone(),
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(Span::raw("")));
+
+    if form.fields.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(no user-visible properties — this workflow runs with declared defaults only)",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::raw("")));
+    }
+
+    for (i, field) in form.fields.iter().enumerate() {
+        let is_focused = matches!(form.focus, FormFocus::Field(fi) if fi == i);
+        let label_style = if is_focused {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let name = field.name();
+        lines.push(Line::from(vec![Span::styled(
+            format!("{} {name}:", if is_focused { "▶" } else { " " }),
+            label_style,
+        )]));
+        match field {
+            FieldEditor::Text { value, cursor, .. }
+            | FieldEditor::Number { value, cursor, .. } => {
+                let rendered = render_text_input(value, *cursor, is_focused);
+                let mut spans: Vec<Span> = vec![Span::raw("    ")];
+                spans.extend(rendered);
+                lines.push(Line::from(spans));
+            }
+            FieldEditor::Select {
+                selected, options, ..
+            } => {
+                let picked = options.get(*selected).cloned().unwrap_or_default();
+                let hint = if is_focused { " (←/→ cycle)" } else { "" };
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(format!("◉ {picked}"), Style::default().fg(Color::Yellow)),
+                    Span::styled(hint, Style::default().fg(Color::DarkGray)),
+                ]));
+            }
+            FieldEditor::MultiSelect {
+                chosen, options, ..
+            } => {
+                let cursor_idx = form.multi_cursor(i).min(options.len().saturating_sub(1));
+                for (oi, opt) in options.iter().enumerate() {
+                    let mark = if chosen.get(oi).copied().unwrap_or(false) {
+                        "☑"
+                    } else {
+                        "☐"
+                    };
+                    let style = if is_focused && oi == cursor_idx {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(format!("{mark} {opt}"), style),
+                    ]));
+                }
+                if is_focused {
+                    lines.push(Line::from(Span::styled(
+                        "    (↑/↓ move, space to toggle)",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+            }
+        }
+        lines.push(Line::from(Span::raw("")));
+    }
+
+    // Steps preview — shows the operator what the workflow will
+    // actually do once Run is pressed. Concise one-liner per step.
+    lines.push(Line::from(Span::styled(
+        "Steps",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    if wf.steps.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no steps declared — Run will be a no-op)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for (i, step) in wf.steps.iter().enumerate() {
+            let (kind, detail) = step_preview(&step.kind);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {}. ", i + 1),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    step.id.clone(),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" [{kind}]"),
+                    Style::default().fg(Color::Magenta),
+                ),
+                Span::styled(
+                    format!(" {detail}"),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        }
+    }
+    lines.push(Line::from(Span::raw("")));
+
+    // Render the scrollable content into the top portion of the
+    // inner rect. The footer (buttons + error + hint) occupies the
+    // last FOOTER_ROWS rows and is always visible.
+    let content_rect = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: content_height,
+    };
+    f.render_widget(Paragraph::new(lines), content_rect);
+
+    // Footer: button row at footer_y + 1 (leave one blank separator
+    // at footer_y so the button doesn't collide with content visually).
+    let button_y = footer_y + 1;
+
+    let run_label = " [ Run ] ";
+    let run_width = run_label.chars().count() as u16;
+
+    let run_style = if matches!(form.focus, FormFocus::Button(FormButton::Run)) {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+
+    let run_x = inner.x + 1;
+    let run_rect = Rect {
+        x: run_x,
+        y: button_y,
+        width: run_width.min(inner.width.saturating_sub(1)),
+        height: 1,
+    };
+
+    f.render_widget(
+        Paragraph::new(Span::styled(run_label, run_style)),
+        run_rect,
+    );
+
+    app.layout
+        .workflow_form_buttons
+        .push((FormButton::Run, run_rect));
+
+    // Error line (row below the buttons).
+    let error_y = button_y + 1;
+    let error_rect = Rect {
+        x: inner.x,
+        y: error_y,
+        width: inner.width,
+        height: 1,
+    };
+    let error_line = match &form.error {
+        Some(err) => Line::from(Span::styled(
+            format!("⚠ {err}"),
+            Style::default().fg(Color::Red),
+        )),
+        None => Line::from(Span::raw("")),
+    };
+    f.render_widget(Paragraph::new(error_line), error_rect);
+
+    // Hint line (row below the error line).
+    let hint_y = error_y + 1;
+    if hint_y < inner.y + inner.height {
+        let hint_rect = Rect {
+            x: inner.x,
+            y: hint_y,
+            width: inner.width,
+            height: 1,
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                " tab next · shift-tab prev · ⏎ run · click Run · esc cancel ",
+                Style::default().fg(Color::DarkGray),
+            )),
+            hint_rect,
+        );
+    }
+
+    inner
+}
+
+/// One-line summary for a `StepKind`, used by the form's preview.
+fn step_preview(kind: &crate::config::StepKind) -> (&'static str, String) {
+    use crate::config::StepKind;
+    match kind {
+        StepKind::Command { command, .. } => ("command", truncate_one_line(command, 60)),
+        StepKind::Worker { worker, prompt } => (
+            "worker",
+            format!("{worker}: {}", truncate_one_line(prompt, 50)),
+        ),
+        StepKind::Conditional {
+            worker,
+            prompt,
+            target,
+        } => (
+            "conditional",
+            format!(
+                "{worker}: {} (on fail → {target})",
+                truncate_one_line(prompt, 36)
+            ),
+        ),
+        StepKind::Check {
+            variable,
+            op,
+            value,
+            target,
+        } => (
+            "check",
+            format!(
+                "{variable} {} {} (on fail → {target})",
+                op.name(),
+                value.as_deref().unwrap_or("")
+            ),
+        ),
+    }
+}
+
+/// Collapse newlines and truncate with an ellipsis so a long command
+/// or prompt stays on one sidebar line.
+fn truncate_one_line(s: &str, max: usize) -> String {
+    let flat: String = s
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect();
+    let trimmed = flat.trim();
+    if trimmed.chars().count() <= max {
+        return trimmed.to_string();
+    }
+    let head: String = trimmed.chars().take(max.saturating_sub(1)).collect();
+    format!("{head}…")
+}
+
+/// Render a text-input buffer with an optional cursor drawn as a thin
+/// vertical bar. Returns a span list the caller can splice into a Line.
+fn render_text_input(value: &str, cursor: usize, focused: bool) -> Vec<Span<'static>> {
+    if !focused {
+        return vec![Span::styled(
+            value.to_string(),
+            Style::default().fg(Color::White),
+        )];
+    }
+    let before: String = value.chars().take(cursor).collect();
+    let after: String = value.chars().skip(cursor).collect();
+    vec![
+        Span::styled(before, Style::default().fg(Color::White)),
+        Span::styled("▏", Style::default().fg(Color::Cyan)),
+        Span::styled(after, Style::default().fg(Color::White)),
+    ]
+}
+
+/// Live progress view for one workflow instance. Lays out the
+/// variables panel (every property's current value), the step list
+/// (with status glyphs + retry counts), and the tail of live output.
+fn render_workflow_instance(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    workflow_idx: usize,
+    instance_id: u64,
+) -> Rect {
+    use crate::workflow::{InstanceStatus, StepStatus};
+
+    let focused = app.focus == Focus::Workflow;
+    let wf = app.config.workflows.get(workflow_idx);
+    let inst = app.workflow_instances.iter().find(|i| i.id == instance_id);
+
+    let (status_label, _status_style) = match inst.map(|i| i.status) {
+        Some(InstanceStatus::Running) => (
+            "running",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Some(InstanceStatus::Failed) => (
+            "failed",
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Some(InstanceStatus::Succeeded) | None => (
+            "done",
+            Style::default().fg(Color::Green),
+        ),
+    };
+    let title = match wf {
+        Some(w) => format!(" {} · #{} · {} ", w.id, instance_id, status_label),
+        None => format!(" #{instance_id} · {status_label} "),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(focus_border_style(focused));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let Some(inst) = inst else {
+        f.render_widget(
+            Paragraph::new("instance not found (may have completed successfully)")
+                .style(Style::default().fg(Color::DarkGray)),
+            inner,
+        );
+        return inner;
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Variables panel — include hidden so workflow_set mutations are
+    // visible to the operator.
+    lines.push(Line::from(Span::styled(
+        "Variables",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    if inst.vars.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no variables seeded yet)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        // Stable order: iterate the declared property list when we can.
+        if let Some(w) = wf {
+            for p in &w.properties {
+                if let Some(v) = inst.vars.get(&p.id) {
+                    let hidden_tag = if matches!(
+                        p.kind,
+                        crate::config::PropertyKind::Hidden { .. }
+                    ) {
+                        Span::styled(" [hidden]", Style::default().fg(Color::DarkGray))
+                    } else {
+                        Span::raw("")
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  {} ", p.id),
+                            Style::default().fg(Color::White),
+                        ),
+                        Span::styled(
+                            "= ",
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled(v.as_display(), Style::default().fg(Color::Yellow)),
+                        hidden_tag,
+                    ]));
+                }
+            }
+        } else {
+            for (k, v) in &inst.vars {
+                lines.push(Line::from(Span::raw(format!(
+                    "  {k} = {}",
+                    v.as_display()
+                ))));
+            }
+        }
+    }
+    lines.push(Line::from(Span::raw("")));
+
+    // Steps panel.
+    lines.push(Line::from(Span::styled(
+        "Steps",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for (idx, s) in inst.steps.iter().enumerate() {
+        let glyph = match s.status {
+            StepStatus::Pending => "•",
+            StepStatus::Running => "▶",
+            StepStatus::Succeeded => "✓",
+            StepStatus::Failed => "✗",
+            StepStatus::Retrying => "↺",
+        };
+        let color = match s.status {
+            StepStatus::Pending => Color::DarkGray,
+            StepStatus::Running => Color::Yellow,
+            StepStatus::Succeeded => Color::Green,
+            StepStatus::Failed => Color::Red,
+            StepStatus::Retrying => Color::Magenta,
+        };
+        let current_marker = if idx == inst.current_step && matches!(inst.status, InstanceStatus::Running) {
+            " ← current"
+        } else {
+            ""
+        };
+        let retry = if s.retry_count > 0 {
+            format!(" · retry #{}", s.retry_count)
+        } else {
+            String::new()
+        };
+        let reason = if let (Some(r), StepStatus::Failed | StepStatus::Retrying) = (&s.reason, s.status) {
+            format!(" ({})", r)
+        } else {
+            String::new()
+        };
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(format!("[{glyph}] "), Style::default().fg(color)),
+            Span::styled(
+                format!("{} ({})", s.id, s.kind_label),
+                Style::default().fg(color),
+            ),
+            Span::styled(retry, Style::default().fg(Color::Magenta)),
+            Span::styled(reason, Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                current_marker.to_string(),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+    }
+    lines.push(Line::from(Span::raw("")));
+
+    // Output tail.
+    if !inst.tail_output.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Output (tail)",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+        // Show the last ~20 lines so the panel fits without scrolling.
+        let take = inst.tail_output.len().saturating_sub(20);
+        for line in inst.tail_output.iter().skip(take) {
+            lines.push(Line::from(Span::styled(
+                format!("  {line}"),
+                Style::default().fg(Color::White),
+            )));
+        }
+    }
+
+    // Failure reason on the final line (if failed).
+    if matches!(inst.status, InstanceStatus::Failed) {
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "⚠ failed: {}",
+                inst.failure_reason.as_deref().unwrap_or("(no reason)")
+            ),
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            " press `d` to dismiss · esc back ",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            " esc back ",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    f.render_widget(Paragraph::new(lines), inner);
+    inner
+}

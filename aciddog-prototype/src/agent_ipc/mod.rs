@@ -52,6 +52,17 @@ pub enum RequestCmd {
     WorkerComplete {
         body: String,
     },
+    /// Start a new instance of a declared workflow. Enforces the
+    /// caller's `can_run_workflows` allowlist. `properties` is a map
+    /// of property-id → JSON value; each is coerced against the
+    /// declared `PropertyKind` (unsupplied properties fall back to
+    /// declared defaults; required-with-no-value fails the request).
+    /// Reply message carries the new instance id.
+    WorkflowRun {
+        workflow: String,
+        #[serde(default)]
+        properties: std::collections::BTreeMap<String, serde_json::Value>,
+    },
     /// Add a new task to the shared team board.
     TaskAdd {
         title: String,

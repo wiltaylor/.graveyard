@@ -9,5 +9,6 @@ mod markdown;
 mod memory_view;
 mod tasks_view;
 mod ui;
+mod workflow_view;
 
 pub use app::run;
