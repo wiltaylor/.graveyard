@@ -124,7 +124,11 @@ fn planner_prompt_has_role_team_tag_tools_and_instructions() {
         "planner has no Bash → tag preamble expected: {p}"
     );
     assert!(
-        !p.contains("/usr/local/bin/aciddog send"),
+        p.contains("| send_message |"),
+        "tag-mode send_message row missing: {p}"
+    );
+    assert!(
+        !p.contains("/usr/local/bin/aciddog test"),
         "CLI preamble leaked into tag-mode tools: {p}"
     );
     assert!(p.contains("<instructions>"), "missing instructions: {p}");
@@ -170,8 +174,12 @@ fn coder_prompt_uses_cli_preamble_inside_tools() {
 
     assert!(p.contains("- `Bash` —"), "missing Bash built-in line: {p}");
     assert!(
-        p.contains("/usr/local/bin/aciddog send --to"),
-        "expected CLI preamble inside <tools>: {p}"
+        p.contains("/usr/local/bin/aciddog test"),
+        "expected CLI preamble header (binary path) inside <tools>: {p}"
+    );
+    assert!(
+        p.contains("| send |"),
+        "CLI-mode send row missing: {p}"
     );
     assert!(
         !p.contains("<aciddog-call>"),
@@ -245,12 +253,12 @@ fn planner_prompt_includes_memory_block_and_cli_docs_for_allowed_banks() {
     );
     // Planner has no Bash → tag preamble; look for tag-flavored docs.
     assert!(
-        p.contains("\"cmd\":\"memory_search\""),
-        "memory_search tag example missing: {p}"
+        p.contains("| memory_search |"),
+        "memory_search tag row missing: {p}"
     );
     assert!(
-        p.contains("\"cmd\":\"memory_store\""),
-        "memory_store tag example missing: {p}"
+        p.contains("| memory_store |"),
+        "memory_store tag row missing: {p}"
     );
     // Memory tag should appear before the tools tag in reading order.
     let mem_pos = p.find("<memory>").unwrap();

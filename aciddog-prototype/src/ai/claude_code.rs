@@ -794,9 +794,10 @@ mod tests {
         assert!(p.contains("<tools>"), "missing tools open tag: {p}");
         assert!(p.contains("- `Bash` —"), "missing Bash built-in line: {p}");
         assert!(
-            p.contains("/usr/bin/aciddog send --to"),
-            "missing CLI preamble: {p}"
+            p.contains("/usr/bin/aciddog test"),
+            "missing CLI preamble header (binary path): {p}"
         );
+        assert!(p.contains("| send |"), "missing CLI send row: {p}");
         assert!(
             !p.contains("<aciddog-call>"),
             "should not include tag preamble: {p}"
