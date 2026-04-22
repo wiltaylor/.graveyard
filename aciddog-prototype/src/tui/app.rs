@@ -5068,19 +5068,36 @@ impl App {
                     }
                 }
 
-                // 2b. Channels list: clicking a channel row both
-                //     focuses the panel and opens that channel in
-                //     the main area (same as Enter on the keyboard).
+                // 2b. Channels list: clicking a channel header opens
+                //     that channel (same as Enter). When a channel is
+                //     active its members are nested beneath it;
+                //     clicking a member row switches to the agent's
+                //     chat and highlights it in the Agents list.
                 //     Clicks on empty rows just focus the panel.
                 if let Some(rect) = self.layout.channels_list_inner {
                     if rect_contains(rect, pos) {
                         let row_in_list = ev.row.saturating_sub(rect.y) as usize;
-                        if row_in_list < self.channels.len() {
-                            self.selected_channel = row_in_list;
-                            self.active_view = ActiveView::Channel(row_in_list);
-                            self.focus = Focus::Chat;
-                        } else {
-                            self.focus = Focus::Channels;
+                        match super::ui::channel_rows(self).get(row_in_list) {
+                            Some(super::ui::ChannelRow::Header { channel_idx }) => {
+                                self.selected_channel = *channel_idx;
+                                self.active_view = ActiveView::Channel(*channel_idx);
+                                self.focus = Focus::Chat;
+                            }
+                            Some(super::ui::ChannelRow::Member {
+                                agent_chat_idx: Some(idx),
+                                ..
+                            }) => {
+                                self.selected = *idx;
+                                self.active_view = ActiveView::Chat;
+                                self.focus = Focus::Agents;
+                            }
+                            Some(super::ui::ChannelRow::Member {
+                                agent_chat_idx: None,
+                                ..
+                            })
+                            | None => {
+                                self.focus = Focus::Channels;
+                            }
                         }
                         return;
                     }

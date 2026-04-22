@@ -71,12 +71,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     // Right column: Views list on top (small), Agents in the middle,
     // Channels list at the bottom (if any channels are declared).
-    // Each list's height = border (2) + one line per entry. Agents
-    // takes whatever's left.
+    // Each list's height = border (2) + one line per entry. When a
+    // channel is active its members are nested beneath its row, so the
+    // panel can grow. Agents takes whatever's left.
     let views_height = (VIEW_ENTRIES.len() as u16).saturating_add(2).max(3);
-    let channels_len = app.channels.len() as u16;
-    let channels_height = if channels_len > 0 {
-        channels_len.saturating_add(2).max(3)
+    let channels_rows_len = channel_rows(app).len() as u16;
+    let channels_height = if !app.channels.is_empty() {
+        channels_rows_len.saturating_add(2).max(3)
     } else {
         0
     };
@@ -1082,6 +1083,46 @@ fn render_views_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
     inner
 }
 
+/// A single renderable row in the channels panel. Members appear only
+/// under the currently-active channel so the operator can see who's in
+/// the room they just opened without a second panel.
+pub(super) enum ChannelRow {
+    Header {
+        channel_idx: usize,
+    },
+    Member {
+        member_id: String,
+        /// Resolved chat index for this member id, if one exists. `None`
+        /// means the configured agent has no live chat (never spawned),
+        /// and the row renders inert and dimmed.
+        agent_chat_idx: Option<usize>,
+    },
+}
+
+pub(super) fn channel_rows(app: &App) -> Vec<ChannelRow> {
+    let active = match app.active_view {
+        ActiveView::Channel(i) => Some(i),
+        _ => None,
+    };
+    let mut rows: Vec<ChannelRow> = Vec::with_capacity(app.channels.len());
+    for (ci, ch) in app.channels.iter().enumerate() {
+        rows.push(ChannelRow::Header { channel_idx: ci });
+        if Some(ci) == active {
+            for member_id in &ch.members {
+                let agent_chat_idx = app
+                    .chats
+                    .iter()
+                    .position(|c| c.parent_idx.is_none() && &c.display_name == member_id);
+                rows.push(ChannelRow::Member {
+                    member_id: member_id.clone(),
+                    agent_chat_idx,
+                });
+            }
+        }
+    }
+    rows
+}
+
 fn render_channels_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
     let focused = app.focus == Focus::Channels;
     let block = Block::default()
@@ -1089,32 +1130,62 @@ fn render_channels_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
         .title(" channels ")
         .border_style(focus_border_style(focused));
     let inner = block.inner(area);
-    let items: Vec<ListItem> = app
-        .channels
+    let rows = channel_rows(app);
+    let mut selected_row: Option<usize> = None;
+    let items: Vec<ListItem> = rows
         .iter()
         .enumerate()
-        .map(|(i, c)| {
-            let active = matches!(app.active_view, ActiveView::Channel(j) if j == i);
-            // Persistent highlight on the currently-open channel so
-            // clicking it gives visible feedback once focus leaves
-            // the panel (mirrors the agent list's always-on selected
-            // highlight). The same highlight tracks the keyboard
-            // cursor when the panel is focused.
-            let style = if active || (focused && i == app.selected_channel) {
-                Style::default()
-                    .bg(Color::Cyan)
-                    .fg(Color::Black)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(Span::styled(format!("#{}", c.id), style)))
+        .map(|(row_idx, row)| match row {
+            ChannelRow::Header { channel_idx } => {
+                let i = *channel_idx;
+                let c = &app.channels[i];
+                let active = matches!(app.active_view, ActiveView::Channel(j) if j == i);
+                // Persistent highlight on the currently-open channel so
+                // clicking it gives visible feedback once focus leaves
+                // the panel (mirrors the agent list's always-on selected
+                // highlight). The same highlight tracks the keyboard
+                // cursor when the panel is focused.
+                let style = if active || (focused && i == app.selected_channel) {
+                    Style::default()
+                        .bg(Color::Cyan)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                if !app.channels.is_empty()
+                    && i == app.selected_channel.min(app.channels.len() - 1)
+                {
+                    selected_row = Some(row_idx);
+                }
+                ListItem::new(Line::from(Span::styled(format!("#{}", c.id), style)))
+            }
+            ChannelRow::Member {
+                member_id,
+                agent_chat_idx,
+            } => {
+                let dim = agent_chat_idx
+                    .and_then(|idx| app.chats.get(idx))
+                    .map(|c| c.hibernated)
+                    .unwrap_or(true);
+                let name_style = if dim {
+                    Style::default().fg(Color::DarkGray)
+                } else {
+                    Style::default()
+                };
+                let spans = vec![
+                    Span::raw("  "),
+                    Span::styled("↳ ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(member_id.clone(), name_style),
+                ];
+                ListItem::new(Line::from(spans))
+            }
         })
         .collect();
     let list = List::new(items).block(block);
     let mut state = ListState::default();
-    if !app.channels.is_empty() {
-        state.select(Some(app.selected_channel.min(app.channels.len() - 1)));
+    if let Some(r) = selected_row {
+        state.select(Some(r));
     }
     f.render_stateful_widget(list, area, &mut state);
     inner
