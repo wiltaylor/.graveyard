@@ -558,7 +558,143 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         RequestCmd::MemoryLink { .. } => ChatBlock::from_tool_use("aciddog memory link", input),
         RequestCmd::MemoryUnlink { .. } => ChatBlock::from_tool_use("aciddog memory unlink", input),
         RequestCmd::MemoryLinks { .. } => ChatBlock::from_tool_use("aciddog memory links", input),
+        RequestCmd::Info => ChatBlock::from_tool_use("aciddog info", input),
+        RequestCmd::CronAdd { .. } => ChatBlock::from_tool_use("aciddog cron add", input),
+        RequestCmd::CronList { .. } => ChatBlock::from_tool_use("aciddog cron list", input),
+        RequestCmd::CronShow { .. } => ChatBlock::from_tool_use("aciddog cron show", input),
+        RequestCmd::CronUpdate { .. } => ChatBlock::from_tool_use("aciddog cron update", input),
+        RequestCmd::CronRemove { .. } => ChatBlock::from_tool_use("aciddog cron remove", input),
     }
+}
+
+/// Parse a `--kind` flag value into a [`crate::cron::CronPayload`].
+/// Returns the same human-readable error a CLI surface would.
+fn parse_cron_payload(kind: &str, payload: String) -> Result<crate::cron::CronPayload, String> {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "message" => {
+            let p = crate::cron::CronPayload::Message { body: payload };
+            crate::cron::validate_payload(&p).map_err(|e| e.to_string())?;
+            Ok(p)
+        }
+        "command" => {
+            let p = crate::cron::CronPayload::SlashCommand { command: payload };
+            crate::cron::validate_payload(&p).map_err(|e| e.to_string())?;
+            Ok(p)
+        }
+        other => Err(format!(
+            "invalid kind `{other}` (expected `message` or `command`)"
+        )),
+    }
+}
+
+/// Parse a `--schedule` flag plus the `--oneoff` toggle into a
+/// [`crate::cron::CronSchedule`].
+fn parse_cron_schedule(
+    schedule: &str,
+    oneoff: bool,
+) -> Result<crate::cron::CronSchedule, crate::cron::CronError> {
+    if oneoff {
+        crate::cron::parse_oneoff(schedule)
+    } else {
+        crate::cron::parse_recurring(schedule)
+    }
+}
+
+/// One-line summary of a cron job for `cron list`. Calls out
+/// targets that no longer match a configured agent so the operator
+/// can see broken jobs at a glance.
+fn fmt_cron_job_short(j: &crate::cron::CronJob, config: &crate::config::AciddogConfig) -> String {
+    let kind = match &j.payload {
+        crate::cron::CronPayload::Message { .. } => "message",
+        crate::cron::CronPayload::SlashCommand { .. } => "command",
+    };
+    let sched = match &j.schedule {
+        crate::cron::CronSchedule::Recurring { expression } => format!("recurring `{expression}`"),
+        crate::cron::CronSchedule::OneOff { run_at_local } => format!("oneoff @{run_at_local}"),
+    };
+    let next = j
+        .next_run
+        .map(|n| n.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_else(|| "—".to_string());
+    let enabled = if j.enabled { "enabled" } else { "disabled" };
+    let target_known = config.agents.iter().any(|a| a.id == j.target_agent);
+    let target_marker = if target_known { "" } else { " [target unknown]" };
+    format!(
+        "{id} {enabled} {kind} → {target}{marker}; {sched}; tz={tz}; next_run={next}",
+        id = j.id,
+        target = j.target_agent,
+        marker = target_marker,
+        tz = j.timezone.as_str(),
+    )
+}
+
+/// Multi-line full rendering for `cron show`.
+fn fmt_cron_job_full(j: &crate::cron::CronJob, config: &crate::config::AciddogConfig) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("id:                 {}\n", j.id));
+    out.push_str(&format!("target_agent:       {}", j.target_agent));
+    if !config.agents.iter().any(|a| a.id == j.target_agent) {
+        out.push_str(" [target unknown]");
+    }
+    out.push('\n');
+    out.push_str(&format!("created_by:         {}\n", j.created_by));
+    out.push_str(&format!(
+        "created_at:         {}\n",
+        j.created_at.format("%Y-%m-%dT%H:%M:%SZ")
+    ));
+    out.push_str(&format!(
+        "enabled:            {}\n",
+        if j.enabled { "true" } else { "false" }
+    ));
+    out.push_str(&format!("timezone:           {}\n", j.timezone.as_str()));
+    out.push_str(&format!(
+        "catchup_on_startup: {}\n",
+        if j.catchup_on_startup { "true" } else { "false" }
+    ));
+    match &j.payload {
+        crate::cron::CronPayload::Message { body } => {
+            out.push_str("payload_kind:       message\n");
+            out.push_str(&format!("payload:            {body}\n"));
+        }
+        crate::cron::CronPayload::SlashCommand { command } => {
+            out.push_str("payload_kind:       command\n");
+            out.push_str(&format!("payload:            {command}\n"));
+        }
+    }
+    match &j.schedule {
+        crate::cron::CronSchedule::Recurring { expression } => {
+            out.push_str("schedule_kind:      recurring\n");
+            out.push_str(&format!("schedule:           {expression}\n"));
+        }
+        crate::cron::CronSchedule::OneOff { run_at_local } => {
+            out.push_str("schedule_kind:      oneoff\n");
+            out.push_str(&format!("schedule:           {run_at_local}\n"));
+        }
+    }
+    out.push_str(&format!(
+        "last_run:           {}\n",
+        j.last_run
+            .map(|n| n.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+            .unwrap_or_else(|| "—".to_string()),
+    ));
+    out.push_str(&format!(
+        "next_run:           {}\n",
+        j.next_run
+            .map(|n| n.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+            .unwrap_or_else(|| "—".to_string()),
+    ));
+    out
+}
+
+/// Who is "sending" a chat message in [`App::handle_send_message_with_origin`].
+/// Plain agent-to-agent sends come from [`MessageOrigin::Agent`]; cron-fired
+/// deliveries come from [`MessageOrigin::Cron`] and carry the creator's
+/// display id plus the firing job id so the recipient can see which schedule
+/// woke them up.
+#[derive(Debug, Clone)]
+pub enum MessageOrigin {
+    Agent { sender_idx: usize },
+    Cron { job_id: Uuid, created_by: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1103,6 +1239,18 @@ pub struct App {
     /// store rooted at `.aciddog/tasks.json` in the cwd so tasks
     /// survive restarts.
     pub tasks: TaskStore,
+    /// Disk-backed cron jobs. `App::new` initialises this ephemeral;
+    /// `tui::run` replaces it with a store rooted at
+    /// `.aciddog/cron.json` and runs startup reconciliation (missed
+    /// one-offs pruned unless they opted into catchup; recurring
+    /// `next_run` recomputed from now).
+    pub cron: crate::cron::CronStore,
+    /// Woken whenever a cron mutation might change the next-due
+    /// instant. The scheduler arm of `event_loop` awaits both
+    /// `sleep_until(next_due)` and this notify, so newly-added jobs
+    /// with a closer `next_run` fire on time instead of waiting for
+    /// the previously-scheduled wakeup.
+    pub cron_invalidate: std::sync::Arc<tokio::sync::Notify>,
     /// Disk-backed semantic memory banks. `App::new` leaves this unset;
     /// `tui::run` constructs a registry rooted at `.aciddog/memory/`
     /// before the TUI starts, so every agent that spawns afterwards
@@ -1176,6 +1324,8 @@ impl App {
             ai_tx: None,
             socket_events_tx: None,
             tasks: TaskStore::new(),
+            cron: crate::cron::CronStore::new(),
+            cron_invalidate: std::sync::Arc::new(tokio::sync::Notify::new()),
             memory: None,
             active_view: ActiveView::default(),
             selected_view: 0,
@@ -1288,20 +1438,43 @@ impl App {
                 return;
             }
             let content = trimmed.to_string();
-            chat.push_block(ChatBlock::user(content.clone()));
             chat.reset_input();
             content
         };
+        self.handle_local_input(selected, content);
+    }
+
+    /// Inject `content` into agent `idx` exactly as if the user had
+    /// typed it into that agent's input box. Slash commands (leading
+    /// `/`) go through [`commands::dispatch`] and `apply_command` —
+    /// the same branch `submit_input` uses — so the cron scheduler
+    /// can fire `/foo` payloads identically to a real keystroke.
+    /// Plain text is echoed as a user block and routed via
+    /// `chat.user_tx`.
+    pub(crate) fn handle_local_input(&mut self, idx: usize, content: String) {
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let content = trimmed.to_string();
+
+        // Echo the input as a user block on the target chat so the
+        // history records what was typed (or fired by cron).
+        if let Some(chat) = self.chats.get_mut(idx) {
+            chat.push_block(ChatBlock::user(content.clone()));
+        } else {
+            return;
+        }
 
         if content.starts_with('/') {
             if let Some(outcome) = super::commands::dispatch(&content) {
-                self.apply_command(outcome);
+                self.apply_command_for(idx, outcome);
             }
             return;
         }
 
         let pool_len = self.config.thinking_messages.len();
-        let Some(chat) = self.chats.get_mut(selected) else {
+        let Some(chat) = self.chats.get_mut(idx) else {
             return;
         };
         if let Some(tx) = &chat.user_tx {
@@ -1596,6 +1769,70 @@ impl App {
                     exclude_tags,
                     reply,
                 );
+            }
+            RequestCmd::Info => {
+                self.handle_info(reply);
+            }
+            RequestCmd::CronAdd {
+                target,
+                kind,
+                payload,
+                schedule,
+                tz,
+                oneoff,
+                catchup_on_startup,
+                disabled,
+            } => {
+                self.handle_cron_add(
+                    idx,
+                    target,
+                    kind,
+                    payload,
+                    schedule,
+                    tz,
+                    oneoff,
+                    catchup_on_startup,
+                    disabled,
+                    reply,
+                );
+            }
+            RequestCmd::CronList {
+                target,
+                include_disabled,
+                mine,
+            } => {
+                self.handle_cron_list(idx, target, include_disabled, mine, reply);
+            }
+            RequestCmd::CronShow { id } => {
+                self.handle_cron_show(idx, id, reply);
+            }
+            RequestCmd::CronUpdate {
+                id,
+                target,
+                kind,
+                payload,
+                schedule,
+                tz,
+                oneoff,
+                catchup_on_startup,
+                enabled,
+            } => {
+                self.handle_cron_update(
+                    idx,
+                    id,
+                    target,
+                    kind,
+                    payload,
+                    schedule,
+                    tz,
+                    oneoff,
+                    catchup_on_startup,
+                    enabled,
+                    reply,
+                );
+            }
+            RequestCmd::CronRemove { id } => {
+                self.handle_cron_remove(idx, id, reply);
             }
         }
     }
@@ -1968,49 +2205,94 @@ impl App {
         body: String,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
-        let Some(sender_chat) = self.chats.get(sender_idx) else {
-            let _ = reply.send(Response::err("unknown sender"));
-            return;
-        };
-        let sender_id = sender_chat.display_name.clone();
-        let sender_parent_idx = sender_chat.parent_idx;
+        self.handle_send_message_with_origin(
+            MessageOrigin::Agent { sender_idx },
+            to,
+            body,
+            reply,
+        );
+    }
 
-        if to == sender_id {
+    /// Core message-delivery path. Drives recipient resolution, ACL,
+    /// hibernation wake-up, recipient Mail block, and the async
+    /// `agent_tx` enqueue. The origin determines the `from=`
+    /// attribute and which ACL checks run.
+    fn handle_send_message_with_origin(
+        &mut self,
+        origin: MessageOrigin,
+        to: String,
+        body: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        // Resolve sender identity + ACL context from the origin.
+        let (sender_id, from_label, is_cron, sender_parent_idx) = match &origin {
+            MessageOrigin::Agent { sender_idx } => {
+                let Some(sender_chat) = self.chats.get(*sender_idx) else {
+                    let _ = reply.send(Response::err("unknown sender"));
+                    return;
+                };
+                let id = sender_chat.display_name.clone();
+                let parent = sender_chat.parent_idx;
+                (id.clone(), id, false, parent)
+            }
+            MessageOrigin::Cron {
+                job_id,
+                created_by,
+            } => {
+                let short = job_id.to_string();
+                let short = short.get(..8).unwrap_or(&short);
+                let label = format!("cron:{created_by}:{short}");
+                (created_by.clone(), label, true, None)
+            }
+        };
+
+        if !is_cron && to == sender_id {
             let _ = reply.send(Response::err("cannot send a message to yourself"));
             return;
         }
 
-        // Resolve recipient by display name across all chats, so workers
-        // (whose names are `<template>#<uuid>`) are reachable too.
         let Some(recipient_idx) = self.chats.iter().position(|c| c.display_name == to) else {
             let _ = reply.send(Response::err(format!("no agent named {to}")));
             return;
         };
 
-        // Worker routing rule: a worker may only message its parent.
-        if let Some(parent_idx) = sender_parent_idx {
-            if recipient_idx != parent_idx {
-                let _ = reply.send(Response::err(
-                    "worker can only message its parent".to_string(),
-                ));
-                return;
+        match &origin {
+            MessageOrigin::Agent { .. } => {
+                // Worker routing rule: a worker may only message its parent.
+                if let Some(parent_idx) = sender_parent_idx {
+                    if recipient_idx != parent_idx {
+                        let _ = reply.send(Response::err(
+                            "worker can only message its parent".to_string(),
+                        ));
+                        return;
+                    }
+                } else {
+                    // Configured agent: apply `can_message` unless the
+                    // recipient is a worker this agent spawned.
+                    let recipient_is_worker = self
+                        .chats
+                        .get(recipient_idx)
+                        .map(|c| c.parent_idx.is_some())
+                        .unwrap_or(false);
+                    if !recipient_is_worker && !self.config.can_send(&sender_id, &to) {
+                        let _ = reply.send(Response::err(format!(
+                            "agent `{sender_id}` is not permitted to message `{to}`"
+                        )));
+                        return;
+                    }
+                }
             }
-        } else {
-            // Statically configured agent: apply the regular
-            // `can_message` allowlist — but only when the recipient is
-            // itself a configured agent. Workers spawned by this agent
-            // are not in the allowlist; reaching them by display id is
-            // always permitted, since the agent spawned them.
-            let recipient_is_worker = self
-                .chats
-                .get(recipient_idx)
-                .map(|c| c.parent_idx.is_some())
-                .unwrap_or(false);
-            if !recipient_is_worker && !self.config.can_send(&sender_id, &to) {
-                let _ = reply.send(Response::err(format!(
-                    "agent `{sender_id}` is not permitted to message `{to}`"
-                )));
-                return;
+            MessageOrigin::Cron { .. } => {
+                // Cron jobs are always delivered agent→agent (worker
+                // targets are rejected at create time). Re-check the
+                // creator's `can_message` allowlist at fire time so
+                // config changes take effect.
+                if !self.config.can_send(&sender_id, &to) {
+                    let _ = reply.send(Response::err(format!(
+                        "cron creator `{sender_id}` is not permitted to message `{to}`"
+                    )));
+                    return;
+                }
             }
         }
 
@@ -2027,7 +2309,7 @@ impl App {
             }
         }
 
-        let payload = format!("<Message from=\"{sender_id}\">{body}</Message>");
+        let payload = format!("<Message from=\"{from_label}\">{body}</Message>");
 
         let Some(agent_tx) = self
             .chats
@@ -2038,24 +2320,14 @@ impl App {
             return;
         };
 
-        // Recipient sees a Mail block naming the sender and carrying the
-        // body. The sender's chat already has a Mail block from the Bash
-        // tool-call intercept in `handle_ai_event`, so no echo is needed
-        // there.
         let pool_len = self.config.thinking_messages.len();
         if let Some(chat) = self.chats.get_mut(recipient_idx) {
-            chat.push_block(ChatBlock::mail_received(sender_id.clone(), body.clone()));
-            // Recipient's AI turn is about to start — reflect that in
-            // the agent-list icon so background agents don't appear
-            // idle while they're actually processing. `TurnResult`
-            // flips it back to `Ready`. Preserve existing `Error`.
+            chat.push_block(ChatBlock::mail_received(from_label.clone(), body.clone()));
             if chat.status != AgentStatus::Error {
                 chat.begin_working(pool_len);
             }
         }
 
-        // Enqueue on a background task so the IPC reply doesn't depend on
-        // the recipient actually running. Reply "queued" immediately.
         tokio::spawn(async move {
             if agent_tx.send(payload).await.is_err() {
                 tracing::warn!(recipient = %to, "agent message dropped: recipient channel closed");
@@ -2265,6 +2537,371 @@ impl App {
             }
             Err(e) => {
                 let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
+    fn handle_info(&mut self, reply: tokio::sync::oneshot::Sender<Response>) {
+        let body = crate::info::render(chrono::Utc::now());
+        let _ = reply.send(Response::ok(body));
+    }
+
+    /// Validate caller-side ACL invariants and return the caller's
+    /// display id. Returns `Err(reason)` if cron is unavailable to
+    /// this caller (worker, or unknown sender). The reason is what
+    /// gets sent back as `Response::err`.
+    fn cron_caller_id(&self, sender_idx: usize) -> Result<String, String> {
+        let chat = self
+            .chats
+            .get(sender_idx)
+            .ok_or_else(|| "unknown sender".to_string())?;
+        if chat.parent_idx.is_some() {
+            return Err("workers cannot use cron".to_string());
+        }
+        Ok(chat.display_name.clone())
+    }
+
+    /// True when `id` matches a config-declared agent (workers are
+    /// excluded). Used to validate cron `--target` at create time.
+    fn is_configured_agent(&self, id: &str) -> bool {
+        self.config.agents.iter().any(|a| a.id == id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_cron_add(
+        &mut self,
+        sender_idx: usize,
+        target: String,
+        kind: String,
+        payload: String,
+        schedule: String,
+        tz: Option<String>,
+        oneoff: bool,
+        catchup_on_startup: bool,
+        disabled: bool,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let sender_id = match self.cron_caller_id(sender_idx) {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = reply.send(Response::err(e));
+                return;
+            }
+        };
+
+        let tz_value = tz.as_deref().unwrap_or("local");
+        let tz = match crate::cron::CronTz::parse(tz_value) {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+                return;
+            }
+        };
+
+        let payload = match parse_cron_payload(&kind, payload) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = reply.send(Response::err(e));
+                return;
+            }
+        };
+
+        let schedule = match parse_cron_schedule(&schedule, oneoff) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+                return;
+            }
+        };
+
+        if catchup_on_startup && !oneoff {
+            let _ = reply.send(Response::err(
+                "--catchup-on-startup is only valid for --oneoff jobs",
+            ));
+            return;
+        }
+
+        if !self.is_configured_agent(&target) {
+            let _ = reply.send(Response::err(format!(
+                "cron target `{target}` is not a configured agent (workers cannot be cron targets)"
+            )));
+            return;
+        }
+
+        if !self.config.can_send(&sender_id, &target) {
+            let _ = reply.send(Response::err(format!(
+                "agent `{sender_id}` is not permitted to message `{target}`"
+            )));
+            return;
+        }
+
+        let enabled = !disabled;
+        match self.cron.add(
+            target,
+            payload,
+            schedule,
+            tz,
+            catchup_on_startup,
+            enabled,
+            sender_id,
+        ) {
+            Ok(j) => {
+                let id = j.id;
+                self.cron_invalidate.notify_one();
+                let _ = reply.send(Response::ok(format!("created cron job {id}")));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
+    fn handle_cron_list(
+        &mut self,
+        sender_idx: usize,
+        target: Option<String>,
+        include_disabled: bool,
+        mine: bool,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let sender_id = match self.cron_caller_id(sender_idx) {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = reply.send(Response::err(e));
+                return;
+            }
+        };
+        let filter = crate::cron::CronFilter {
+            target,
+            include_disabled,
+            created_by: if mine { Some(sender_id) } else { None },
+        };
+        let jobs = self.cron.list(&filter);
+        let body = if jobs.is_empty() {
+            "no cron jobs".to_string()
+        } else {
+            let mut out = String::new();
+            for j in jobs {
+                out.push_str(&fmt_cron_job_short(j, &self.config));
+                out.push('\n');
+            }
+            out.trim_end().to_string()
+        };
+        let _ = reply.send(Response::ok(body));
+    }
+
+    fn handle_cron_show(
+        &mut self,
+        sender_idx: usize,
+        id: Uuid,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if let Err(e) = self.cron_caller_id(sender_idx) {
+            let _ = reply.send(Response::err(e));
+            return;
+        }
+        match self.cron.get(id) {
+            Some(j) => {
+                let _ = reply.send(Response::ok(fmt_cron_job_full(j, &self.config)));
+            }
+            None => {
+                let _ = reply.send(Response::err(format!("cron job {id} not found")));
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_cron_update(
+        &mut self,
+        sender_idx: usize,
+        id: Uuid,
+        target: Option<String>,
+        kind: Option<String>,
+        payload: Option<String>,
+        schedule: Option<String>,
+        tz: Option<String>,
+        oneoff: Option<bool>,
+        catchup_on_startup: Option<bool>,
+        enabled: Option<bool>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let sender_id = match self.cron_caller_id(sender_idx) {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = reply.send(Response::err(e));
+                return;
+            }
+        };
+
+        // Snapshot current target + oneoff so a partial update can
+        // re-validate the resulting shape.
+        let (current_target, current_oneoff) = match self.cron.get(id) {
+            Some(j) => (
+                j.target_agent.clone(),
+                matches!(j.schedule, crate::cron::CronSchedule::OneOff { .. }),
+            ),
+            None => {
+                let _ = reply.send(Response::err(format!("cron job {id} not found")));
+                return;
+            }
+        };
+
+        let _ = current_target; // kept for parity with future ACL re-checks
+        let next_oneoff = oneoff.unwrap_or(current_oneoff);
+
+        if let Some(ref t) = target {
+            if !self.is_configured_agent(t) {
+                let _ = reply.send(Response::err(format!(
+                    "cron target `{t}` is not a configured agent"
+                )));
+                return;
+            }
+            if !self.config.can_send(&sender_id, t) {
+                let _ = reply.send(Response::err(format!(
+                    "agent `{sender_id}` is not permitted to message `{t}`"
+                )));
+                return;
+            }
+        }
+
+        let new_tz = match tz.as_deref() {
+            Some(s) => match crate::cron::CronTz::parse(s) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    let _ = reply.send(Response::err(e.to_string()));
+                    return;
+                }
+            },
+            None => None,
+        };
+
+        let new_payload = match (kind, payload) {
+            (Some(k), Some(p)) => match parse_cron_payload(&k, p) {
+                Ok(pl) => Some(pl),
+                Err(e) => {
+                    let _ = reply.send(Response::err(e));
+                    return;
+                }
+            },
+            (Some(_), None) | (None, Some(_)) => {
+                let _ = reply.send(Response::err(
+                    "updating the payload requires both --kind and --payload",
+                ));
+                return;
+            }
+            (None, None) => None,
+        };
+
+        let new_schedule = match schedule.as_deref() {
+            Some(s) => match parse_cron_schedule(s, next_oneoff) {
+                Ok(parsed) => Some(parsed),
+                Err(e) => {
+                    let _ = reply.send(Response::err(e.to_string()));
+                    return;
+                }
+            },
+            None => None,
+        };
+
+        let patch = crate::cron::CronPatch {
+            target_agent: target,
+            payload: new_payload,
+            schedule: new_schedule,
+            timezone: new_tz,
+            catchup_on_startup,
+            enabled,
+        };
+
+        match self.cron.update(id, patch) {
+            Ok(_) => {
+                self.cron_invalidate.notify_one();
+                let _ = reply.send(Response::ok(format!("updated cron job {id}")));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
+    fn handle_cron_remove(
+        &mut self,
+        sender_idx: usize,
+        id: Uuid,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if let Err(e) = self.cron_caller_id(sender_idx) {
+            let _ = reply.send(Response::err(e));
+            return;
+        }
+        match self.cron.remove(id) {
+            Ok(_) => {
+                self.cron_invalidate.notify_one();
+                let _ = reply.send(Response::ok(format!("removed cron job {id}")));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
+    /// Fire all due cron jobs at `now`. For each job:
+    /// - Re-validate the target still resolves to a live agent chat.
+    ///   If not: recurring → disable (keep for operator inspection),
+    ///   one-off → remove. Either way log a warning.
+    /// - Deliver the payload through the same path a real keystroke
+    ///   or `aciddog send` would take.
+    /// - `mark_fired` advances recurring `next_run` (or removes a
+    ///   one-off).
+    pub fn tick_cron(&mut self, now: chrono::DateTime<chrono::Utc>) {
+        let due_ids = self.cron.due_at(now);
+        for id in due_ids {
+            let job = match self.cron.get(id) {
+                Some(j) => j.clone(),
+                None => continue,
+            };
+
+            let target_idx = self
+                .chats
+                .iter()
+                .position(|c| c.display_name == job.target_agent && c.parent_idx.is_none());
+
+            let Some(target_idx) = target_idx else {
+                tracing::warn!(
+                    job_id = %job.id,
+                    target = %job.target_agent,
+                    "cron target no longer exists; pruning or disabling job",
+                );
+                match job.schedule {
+                    crate::cron::CronSchedule::OneOff { .. } => {
+                        let _ = self.cron.remove(job.id);
+                    }
+                    crate::cron::CronSchedule::Recurring { .. } => {
+                        let _ = self.cron.disable(job.id);
+                    }
+                }
+                continue;
+            };
+
+            match &job.payload {
+                crate::cron::CronPayload::Message { body } => {
+                    let (tx, _rx) = tokio::sync::oneshot::channel();
+                    self.handle_send_message_with_origin(
+                        MessageOrigin::Cron {
+                            job_id: job.id,
+                            created_by: job.created_by.clone(),
+                        },
+                        job.target_agent.clone(),
+                        body.clone(),
+                        tx,
+                    );
+                }
+                crate::cron::CronPayload::SlashCommand { command } => {
+                    self.handle_local_input(target_idx, command.clone());
+                }
+            }
+
+            if let Err(e) = self.cron.mark_fired(job.id, now) {
+                tracing::warn!(job_id = %job.id, error = %e, "cron mark_fired failed");
             }
         }
     }
@@ -2803,12 +3440,19 @@ impl App {
         }
     }
 
-    fn apply_command(&mut self, outcome: super::commands::CommandOutcome) {
+    /// Apply a parsed slash-command outcome against a specific chat
+    /// `idx`. The keystroke path (`submit_input` → `handle_local_input`)
+    /// passes `self.selected`; cron passes the target job's `idx`
+    /// when firing a `/foo` payload on a background agent.
+    pub(crate) fn apply_command_for(
+        &mut self,
+        idx: usize,
+        outcome: super::commands::CommandOutcome,
+    ) {
         use super::commands::CommandOutcome;
-        let selected = self.selected;
         match outcome {
             CommandOutcome::Message(text) => {
-                if let Some(chat) = self.chats.get_mut(selected) {
+                if let Some(chat) = self.chats.get_mut(idx) {
                     chat.push_block(ChatBlock::system_info(text));
                 }
             }
@@ -2817,7 +3461,7 @@ impl App {
                 self.should_quit = true;
             }
             CommandOutcome::Unknown { name, hint } => {
-                if let Some(chat) = self.chats.get_mut(selected) {
+                if let Some(chat) = self.chats.get_mut(idx) {
                     chat.push_block(ChatBlock::system_warn(format!(
                         "unknown command: /{name} — {hint}"
                     )));
@@ -4422,6 +5066,35 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         }
     }
 
+    // Disk-backed cron store. Same fallback policy as TaskStore: a
+    // load failure logs a warning and the TUI boots with an ephemeral
+    // store so an unparseable cron.json doesn't bring everything down.
+    let cron_path = std::path::PathBuf::from(".aciddog").join("cron.json");
+    match crate::cron::CronStore::load_or_init(cron_path.clone()) {
+        Ok(mut store) => {
+            match store.reconcile_on_startup(chrono::Utc::now()) {
+                Ok(report) => {
+                    info!(
+                        path = %cron_path.display(),
+                        count = store.len(),
+                        removed_one_offs = report.removed_one_offs.len(),
+                        queued_one_offs = report.queued_one_offs.len(),
+                        recomputed_recurring = report.recomputed_recurring.len(),
+                        disabled_unreachable = report.disabled_unreachable.len(),
+                        "loaded cron store",
+                    );
+                }
+                Err(e) => {
+                    warn!(error = %e, path = %cron_path.display(), "cron startup reconciliation failed");
+                }
+            }
+            app.cron = store;
+        }
+        Err(e) => {
+            warn!(error = %e, path = %cron_path.display(), "failed to load cron store; using ephemeral store");
+        }
+    }
+
     // Construct the semantic-memory registry rooted at `.aciddog/memory/`.
     // Banks open lazily on first use, so this is just a handle creation —
     // no disk or model download cost unless an agent actually invokes
@@ -4646,6 +5319,14 @@ async fn event_loop<B: ratatui::backend::Backend>(
     spinner_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        // Recompute the next cron firing each iteration so a freshly-
+        // added job with a closer `next_run` displaces the previous
+        // sleep_until target. `cron_invalidate` is woken by every
+        // mutating cron handler so the loop re-selects immediately
+        // even when a longer sleep was already in flight.
+        let next_cron_at = app.cron.next_due_at();
+        let cron_invalidate = app.cron_invalidate.clone();
+
         let mut needs_redraw = true;
         tokio::select! {
             maybe_event = events.next() => {
@@ -4679,6 +5360,24 @@ async fn event_loop<B: ratatui::backend::Backend>(
                 } else {
                     needs_redraw = false;
                 }
+            }
+            _ = async move {
+                match next_cron_at {
+                    Some(at) => {
+                        let now = chrono::Utc::now();
+                        let dur = (at - now).to_std().unwrap_or(Duration::from_millis(0));
+                        tokio::time::sleep(dur).await
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                app.tick_cron(chrono::Utc::now());
+            }
+            _ = cron_invalidate.notified() => {
+                // No-op: just causes the loop to re-select with a
+                // recomputed `next_cron_at`. Skip the redraw since
+                // nothing visible changed.
+                needs_redraw = false;
             }
         }
 
@@ -8911,5 +9610,414 @@ mod tests {
         });
         assert_eq!(app.active_view, ActiveView::Chat);
         assert_eq!(app.focus, Focus::Chat);
+    }
+
+    // ─── info + cron ────────────────────────────────────────────────
+
+    fn cron_add_request(
+        sender: Uuid,
+        target: &str,
+        kind: &str,
+        payload: &str,
+        schedule: &str,
+        oneoff: bool,
+    ) -> crate::agent_ipc::Request {
+        crate::agent_ipc::Request {
+            agent_id: sender,
+            cmd: RequestCmd::CronAdd {
+                target: target.into(),
+                kind: kind.into(),
+                payload: payload.into(),
+                schedule: schedule.into(),
+                tz: Some("utc".into()),
+                oneoff,
+                catchup_on_startup: false,
+                disabled: false,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn info_returns_local_and_utc_lines() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::Info,
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok, "info should succeed: {resp:?}");
+        let body = resp.message.unwrap();
+        assert!(body.contains("local_time:"), "body: {body}");
+        assert!(body.contains("utc_time:"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn cron_add_persists_and_lists() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: cron_add_request(sender, "b", "message", "ping", "0 * * * *", false),
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok, "{resp:?}");
+        assert_eq!(app.cron.len(), 1);
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::CronList {
+                    target: None,
+                    include_disabled: false,
+                    mine: false,
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok);
+        let body = resp.message.unwrap();
+        assert!(body.contains("→ b"), "list output: {body}");
+    }
+
+    #[tokio::test]
+    async fn cron_message_payload_delivers_with_cron_from_prefix() {
+        let mut app = App::new(sample_config());
+        let mut agent_rxs = wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+
+        // Add a one-off message scheduled for 1s ago so it fires on the
+        // next tick.
+        let past =
+            (chrono::Utc::now() - chrono::Duration::seconds(1)).naive_utc();
+        let past_str = past.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: cron_add_request(sender, "b", "message", "ping", &past_str, true),
+            reply: tx,
+        });
+        assert!(rx.await.unwrap().ok);
+
+        app.tick_cron(chrono::Utc::now());
+        let payload = agent_rxs[1].recv().await.expect("delivered");
+        assert!(
+            payload.starts_with("<Message from=\"cron:a:"),
+            "got: {payload}"
+        );
+        assert!(payload.contains("ping</Message>"), "got: {payload}");
+        // One-off should be gone after firing.
+        assert_eq!(app.cron.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn cron_slash_payload_executes_apply_command() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+
+        let past =
+            (chrono::Utc::now() - chrono::Duration::seconds(1)).naive_utc();
+        let past_str = past.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: cron_add_request(sender, "b", "command", "/version", &past_str, true),
+            reply: tx,
+        });
+        assert!(rx.await.unwrap().ok);
+
+        app.tick_cron(chrono::Utc::now());
+        // Target chat (b) should have a system_info block from the
+        // /version command outcome AND a user echo block of the slash
+        // command itself.
+        let blocks = &app.chats[1].blocks;
+        assert!(
+            blocks.iter().any(|b| matches!(b, ChatBlock::UserText { .. })),
+            "expected a user block on target chat, got: {blocks:?}"
+        );
+        assert!(
+            blocks
+                .iter()
+                .any(|b| matches!(b, ChatBlock::System { .. })),
+            "expected /version system block on target chat, got: {blocks:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cron_add_rejects_blocked_slash_payload() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: cron_add_request(sender, "b", "command", "/exit", "0 9 * * *", false),
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(
+            resp.error.as_deref().unwrap_or("").contains("blocked"),
+            "expected blocklist error: {resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cron_add_rejected_for_unknown_tz() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::CronAdd {
+                    target: "b".into(),
+                    kind: "message".into(),
+                    payload: "ping".into(),
+                    schedule: "0 9 * * *".into(),
+                    tz: Some("Pacific/Auckland".into()),
+                    oneoff: false,
+                    catchup_on_startup: false,
+                    disabled: false,
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(
+            resp.error.as_deref().unwrap_or("").contains("timezone"),
+            "expected tz error: {resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cron_add_rejected_when_target_is_a_worker() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            // `coder#deadbeef` — looks like a worker display id; not a
+            // configured agent, so it must be rejected.
+            request: cron_add_request(sender, "coder#deadbeef", "message", "ping", "0 9 * * *", false),
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or("")
+                .contains("not a configured agent"),
+            "expected configured-agent error: {resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cron_add_rejected_when_caller_lacks_can_message() {
+        let mut cfg = sample_config();
+        // Restrict agent `a` to message only `c`.
+        cfg.agents[0].can_message = Some(vec!["c".into()]);
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: cron_add_request(sender, "b", "message", "ping", "0 9 * * *", false),
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or("")
+                .contains("not permitted to message"),
+            "expected ACL error: {resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cron_add_rejected_for_worker_caller() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        // Mark chat 0 as a worker (give it a parent_idx).
+        app.chats[0].parent_idx = Some(1);
+        let sender = app.chats[0].session_id.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: cron_add_request(sender, "b", "message", "ping", "0 9 * * *", false),
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap_or("")
+                .contains("workers cannot use cron"),
+            "expected worker-rejection: {resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cron_list_and_show_rejected_for_worker_caller() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        app.chats[0].parent_idx = Some(1);
+        let sender = app.chats[0].session_id.unwrap();
+
+        for cmd in [
+            RequestCmd::CronList {
+                target: None,
+                include_disabled: false,
+                mine: false,
+            },
+            RequestCmd::CronShow { id: Uuid::nil() },
+        ] {
+            let (tx, rx) = oneshot::channel();
+            app.handle_agent_socket_event(AgentSocketEvent {
+                request: crate::agent_ipc::Request {
+                    agent_id: sender,
+                    cmd,
+                },
+                reply: tx,
+            });
+            let resp = rx.await.unwrap();
+            assert!(!resp.ok);
+            assert!(
+                resp.error
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("workers cannot use cron"),
+                "expected worker-rejection: {resp:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cron_remove_drops_job_and_notifies_invalidate() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: cron_add_request(sender, "b", "message", "ping", "0 * * * *", false),
+            reply: tx,
+        });
+        assert!(rx.await.unwrap().ok);
+        let id = app.cron.all()[0].id;
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::CronRemove { id },
+            },
+            reply: tx,
+        });
+        assert!(rx.await.unwrap().ok);
+        assert_eq!(app.cron.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn cron_target_removed_disables_recurring_and_removes_one_off() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+
+        // Recurring job targeting `b`.
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: cron_add_request(sender, "b", "message", "ping", "0 * * * *", false),
+            reply: tx,
+        });
+        assert!(rx.await.unwrap().ok);
+
+        // One-off targeting `c`, scheduled in the past so it's due.
+        let past =
+            (chrono::Utc::now() - chrono::Duration::seconds(1)).naive_utc();
+        let past_str = past.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: cron_add_request(sender, "c", "message", "ping", &past_str, true),
+            reply: tx,
+        });
+        assert!(rx.await.unwrap().ok);
+
+        // Now drop `b` and `c`'s chats so the targets vanish before
+        // we tick. (They're still in `app.config.agents`, but tick
+        // looks up the live chat by display name — that's how the
+        // production flow behaves when an agent never spawns.)
+        app.chats[1].display_name = "renamed-b".into();
+        app.chats[2].display_name = "renamed-c".into();
+
+        // Force the recurring job's next_run into the past so it's
+        // also due this tick.
+        if let Some(j) = app.cron.all().first().cloned() {
+            let _ = app.cron.update(
+                j.id,
+                crate::cron::CronPatch {
+                    schedule: Some(crate::cron::CronSchedule::OneOff {
+                        run_at_local: past,
+                    }),
+                    timezone: Some(crate::cron::CronTz::Utc),
+                    enabled: Some(true),
+                    ..Default::default()
+                },
+            );
+        }
+        // The above turned the first job into a one-off too — for the
+        // purpose of this test we just need both to disappear when the
+        // target's gone.
+        app.tick_cron(chrono::Utc::now());
+
+        assert_eq!(
+            app.cron.len(),
+            0,
+            "both jobs should be pruned (one-off targets vanished)"
+        );
+    }
+
+    #[tokio::test]
+    async fn cron_invalidate_wakes_on_mutation() {
+        // Sanity: the cron_invalidate Notify is woken by a successful
+        // CronAdd. We can't easily drive the full event loop in a unit
+        // test, but we can subscribe to the Notify and assert it fires.
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+        let invalidate = app.cron_invalidate.clone();
+
+        let notified = tokio::spawn(async move {
+            tokio::time::timeout(std::time::Duration::from_secs(1), invalidate.notified())
+                .await
+                .is_ok()
+        });
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: cron_add_request(sender, "b", "message", "ping", "0 * * * *", false),
+            reply: tx,
+        });
+        assert!(rx.await.unwrap().ok);
+        assert!(notified.await.unwrap(), "cron_invalidate did not fire");
     }
 }

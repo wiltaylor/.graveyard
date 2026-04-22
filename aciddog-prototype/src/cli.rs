@@ -72,6 +72,16 @@ pub enum AgentCommand {
         #[command(subcommand)]
         cmd: MemoryCommand,
     },
+    /// Print the current local time, UTC time, and the orchestrator's
+    /// timezone. Use this when computing a cron schedule rather than
+    /// shelling out to `date`.
+    Info,
+    /// Schedule a payload to be delivered to a target agent on a
+    /// recurring or one-off schedule.
+    Cron {
+        #[command(subcommand)]
+        cmd: CronCommand,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -324,6 +334,102 @@ pub enum CommentCommand {
     Remove {
         #[arg(long)]
         task: Uuid,
+        #[arg(long)]
+        id: Uuid,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum CronCommand {
+    /// Schedule a new payload. `--kind message --payload "<text>"`
+    /// sends a chat message; `--kind command --payload "/foo bar"`
+    /// runs a slash command on the target as if the user typed it.
+    /// `--schedule` is a 5-field POSIX cron expression for recurring
+    /// jobs (default), or a `YYYY-MM-DDTHH:MM[:SS]` wall-clock
+    /// instant when `--oneoff` is set. `--tz` is `utc` or `local`
+    /// (default `local`, meaning the orchestrator's timezone).
+    /// `--catchup-on-startup` only applies to `--oneoff` jobs whose
+    /// `run_at` passed while aciddog was offline; without it those
+    /// jobs are pruned on startup.
+    Add {
+        /// Config id of the agent to deliver the payload to.
+        #[arg(long)]
+        target: String,
+        /// `message` or `command`.
+        #[arg(long)]
+        kind: String,
+        /// The message body (for `message`) or the slash command (for
+        /// `command`, with the leading `/`).
+        #[arg(long)]
+        payload: String,
+        /// Cron expression (recurring) or `YYYY-MM-DDTHH:MM[:SS]`
+        /// wall-clock time (one-off, with `--oneoff`).
+        #[arg(long)]
+        schedule: String,
+        /// `utc` or `local`. Default `local` (the orchestrator's
+        /// timezone). Use `aciddog info` to see the current local tz.
+        #[arg(long)]
+        tz: Option<String>,
+        /// Treat `--schedule` as a one-off wall-clock datetime
+        /// instead of a recurring cron expression.
+        #[arg(long)]
+        oneoff: bool,
+        /// For one-off jobs only: if the scheduled instant has
+        /// already passed by the time aciddog starts, fire it once
+        /// on startup. Without this flag, missed one-off jobs are
+        /// pruned during startup reconciliation.
+        #[arg(long = "catchup-on-startup", requires = "oneoff")]
+        catchup_on_startup: bool,
+        /// Create the job in the disabled state (no `next_run` is
+        /// computed; will not fire until enabled via `cron update`).
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// List cron jobs, optionally filtered.
+    List {
+        /// Only show jobs whose target matches this id.
+        #[arg(long)]
+        target: Option<String>,
+        /// Include disabled jobs in the output.
+        #[arg(long = "include-disabled")]
+        include_disabled: bool,
+        /// Only show jobs created by the calling agent.
+        #[arg(long)]
+        mine: bool,
+    },
+    /// Show the full body of a cron job: target, payload, schedule,
+    /// timezone, last/next run, and creator.
+    Show {
+        /// Job id from `cron add` / `cron list`.
+        #[arg(long)]
+        id: Uuid,
+    },
+    /// Update fields on an existing cron job. Omitted flags leave the
+    /// field unchanged. Updating the schedule, timezone, or oneoff
+    /// flag recomputes `next_run` from now.
+    Update {
+        /// Job id from `cron add` / `cron list`.
+        #[arg(long)]
+        id: Uuid,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long)]
+        payload: Option<String>,
+        #[arg(long)]
+        schedule: Option<String>,
+        #[arg(long)]
+        tz: Option<String>,
+        #[arg(long)]
+        oneoff: Option<bool>,
+        #[arg(long = "catchup-on-startup")]
+        catchup_on_startup: Option<bool>,
+        #[arg(long)]
+        enabled: Option<bool>,
+    },
+    /// Remove a cron job by id.
+    Remove {
         #[arg(long)]
         id: Uuid,
     },
@@ -889,6 +995,235 @@ mod tests {
                 assert_eq!(body, "heads up");
             }
             other => panic!("expected Task::Comment::Add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_info_subcommand() {
+        let args = AgentArgs::try_parse_from(["aciddog", "info"]).expect("parses");
+        assert!(matches!(args.cmd, AgentCommand::Info));
+    }
+
+    #[test]
+    fn agent_args_parses_cron_add_recurring_local_default() {
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "cron",
+            "add",
+            "--target",
+            "reviewer",
+            "--kind",
+            "message",
+            "--payload",
+            "ping",
+            "--schedule",
+            "0 9 * * *",
+        ])
+        .expect("parses");
+        match args.cmd {
+            AgentCommand::Cron {
+                cmd:
+                    CronCommand::Add {
+                        target,
+                        kind,
+                        payload,
+                        schedule,
+                        tz,
+                        oneoff,
+                        catchup_on_startup,
+                        disabled,
+                    },
+            } => {
+                assert_eq!(target, "reviewer");
+                assert_eq!(kind, "message");
+                assert_eq!(payload, "ping");
+                assert_eq!(schedule, "0 9 * * *");
+                assert!(tz.is_none());
+                assert!(!oneoff);
+                assert!(!catchup_on_startup);
+                assert!(!disabled);
+            }
+            other => panic!("expected Cron::Add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_cron_add_with_tz_utc_explicit() {
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "cron",
+            "add",
+            "--target",
+            "reviewer",
+            "--kind",
+            "message",
+            "--payload",
+            "ping",
+            "--schedule",
+            "0 9 * * *",
+            "--tz",
+            "utc",
+        ])
+        .expect("parses");
+        match args.cmd {
+            AgentCommand::Cron {
+                cmd: CronCommand::Add { tz, .. },
+            } => assert_eq!(tz.as_deref(), Some("utc")),
+            other => panic!("expected Cron::Add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_cron_add_oneoff_with_catchup() {
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "cron",
+            "add",
+            "--target",
+            "self",
+            "--kind",
+            "command",
+            "--payload",
+            "/version",
+            "--schedule",
+            "2026-04-22T14:35:00",
+            "--oneoff",
+            "--catchup-on-startup",
+        ])
+        .expect("parses");
+        match args.cmd {
+            AgentCommand::Cron {
+                cmd:
+                    CronCommand::Add {
+                        oneoff,
+                        catchup_on_startup,
+                        ..
+                    },
+            } => {
+                assert!(oneoff);
+                assert!(catchup_on_startup);
+            }
+            other => panic!("expected Cron::Add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_cron_add_catchup_on_startup_requires_oneoff() {
+        // `--catchup-on-startup` is gated on `--oneoff`; clap should
+        // reject the combination without `--oneoff`.
+        let err = AgentArgs::try_parse_from([
+            "aciddog",
+            "cron",
+            "add",
+            "--target",
+            "reviewer",
+            "--kind",
+            "message",
+            "--payload",
+            "p",
+            "--schedule",
+            "0 9 * * *",
+            "--catchup-on-startup",
+        ])
+        .unwrap_err();
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("required") || msg.contains("oneoff"),
+            "expected requires-oneoff error: {msg}"
+        );
+    }
+
+    #[test]
+    fn agent_args_cron_add_requires_target_kind_payload_schedule() {
+        assert!(AgentArgs::try_parse_from(["aciddog", "cron", "add"]).is_err());
+        assert!(AgentArgs::try_parse_from([
+            "aciddog", "cron", "add", "--target", "r", "--kind", "message", "--payload", "p"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn agent_args_parses_cron_list_with_filters() {
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "cron",
+            "list",
+            "--target",
+            "reviewer",
+            "--include-disabled",
+            "--mine",
+        ])
+        .expect("parses");
+        match args.cmd {
+            AgentCommand::Cron {
+                cmd:
+                    CronCommand::List {
+                        target,
+                        include_disabled,
+                        mine,
+                    },
+            } => {
+                assert_eq!(target.as_deref(), Some("reviewer"));
+                assert!(include_disabled);
+                assert!(mine);
+            }
+            other => panic!("expected Cron::List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_cron_show_remove() {
+        let id = Uuid::new_v4();
+        let show =
+            AgentArgs::try_parse_from(["aciddog", "cron", "show", "--id", &id.to_string()])
+                .unwrap();
+        assert!(matches!(
+            show.cmd,
+            AgentCommand::Cron {
+                cmd: CronCommand::Show { id: parsed }
+            } if parsed == id
+        ));
+        let rm =
+            AgentArgs::try_parse_from(["aciddog", "cron", "remove", "--id", &id.to_string()])
+                .unwrap();
+        assert!(matches!(
+            rm.cmd,
+            AgentCommand::Cron {
+                cmd: CronCommand::Remove { id: parsed }
+            } if parsed == id
+        ));
+    }
+
+    #[test]
+    fn agent_args_parses_cron_update_partial_fields() {
+        let id = Uuid::new_v4();
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "cron",
+            "update",
+            "--id",
+            &id.to_string(),
+            "--payload",
+            "revised",
+            "--enabled",
+            "false",
+        ])
+        .expect("parses");
+        match args.cmd {
+            AgentCommand::Cron {
+                cmd:
+                    CronCommand::Update {
+                        id: parsed,
+                        payload,
+                        enabled,
+                        ..
+                    },
+            } => {
+                assert_eq!(parsed, id);
+                assert_eq!(payload.as_deref(), Some("revised"));
+                assert_eq!(enabled, Some(false));
+            }
+            other => panic!("expected Cron::Update, got {other:?}"),
         }
     }
 

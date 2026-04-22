@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use aciddog::agent_ipc::{self, Request, RequestCmd};
 use aciddog::cli::{
-    AgentArgs, AgentCommand, Args, CommentCommand, MemoryCommand, TaskCommand, TodoCommand,
-    WorkerCommand,
+    AgentArgs, AgentCommand, Args, CommentCommand, CronCommand, MemoryCommand, TaskCommand,
+    TodoCommand, WorkerCommand,
 };
 use aciddog::config::load_config;
 use aciddog::tui;
@@ -283,6 +283,71 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
             include_tags: include_tag,
             exclude_tags: exclude_tag,
         },
+        AgentCommand::Info => RequestCmd::Info,
+        AgentCommand::Cron {
+            cmd:
+                CronCommand::Add {
+                    target,
+                    kind,
+                    payload,
+                    schedule,
+                    tz,
+                    oneoff,
+                    catchup_on_startup,
+                    disabled,
+                },
+        } => RequestCmd::CronAdd {
+            target,
+            kind,
+            payload,
+            schedule,
+            tz,
+            oneoff,
+            catchup_on_startup,
+            disabled,
+        },
+        AgentCommand::Cron {
+            cmd:
+                CronCommand::List {
+                    target,
+                    include_disabled,
+                    mine,
+                },
+        } => RequestCmd::CronList {
+            target,
+            include_disabled,
+            mine,
+        },
+        AgentCommand::Cron {
+            cmd: CronCommand::Show { id },
+        } => RequestCmd::CronShow { id },
+        AgentCommand::Cron {
+            cmd:
+                CronCommand::Update {
+                    id,
+                    target,
+                    kind,
+                    payload,
+                    schedule,
+                    tz,
+                    oneoff,
+                    catchup_on_startup,
+                    enabled,
+                },
+        } => RequestCmd::CronUpdate {
+            id,
+            target,
+            kind,
+            payload,
+            schedule,
+            tz,
+            oneoff,
+            catchup_on_startup,
+            enabled,
+        },
+        AgentCommand::Cron {
+            cmd: CronCommand::Remove { id },
+        } => RequestCmd::CronRemove { id },
     };
 
     let response = agent_ipc::client::send(&socket_path, &Request { agent_id, cmd })

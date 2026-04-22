@@ -201,6 +201,73 @@ pub enum RequestCmd {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         exclude_tags: Vec<String>,
     },
+    /// Return current time (local + UTC) and the orchestrator's
+    /// timezone. Cheap, in-process, the canonical way for an agent to
+    /// discover "now" before scheduling a cron job.
+    Info,
+    /// Schedule a payload to be delivered to a target agent on a
+    /// recurring or one-off schedule.
+    ///
+    /// `kind` is `"message"` or `"command"` (slash command). For
+    /// recurring jobs `schedule` is a 5-field POSIX cron expression
+    /// (`min hour dom mon dow`); for one-off (`oneoff = true`) it is
+    /// a wall-clock datetime `YYYY-MM-DDTHH:MM[:SS]`. `tz` is
+    /// `"utc"` or `"local"` (default `"local"` if omitted).
+    /// `catchup_on_startup` only applies to one-off jobs.
+    CronAdd {
+        target: String,
+        kind: String,
+        payload: String,
+        schedule: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tz: Option<String>,
+        #[serde(default)]
+        oneoff: bool,
+        #[serde(default)]
+        catchup_on_startup: bool,
+        #[serde(default)]
+        disabled: bool,
+    },
+    /// List cron jobs, optionally filtered.
+    CronList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default)]
+        include_disabled: bool,
+        /// Only show jobs created by the calling agent.
+        #[serde(default)]
+        mine: bool,
+    },
+    /// Show the full body of a cron job.
+    CronShow {
+        id: Uuid,
+    },
+    /// Update fields on an existing cron job. Omitted fields are
+    /// left unchanged. Updating the schedule or timezone recomputes
+    /// `next_run` from now.
+    CronUpdate {
+        id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schedule: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tz: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        oneoff: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        catchup_on_startup: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+    /// Remove a cron job by id.
+    CronRemove {
+        id: Uuid,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -658,6 +725,171 @@ mod tests {
                 ) => assert_eq!(a, b),
                 (expected, got) => panic!("mismatch: {expected:?} vs {got:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn info_serializes_with_cmd_tag() {
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::Info,
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"info\""), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        assert!(matches!(back.cmd, RequestCmd::Info));
+    }
+
+    #[test]
+    fn cron_add_roundtrips() {
+        let req = Request {
+            agent_id: Uuid::new_v4(),
+            cmd: RequestCmd::CronAdd {
+                target: "reviewer".into(),
+                kind: "message".into(),
+                payload: "ping".into(),
+                schedule: "0 9 * * *".into(),
+                tz: Some("local".into()),
+                oneoff: false,
+                catchup_on_startup: false,
+                disabled: false,
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"cron_add\""), "got: {s}");
+        assert!(s.contains("\"target\":\"reviewer\""), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::CronAdd {
+                target,
+                kind,
+                payload,
+                schedule,
+                tz,
+                oneoff,
+                catchup_on_startup,
+                disabled,
+            } => {
+                assert_eq!(target, "reviewer");
+                assert_eq!(kind, "message");
+                assert_eq!(payload, "ping");
+                assert_eq!(schedule, "0 9 * * *");
+                assert_eq!(tz.as_deref(), Some("local"));
+                assert!(!oneoff);
+                assert!(!catchup_on_startup);
+                assert!(!disabled);
+            }
+            other => panic!("expected CronAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cron_add_omits_optional_tz_when_none() {
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::CronAdd {
+                target: "a".into(),
+                kind: "message".into(),
+                payload: "b".into(),
+                schedule: "0 9 * * *".into(),
+                tz: None,
+                oneoff: false,
+                catchup_on_startup: false,
+                disabled: false,
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(!s.contains("\"tz\""), "tz should be omitted: {s}");
+    }
+
+    #[test]
+    fn cron_list_roundtrips() {
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::CronList {
+                target: Some("reviewer".into()),
+                include_disabled: true,
+                mine: false,
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"cron_list\""), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        assert!(matches!(
+            back.cmd,
+            RequestCmd::CronList {
+                include_disabled: true,
+                mine: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn cron_show_remove_roundtrip() {
+        let id = Uuid::new_v4();
+        for (variant, tag) in [
+            (RequestCmd::CronShow { id }, "cron_show"),
+            (RequestCmd::CronRemove { id }, "cron_remove"),
+        ] {
+            let req = Request {
+                agent_id: Uuid::nil(),
+                cmd: variant.clone(),
+            };
+            let s = serde_json::to_string(&req).unwrap();
+            assert!(
+                s.contains(&format!("\"cmd\":\"{tag}\"")),
+                "missing tag {tag} in {s}"
+            );
+            let back: Request = serde_json::from_str(&s).unwrap();
+            match (variant, back.cmd) {
+                (RequestCmd::CronShow { id: a }, RequestCmd::CronShow { id: b }) => {
+                    assert_eq!(a, b)
+                }
+                (RequestCmd::CronRemove { id: a }, RequestCmd::CronRemove { id: b }) => {
+                    assert_eq!(a, b)
+                }
+                (e, g) => panic!("mismatch: {e:?} vs {g:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn cron_update_roundtrips_with_partial_fields() {
+        let id = Uuid::new_v4();
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::CronUpdate {
+                id,
+                target: None,
+                kind: None,
+                payload: Some("revised".into()),
+                schedule: Some("*/5 * * * *".into()),
+                tz: None,
+                oneoff: None,
+                catchup_on_startup: None,
+                enabled: Some(false),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"cron_update\""), "got: {s}");
+        assert!(s.contains("\"payload\":\"revised\""), "got: {s}");
+        assert!(!s.contains("\"target\""), "None target should be omitted: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::CronUpdate {
+                id: parsed,
+                payload,
+                schedule,
+                enabled,
+                ..
+            } => {
+                assert_eq!(parsed, id);
+                assert_eq!(payload.as_deref(), Some("revised"));
+                assert_eq!(schedule.as_deref(), Some("*/5 * * * *"));
+                assert_eq!(enabled, Some(false));
+            }
+            other => panic!("expected CronUpdate, got {other:?}"),
         }
     }
 

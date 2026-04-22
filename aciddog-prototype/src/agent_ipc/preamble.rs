@@ -195,6 +195,38 @@ pub fn cli_preamble(
             ),
         );
     }
+    push_section(
+        &mut out,
+        binary,
+        "info",
+        "print the orchestrator's current local time, UTC time, and IANA \
+         timezone. Use this *before* scheduling a cron job — never shell out \
+         to `date`. The output is a small `key: value` table.",
+    );
+    push_section(
+        &mut out,
+        binary,
+        "cron <add|list|show|update|remove>",
+        "schedule a payload (chat message or slash command) to be delivered \
+         to a target agent on a recurring or one-off schedule. Persisted to \
+         `.aciddog/cron.json`. Examples: \
+         `cron add --target reviewer --kind message --payload \"ping\" --schedule \"0 9 * * *\"` \
+         (every day at 9:00 in the orchestrator's local tz); \
+         `cron add --target self --kind command --payload \"/version\" \
+         --schedule \"2026-04-22T14:35:00\" --tz utc --oneoff` \
+         (one-off slash command). \
+         **Timezone**: `--tz utc|local` (default `local`, meaning the box \
+         running aciddog — call `aciddog info` to see what that resolves to). \
+         **Recurring**: 5-field POSIX cron `min hour dom mon dow`. \
+         **One-off**: pass `--oneoff` plus an ISO `YYYY-MM-DDTHH:MM[:SS]`; \
+         add `--catchup-on-startup` if the job should still fire when the \
+         scheduled instant passed while aciddog was offline (without the \
+         flag the job is pruned during reconciliation). \
+         **Restrictions**: `/exit` and `/quit` are blocked as slash payloads; \
+         the target must be a configured agent (workers cannot be cron \
+         targets); cross-agent targeting is gated by the same `can_message` \
+         allowlist as `send`. Workers cannot use `cron` at all.",
+    );
     // add new subcommand sections above this line
 
     out
@@ -346,6 +378,10 @@ pub fn tag_preamble(contactable: &[&str], creatable: &[&str], memory_banks: &[&s
 
     push_memory_tag_docs(&mut out, memory_banks);
 
+    push_info_tag_docs(&mut out);
+
+    push_cron_tag_docs(&mut out);
+
     out
 }
 
@@ -431,6 +467,70 @@ fn push_task_board_tag_docs(out: &mut String) {
     push_line(
         out,
         r#"**Comments** are intentional messages for the next agent (distinct from `note`, the system's event log): `task_comment_add`, `task_comment_list`, `task_comment_update`, `task_comment_remove`. Each takes a `task` uuid plus its fields."#,
+    );
+}
+
+fn push_info_tag_docs(out: &mut String) {
+    push_line(out, "### Time + tz info");
+    push_tag_section(
+        out,
+        "info",
+        r#"{"cmd":"info"}"#,
+        "print the orchestrator's current local time, UTC time, and IANA \
+         timezone (canonical source for `now` — call this before scheduling \
+         a cron job, never reach for `date`).",
+    );
+}
+
+fn push_cron_tag_docs(out: &mut String) {
+    push_line(out, "### Cron scheduling");
+    push_line(
+        out,
+        "Schedule a payload (chat message or slash command) to be delivered \
+         to a target agent on a recurring or one-off schedule. Persisted to \
+         `.aciddog/cron.json`. The target must be a configured agent \
+         (workers cannot be cron targets). `/exit` and `/quit` are blocked \
+         as slash payloads. Workers cannot use these commands at all.",
+    );
+    push_tag_section(
+        out,
+        "cron_add",
+        r#"{"cmd":"cron_add","target":"<agent-id>","kind":"message","payload":"<text-or-/cmd>","schedule":"0 9 * * *","tz":"local","oneoff":false,"catchup_on_startup":false,"disabled":false}"#,
+        "create a new cron job. `kind` is `\"message\"` or `\"command\"`. \
+         `tz` is `\"utc\"` or `\"local\"` (default `\"local\"`, the orchestrator's \
+         timezone). For recurring jobs `schedule` is a 5-field POSIX cron \
+         expression `min hour dom mon dow`; for one-off jobs set \
+         `\"oneoff\":true` and pass `\"YYYY-MM-DDTHH:MM[:SS]\"`. \
+         `catchup_on_startup` (one-off only) re-fires a missed instant on \
+         next start; without it the job is pruned during reconciliation.",
+    );
+    push_tag_section(
+        out,
+        "cron_list",
+        r#"{"cmd":"cron_list","target":"<agent-id-or-omit>","include_disabled":false,"mine":false}"#,
+        "list cron jobs. Filters are optional. `mine` restricts to jobs you \
+         created.",
+    );
+    push_tag_section(
+        out,
+        "cron_show",
+        r#"{"cmd":"cron_show","id":"<job-uuid>"}"#,
+        "full body of a single job: target, payload, schedule, timezone, \
+         catchup flag, last/next run, creator.",
+    );
+    push_tag_section(
+        out,
+        "cron_update",
+        r#"{"cmd":"cron_update","id":"<job-uuid>","target":"...","kind":"...","payload":"...","schedule":"...","tz":"utc|local","oneoff":true,"catchup_on_startup":true,"enabled":false}"#,
+        "update fields on an existing job. Omit fields you don't want to \
+         change. Updating the schedule, timezone, or oneoff flag recomputes \
+         `next_run` from now.",
+    );
+    push_tag_section(
+        out,
+        "cron_remove",
+        r#"{"cmd":"cron_remove","id":"<job-uuid>"}"#,
+        "delete a cron job by id.",
     );
 }
 
@@ -765,6 +865,65 @@ mod tests {
         assert!(
             p.to_lowercase().contains("hibernate"),
             "missing hibernate wording: {p}"
+        );
+    }
+
+    // ── info + cron sections (CLI + tag) ────────────────────────────
+
+    #[test]
+    fn cli_preamble_mentions_info_and_cron_sections() {
+        let p = cli_preamble("/a", &[], &[], &[]);
+        assert!(p.contains("/a info"), "missing info entry: {p}");
+        assert!(
+            p.contains("/a cron <add|list|show|update|remove>"),
+            "missing cron entry: {p}"
+        );
+    }
+
+    #[test]
+    fn cli_preamble_cron_section_mentions_tz_blocklist_and_workers() {
+        let p = cli_preamble("/a", &[], &[], &[]);
+        let lower = p.to_lowercase();
+        assert!(lower.contains("--tz utc|local"), "missing tz docs: {p}");
+        assert!(
+            p.contains("`/exit` and `/quit` are blocked"),
+            "missing slash blocklist: {p}"
+        );
+        assert!(
+            lower.contains("workers cannot be cron targets")
+                && lower.contains("workers cannot use `cron`"),
+            "missing worker restrictions: {p}"
+        );
+    }
+
+    #[test]
+    fn tag_preamble_includes_info_and_cron_sections() {
+        let p = tag_preamble(&[], &[], &[]);
+        assert!(p.contains("\"cmd\":\"info\""), "missing info tag: {p}");
+        assert!(p.contains("\"cmd\":\"cron_add\""), "missing cron_add: {p}");
+        assert!(p.contains("\"cmd\":\"cron_list\""), "missing cron_list: {p}");
+        assert!(p.contains("\"cmd\":\"cron_show\""), "missing cron_show: {p}");
+        assert!(
+            p.contains("\"cmd\":\"cron_update\""),
+            "missing cron_update: {p}"
+        );
+        assert!(
+            p.contains("\"cmd\":\"cron_remove\""),
+            "missing cron_remove: {p}"
+        );
+    }
+
+    #[test]
+    fn tag_preamble_cron_section_documents_tz_and_blocklist() {
+        let p = tag_preamble(&[], &[], &[]);
+        let lower = p.to_lowercase();
+        assert!(
+            lower.contains("\"tz\":\"local\"") || lower.contains("\"tz\":\"utc\""),
+            "missing tz docs: {p}"
+        );
+        assert!(
+            p.contains("`/exit` and `/quit` are blocked"),
+            "missing slash blocklist: {p}"
         );
     }
 }
