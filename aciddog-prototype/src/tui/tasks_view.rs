@@ -588,11 +588,11 @@ pub fn cursor_visual_pos(s: &str, lines: &[VisualLine], cursor: usize) -> (usize
     (last, count)
 }
 
-fn segment_char_count(s: &str, v: &VisualLine) -> u16 {
+pub(crate) fn segment_char_count(s: &str, v: &VisualLine) -> u16 {
     s[v.byte_start..v.byte_end].chars().count() as u16
 }
 
-fn offset_at_col_in_segment(s: &str, segment: &VisualLine, col: u16) -> usize {
+pub(crate) fn offset_at_col_in_segment(s: &str, segment: &VisualLine, col: u16) -> usize {
     let mut remaining = col as usize;
     let mut off = segment.byte_start;
     while off < segment.byte_end && remaining > 0 {
@@ -946,7 +946,7 @@ fn non_empty_owned(s: &str) -> Option<String> {
 
 /// Byte length in UTF-8 of the char starting at `offset`, or 0 if
 /// out of bounds.
-fn utf8_char_len(s: &str, offset: usize) -> usize {
+pub(crate) fn utf8_char_len(s: &str, offset: usize) -> usize {
     if offset >= s.len() {
         return 0;
     }
@@ -970,7 +970,7 @@ fn utf8_char_len(s: &str, offset: usize) -> usize {
 /// Byte length of the char that *ends* at `offset` (i.e. the char
 /// immediately before cursor position `offset`). Returns 0 at the
 /// start of the string.
-fn utf8_char_len_prev(s: &str, offset: usize) -> usize {
+pub(crate) fn utf8_char_len_prev(s: &str, offset: usize) -> usize {
     if offset == 0 || offset > s.len() {
         return 0;
     }

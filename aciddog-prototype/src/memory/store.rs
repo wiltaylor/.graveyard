@@ -529,6 +529,246 @@ impl MemoryStore {
         Ok(out)
     }
 
+    /// Fetch a single entry by id. Returns `None` when the entry is
+    /// absent. `distance` on the returned [`Hit`] is [`f32::NAN`] — this
+    /// is a relational lookup, not a semantic search.
+    pub fn get_entry(&self, id: Uuid) -> Result<Option<Hit>, MemoryError> {
+        let mut params = BTreeMap::new();
+        params.insert("id".into(), DataValue::Str(id.to_string().into()));
+        let rows = self
+            .db
+            .run_script(
+                "?[title, body, created_at] := *entries{id: $id, title, body, created_at}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| MemoryError::Cozo(format!("get entry: {e}")))?;
+        let Some(row) = rows.rows.into_iter().next() else {
+            return Ok(None);
+        };
+        let title = row.first().and_then(as_str).unwrap_or_default();
+        let body = row
+            .get(1)
+            .and_then(as_str)
+            .ok_or_else(|| MemoryError::Cozo("entry row missing body".into()))?;
+        let created_at = row
+            .get(2)
+            .and_then(as_i64)
+            .and_then(|ms| Utc.timestamp_millis_opt(ms).single())
+            .unwrap_or_else(Utc::now);
+        let tags = self.load_tags(id)?;
+        Ok(Some(Hit {
+            id,
+            title,
+            body,
+            tags,
+            created_at,
+            distance: f32::NAN,
+        }))
+    }
+
+    /// Rewrite an existing entry's body, title, and tag set. Re-embeds
+    /// `body` (so semantic search reflects the new text), replaces the
+    /// tag set entirely, and preserves `created_at`. The entry must
+    /// exist; otherwise returns [`MemoryError::UnknownEntry`].
+    pub fn update_entry(
+        &self,
+        id: Uuid,
+        body: &str,
+        title: Option<&str>,
+        tags: &[String],
+    ) -> Result<(), MemoryError> {
+        let trimmed = body.trim();
+        if trimmed.is_empty() {
+            return Err(MemoryError::EmptyBody);
+        }
+        let existing = self.require_entry_row(id)?;
+
+        let embedding = self.embedder.embed(self.embed_model.as_deref(), trimmed)?;
+        if embedding.len() != self.dim {
+            return Err(MemoryError::DimMismatch {
+                expected: self.dim,
+                actual: embedding.len(),
+            });
+        }
+
+        let title = title.map(str::trim).unwrap_or("").to_string();
+        let normalised_tags = normalise_tags(tags);
+
+        // `:put` on the primary key (`id`) updates in place. created_at
+        // is kept as-is from the existing row.
+        let mut params = BTreeMap::new();
+        params.insert("id".into(), DataValue::Str(id.to_string().into()));
+        params.insert("title".into(), DataValue::Str(title.into()));
+        params.insert("body".into(), DataValue::Str(trimmed.to_string().into()));
+        params.insert("created_at".into(), DataValue::Num(Num::Int(existing)));
+        params.insert("embedding".into(), list_of_floats(&embedding));
+        self.db
+            .run_script(
+                "?[id, title, body, created_at, embedding] <- \
+                   [[$id, $title, $body, $created_at, $embedding]] \
+                 :put entries {id => title, body, created_at, embedding}",
+                params,
+                ScriptMutability::Mutable,
+            )
+            .map_err(|e| MemoryError::Cozo(format!("update entries: {e}")))?;
+
+        // Replace the tag set: drop existing rows for this entry, insert new.
+        self.drop_tags_for(id)?;
+        let ts = Utc::now().timestamp_millis();
+        for tag in &normalised_tags {
+            let mut tag_params = BTreeMap::new();
+            tag_params.insert("entry".into(), DataValue::Str(id.to_string().into()));
+            tag_params.insert("tag".into(), DataValue::Str(tag.clone().into()));
+            tag_params.insert("created_at".into(), DataValue::Num(Num::Int(ts)));
+            self.db
+                .run_script(
+                    "?[entry, tag, created_at] <- [[$entry, $tag, $created_at]] \
+                     :put entry_tags {entry, tag => created_at}",
+                    tag_params,
+                    ScriptMutability::Mutable,
+                )
+                .map_err(|e| MemoryError::Cozo(format!("update entry_tags: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Remove an entry and everything attached to it: its tag rows and
+    /// every link where it appears as `from` or `to`. Returns `true`
+    /// when an entry was removed, `false` when `id` didn't exist.
+    pub fn delete_entry(&self, id: Uuid) -> Result<bool, MemoryError> {
+        if self.get_entry_created_at(id)?.is_none() {
+            return Ok(false);
+        }
+
+        self.drop_tags_for(id)?;
+        self.drop_links_touching(id)?;
+
+        let mut params = BTreeMap::new();
+        params.insert("id".into(), DataValue::Str(id.to_string().into()));
+        self.db
+            .run_script(
+                "?[id] <- [[$id]] :rm entries {id}",
+                params,
+                ScriptMutability::Mutable,
+            )
+            .map_err(|e| MemoryError::Cozo(format!("delete entry: {e}")))?;
+        Ok(true)
+    }
+
+    fn drop_tags_for(&self, id: Uuid) -> Result<(), MemoryError> {
+        let mut params = BTreeMap::new();
+        params.insert("id".into(), DataValue::Str(id.to_string().into()));
+        // cozo's `:rm` needs (entry, tag) pairs, so collect the current
+        // tag names first, then issue a single bulk delete.
+        let rows = self
+            .db
+            .run_script(
+                "?[tag] := *entry_tags{entry: $id, tag}",
+                params.clone(),
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| MemoryError::Cozo(format!("enumerate tags: {e}")))?;
+        if rows.rows.is_empty() {
+            return Ok(());
+        }
+        let pairs: Vec<DataValue> = rows
+            .rows
+            .into_iter()
+            .filter_map(|row| row.into_iter().next().and_then(|v| as_str(&v)))
+            .map(|tag| {
+                DataValue::List(vec![
+                    DataValue::Str(id.to_string().into()),
+                    DataValue::Str(tag.into()),
+                ])
+            })
+            .collect();
+        let mut rm_params = BTreeMap::new();
+        rm_params.insert("pairs".into(), DataValue::List(pairs));
+        self.db
+            .run_script(
+                "?[entry, tag] <- $pairs :rm entry_tags {entry, tag}",
+                rm_params,
+                ScriptMutability::Mutable,
+            )
+            .map_err(|e| MemoryError::Cozo(format!("rm entry_tags: {e}")))?;
+        Ok(())
+    }
+
+    fn drop_links_touching(&self, id: Uuid) -> Result<(), MemoryError> {
+        let mut pairs: Vec<DataValue> = Vec::new();
+        for (query, label) in [
+            (
+                "?[from, to] := *links{from: $id, to}, from = $id",
+                "outgoing",
+            ),
+            ("?[from, to] := *links{from, to: $id}, to = $id", "incoming"),
+        ] {
+            let mut params = BTreeMap::new();
+            params.insert("id".into(), DataValue::Str(id.to_string().into()));
+            let rows = self
+                .db
+                .run_script(query, params, ScriptMutability::Immutable)
+                .map_err(|e| MemoryError::Cozo(format!("enumerate {label} links: {e}")))?;
+            for row in rows.rows {
+                let mut it = row.into_iter();
+                let Some(from) = it.next().as_ref().and_then(as_str) else {
+                    continue;
+                };
+                let Some(to) = it.next().as_ref().and_then(as_str) else {
+                    continue;
+                };
+                pairs.push(DataValue::List(vec![
+                    DataValue::Str(from.into()),
+                    DataValue::Str(to.into()),
+                ]));
+            }
+        }
+        if pairs.is_empty() {
+            return Ok(());
+        }
+        let mut rm_params = BTreeMap::new();
+        rm_params.insert("pairs".into(), DataValue::List(pairs));
+        self.db
+            .run_script(
+                "?[from, to] <- $pairs :rm links {from, to}",
+                rm_params,
+                ScriptMutability::Mutable,
+            )
+            .map_err(|e| MemoryError::Cozo(format!("rm links: {e}")))?;
+        Ok(())
+    }
+
+    /// Fetch `created_at` for an entry, returning `None` when absent.
+    /// Used by [`update_entry`] (to preserve the timestamp) and
+    /// [`delete_entry`] (to report whether a row actually existed).
+    fn get_entry_created_at(&self, id: Uuid) -> Result<Option<i64>, MemoryError> {
+        let mut params = BTreeMap::new();
+        params.insert("id".into(), DataValue::Str(id.to_string().into()));
+        let rows = self
+            .db
+            .run_script(
+                "?[created_at] := *entries{id: $id, created_at}",
+                params,
+                ScriptMutability::Immutable,
+            )
+            .map_err(|e| MemoryError::Cozo(format!("entry ts lookup: {e}")))?;
+        Ok(rows
+            .rows
+            .into_iter()
+            .next()
+            .and_then(|row| row.into_iter().next())
+            .and_then(|v| as_i64(&v)))
+    }
+
+    /// Like [`require_entry`] but returns the entry's `created_at`
+    /// instead of discarding it. Used by [`update_entry`] to preserve
+    /// the original timestamp.
+    fn require_entry_row(&self, id: Uuid) -> Result<i64, MemoryError> {
+        self.get_entry_created_at(id)?
+            .ok_or(MemoryError::UnknownEntry(id))
+    }
+
     fn require_entry(&self, id: Uuid) -> Result<(), MemoryError> {
         let mut params = BTreeMap::new();
         params.insert("id".into(), DataValue::Str(id.to_string().into()));
@@ -642,7 +882,7 @@ fn as_i64(v: &DataValue) -> Option<i64> {
 /// Canonicalise caller-supplied tags: trim, lower-case, drop empties
 /// and duplicates. All tag matching (store, include, exclude) routes
 /// through this so queries can rely on normalised comparisons.
-pub(crate) fn normalise_tag(s: &str) -> String {
+pub fn normalise_tag(s: &str) -> String {
     s.trim().to_ascii_lowercase()
 }
 

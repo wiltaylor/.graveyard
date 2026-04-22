@@ -185,6 +185,42 @@ pub enum MemoryCommand {
         #[arg(long)]
         to: Uuid,
     },
+    /// Rewrite an existing entry's body, title, and tag set. The body
+    /// is re-embedded so semantic search reflects the new text; the
+    /// tag set is replaced entirely (omit `--tag` to drop all tags).
+    Update {
+        #[arg(long)]
+        bank: String,
+        /// Entry id as returned by `memory store` / `memory search`.
+        #[arg(long)]
+        id: Uuid,
+        /// New body. Cannot be empty.
+        #[arg(long)]
+        body: String,
+        /// New title. Pass an empty string to clear it.
+        #[arg(long)]
+        title: Option<String>,
+        /// Tag to attach to the entry (repeatable). Replaces the
+        /// current tag set.
+        #[arg(long = "tag")]
+        tag: Vec<String>,
+    },
+    /// Remove an entry. Cascades to its tags and every link where it
+    /// appears as `from` or `to`.
+    Remove {
+        #[arg(long)]
+        bank: String,
+        #[arg(long)]
+        id: Uuid,
+    },
+    /// Fetch a single entry by id. Prints `title`, tags, `created_at`,
+    /// and the full body.
+    Show {
+        #[arg(long)]
+        bank: String,
+        #[arg(long)]
+        id: Uuid,
+    },
     /// List every link touching an entry. Each line is:
     /// `<-out|in-> <peer-uuid> [<kind>] <peer-body>`.
     Links {

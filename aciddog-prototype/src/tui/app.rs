@@ -314,6 +314,29 @@ fn short_uuid(id: uuid::Uuid) -> String {
     s[..8.min(s.len())].to_string()
 }
 
+/// Format a single `memory show` reply. Same column set as the hit
+/// formatter, minus rank / distance (irrelevant for a point lookup)
+/// and including the full uuid so agents can feed it into follow-up
+/// `memory link` / `memory update` calls.
+fn format_memory_entry(hit: &crate::memory::Hit) -> String {
+    let ts = hit.created_at.format("%Y-%m-%d %H:%M");
+    let title = if hit.title.is_empty() {
+        String::new()
+    } else {
+        format!(" · title={}", hit.title)
+    };
+    let tags = if hit.tags.is_empty() {
+        String::new()
+    } else {
+        format!(" · tags=[{}]", hit.tags.join(","))
+    };
+    format!(
+        "[{id} · {ts}{title}{tags}] {body}",
+        id = hit.id,
+        body = hit.body
+    )
+}
+
 /// Format a list of links from `memory links` as the plaintext body
 /// returned to the agent. Arrows reflect direction: `->` for outgoing,
 /// `<-` for incoming. An empty kind is omitted so short links don't
@@ -545,6 +568,9 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         }
         RequestCmd::MemorySearch { .. } => ChatBlock::from_tool_use("aciddog memory search", input),
         RequestCmd::MemoryStore { .. } => ChatBlock::from_tool_use("aciddog memory store", input),
+        RequestCmd::MemoryUpdate { .. } => ChatBlock::from_tool_use("aciddog memory update", input),
+        RequestCmd::MemoryRemove { .. } => ChatBlock::from_tool_use("aciddog memory remove", input),
+        RequestCmd::MemoryShow { .. } => ChatBlock::from_tool_use("aciddog memory show", input),
         RequestCmd::MemoryLink { .. } => ChatBlock::from_tool_use("aciddog memory link", input),
         RequestCmd::MemoryUnlink { .. } => ChatBlock::from_tool_use("aciddog memory unlink", input),
         RequestCmd::MemoryLinks { .. } => ChatBlock::from_tool_use("aciddog memory links", input),
@@ -729,6 +755,20 @@ pub enum Focus {
     /// Up/Down moves the selection, Enter sets the main area to
     /// `ActiveView::Channel(idx)`.
     Channels,
+    /// The main area while `active_view == Memory` — keyboard input
+    /// goes to the memory-view handler.
+    Memory,
+}
+
+/// Which scrollable zone inside the Memory view the wheel cursor is
+/// hovering over. Used by the mouse-wheel handler so scrolling moves
+/// the right thing (result selection vs. bank selection vs. detail
+/// body scroll) instead of the whole main area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryScrollZone {
+    Banks,
+    Results,
+    Detail,
 }
 
 /// Which content the main (left) area is currently showing. Chat
@@ -740,13 +780,14 @@ pub enum ActiveView {
     #[default]
     Chat,
     Tasks,
+    Memory,
     Channel(usize),
 }
 
-/// Entries in the right-column Views list. Currently a single
-/// entry; adding more is just extending this array and wiring a new
-/// activation arm in `handle_key_views`.
-pub const VIEW_ENTRIES: &[&str] = &["Tasks"];
+/// Entries in the right-column Views list. Extend this array and add
+/// a matching activation arm in `handle_key_views` to wire a new
+/// view up.
+pub const VIEW_ENTRIES: &[&str] = &["Tasks", "Memory"];
 
 #[derive(Debug, Default, Clone)]
 pub struct LayoutRects {
@@ -787,6 +828,23 @@ pub struct LayoutRects {
     /// The full outer rect of the child overlay, used to detect
     /// clicks *outside* the overlay (which close it).
     pub child_overlay_outer: Option<Rect>,
+    /// Clickable rects for the Memory view's bank list (when the
+    /// view is in the Banks stage). Populated each frame in `ui.rs`.
+    pub memory_bank_rows: Vec<Rect>,
+    /// Clickable rects for search-result rows in the Memory view.
+    pub memory_result_rows: Vec<Rect>,
+    /// Rect of the search-input bar on the Memory view. Click = focus
+    /// search mode.
+    pub memory_search_rect: Option<Rect>,
+    /// Fields on the currently-open note form (if any). Click =
+    /// focus that field.
+    pub memory_form_fields: Vec<(super::memory_view::NoteField, Rect)>,
+    /// Rows on the links overlay, when open. Click = move cursor.
+    pub memory_link_rows: Vec<Rect>,
+    /// Outer rect of whatever memory modal is active (form, detail,
+    /// links overlay, confirm-delete). Used to distinguish outside-
+    /// click (close) from inside-click (swallow).
+    pub memory_modal_outer: Option<Rect>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1439,6 +1497,13 @@ pub struct App {
     pub selected_channel: usize,
     /// UI-local state for the Tasks screen: cursor, modals, prompts.
     pub tasks_screen: TasksScreen,
+    /// UI-local state for the Memory view: bank list, search, modals.
+    pub memory_screen: super::memory_view::MemoryScreen,
+    /// Channel for replies from background memory ops (search, store,
+    /// update, delete, link). Populated by `tui::run`; `None` only in
+    /// unit tests that construct `App::new` directly and don't drive
+    /// the memory view.
+    pub memory_event_tx: Option<tokio::sync::mpsc::UnboundedSender<super::memory_view::MemoryEvent>>,
     /// Last left-click coord + timestamp, used only to detect
     /// double-clicks on task rows. A second click at the same
     /// (col,row) within `DOUBLE_CLICK_WINDOW` counts as double.
@@ -1536,6 +1601,8 @@ impl App {
             channels,
             selected_channel: 0,
             tasks_screen: TasksScreen::default(),
+            memory_screen: super::memory_view::MemoryScreen::default(),
+            memory_event_tx: None,
             last_click: None,
             frame_tick: 0,
             compaction_tx: None,
@@ -1970,6 +2037,21 @@ impl App {
                 tags,
             } => {
                 self.handle_memory_store(idx, bank, body, title, tags, reply);
+            }
+            RequestCmd::MemoryUpdate {
+                bank,
+                id,
+                body,
+                title,
+                tags,
+            } => {
+                self.handle_memory_update(idx, bank, id, body, title, tags, reply);
+            }
+            RequestCmd::MemoryRemove { bank, id } => {
+                self.handle_memory_remove(idx, bank, id, reply);
+            }
+            RequestCmd::MemoryShow { bank, id } => {
+                self.handle_memory_show(idx, bank, id, reply);
             }
             RequestCmd::MemoryLink {
                 bank,
@@ -3968,6 +4050,118 @@ impl App {
         });
     }
 
+    fn handle_memory_update(
+        &mut self,
+        sender_idx: usize,
+        bank: String,
+        id: Uuid,
+        body: String,
+        title: Option<String>,
+        tags: Vec<String>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let (registry, bank_decl) = match self.resolve_memory(sender_idx, &bank) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+                return;
+            }
+        };
+
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                registry.update_entry(&bank_decl, id, &body, title.as_deref(), &tags)
+            })
+            .await;
+            match result {
+                Ok(Ok(())) => {
+                    let _ = reply.send(Response::ok(format!("updated {}", short_uuid(id))));
+                }
+                Ok(Err(e)) => {
+                    let _ = reply.send(Response::err(e.to_string()));
+                }
+                Err(join_err) => {
+                    let _ = reply.send(Response::err(format!("memory update task: {join_err}")));
+                }
+            }
+        });
+    }
+
+    fn handle_memory_remove(
+        &mut self,
+        sender_idx: usize,
+        bank: String,
+        id: Uuid,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let (registry, bank_decl) = match self.resolve_memory(sender_idx, &bank) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+                return;
+            }
+        };
+
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                registry.delete_entry(&bank_decl, id)
+            })
+            .await;
+            match result {
+                Ok(Ok(true)) => {
+                    let _ = reply.send(Response::ok(format!("removed {}", short_uuid(id))));
+                }
+                Ok(Ok(false)) => {
+                    let _ = reply.send(Response::ok(format!(
+                        "no entry {} (nothing to remove)",
+                        short_uuid(id)
+                    )));
+                }
+                Ok(Err(e)) => {
+                    let _ = reply.send(Response::err(e.to_string()));
+                }
+                Err(join_err) => {
+                    let _ = reply.send(Response::err(format!("memory remove task: {join_err}")));
+                }
+            }
+        });
+    }
+
+    fn handle_memory_show(
+        &mut self,
+        sender_idx: usize,
+        bank: String,
+        id: Uuid,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let (registry, bank_decl) = match self.resolve_memory(sender_idx, &bank) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+                return;
+            }
+        };
+
+        tokio::spawn(async move {
+            let result =
+                tokio::task::spawn_blocking(move || registry.get_entry(&bank_decl, id)).await;
+            match result {
+                Ok(Ok(Some(hit))) => {
+                    let _ = reply.send(Response::ok(format_memory_entry(&hit)));
+                }
+                Ok(Ok(None)) => {
+                    let _ = reply.send(Response::err(format!("no entry {id}")));
+                }
+                Ok(Err(e)) => {
+                    let _ = reply.send(Response::err(e.to_string()));
+                }
+                Err(join_err) => {
+                    let _ = reply.send(Response::err(format!("memory show task: {join_err}")));
+                }
+            }
+        });
+    }
+
     /// Push a passive `system_info` block into the assignee's chat so
     /// they see the new work next time they look at the pane. Does
     /// NOT resurrect hibernated workers — tasks are pull-driven, so
@@ -4037,18 +4231,22 @@ impl App {
         }
 
         // Tab cycles the visible right-column panels plus the main
-        // area — UNLESS a Tasks-view modal (form / detail / prompt)
-        // is open, in which case Tab belongs to that modal's field
-        // navigation and must reach `handle_key_tasks`.
+        // area — UNLESS a Tasks-view or Memory-view modal is open, in
+        // which case Tab belongs to that modal's field navigation and
+        // must reach the view's own key handler.
         let tasks_modal_open = self.active_view == ActiveView::Tasks
             && self.focus == Focus::Tasks
             && (self.tasks_screen.form.is_some()
                 || self.tasks_screen.detail.is_some()
                 || self.tasks_screen.prompt.is_some());
-        if matches!(code, KeyCode::Tab) && !tasks_modal_open {
+        let memory_modal_open = self.active_view == ActiveView::Memory
+            && self.focus == Focus::Memory
+            && self.memory_screen.has_active_modal();
+        if matches!(code, KeyCode::Tab) && !tasks_modal_open && !memory_modal_open {
             let main = match self.active_view {
                 ActiveView::Chat | ActiveView::Channel(_) => Focus::Chat,
                 ActiveView::Tasks => Focus::Tasks,
+                ActiveView::Memory => Focus::Memory,
             };
             let has_channels = !self.channels.is_empty();
             self.focus = match self.focus {
@@ -4076,6 +4274,7 @@ impl App {
             Focus::Views => self.handle_key_views(code, mods),
             Focus::Tasks => self.handle_key_tasks(code, mods),
             Focus::Channels => self.handle_key_channels(code, mods),
+            Focus::Memory => self.handle_key_memory(code, mods),
         }
     }
 
@@ -4116,6 +4315,10 @@ impl App {
                 // stranded off-screen.
                 self.tasks_screen.close_modal();
             }
+            ActiveView::Memory => {
+                self.active_view = ActiveView::Chat;
+                self.memory_screen.close_overlays();
+            }
             ActiveView::Channel(_) => {
                 self.active_view = ActiveView::Chat;
             }
@@ -4139,17 +4342,17 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                // Only "Tasks" today. Hard-coded dispatch for now
-                // since there's exactly one entry; extending means
-                // matching on `VIEW_ENTRIES[self.selected_view]`.
-                if VIEW_ENTRIES.get(self.selected_view).copied() == Some("Tasks") {
-                    self.active_view = ActiveView::Tasks;
-                    self.focus = Focus::Tasks;
-                    // Snap the tasks-screen cursor to the first
-                    // selectable row (in case the store state
-                    // changed since it was last opened).
-                    let rows = TasksScreen::rows(&self.tasks);
-                    self.tasks_screen.reclamp(&rows);
+                match VIEW_ENTRIES.get(self.selected_view).copied() {
+                    Some("Tasks") => {
+                        self.active_view = ActiveView::Tasks;
+                        self.focus = Focus::Tasks;
+                        let rows = TasksScreen::rows(&self.tasks);
+                        self.tasks_screen.reclamp(&rows);
+                    }
+                    Some("Memory") => {
+                        self.open_memory_view();
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -4179,6 +4382,1217 @@ impl App {
                 self.focus = Focus::Chat;
             }
             _ => {}
+        }
+    }
+
+    /// Enter the Memory view. Shows an error toast if there is no
+    /// memory registry on this App (headless tests) or no banks
+    /// configured.
+    pub(crate) fn open_memory_view(&mut self) {
+        if self.memory.is_none() {
+            self.memory_screen
+                .set_status("memory registry not initialised");
+            return;
+        }
+        if self.config.memory_banks.is_empty() {
+            self.memory_screen
+                .set_status("no memory banks declared in config");
+            return;
+        }
+        self.active_view = ActiveView::Memory;
+        self.focus = Focus::Memory;
+        self.memory_screen.banks_stage();
+    }
+
+    fn handle_key_memory(&mut self, code: KeyCode, mods: KeyModifiers) {
+        // Clear transient toast on any keypress.
+        self.memory_screen.status_msg = None;
+
+        // Confirm-delete prompt intercepts input first.
+        if let Some(bank) = self.memory_screen.bank() {
+            if let Some(id) = bank.confirm_delete {
+                match code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        self.dispatch_memory_delete(id);
+                        if let Some(b) = self.memory_screen.bank_mut() {
+                            b.confirm_delete = None;
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                        if let Some(b) = self.memory_screen.bank_mut() {
+                            b.confirm_delete = None;
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+        }
+
+        // Form takes all input while open.
+        if self.memory_screen.bank().map(|b| b.form.is_some()).unwrap_or(false) {
+            self.handle_memory_form_key(code, mods);
+            return;
+        }
+
+        // Links overlay / picker.
+        if self
+            .memory_screen
+            .bank()
+            .map(|b| b.links_overlay.is_some())
+            .unwrap_or(false)
+        {
+            self.handle_memory_links_key(code, mods);
+            return;
+        }
+
+        // Detail overlay.
+        if self
+            .memory_screen
+            .bank()
+            .map(|b| b.detail.is_some())
+            .unwrap_or(false)
+        {
+            self.handle_memory_detail_key(code);
+            return;
+        }
+
+        match &self.memory_screen.stage {
+            super::memory_view::MemoryStage::Banks { .. } => {
+                self.handle_memory_banks_key(code);
+            }
+            super::memory_view::MemoryStage::Bank(_) => {
+                self.handle_memory_bank_key(code, mods);
+            }
+        }
+    }
+
+    fn handle_memory_banks_key(&mut self, code: KeyCode) {
+        let bank_count = self.config.memory_banks.len();
+        let selected = match &self.memory_screen.stage {
+            super::memory_view::MemoryStage::Banks { selected } => *selected,
+            _ => return,
+        };
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.focus = Focus::Views;
+                self.active_view = ActiveView::Chat;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if selected + 1 < bank_count {
+                    self.memory_screen.stage =
+                        super::memory_view::MemoryStage::Banks { selected: selected + 1 };
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if selected > 0 {
+                    self.memory_screen.stage =
+                        super::memory_view::MemoryStage::Banks { selected: selected - 1 };
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(bank) = self.config.memory_banks.get(selected) {
+                    let id = bank.id.clone();
+                    self.memory_screen.enter_bank(id);
+                    self.dispatch_memory_search();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_memory_bank_key(&mut self, code: KeyCode, _mods: KeyModifiers) {
+        // Search-input focus: most keys go to the text field.
+        let focus = self.memory_screen.bank().map(|b| b.focus).unwrap_or_default();
+        match (focus, code) {
+            (_, KeyCode::Esc) => {
+                // Back to bank list.
+                self.memory_screen.banks_stage();
+                return;
+            }
+            (super::memory_view::BankFocus::Search, KeyCode::Enter) => {
+                // Submit search. Also switch focus to results so j/k
+                // navigate the list immediately.
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.focus = super::memory_view::BankFocus::Results;
+                }
+                self.dispatch_memory_search();
+                return;
+            }
+            (super::memory_view::BankFocus::Search, KeyCode::Down) => {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.focus = super::memory_view::BankFocus::Results;
+                }
+                return;
+            }
+            (super::memory_view::BankFocus::Search, KeyCode::Backspace) => {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.search.backspace();
+                }
+                return;
+            }
+            (super::memory_view::BankFocus::Search, KeyCode::Left) => {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.search.move_char(-1);
+                }
+                return;
+            }
+            (super::memory_view::BankFocus::Search, KeyCode::Right) => {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.search.move_char(1);
+                }
+                return;
+            }
+            (super::memory_view::BankFocus::Search, KeyCode::Char(c)) => {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.search.insert(c);
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        // Results focus.
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    if !b.results.is_empty() && b.selected_result + 1 < b.results.len() {
+                        b.selected_result += 1;
+                    }
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    if b.selected_result > 0 {
+                        b.selected_result -= 1;
+                    } else {
+                        b.focus = super::memory_view::BankFocus::Search;
+                    }
+                }
+            }
+            KeyCode::Char('/') => {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.focus = super::memory_view::BankFocus::Search;
+                }
+            }
+            KeyCode::Char('a') => {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.form = Some(super::memory_view::NoteForm::new_add());
+                }
+            }
+            KeyCode::Char('e') | KeyCode::Enter => {
+                if let Some(hit) = self
+                    .memory_screen
+                    .bank()
+                    .and_then(|b| b.results.get(b.selected_result).cloned())
+                {
+                    if matches!(code, KeyCode::Char('e')) {
+                        if let Some(b) = self.memory_screen.bank_mut() {
+                            b.form = Some(super::memory_view::NoteForm::new_edit(&hit));
+                        }
+                    } else {
+                        self.open_memory_detail(hit.id);
+                    }
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(hit) = self
+                    .memory_screen
+                    .bank()
+                    .and_then(|b| b.results.get(b.selected_result).cloned())
+                {
+                    if let Some(b) = self.memory_screen.bank_mut() {
+                        b.confirm_delete = Some(hit.id);
+                    }
+                }
+            }
+            KeyCode::Char('l') => {
+                if let Some(hit) = self
+                    .memory_screen
+                    .bank()
+                    .and_then(|b| b.results.get(b.selected_result).cloned())
+                {
+                    self.open_memory_links(hit.id);
+                }
+            }
+            KeyCode::Char('r') => {
+                self.dispatch_memory_search();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_memory_form_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        use super::memory_view::NoteField;
+        let focused = match self.memory_screen.bank().and_then(|b| b.form.as_ref()) {
+            Some(f) => f.focused_field,
+            None => return,
+        };
+        match code {
+            KeyCode::Esc => {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.form = None;
+                }
+            }
+            KeyCode::Tab => {
+                if let Some(f) = self.memory_screen.bank_mut().and_then(|b| b.form.as_mut()) {
+                    if mods.contains(KeyModifiers::SHIFT) {
+                        f.focus_prev();
+                    } else {
+                        f.focus_next();
+                    }
+                }
+            }
+            KeyCode::BackTab => {
+                if let Some(f) = self.memory_screen.bank_mut().and_then(|b| b.form.as_mut()) {
+                    f.focus_prev();
+                }
+            }
+            KeyCode::Enter => {
+                match focused {
+                    NoteField::Cancel => {
+                        if let Some(b) = self.memory_screen.bank_mut() {
+                            b.form = None;
+                        }
+                    }
+                    NoteField::Ok => {
+                        self.submit_memory_form();
+                    }
+                    NoteField::Body => {
+                        // Newline in body.
+                        if let Some(f) = self.memory_screen.bank_mut().and_then(|b| b.form.as_mut())
+                        {
+                            f.insert_char('\n');
+                        }
+                    }
+                    NoteField::Title | NoteField::Tags => {
+                        // Enter on single-line fields submits the form.
+                        self.submit_memory_form();
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(f) = self.memory_screen.bank_mut().and_then(|b| b.form.as_mut()) {
+                    f.backspace();
+                }
+            }
+            KeyCode::Left => {
+                if let Some(f) = self.memory_screen.bank_mut().and_then(|b| b.form.as_mut()) {
+                    f.move_char(-1);
+                }
+            }
+            KeyCode::Right => {
+                if let Some(f) = self.memory_screen.bank_mut().and_then(|b| b.form.as_mut()) {
+                    f.move_char(1);
+                }
+            }
+            KeyCode::Up => {
+                if focused == NoteField::Body {
+                    if let Some(f) =
+                        self.memory_screen.bank_mut().and_then(|b| b.form.as_mut())
+                    {
+                        if !f.body_move_line(-1) {
+                            f.focus_prev();
+                        }
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if focused == NoteField::Body {
+                    if let Some(f) =
+                        self.memory_screen.bank_mut().and_then(|b| b.form.as_mut())
+                    {
+                        if !f.body_move_line(1) {
+                            f.focus_next();
+                        }
+                    }
+                }
+            }
+            KeyCode::Char(c) => {
+                if !focused.is_button() {
+                    if let Some(f) =
+                        self.memory_screen.bank_mut().and_then(|b| b.form.as_mut())
+                    {
+                        f.insert_char(c);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_memory_detail_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.detail = None;
+                }
+            }
+            KeyCode::Char('e') => {
+                let hit = self
+                    .memory_screen
+                    .bank()
+                    .and_then(|b| b.detail.as_ref())
+                    .and_then(|d| d.entry.clone());
+                if let Some(hit) = hit {
+                    if let Some(b) = self.memory_screen.bank_mut() {
+                        b.detail = None;
+                        b.form = Some(super::memory_view::NoteForm::new_edit(&hit));
+                    }
+                }
+            }
+            KeyCode::Char('d') => {
+                let id = self
+                    .memory_screen
+                    .bank()
+                    .and_then(|b| b.detail.as_ref())
+                    .map(|d| d.id);
+                if let Some(id) = id {
+                    if let Some(b) = self.memory_screen.bank_mut() {
+                        b.detail = None;
+                        b.confirm_delete = Some(id);
+                    }
+                }
+            }
+            KeyCode::Char('l') => {
+                let id = self
+                    .memory_screen
+                    .bank()
+                    .and_then(|b| b.detail.as_ref())
+                    .map(|d| d.id);
+                if let Some(id) = id {
+                    if let Some(b) = self.memory_screen.bank_mut() {
+                        b.detail = None;
+                    }
+                    self.open_memory_links(id);
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(d) = self
+                    .memory_screen
+                    .bank_mut()
+                    .and_then(|b| b.detail.as_mut())
+                {
+                    d.scroll = d.scroll.saturating_add(1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(d) = self
+                    .memory_screen
+                    .bank_mut()
+                    .and_then(|b| b.detail.as_mut())
+                {
+                    d.scroll = d.scroll.saturating_sub(1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_memory_links_key(&mut self, code: KeyCode, _mods: KeyModifiers) {
+        // Picker mode: typing/query.
+        let picker_open = self
+            .memory_screen
+            .bank()
+            .and_then(|b| b.links_overlay.as_ref())
+            .map(|o| o.picker.is_some())
+            .unwrap_or(false);
+        if picker_open {
+            self.handle_memory_link_picker_key(code);
+            return;
+        }
+
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.links_overlay = None;
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(o) = self
+                    .memory_screen
+                    .bank_mut()
+                    .and_then(|b| b.links_overlay.as_mut())
+                {
+                    o.move_cursor(1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(o) = self
+                    .memory_screen
+                    .bank_mut()
+                    .and_then(|b| b.links_overlay.as_mut())
+                {
+                    o.move_cursor(-1);
+                }
+            }
+            KeyCode::Char('a') | KeyCode::Char('+') => {
+                if let Some(o) = self
+                    .memory_screen
+                    .bank_mut()
+                    .and_then(|b| b.links_overlay.as_mut())
+                {
+                    o.picker = Some(super::memory_view::LinkPicker::default());
+                }
+                self.dispatch_memory_link_search();
+            }
+            KeyCode::Char('d') | KeyCode::Char('-') => {
+                let pair = self
+                    .memory_screen
+                    .bank()
+                    .and_then(|b| b.links_overlay.as_ref())
+                    .and_then(|o| o.selected().map(|l| (o.source_id, l.peer_id)));
+                if let Some((from, to)) = pair {
+                    self.dispatch_memory_unlink(from, to);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_memory_link_picker_key(&mut self, code: KeyCode) {
+        use super::memory_view::LinkPickerFocus;
+        let focus = self
+            .memory_screen
+            .bank()
+            .and_then(|b| b.links_overlay.as_ref())
+            .and_then(|o| o.picker.as_ref())
+            .map(|p| p.focus)
+            .unwrap_or_default();
+        match code {
+            KeyCode::Esc => {
+                if let Some(o) = self
+                    .memory_screen
+                    .bank_mut()
+                    .and_then(|b| b.links_overlay.as_mut())
+                {
+                    o.picker = None;
+                }
+            }
+            KeyCode::Tab => {
+                if let Some(p) = self
+                    .memory_screen
+                    .bank_mut()
+                    .and_then(|b| b.links_overlay.as_mut())
+                    .and_then(|o| o.picker.as_mut())
+                {
+                    p.focus = match p.focus {
+                        LinkPickerFocus::Query => LinkPickerFocus::Results,
+                        LinkPickerFocus::Results => LinkPickerFocus::Kind,
+                        LinkPickerFocus::Kind => LinkPickerFocus::Query,
+                    };
+                }
+            }
+            KeyCode::Enter => match focus {
+                LinkPickerFocus::Query => {
+                    self.dispatch_memory_link_search();
+                    if let Some(p) = self
+                        .memory_screen
+                        .bank_mut()
+                        .and_then(|b| b.links_overlay.as_mut())
+                        .and_then(|o| o.picker.as_mut())
+                    {
+                        p.focus = LinkPickerFocus::Results;
+                    }
+                }
+                LinkPickerFocus::Results | LinkPickerFocus::Kind => {
+                    self.commit_memory_link();
+                }
+            },
+            KeyCode::Down => {
+                if focus == LinkPickerFocus::Results {
+                    if let Some(p) = self
+                        .memory_screen
+                        .bank_mut()
+                        .and_then(|b| b.links_overlay.as_mut())
+                        .and_then(|o| o.picker.as_mut())
+                    {
+                        if !p.results.is_empty() && p.selected + 1 < p.results.len() {
+                            p.selected += 1;
+                        }
+                    }
+                }
+            }
+            KeyCode::Up => {
+                if focus == LinkPickerFocus::Results {
+                    if let Some(p) = self
+                        .memory_screen
+                        .bank_mut()
+                        .and_then(|b| b.links_overlay.as_mut())
+                        .and_then(|o| o.picker.as_mut())
+                    {
+                        if p.selected > 0 {
+                            p.selected -= 1;
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(p) = self
+                    .memory_screen
+                    .bank_mut()
+                    .and_then(|b| b.links_overlay.as_mut())
+                    .and_then(|o| o.picker.as_mut())
+                {
+                    match focus {
+                        LinkPickerFocus::Query => {
+                            if p.query_cursor > 0 {
+                                let n = super::tasks_view::utf8_char_len_prev(
+                                    &p.query,
+                                    p.query_cursor,
+                                );
+                                let start = p.query_cursor - n;
+                                p.query.drain(start..p.query_cursor);
+                                p.query_cursor = start;
+                            }
+                        }
+                        LinkPickerFocus::Kind => {
+                            if p.kind_cursor > 0 {
+                                let n = super::tasks_view::utf8_char_len_prev(
+                                    &p.kind,
+                                    p.kind_cursor,
+                                );
+                                let start = p.kind_cursor - n;
+                                p.kind.drain(start..p.kind_cursor);
+                                p.kind_cursor = start;
+                            }
+                        }
+                        LinkPickerFocus::Results => {}
+                    }
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(p) = self
+                    .memory_screen
+                    .bank_mut()
+                    .and_then(|b| b.links_overlay.as_mut())
+                    .and_then(|o| o.picker.as_mut())
+                {
+                    let mut buf = [0u8; 4];
+                    let s = c.encode_utf8(&mut buf);
+                    match focus {
+                        LinkPickerFocus::Query => {
+                            p.query.insert_str(p.query_cursor, s);
+                            p.query_cursor += s.len();
+                        }
+                        LinkPickerFocus::Kind => {
+                            p.kind.insert_str(p.kind_cursor, s);
+                            p.kind_cursor += s.len();
+                        }
+                        LinkPickerFocus::Results => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ---- Async dispatch helpers for the Memory view ----
+
+    fn current_memory_bank_decl(&self) -> Option<crate::config::MemoryBank> {
+        let bank_id = self.memory_screen.bank()?.bank_id.clone();
+        self.config.memory_bank(&bank_id).cloned()
+    }
+
+    fn dispatch_memory_search(&mut self) {
+        let (Some(registry), Some(bank)) = (self.memory.clone(), self.current_memory_bank_decl())
+        else {
+            self.memory_screen.set_status("no memory registry");
+            return;
+        };
+        let Some(tx) = self.memory_event_tx.clone() else {
+            return;
+        };
+        let (query, limit, bank_id) = match self.memory_screen.bank() {
+            Some(b) => (
+                b.search.query.trim().to_string(),
+                b.search.limit.max(1),
+                b.bank_id.clone(),
+            ),
+            None => return,
+        };
+        let token = self.memory_screen.begin_op("searching");
+        tokio::spawn(async move {
+            let opts = crate::memory::SearchOptions {
+                query: if query.is_empty() { None } else { Some(query) },
+                title_contains: None,
+                tags: crate::memory::TagFilter::default(),
+                limit,
+            };
+            let result =
+                tokio::task::spawn_blocking(move || registry.search(&bank, opts)).await;
+            let normalised = match result {
+                Ok(Ok(hits)) => Ok(hits),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(format!("memory search task: {e}")),
+            };
+            let _ = tx.send(super::memory_view::MemoryEvent::SearchDone {
+                token,
+                bank_id,
+                result: normalised,
+            });
+        });
+    }
+
+    fn open_memory_detail(&mut self, id: Uuid) {
+        if let Some(b) = self.memory_screen.bank_mut() {
+            b.detail = Some(super::memory_view::NoteDetail::new(id));
+        }
+        self.dispatch_memory_entry_load(id);
+    }
+
+    fn dispatch_memory_entry_load(&mut self, id: Uuid) {
+        let (Some(registry), Some(bank)) = (self.memory.clone(), self.current_memory_bank_decl())
+        else {
+            return;
+        };
+        let Some(tx) = self.memory_event_tx.clone() else {
+            return;
+        };
+        let token = self.memory_screen.begin_op("loading entry");
+        let bank_id = bank.id.clone();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                let entry = registry.get_entry(&bank, id)?;
+                let Some(entry) = entry else {
+                    return Ok::<_, crate::memory::MemoryError>(None);
+                };
+                let empty = crate::memory::TagFilter::default();
+                let out = registry.links(&bank, id, crate::memory::LinkDirection::Out, &empty)?;
+                let inc = registry.links(&bank, id, crate::memory::LinkDirection::In, &empty)?;
+                Ok(Some((entry, out, inc)))
+            })
+            .await;
+            let normalised = match result {
+                Ok(Ok(payload)) => Ok(payload),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(format!("memory load task: {e}")),
+            };
+            let _ = tx.send(super::memory_view::MemoryEvent::EntryLoaded {
+                token,
+                bank_id,
+                id,
+                result: normalised,
+            });
+        });
+    }
+
+    fn open_memory_links(&mut self, id: Uuid) {
+        if let Some(b) = self.memory_screen.bank_mut() {
+            b.links_overlay = Some(super::memory_view::LinksOverlay::new(id, Vec::new()));
+        }
+        self.dispatch_memory_link_refresh(id);
+    }
+
+    fn dispatch_memory_link_refresh(&mut self, id: Uuid) {
+        let (Some(registry), Some(bank)) = (self.memory.clone(), self.current_memory_bank_decl())
+        else {
+            return;
+        };
+        let Some(tx) = self.memory_event_tx.clone() else {
+            return;
+        };
+        let token = self.memory_screen.begin_op("loading links");
+        let bank_id = bank.id.clone();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                let entry = registry.get_entry(&bank, id)?;
+                let Some(entry) = entry else {
+                    return Ok::<_, crate::memory::MemoryError>(None);
+                };
+                let empty = crate::memory::TagFilter::default();
+                let out = registry.links(&bank, id, crate::memory::LinkDirection::Out, &empty)?;
+                let inc = registry.links(&bank, id, crate::memory::LinkDirection::In, &empty)?;
+                Ok(Some((entry, out, inc)))
+            })
+            .await;
+            let normalised = match result {
+                Ok(Ok(payload)) => Ok(payload),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(format!("memory links task: {e}")),
+            };
+            let _ = tx.send(super::memory_view::MemoryEvent::EntryLoaded {
+                token,
+                bank_id,
+                id,
+                result: normalised,
+            });
+        });
+    }
+
+    fn submit_memory_form(&mut self) {
+        let validated = self
+            .memory_screen
+            .bank_mut()
+            .and_then(|b| b.form.as_mut())
+            .map(|f| f.validate().is_ok())
+            .unwrap_or(false);
+        if !validated {
+            return;
+        }
+        let (kind, title, body, tags) = match self.memory_screen.bank().and_then(|b| b.form.as_ref()) {
+            Some(f) => (
+                f.kind,
+                if f.title.trim().is_empty() {
+                    None
+                } else {
+                    Some(f.title.trim().to_string())
+                },
+                f.body.clone(),
+                f.parsed_tags(),
+            ),
+            None => return,
+        };
+        match kind {
+            super::memory_view::NoteFormKind::Add => self.dispatch_memory_store(body, title, tags),
+            super::memory_view::NoteFormKind::Edit(id) => {
+                self.dispatch_memory_update(id, body, title, tags)
+            }
+        }
+    }
+
+    fn dispatch_memory_store(&mut self, body: String, title: Option<String>, tags: Vec<String>) {
+        let (Some(registry), Some(bank)) = (self.memory.clone(), self.current_memory_bank_decl())
+        else {
+            return;
+        };
+        let Some(tx) = self.memory_event_tx.clone() else {
+            return;
+        };
+        let token = self.memory_screen.begin_op("saving note");
+        let bank_id = bank.id.clone();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                registry.store(&bank, &body, title.as_deref(), &tags)
+            })
+            .await;
+            let normalised = match result {
+                Ok(Ok(id)) => Ok(id),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(format!("memory store task: {e}")),
+            };
+            let _ = tx.send(super::memory_view::MemoryEvent::StoreDone {
+                token,
+                bank_id,
+                result: normalised,
+            });
+        });
+    }
+
+    fn dispatch_memory_update(
+        &mut self,
+        id: Uuid,
+        body: String,
+        title: Option<String>,
+        tags: Vec<String>,
+    ) {
+        let (Some(registry), Some(bank)) = (self.memory.clone(), self.current_memory_bank_decl())
+        else {
+            return;
+        };
+        let Some(tx) = self.memory_event_tx.clone() else {
+            return;
+        };
+        let token = self.memory_screen.begin_op("updating note");
+        let bank_id = bank.id.clone();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                registry.update_entry(&bank, id, &body, title.as_deref(), &tags)
+            })
+            .await;
+            let normalised = match result {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(format!("memory update task: {e}")),
+            };
+            let _ = tx.send(super::memory_view::MemoryEvent::UpdateDone {
+                token,
+                bank_id,
+                id,
+                result: normalised,
+            });
+        });
+    }
+
+    fn dispatch_memory_delete(&mut self, id: Uuid) {
+        let (Some(registry), Some(bank)) = (self.memory.clone(), self.current_memory_bank_decl())
+        else {
+            return;
+        };
+        let Some(tx) = self.memory_event_tx.clone() else {
+            return;
+        };
+        let token = self.memory_screen.begin_op("removing note");
+        let bank_id = bank.id.clone();
+        tokio::spawn(async move {
+            let result =
+                tokio::task::spawn_blocking(move || registry.delete_entry(&bank, id)).await;
+            let normalised = match result {
+                Ok(Ok(removed)) => Ok(removed),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(format!("memory delete task: {e}")),
+            };
+            let _ = tx.send(super::memory_view::MemoryEvent::DeleteDone {
+                token,
+                bank_id,
+                id,
+                result: normalised,
+            });
+        });
+    }
+
+    fn dispatch_memory_link_search(&mut self) {
+        let (Some(registry), Some(bank)) = (self.memory.clone(), self.current_memory_bank_decl())
+        else {
+            return;
+        };
+        let Some(tx) = self.memory_event_tx.clone() else {
+            return;
+        };
+        let Some(p) = self
+            .memory_screen
+            .bank()
+            .and_then(|b| b.links_overlay.as_ref())
+            .and_then(|o| o.picker.as_ref())
+        else {
+            return;
+        };
+        let query = p.query.trim().to_string();
+        let token = self.memory_screen.begin_op("searching targets");
+        let bank_id = bank.id.clone();
+        tokio::spawn(async move {
+            let opts = crate::memory::SearchOptions {
+                query: if query.is_empty() { None } else { Some(query) },
+                title_contains: None,
+                tags: crate::memory::TagFilter::default(),
+                limit: 20,
+            };
+            let result =
+                tokio::task::spawn_blocking(move || registry.search(&bank, opts)).await;
+            let normalised = match result {
+                Ok(Ok(hits)) => Ok(hits),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(format!("memory link search task: {e}")),
+            };
+            let _ = tx.send(super::memory_view::MemoryEvent::LinkSearchDone {
+                token,
+                bank_id,
+                result: normalised,
+            });
+        });
+    }
+
+    fn commit_memory_link(&mut self) {
+        let (from, to, kind) = match self
+            .memory_screen
+            .bank()
+            .and_then(|b| b.links_overlay.as_ref())
+            .and_then(|o| {
+                let p = o.picker.as_ref()?;
+                let target = p.results.get(p.selected)?;
+                Some((
+                    o.source_id,
+                    target.id,
+                    if p.kind.trim().is_empty() {
+                        None
+                    } else {
+                        Some(p.kind.trim().to_string())
+                    },
+                ))
+            }) {
+            Some(triple) => triple,
+            None => return,
+        };
+        let (Some(registry), Some(bank)) = (self.memory.clone(), self.current_memory_bank_decl())
+        else {
+            return;
+        };
+        let Some(tx) = self.memory_event_tx.clone() else {
+            return;
+        };
+        let token = self.memory_screen.begin_op("linking");
+        let bank_id = bank.id.clone();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                registry.link(&bank, from, to, kind.as_deref())
+            })
+            .await;
+            let normalised = match result {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(format!("memory link task: {e}")),
+            };
+            let _ = tx.send(super::memory_view::MemoryEvent::LinkDone {
+                token,
+                bank_id,
+                from,
+                to,
+                result: normalised,
+            });
+        });
+    }
+
+    fn dispatch_memory_unlink(&mut self, from: Uuid, to: Uuid) {
+        let (Some(registry), Some(bank)) = (self.memory.clone(), self.current_memory_bank_decl())
+        else {
+            return;
+        };
+        let Some(tx) = self.memory_event_tx.clone() else {
+            return;
+        };
+        let token = self.memory_screen.begin_op("unlinking");
+        let bank_id = bank.id.clone();
+        tokio::spawn(async move {
+            let result =
+                tokio::task::spawn_blocking(move || registry.unlink(&bank, from, to)).await;
+            let normalised = match result {
+                Ok(Ok(removed)) => Ok(removed),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(format!("memory unlink task: {e}")),
+            };
+            let _ = tx.send(super::memory_view::MemoryEvent::UnlinkDone {
+                token,
+                bank_id,
+                from,
+                to,
+                result: normalised,
+            });
+        });
+    }
+
+    /// Reducer for `MemoryEvent`s delivered on the background channel.
+    /// Called from the event-loop select arm. Drops any event whose
+    /// bank or token doesn't match the current state so stale replies
+    /// (after the user moved on) are ignored.
+    pub(crate) fn on_memory_event(&mut self, event: super::memory_view::MemoryEvent) {
+        use super::memory_view::MemoryEvent;
+        // We don't gate strictly on `token == current_token` because
+        // some ops (search + link-refresh) intentionally run in
+        // sequence with the reply. Instead, reject only when the bank
+        // has changed. `clear_pending` runs on every terminal event
+        // so the spinner disappears.
+        let current_bank = self.memory_screen.bank().map(|b| b.bank_id.clone());
+        match event {
+            MemoryEvent::SearchDone { bank_id, result, .. } => {
+                if current_bank.as_deref() != Some(&bank_id) {
+                    return;
+                }
+                self.memory_screen.clear_pending();
+                match result {
+                    Ok(hits) => {
+                        if let Some(b) = self.memory_screen.bank_mut() {
+                            b.results = hits;
+                            if b.selected_result >= b.results.len() {
+                                b.selected_result = 0;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.memory_screen.set_status(format!("search failed: {e}"));
+                    }
+                }
+            }
+            MemoryEvent::EntryLoaded {
+                bank_id,
+                id,
+                result,
+                ..
+            } => {
+                if current_bank.as_deref() != Some(&bank_id) {
+                    return;
+                }
+                self.memory_screen.clear_pending();
+                match result {
+                    Ok(Some((hit, out, inc))) => {
+                        if let Some(b) = self.memory_screen.bank_mut() {
+                            if let Some(detail) = b.detail.as_mut() {
+                                if detail.id == id {
+                                    detail.entry = Some(hit.clone());
+                                    detail.out_links = out.clone();
+                                    detail.in_links = inc.clone();
+                                }
+                            }
+                            if let Some(overlay) = b.links_overlay.as_mut() {
+                                if overlay.source_id == id {
+                                    overlay.existing = out;
+                                    if overlay.cursor >= overlay.existing.len() {
+                                        overlay.cursor = 0;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        self.memory_screen.set_status("entry not found");
+                        if let Some(b) = self.memory_screen.bank_mut() {
+                            b.detail = None;
+                            b.links_overlay = None;
+                        }
+                    }
+                    Err(e) => {
+                        self.memory_screen.set_status(format!("load failed: {e}"));
+                    }
+                }
+            }
+            MemoryEvent::StoreDone { bank_id, result, .. } => {
+                if current_bank.as_deref() != Some(&bank_id) {
+                    return;
+                }
+                self.memory_screen.clear_pending();
+                match result {
+                    Ok(id) => {
+                        if let Some(b) = self.memory_screen.bank_mut() {
+                            b.form = None;
+                        }
+                        self.memory_screen
+                            .set_status(format!("saved {}", short_uuid(id)));
+                        self.dispatch_memory_search();
+                    }
+                    Err(e) => {
+                        if let Some(f) = self
+                            .memory_screen
+                            .bank_mut()
+                            .and_then(|b| b.form.as_mut())
+                        {
+                            f.error = Some(e.clone());
+                        }
+                        self.memory_screen.set_status(format!("save failed: {e}"));
+                    }
+                }
+            }
+            MemoryEvent::UpdateDone {
+                bank_id,
+                id,
+                result,
+                ..
+            } => {
+                if current_bank.as_deref() != Some(&bank_id) {
+                    return;
+                }
+                self.memory_screen.clear_pending();
+                match result {
+                    Ok(()) => {
+                        if let Some(b) = self.memory_screen.bank_mut() {
+                            b.form = None;
+                        }
+                        self.memory_screen
+                            .set_status(format!("updated {}", short_uuid(id)));
+                        self.dispatch_memory_search();
+                    }
+                    Err(e) => {
+                        if let Some(f) = self
+                            .memory_screen
+                            .bank_mut()
+                            .and_then(|b| b.form.as_mut())
+                        {
+                            f.error = Some(e.clone());
+                        }
+                        self.memory_screen.set_status(format!("update failed: {e}"));
+                    }
+                }
+            }
+            MemoryEvent::DeleteDone {
+                bank_id,
+                id,
+                result,
+                ..
+            } => {
+                if current_bank.as_deref() != Some(&bank_id) {
+                    return;
+                }
+                self.memory_screen.clear_pending();
+                match result {
+                    Ok(true) => {
+                        self.memory_screen
+                            .set_status(format!("removed {}", short_uuid(id)));
+                        self.dispatch_memory_search();
+                    }
+                    Ok(false) => {
+                        self.memory_screen.set_status(format!(
+                            "{} already gone",
+                            short_uuid(id)
+                        ));
+                    }
+                    Err(e) => {
+                        self.memory_screen.set_status(format!("delete failed: {e}"));
+                    }
+                }
+            }
+            MemoryEvent::LinkDone {
+                bank_id,
+                from,
+                result,
+                ..
+            } => {
+                if current_bank.as_deref() != Some(&bank_id) {
+                    return;
+                }
+                self.memory_screen.clear_pending();
+                match result {
+                    Ok(()) => {
+                        if let Some(o) = self
+                            .memory_screen
+                            .bank_mut()
+                            .and_then(|b| b.links_overlay.as_mut())
+                        {
+                            o.picker = None;
+                        }
+                        self.memory_screen.set_status("linked");
+                        self.dispatch_memory_link_refresh(from);
+                    }
+                    Err(e) => {
+                        self.memory_screen.set_status(format!("link failed: {e}"));
+                    }
+                }
+            }
+            MemoryEvent::UnlinkDone {
+                bank_id,
+                from,
+                result,
+                ..
+            } => {
+                if current_bank.as_deref() != Some(&bank_id) {
+                    return;
+                }
+                self.memory_screen.clear_pending();
+                match result {
+                    Ok(true) => {
+                        self.memory_screen.set_status("unlinked");
+                        self.dispatch_memory_link_refresh(from);
+                    }
+                    Ok(false) => {
+                        self.memory_screen.set_status("no link to remove");
+                    }
+                    Err(e) => {
+                        self.memory_screen.set_status(format!("unlink failed: {e}"));
+                    }
+                }
+            }
+            MemoryEvent::LinkSearchDone { bank_id, result, .. } => {
+                if current_bank.as_deref() != Some(&bank_id) {
+                    return;
+                }
+                self.memory_screen.clear_pending();
+                match result {
+                    Ok(hits) => {
+                        if let Some(p) = self
+                            .memory_screen
+                            .bank_mut()
+                            .and_then(|b| b.links_overlay.as_mut())
+                            .and_then(|o| o.picker.as_mut())
+                        {
+                            p.results = hits;
+                            if p.selected >= p.results.len() {
+                                p.selected = 0;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.memory_screen
+                            .set_status(format!("link search failed: {e}"));
+                    }
+                }
+            }
         }
     }
 
@@ -5029,6 +6443,17 @@ impl App {
                     return;
                 }
 
+                // 0c. Memory-view modals (form / detail / links /
+                //     confirm-delete) capture all clicks. Clicks
+                //     outside the modal dismiss it, clicks inside
+                //     route to the specific handler.
+                if self.active_view == ActiveView::Memory
+                    && self.memory_screen.has_active_modal()
+                {
+                    self.handle_mouse_memory_modal(pos);
+                    return;
+                }
+
                 // 1. Chat buttons take priority.
                 if let Some(btn) = self
                     .layout
@@ -5056,6 +6481,9 @@ impl App {
                                     self.focus = Focus::Tasks;
                                     let rows = TasksScreen::rows(&self.tasks);
                                     self.tasks_screen.reclamp(&rows);
+                                }
+                                "Memory" => {
+                                    self.open_memory_view();
                                 }
                                 _ => {
                                     self.focus = Focus::Views;
@@ -5127,7 +6555,19 @@ impl App {
                         self.focus = match self.active_view {
                             ActiveView::Chat | ActiveView::Channel(_) => Focus::Chat,
                             ActiveView::Tasks => Focus::Tasks,
+                            ActiveView::Memory => Focus::Memory,
                         };
+
+                        // Memory view: route row / search-box clicks to
+                        // bank-list or bank-stage handlers. Returns
+                        // early on any hit; falls through to plain
+                        // focus-grab on an empty-area click.
+                        if self.active_view == ActiveView::Memory {
+                            if self.handle_mouse_memory_main(pos, ev.column, ev.row) {
+                                return;
+                            }
+                        }
+
                         // In Tasks view, clicking a row selects it;
                         // a double-click on the same row opens the
                         // edit modal.
@@ -5176,21 +6616,313 @@ impl App {
                         self.focus = match self.active_view {
                             ActiveView::Chat | ActiveView::Channel(_) => Focus::Chat,
                             ActiveView::Tasks => Focus::Tasks,
+                            ActiveView::Memory => Focus::Memory,
                         };
                     }
                 }
             }
             MouseEventKind::ScrollUp => {
+                if self.active_view == ActiveView::Memory {
+                    if let Some(zone) = self.memory_scroll_hit(pos) {
+                        self.memory_scroll(zone, -1);
+                        return;
+                    }
+                }
                 if self.mouse_in_chat_scroll_zone(pos) {
                     self.scroll_up(3);
                 }
             }
             MouseEventKind::ScrollDown => {
+                if self.active_view == ActiveView::Memory {
+                    if let Some(zone) = self.memory_scroll_hit(pos) {
+                        self.memory_scroll(zone, 1);
+                        return;
+                    }
+                }
                 if self.mouse_in_chat_scroll_zone(pos) {
                     self.scroll_down(3);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Returns the scrollable "zone" the cursor is in, if any. Used by
+    /// the wheel handlers to scope scrolling to a sensible target
+    /// (detail body, result list, bank list) instead of the whole
+    /// main area.
+    fn memory_scroll_hit(&self, pos: (u16, u16)) -> Option<MemoryScrollZone> {
+        if let Some(rect) = self.layout.memory_modal_outer {
+            if self
+                .memory_screen
+                .bank()
+                .map(|b| b.detail.is_some())
+                .unwrap_or(false)
+                && rect_contains(rect, pos)
+            {
+                return Some(MemoryScrollZone::Detail);
+            }
+        }
+        if matches!(
+            self.memory_screen.stage,
+            super::memory_view::MemoryStage::Banks { .. }
+        ) {
+            for rect in &self.layout.memory_bank_rows {
+                if rect_contains(*rect, pos) {
+                    return Some(MemoryScrollZone::Banks);
+                }
+            }
+        } else {
+            for rect in &self.layout.memory_result_rows {
+                if rect_contains(*rect, pos) {
+                    return Some(MemoryScrollZone::Results);
+                }
+            }
+        }
+        None
+    }
+
+    fn memory_scroll(&mut self, zone: MemoryScrollZone, delta: i32) {
+        match zone {
+            MemoryScrollZone::Banks => {
+                if let super::memory_view::MemoryStage::Banks { selected } =
+                    &mut self.memory_screen.stage
+                {
+                    let bank_count = self.config.memory_banks.len();
+                    if bank_count == 0 {
+                        return;
+                    }
+                    let next = (*selected as i32 + delta)
+                        .clamp(0, bank_count.saturating_sub(1) as i32)
+                        as usize;
+                    *selected = next;
+                }
+            }
+            MemoryScrollZone::Results => {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    if b.results.is_empty() {
+                        return;
+                    }
+                    let next = (b.selected_result as i32 + delta)
+                        .clamp(0, b.results.len().saturating_sub(1) as i32)
+                        as usize;
+                    b.selected_result = next;
+                }
+            }
+            MemoryScrollZone::Detail => {
+                if let Some(d) = self
+                    .memory_screen
+                    .bank_mut()
+                    .and_then(|b| b.detail.as_mut())
+                {
+                    if delta > 0 {
+                        d.scroll = d.scroll.saturating_add(delta as u16);
+                    } else {
+                        d.scroll = d.scroll.saturating_sub((-delta) as u16);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Main-area mouse handler for the Memory view when no modal is
+    /// open. Returns `true` when the click was consumed so the caller
+    /// can skip its generic "focus the main area" fallback.
+    fn handle_mouse_memory_main(&mut self, pos: (u16, u16), col: u16, row: u16) -> bool {
+        // Banks stage: click a bank row → select + open.
+        if matches!(
+            self.memory_screen.stage,
+            super::memory_view::MemoryStage::Banks { .. }
+        ) {
+            let rects = self.layout.memory_bank_rows.clone();
+            for (i, rect) in rects.iter().enumerate() {
+                if rect_contains(*rect, pos) {
+                    if let Some(bank) = self.config.memory_banks.get(i) {
+                        let id = bank.id.clone();
+                        self.memory_screen.stage =
+                            super::memory_view::MemoryStage::Banks { selected: i };
+                        self.memory_screen.enter_bank(id);
+                        self.dispatch_memory_search();
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Bank stage. Search rect → focus search (cursor moved to end).
+        if let Some(rect) = self.layout.memory_search_rect {
+            if rect_contains(rect, pos) {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.focus = super::memory_view::BankFocus::Search;
+                }
+                return true;
+            }
+        }
+
+        // Result row click: select it (+ double-click opens detail).
+        let result_rects = self.layout.memory_result_rows.clone();
+        for (i, rect) in result_rects.iter().enumerate() {
+            if rect_contains(*rect, pos) {
+                let hit = self
+                    .memory_screen
+                    .bank()
+                    .and_then(|b| b.results.get(i).cloned());
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.focus = super::memory_view::BankFocus::Results;
+                    b.selected_result = i;
+                }
+                let is_double = match self.last_click {
+                    Some((c, r, t)) => {
+                        c == col && r == row && t.elapsed() < DOUBLE_CLICK_WINDOW
+                    }
+                    None => false,
+                };
+                self.last_click = Some((col, row, Instant::now()));
+                if is_double {
+                    if let Some(hit) = hit {
+                        self.open_memory_detail(hit.id);
+                    }
+                    self.last_click = None;
+                }
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Capture clicks while any Memory-view modal is open. Clicks
+    /// outside the modal's outer rect dismiss the modal (operator-
+    /// friendly default, unlike the Tasks modal which swallows);
+    /// clicks inside route to field / row / picker hit-tests.
+    fn handle_mouse_memory_modal(&mut self, pos: (u16, u16)) {
+        // Confirm-delete: only y/n via keyboard; any click dismisses it.
+        let confirm_open = self
+            .memory_screen
+            .bank()
+            .map(|b| b.confirm_delete.is_some())
+            .unwrap_or(false);
+        if confirm_open {
+            if let Some(b) = self.memory_screen.bank_mut() {
+                b.confirm_delete = None;
+            }
+            return;
+        }
+
+        let outer = self.layout.memory_modal_outer;
+
+        // Link picker takes priority over the links overlay when open.
+        let picker_open = self
+            .memory_screen
+            .bank()
+            .and_then(|b| b.links_overlay.as_ref())
+            .map(|o| o.picker.is_some())
+            .unwrap_or(false);
+        if picker_open {
+            // Clicks outside dismiss the picker.
+            if let Some(rect) = outer {
+                if !rect_contains(rect, pos) {
+                    if let Some(o) = self
+                        .memory_screen
+                        .bank_mut()
+                        .and_then(|b| b.links_overlay.as_mut())
+                    {
+                        o.picker = None;
+                    }
+                    return;
+                }
+            }
+            // (Row-level picker hit-tests are not stored; picker is
+            // driven by Tab/Enter/arrow keys. Clicks inside the outer
+            // rect are swallowed so they don't leak to the main area.)
+            return;
+        }
+
+        // Form open: hit-test field rects; outside the modal dismisses.
+        let form_open = self
+            .memory_screen
+            .bank()
+            .map(|b| b.form.is_some())
+            .unwrap_or(false);
+        if form_open {
+            if let Some(rect) = outer {
+                if !rect_contains(rect, pos) {
+                    if let Some(b) = self.memory_screen.bank_mut() {
+                        b.form = None;
+                    }
+                    return;
+                }
+            }
+            let fields = self.layout.memory_form_fields.clone();
+            for (field, rect) in &fields {
+                if rect_contains(*rect, pos) {
+                    // Focus the field; buttons also trigger their
+                    // action immediately.
+                    if let Some(f) = self
+                        .memory_screen
+                        .bank_mut()
+                        .and_then(|b| b.form.as_mut())
+                    {
+                        f.focused_field = *field;
+                    }
+                    match field {
+                        super::memory_view::NoteField::Ok => self.submit_memory_form(),
+                        super::memory_view::NoteField::Cancel => {
+                            if let Some(b) = self.memory_screen.bank_mut() {
+                                b.form = None;
+                            }
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+            }
+            // Click inside the modal but not on a labelled rect —
+            // swallow so it doesn't reach the background.
+            return;
+        }
+
+        // Links overlay (no picker): hit-test link rows.
+        let links_open = self
+            .memory_screen
+            .bank()
+            .map(|b| b.links_overlay.is_some())
+            .unwrap_or(false);
+        if links_open {
+            if let Some(rect) = outer {
+                if !rect_contains(rect, pos) {
+                    if let Some(b) = self.memory_screen.bank_mut() {
+                        b.links_overlay = None;
+                    }
+                    return;
+                }
+            }
+            let link_rects = self.layout.memory_link_rows.clone();
+            for (i, rect) in link_rects.iter().enumerate() {
+                if rect_contains(*rect, pos) {
+                    if let Some(o) = self
+                        .memory_screen
+                        .bank_mut()
+                        .and_then(|b| b.links_overlay.as_mut())
+                    {
+                        if i < o.existing.len() {
+                            o.cursor = i;
+                        }
+                    }
+                    return;
+                }
+            }
+            return;
+        }
+
+        // Detail overlay: outside = close; inside = swallow.
+        if let Some(rect) = outer {
+            if !rect_contains(rect, pos) {
+                if let Some(b) = self.memory_screen.bank_mut() {
+                    b.detail = None;
+                }
+            }
         }
     }
 
@@ -5963,6 +7695,13 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     );
     app.memory = Some(memory);
 
+    // Channel for background memory ops (search/store/update/delete/link)
+    // initiated by the Memory view. The receiver half is drained in the
+    // main event loop; sends are non-blocking so the UI stays responsive.
+    let (memory_event_tx, memory_event_rx) =
+        tokio::sync::mpsc::unbounded_channel::<super::memory_view::MemoryEvent>();
+    app.memory_event_tx = Some(memory_event_tx);
+
     // Bind the agent IPC socket for this team before spawning cores, so its
     // path can be injected into each claude child's environment.
     let team_id = app.config.team.id.clone();
@@ -6139,6 +7878,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         ai_rx,
         &mut socket.events,
         &mut compaction_rx,
+        memory_event_rx,
     )
     .await;
 
@@ -6207,6 +7947,7 @@ async fn event_loop<B: ratatui::backend::Backend>(
     mut ai_rx: mpsc::Receiver<(usize, AIEvent)>,
     socket_rx: &mut mpsc::Receiver<AgentSocketEvent>,
     compaction_rx: &mut mpsc::Receiver<super::compaction::CompactionEvent>,
+    mut memory_event_rx: tokio::sync::mpsc::UnboundedReceiver<super::memory_view::MemoryEvent>,
 ) -> Result<()> {
     let mut events = EventStream::new();
     terminal.draw(|f| ui::render(f, app))?;
@@ -6254,6 +7995,9 @@ async fn event_loop<B: ratatui::backend::Backend>(
             }
             Some(comp_ev) = compaction_rx.recv() => {
                 app.handle_compaction_event(comp_ev);
+            }
+            Some(mem_ev) = memory_event_rx.recv() => {
+                app.on_memory_event(mem_ev);
             }
             _ = spinner_tick.tick() => {
                 // Only redraw when something is actually animating.

@@ -6,6 +6,7 @@ mod commands;
 mod compaction;
 mod diff;
 mod markdown;
+mod memory_view;
 mod tasks_view;
 mod ui;
 

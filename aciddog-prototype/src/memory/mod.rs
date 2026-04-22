@@ -140,6 +140,40 @@ impl MemoryRegistry {
         store.links(id, direction, tag_filter)
     }
 
+    /// Fetch a single entry by id. Returns `Ok(None)` when the entry
+    /// is absent.
+    pub fn get_entry(
+        &self,
+        bank: &MemoryBank,
+        id: uuid::Uuid,
+    ) -> Result<Option<Hit>, MemoryError> {
+        self.open_bank(bank)?.get_entry(id)
+    }
+
+    /// Rewrite an existing entry's body, title, and tag set. See
+    /// [`MemoryStore::update_entry`] for the semantics.
+    pub fn update_entry(
+        &self,
+        bank: &MemoryBank,
+        id: uuid::Uuid,
+        body: &str,
+        title: Option<&str>,
+        tags: &[String],
+    ) -> Result<(), MemoryError> {
+        self.open_bank(bank)?.update_entry(id, body, title, tags)
+    }
+
+    /// Remove an entry and every tag/link row that references it.
+    /// Returns `true` when an entry was removed, `false` when `id`
+    /// didn't exist.
+    pub fn delete_entry(
+        &self,
+        bank: &MemoryBank,
+        id: uuid::Uuid,
+    ) -> Result<bool, MemoryError> {
+        self.open_bank(bank)?.delete_entry(id)
+    }
+
     /// Pre-open every bank in `banks` so the first real call doesn't
     /// stall on directory creation or model download. Errors short-
     /// circuit on the first failure; earlier successes remain cached.

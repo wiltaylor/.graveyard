@@ -493,6 +493,21 @@ pub fn tag_preamble(
                     desc: "Persist an entry (permanent). Reply carries the new uuid. Tags lower-cased and de-duplicated.",
                 },
                 Row {
+                    cmd: "memory_update",
+                    params: "`\"bank\":\"<id>\"`, `\"id\":\"<uuid>\"`, `\"body\":\"<text>\"`, [`\"title\":\"<label>\"`], [`\"tags\":[\"<tag>\"…]`]",
+                    desc: "Rewrite an existing entry. Re-embeds the body; replaces the tag set entirely.",
+                },
+                Row {
+                    cmd: "memory_remove",
+                    params: "`\"bank\":\"<id>\"`, `\"id\":\"<uuid>\"`",
+                    desc: "Delete an entry. Cascades to its tags and every link that references it.",
+                },
+                Row {
+                    cmd: "memory_show",
+                    params: "`\"bank\":\"<id>\"`, `\"id\":\"<uuid>\"`",
+                    desc: "Fetch a single entry's title, tags, created_at, and full body.",
+                },
+                Row {
                     cmd: "memory_link",
                     params: "`\"bank\":\"<id>\"`, `\"from\":\"<uuid>\"`, `\"to\":\"<uuid>\"`, [`\"kind\":\"<label>\"`]",
                     desc: "Directed link between two stored entries. `\"kind\"` classifies (e.g. `supersedes`, `see_also`, `contradicts`).",
@@ -1086,6 +1101,9 @@ mod tests {
         for cmd in [
             "| memory_search |",
             "| memory_store |",
+            "| memory_update |",
+            "| memory_remove |",
+            "| memory_show |",
             "| memory_link |",
             "| memory_links |",
             "| memory_unlink |",

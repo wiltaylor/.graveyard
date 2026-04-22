@@ -198,6 +198,28 @@ pub enum RequestCmd {
         from: Uuid,
         to: Uuid,
     },
+    /// Rewrite an existing entry. Re-embeds `body`; replaces the tag
+    /// set entirely. `title` = `None` clears the title.
+    MemoryUpdate {
+        bank: String,
+        id: Uuid,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tags: Vec<String>,
+    },
+    /// Delete an entry. Cascades to its tags and any link that
+    /// references it.
+    MemoryRemove {
+        bank: String,
+        id: Uuid,
+    },
+    /// Fetch a single entry by id.
+    MemoryShow {
+        bank: String,
+        id: Uuid,
+    },
     /// List every link touching an entry. `direction` is one of
     /// `out` / `in` / `both` (default `both`). `include_tags` /
     /// `exclude_tags` filter the peers.

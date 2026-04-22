@@ -10,6 +10,9 @@ use ratatui::Frame;
 
 use super::app::{format_task_detail, ActiveView, AgentStatus, App, Focus, VIEW_ENTRIES};
 use super::blocks::{block_fingerprint, AnchorScratch, ChatButton, ScrollAnchor};
+use super::memory_view::{
+    BankFocus, LinkPickerFocus, LinksOverlay, MemoryStage, NoteDetail, NoteField, NoteForm,
+};
 use super::tasks_view::{FormField, TaskForm, TaskFormKind, TaskRow, TasksPrompt, TasksScreen};
 
 const APP_NAME: &str = "aciddog";
@@ -24,6 +27,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.layout.task_form_picker_buttons.clear();
     app.layout.child_overlay_rows.clear();
     app.layout.child_overlay_outer = None;
+    app.layout.memory_bank_rows.clear();
+    app.layout.memory_result_rows.clear();
+    app.layout.memory_search_rect = None;
+    app.layout.memory_form_fields.clear();
+    app.layout.memory_link_rows.clear();
+    app.layout.memory_modal_outer = None;
 
     // Input height: in Chat view, grow from 3 to 7 rows (1–5 usable +
     // 2 for borders) based on the wrapped line count of the current
@@ -44,6 +53,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         }
         ActiveView::Tasks => 3,
         ActiveView::Channel(_) => 3,
+        ActiveView::Memory => 3,
     };
 
     let root = Layout::default()
@@ -110,6 +120,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ActiveView::Chat => render_agent_chat(f, main_area, app),
         ActiveView::Tasks => render_tasks_screen(f, main_area, app),
         ActiveView::Channel(idx) => render_channel_chat(f, main_area, app, idx),
+        ActiveView::Memory => render_memory_screen(f, main_area, app),
     };
     let views_inner = render_views_list(f, views_area, app);
     let list_inner = render_agent_list(f, agents_area, app);
@@ -126,6 +137,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
         } else if app.tasks_screen.child_overlay.is_some() {
             render_child_overlay(f, main_area, app);
         }
+    }
+
+    // Memory view modals: form / detail / links overlay / confirm.
+    if app.active_view == ActiveView::Memory {
+        render_memory_modals(f, main_area, app);
     }
 
     app.layout.agent_list_inner = Some(list_inner);
@@ -931,6 +947,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
         Focus::Views => "views",
         Focus::Tasks => "tasks",
         Focus::Channels => "channels",
+        Focus::Memory => "memory",
     };
     let mut hint_spans: Vec<Span> = match app.focus {
         Focus::Agents => vec![
@@ -1029,6 +1046,30 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("tab", Style::default().fg(Color::Cyan)),
             Span::raw(" next panel"),
         ],
+        Focus::Memory => vec![
+            Span::styled(" focus: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                focus_label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("/", Style::default().fg(Color::Cyan)),
+            Span::raw(" search  "),
+            Span::styled("a", Style::default().fg(Color::Cyan)),
+            Span::raw(" add  "),
+            Span::styled("e", Style::default().fg(Color::Cyan)),
+            Span::raw(" edit  "),
+            Span::styled("d", Style::default().fg(Color::Cyan)),
+            Span::raw(" del  "),
+            Span::styled("l", Style::default().fg(Color::Cyan)),
+            Span::raw(" links  "),
+            Span::styled("⏎", Style::default().fg(Color::Cyan)),
+            Span::raw(" detail  "),
+            Span::styled("esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" back"),
+        ],
     };
 
     if app.copied_recently() {
@@ -1059,7 +1100,10 @@ fn render_views_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            let active = matches!((*name, app.active_view), ("Tasks", ActiveView::Tasks));
+            let active = matches!(
+                (*name, app.active_view),
+                ("Tasks", ActiveView::Tasks) | ("Memory", ActiveView::Memory),
+            );
             // Persistent highlight on the currently-displayed view so
             // clicking it gives visible feedback even once focus
             // leaves the panel (mirrors the agent list's always-on
@@ -2173,3 +2217,836 @@ fn render_child_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     app.layout.child_overlay_rows = overlay_rows;
     app.layout.child_overlay_outer = Some(rect);
 }
+
+// ========= Memory view =========
+
+fn render_memory_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
+    let focused = app.focus == Focus::Memory;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" memory ")
+        .border_style(focus_border_style(focused));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let stage_is_banks = matches!(app.memory_screen.stage, MemoryStage::Banks { .. });
+    if stage_is_banks {
+        render_memory_banks(f, inner, app, focused);
+    } else {
+        render_memory_bank(f, inner, app, focused);
+    }
+    inner
+}
+
+fn render_memory_banks(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
+    if app.config.memory_banks.is_empty() {
+        let p = Paragraph::new("No memory banks declared in the team config.")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(p, area);
+        return;
+    }
+    let selected = match app.memory_screen.stage {
+        MemoryStage::Banks { selected } => selected,
+        _ => 0,
+    };
+
+    let mut bank_rects: Vec<Rect> = Vec::with_capacity(app.config.memory_banks.len());
+    let items: Vec<ListItem> = app
+        .config
+        .memory_banks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let is_sel = i == selected && focused;
+            let style = if is_sel {
+                Style::default()
+                    .bg(Color::Cyan)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let spans = Line::from(vec![
+                Span::styled(format!("  {}  ", b.id), style),
+                Span::styled(
+                    format!("· {} ", b.description),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]);
+            // Row rect is recorded lazily below — `List` handles draw.
+            let _ = (&mut bank_rects, area);
+            ListItem::new(spans)
+        })
+        .collect();
+    for i in 0..app.config.memory_banks.len() {
+        let y = area.y.saturating_add(i as u16);
+        if y >= area.y + area.height {
+            break;
+        }
+        bank_rects.push(Rect::new(area.x, y, area.width, 1));
+    }
+    app.layout.memory_bank_rows = bank_rects;
+
+    let list = List::new(items);
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    f.render_stateful_widget(list, area, &mut state);
+
+    if let Some(msg) = &app.memory_screen.status_msg {
+        let bot = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
+        f.render_widget(
+            Paragraph::new(msg.clone()).style(Style::default().fg(Color::Yellow)),
+            bot,
+        );
+    }
+}
+
+fn render_memory_bank(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
+    // Layout: title row (bank id) + search bar + results list + status.
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // bank header
+            Constraint::Length(3), // search box
+            Constraint::Min(3),    // results
+            Constraint::Length(1), // status
+        ])
+        .split(area);
+
+    let (bank_id, query, query_cursor, results, selected, bank_focus, pending) = match app
+        .memory_screen
+        .bank()
+    {
+        Some(b) => (
+            b.bank_id.clone(),
+            b.search.query.clone(),
+            b.search.cursor,
+            b.results.clone(),
+            b.selected_result,
+            b.focus,
+            app.memory_screen.pending.clone(),
+        ),
+        None => return,
+    };
+
+    // Bank header.
+    let header = Line::from(vec![
+        Span::styled(" bank: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            bank_id,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("{} result(s)", results.len()),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(header), layout[0]);
+
+    // Search box.
+    let search_focused = focused && bank_focus == BankFocus::Search;
+    let search_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" search ")
+        .border_style(focus_border_style(search_focused));
+    let search_inner = search_block.inner(layout[1]);
+    f.render_widget(search_block, layout[1]);
+    let before = &query[..query_cursor.min(query.len())];
+    let after = &query[query_cursor.min(query.len())..];
+    let spans = if search_focused {
+        vec![
+            Span::raw(before.to_string()),
+            Span::styled("▏", Style::default().fg(Color::Cyan)),
+            Span::raw(after.to_string()),
+        ]
+    } else if query.is_empty() {
+        vec![Span::styled(
+            "(semantic query, leave blank to list newest)",
+            Style::default().fg(Color::DarkGray),
+        )]
+    } else {
+        vec![Span::raw(query.clone())]
+    };
+    f.render_widget(Paragraph::new(Line::from(spans)), search_inner);
+    app.layout.memory_search_rect = Some(layout[1]);
+
+    // Results list.
+    let results_focused = focused && bank_focus == BankFocus::Results;
+    let results_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" results ")
+        .border_style(focus_border_style(results_focused));
+    let results_inner = results_block.inner(layout[2]);
+    f.render_widget(results_block, layout[2]);
+
+    if results.is_empty() {
+        let msg = if query.trim().is_empty() {
+            "No entries in this bank yet. Press `a` to add one."
+        } else {
+            "No matches. Try a different query or press `a` to add."
+        };
+        f.render_widget(
+            Paragraph::new(msg).style(Style::default().fg(Color::DarkGray)),
+            results_inner,
+        );
+    } else {
+        let mut result_rects: Vec<Rect> = Vec::with_capacity(results.len());
+        let items: Vec<ListItem> = results
+            .iter()
+            .enumerate()
+            .map(|(i, h)| {
+                let is_sel = i == selected && results_focused;
+                let base = if is_sel {
+                    Style::default()
+                        .bg(Color::Cyan)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                let short = h.id.to_string();
+                let short = &short[..8.min(short.len())];
+                let title = if h.title.is_empty() {
+                    h.body.lines().next().unwrap_or("").to_string()
+                } else {
+                    h.title.clone()
+                };
+                let dist = if h.distance.is_nan() {
+                    String::new()
+                } else {
+                    format!("  d={:.3}", h.distance)
+                };
+                let tags = if h.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!("  [{}]", h.tags.join(","))
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("  {short} "), base),
+                    Span::styled(title, base),
+                    Span::styled(tags, Style::default().fg(Color::DarkGray)),
+                    Span::styled(dist, Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect();
+        for i in 0..results.len() {
+            let y = results_inner.y.saturating_add(i as u16);
+            if y >= results_inner.y + results_inner.height {
+                break;
+            }
+            result_rects.push(Rect::new(
+                results_inner.x,
+                y,
+                results_inner.width,
+                1,
+            ));
+        }
+        app.layout.memory_result_rows = result_rects;
+
+        let list = List::new(items);
+        let mut state = ListState::default();
+        state.select(Some(selected));
+        f.render_stateful_widget(list, results_inner, &mut state);
+    }
+
+    // Status / pending.
+    let status = layout[3];
+    let line = if let Some(label) = pending {
+        Line::from(Span::styled(
+            format!(" … {label}"),
+            Style::default().fg(Color::Yellow),
+        ))
+    } else if let Some(msg) = &app.memory_screen.status_msg {
+        Line::from(Span::styled(
+            format!(" {msg}"),
+            Style::default().fg(Color::Yellow),
+        ))
+    } else {
+        Line::from(Span::styled(
+            " / search · a add · e edit · d del · l links · ⏎ detail · esc banks",
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+    f.render_widget(Paragraph::new(line), status);
+}
+
+fn render_memory_modals(f: &mut Frame, area: Rect, app: &mut App) {
+    // Confirm delete prompt (piggy-backs on the main area's bottom row).
+    let confirm = app.memory_screen.bank().and_then(|b| b.confirm_delete);
+    if let Some(id) = confirm {
+        let rect = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
+        let short = id.to_string();
+        let short = &short[..8.min(short.len())];
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!(" Delete {short}? "),
+                    Style::default().fg(Color::Black).bg(Color::Yellow),
+                ),
+                Span::raw(" y/N "),
+            ])),
+            rect,
+        );
+        return;
+    }
+
+    let form_open = app
+        .memory_screen
+        .bank()
+        .map(|b| b.form.is_some())
+        .unwrap_or(false);
+    if form_open {
+        render_memory_form(f, area, app);
+        return;
+    }
+
+    let links_open = app
+        .memory_screen
+        .bank()
+        .map(|b| b.links_overlay.is_some())
+        .unwrap_or(false);
+    if links_open {
+        render_memory_links_overlay(f, area, app);
+        return;
+    }
+
+    let detail_open = app
+        .memory_screen
+        .bank()
+        .map(|b| b.detail.is_some())
+        .unwrap_or(false);
+    if detail_open {
+        render_memory_detail(f, area, app);
+    }
+}
+
+fn render_memory_form(f: &mut Frame, area: Rect, app: &mut App) {
+    let w = area.width.saturating_sub(4).min(100);
+    let h = area.height.saturating_sub(2).min(24);
+    let rect = centered_rect(area, w, h);
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" note ")
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    app.layout.memory_modal_outer = Some(rect);
+
+    let form = match app.memory_screen.bank().and_then(|b| b.form.as_ref()) {
+        Some(f) => f.clone(),
+        None => return,
+    };
+
+    // Tags row grows to fit 1 line; body takes everything left.
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Title
+            Constraint::Min(6),     // Body (expands)
+            Constraint::Length(3),  // Tags
+            Constraint::Length(1),  // Error
+            Constraint::Length(1),  // Buttons
+        ])
+        .split(inner);
+
+    render_memory_form_line(f, sections[0], NoteField::Title, &form, app);
+    render_memory_form_body(f, sections[1], &form, app);
+    render_memory_form_line(f, sections[2], NoteField::Tags, &form, app);
+
+    if let Some(err) = &form.error {
+        f.render_widget(
+            Paragraph::new(format!(" ! {err}")).style(Style::default().fg(Color::Red)),
+            sections[3],
+        );
+    }
+
+    // Buttons row.
+    let btn_row = sections[4];
+    let btn_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(12), Constraint::Length(12)])
+        .split(btn_row);
+    let ok_style = if form.focused_field == NoteField::Ok {
+        Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
+    let cancel_style = if form.focused_field == NoteField::Cancel {
+        Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(" [ OK ] ", ok_style))),
+        btn_layout[1],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(" [ Cancel ] ", cancel_style))),
+        btn_layout[2],
+    );
+    app.layout
+        .memory_form_fields
+        .push((NoteField::Ok, btn_layout[1]));
+    app.layout
+        .memory_form_fields
+        .push((NoteField::Cancel, btn_layout[2]));
+}
+
+fn render_memory_form_line(
+    f: &mut Frame,
+    area: Rect,
+    field: NoteField,
+    form: &NoteForm,
+    app: &mut App,
+) {
+    let focused = form.focused_field == field;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", field.label()))
+        .border_style(focus_border_style(focused));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    app.layout.memory_form_fields.push((field, area));
+
+    let (text, cursor) = match field {
+        NoteField::Title => (form.title.clone(), form.title_cursor),
+        NoteField::Tags => (form.tags.clone(), form.tags_cursor),
+        _ => (String::new(), 0),
+    };
+    let before = &text[..cursor.min(text.len())];
+    let after = &text[cursor.min(text.len())..];
+    let spans = if focused {
+        vec![
+            Span::raw(before.to_string()),
+            Span::styled("▏", Style::default().fg(Color::Cyan)),
+            Span::raw(after.to_string()),
+        ]
+    } else {
+        vec![Span::raw(text)]
+    };
+    f.render_widget(Paragraph::new(Line::from(spans)), inner);
+}
+
+fn render_memory_form_body(f: &mut Frame, area: Rect, form: &NoteForm, app: &mut App) {
+    let focused = form.focused_field == NoteField::Body;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Body ")
+        .border_style(focus_border_style(focused));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    app.layout.memory_form_fields.push((NoteField::Body, area));
+
+    let wrap_width = inner.width;
+    // Update the form's cached wrap width for key-handler consistency.
+    if let Some(f_mut) = app
+        .memory_screen
+        .bank_mut()
+        .and_then(|b| b.form.as_mut())
+    {
+        f_mut.body_last_wrap_width = wrap_width;
+        f_mut.body_last_visible_lines = inner.height;
+        f_mut.body_ensure_visible(inner.height);
+    }
+
+    // Render wrapped body with a simple cursor marker at the focused
+    // position. Using ratatui's Paragraph with Wrap::trim false handles
+    // word-wrap; the cursor glyph is just a visual hint.
+    let paragraph = Paragraph::new(form.body.clone()).wrap(Wrap { trim: false });
+    f.render_widget(paragraph, inner);
+
+    if focused && inner.height > 0 {
+        // Best-effort cursor: byte cursor → line + col assuming no wrap.
+        let before = &form.body[..form.body_cursor.min(form.body.len())];
+        let line_idx = before.chars().filter(|c| *c == '\n').count() as u16;
+        let col = before.rsplit('\n').next().map(|l| l.chars().count()).unwrap_or(0) as u16;
+        let scroll = form.body_scroll;
+        if line_idx >= scroll && line_idx < scroll + inner.height {
+            let y = inner.y + (line_idx - scroll);
+            let x = inner.x + col.min(inner.width.saturating_sub(1));
+            f.set_cursor_position((x, y));
+        }
+    }
+}
+
+fn render_memory_detail(f: &mut Frame, area: Rect, app: &mut App) {
+    let w = area.width.saturating_sub(4).min(100);
+    let h = area.height.saturating_sub(2).min(30);
+    let rect = centered_rect(area, w, h);
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" note detail ")
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    app.layout.memory_modal_outer = Some(rect);
+
+    let detail: NoteDetail = match app
+        .memory_screen
+        .bank()
+        .and_then(|b| b.detail.as_ref())
+        .cloned()
+    {
+        Some(d) => d,
+        None => return,
+    };
+
+    if detail.entry.is_none() {
+        f.render_widget(
+            Paragraph::new("loading…").style(Style::default().fg(Color::DarkGray)),
+            inner,
+        );
+        return;
+    }
+    let hit = detail.entry.as_ref().unwrap();
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // title line
+            Constraint::Length(1), // meta line
+            Constraint::Min(3),    // body
+            Constraint::Length(1), // blank
+            Constraint::Length(1), // outgoing header
+            Constraint::Min(1),    // outgoing list
+            Constraint::Length(1), // incoming header
+            Constraint::Min(1),    // incoming list
+            Constraint::Length(1), // footer hints
+        ])
+        .split(inner);
+
+    let title_line = if hit.title.is_empty() {
+        Line::from(Span::styled(
+            " (no title) ",
+            Style::default().fg(Color::DarkGray),
+        ))
+    } else {
+        Line::from(Span::styled(
+            format!(" {} ", hit.title),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ))
+    };
+    f.render_widget(Paragraph::new(title_line), sections[0]);
+
+    let meta = Line::from(vec![
+        Span::styled(
+            format!(" {} ", hit.id),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            hit.created_at.format(" · %Y-%m-%d %H:%M ").to_string(),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            if hit.tags.is_empty() {
+                String::new()
+            } else {
+                format!(" · [{}] ", hit.tags.join(","))
+            },
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(meta), sections[1]);
+
+    let body = Paragraph::new(hit.body.clone())
+        .wrap(Wrap { trim: false })
+        .scroll((detail.scroll, 0));
+    f.render_widget(body, sections[2]);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " outgoing links ",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        sections[4],
+    );
+    render_memory_link_list(f, sections[5], &detail.out_links);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " incoming links ",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        sections[6],
+    );
+    render_memory_link_list(f, sections[7], &detail.in_links);
+
+    f.render_widget(
+        Paragraph::new(" e edit · d del · l links · j/k scroll · esc close ")
+            .style(Style::default().fg(Color::DarkGray)),
+        sections[8],
+    );
+}
+
+fn render_memory_link_list(f: &mut Frame, area: Rect, links: &[crate::memory::Link]) {
+    if links.is_empty() {
+        f.render_widget(
+            Paragraph::new("  (none)").style(Style::default().fg(Color::DarkGray)),
+            area,
+        );
+        return;
+    }
+    let items: Vec<ListItem> = links
+        .iter()
+        .map(|l| {
+            let short = l.peer_id.to_string();
+            let short = &short[..8.min(short.len())];
+            let kind = if l.kind.is_empty() {
+                String::new()
+            } else {
+                format!("[{}] ", l.kind)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("  {short}  "), Style::default().fg(Color::DarkGray)),
+                Span::raw(kind),
+                Span::raw(l.peer_title.clone()),
+            ]))
+        })
+        .collect();
+    let list = List::new(items);
+    f.render_widget(list, area);
+}
+
+fn render_memory_links_overlay(f: &mut Frame, area: Rect, app: &mut App) {
+    let w = area.width.saturating_sub(4).min(100);
+    let h = area.height.saturating_sub(2).min(26);
+    let rect = centered_rect(area, w, h);
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" links ")
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    app.layout.memory_modal_outer = Some(rect);
+
+    let overlay: LinksOverlay = match app
+        .memory_screen
+        .bank()
+        .and_then(|b| b.links_overlay.as_ref())
+        .cloned()
+    {
+        Some(o) => o,
+        None => return,
+    };
+
+    if overlay.picker.is_some() {
+        render_memory_link_picker(f, inner, &overlay, app);
+        return;
+    }
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // source id header
+            Constraint::Min(3),    // existing links list
+            Constraint::Length(1), // footer
+        ])
+        .split(inner);
+
+    let src = overlay.source_id.to_string();
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" source: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                src,
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        sections[0],
+    );
+
+    if overlay.existing.is_empty() {
+        f.render_widget(
+            Paragraph::new("  No outgoing links. Press `a` / `+` to add one.")
+                .style(Style::default().fg(Color::DarkGray)),
+            sections[1],
+        );
+    } else {
+        let mut link_rects: Vec<Rect> = Vec::with_capacity(overlay.existing.len());
+        let items: Vec<ListItem> = overlay
+            .existing
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let is_sel = i == overlay.cursor;
+                let base = if is_sel {
+                    Style::default()
+                        .bg(Color::Cyan)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                let short = l.peer_id.to_string();
+                let short = &short[..8.min(short.len())];
+                let kind = if l.kind.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", l.kind)
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("  {short}"), base),
+                    Span::styled(kind, base),
+                    Span::styled(format!("  {}", l.peer_title), base),
+                ]))
+            })
+            .collect();
+        for i in 0..overlay.existing.len() {
+            let y = sections[1].y.saturating_add(i as u16);
+            if y >= sections[1].y + sections[1].height {
+                break;
+            }
+            link_rects.push(Rect::new(
+                sections[1].x,
+                y,
+                sections[1].width,
+                1,
+            ));
+        }
+        app.layout.memory_link_rows = link_rects;
+        let list = List::new(items);
+        let mut state = ListState::default();
+        state.select(Some(overlay.cursor));
+        f.render_stateful_widget(list, sections[1], &mut state);
+    }
+
+    f.render_widget(
+        Paragraph::new(" a/+ add · d/- unlink · j/k nav · esc close ")
+            .style(Style::default().fg(Color::DarkGray)),
+        sections[2],
+    );
+}
+
+fn render_memory_link_picker(
+    f: &mut Frame,
+    area: Rect,
+    overlay: &LinksOverlay,
+    _app: &mut App,
+) {
+    let picker = match overlay.picker.as_ref() {
+        Some(p) => p,
+        None => return,
+    };
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // query box
+            Constraint::Min(3),    // results
+            Constraint::Length(3), // kind box
+            Constraint::Length(1), // footer
+        ])
+        .split(area);
+
+    // Query box.
+    let q_focused = picker.focus == LinkPickerFocus::Query;
+    let q_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" search target ")
+        .border_style(focus_border_style(q_focused));
+    let q_inner = q_block.inner(sections[0]);
+    f.render_widget(q_block, sections[0]);
+    let before = &picker.query[..picker.query_cursor.min(picker.query.len())];
+    let after = &picker.query[picker.query_cursor.min(picker.query.len())..];
+    let spans = if q_focused {
+        vec![
+            Span::raw(before.to_string()),
+            Span::styled("▏", Style::default().fg(Color::Cyan)),
+            Span::raw(after.to_string()),
+        ]
+    } else if picker.query.is_empty() {
+        vec![Span::styled(
+            "(type to search; leave blank for latest)",
+            Style::default().fg(Color::DarkGray),
+        )]
+    } else {
+        vec![Span::raw(picker.query.clone())]
+    };
+    f.render_widget(Paragraph::new(Line::from(spans)), q_inner);
+
+    // Results list.
+    let r_focused = picker.focus == LinkPickerFocus::Results;
+    let r_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" results ")
+        .border_style(focus_border_style(r_focused));
+    let r_inner = r_block.inner(sections[1]);
+    f.render_widget(r_block, sections[1]);
+    if picker.results.is_empty() {
+        f.render_widget(
+            Paragraph::new("  No matches. Press ⏎ on the search to run.")
+                .style(Style::default().fg(Color::DarkGray)),
+            r_inner,
+        );
+    } else {
+        let items: Vec<ListItem> = picker
+            .results
+            .iter()
+            .enumerate()
+            .map(|(i, h)| {
+                let is_sel = i == picker.selected && r_focused;
+                let base = if is_sel {
+                    Style::default()
+                        .bg(Color::Cyan)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                let short = h.id.to_string();
+                let short = &short[..8.min(short.len())];
+                let title = if h.title.is_empty() {
+                    h.body.lines().next().unwrap_or("").to_string()
+                } else {
+                    h.title.clone()
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("  {short}  "), base),
+                    Span::styled(title, base),
+                ]))
+            })
+            .collect();
+        let list = List::new(items);
+        let mut state = ListState::default();
+        state.select(Some(picker.selected));
+        f.render_stateful_widget(list, r_inner, &mut state);
+    }
+
+    // Kind box.
+    let k_focused = picker.focus == LinkPickerFocus::Kind;
+    let k_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" kind (optional) ")
+        .border_style(focus_border_style(k_focused));
+    let k_inner = k_block.inner(sections[2]);
+    f.render_widget(k_block, sections[2]);
+    let before = &picker.kind[..picker.kind_cursor.min(picker.kind.len())];
+    let after = &picker.kind[picker.kind_cursor.min(picker.kind.len())..];
+    let spans = if k_focused {
+        vec![
+            Span::raw(before.to_string()),
+            Span::styled("▏", Style::default().fg(Color::Cyan)),
+            Span::raw(after.to_string()),
+        ]
+    } else if picker.kind.is_empty() {
+        vec![Span::styled(
+            "e.g. see_also, supersedes, contradicts",
+            Style::default().fg(Color::DarkGray),
+        )]
+    } else {
+        vec![Span::raw(picker.kind.clone())]
+    };
+    f.render_widget(Paragraph::new(Line::from(spans)), k_inner);
+
+    f.render_widget(
+        Paragraph::new(" tab next · ⏎ commit · esc cancel ")
+            .style(Style::default().fg(Color::DarkGray)),
+        sections[3],
+    );
+}
+

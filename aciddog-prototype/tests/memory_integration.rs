@@ -345,6 +345,119 @@ fn links_respect_tag_filter_on_peer() {
 
 #[test]
 #[ignore]
+fn update_entry_rewrites_body_title_and_tags() {
+    let (_tmp, store) = open_tmp();
+
+    let id = store
+        .store(
+            "The CI pipeline is defined in .github/workflows/ci.yml.",
+            Some("ci config"),
+            &["ci".into()],
+        )
+        .expect("store");
+
+    // Original text should surface for a semantic query.
+    let hits = store
+        .search(opts_query("where is the ci config", 3))
+        .expect("search pre");
+    assert!(hits.iter().any(|h| h.id == id), "pre: {hits:?}");
+
+    store
+        .update_entry(
+            id,
+            "The billing module uses Stripe for payment processing.",
+            Some("billing notes"),
+            &["billing".into(), "Stripe".into()],
+        )
+        .expect("update");
+
+    // Fetch by id — title/body/tags reflect the new values.
+    let hit = store
+        .get_entry(id)
+        .expect("get")
+        .expect("entry still present");
+    assert_eq!(hit.title, "billing notes");
+    assert!(hit.body.contains("Stripe"));
+    assert_eq!(hit.tags, vec!["billing".to_string(), "stripe".to_string()]);
+
+    // New embedding: semantic search for the new text should return it.
+    let hits = store
+        .search(opts_query("what payment processor do we use", 3))
+        .expect("search post");
+    assert!(hits.iter().any(|h| h.id == id), "post: {hits:?}");
+}
+
+#[test]
+fn update_unknown_entry_errors() {
+    // Doesn't need the real embedder — update bails on require_entry
+    // before embedding.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let embedder = Arc::new(EmbedderPool::new(root.join("_models")));
+    let bank = bank_default();
+    let store = MemoryStore::open(&bank, &root, embedder).expect("open");
+
+    let ghost = uuid::Uuid::new_v4();
+    let err = store
+        .update_entry(ghost, "anything", None, &[])
+        .expect_err("unknown entry");
+    assert!(err.to_string().to_lowercase().contains("unknown"), "got {err}");
+}
+
+#[test]
+#[ignore]
+fn delete_entry_cascades_to_tags_and_links() {
+    let (_tmp, store) = open_tmp();
+
+    let hub = store
+        .store("hub entry", Some("hub"), &["core".into()])
+        .expect("hub");
+    let peer = store
+        .store("peer entry", Some("peer"), &["core".into(), "peer".into()])
+        .expect("peer");
+
+    store.link(hub, peer, Some("see_also")).expect("link 1");
+    store.link(peer, hub, None).expect("link 2");
+
+    assert!(store.delete_entry(hub).expect("delete"), "hub removed");
+    assert!(!store.delete_entry(hub).expect("delete 2"), "idempotent");
+
+    // Entry lookup gone.
+    assert!(store.get_entry(hub).expect("get").is_none());
+    // Tags gone: filter by the include tag used by the hub — it should
+    // not appear in relational listing.
+    let opts = aciddog::memory::SearchOptions {
+        tags: aciddog::memory::TagFilter {
+            include: vec!["core".into()],
+            exclude: vec![],
+        },
+        limit: 10,
+        ..aciddog::memory::SearchOptions::default()
+    };
+    let hits = store.search(opts).expect("search core");
+    let ids: Vec<_> = hits.iter().map(|h| h.id).collect();
+    assert!(!ids.contains(&hub), "deleted entry leaked through tag filter: {ids:?}");
+
+    // Links gone: querying from either side returns nothing for hub.
+    let empty = aciddog::memory::TagFilter::default();
+    let out = store.links(peer, LinkDirection::Both, &empty).expect("peer links");
+    assert!(!out.iter().any(|l| l.peer_id == hub), "hub still referenced: {out:?}");
+}
+
+#[test]
+fn get_entry_returns_none_for_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let embedder = Arc::new(EmbedderPool::new(root.join("_models")));
+    let bank = bank_default();
+    let store = MemoryStore::open(&bank, &root, embedder).expect("open");
+
+    let ghost = uuid::Uuid::new_v4();
+    assert!(store.get_entry(ghost).expect("get").is_none());
+}
+
+#[test]
+#[ignore]
 fn link_self_and_unknown_entry_are_rejected() {
     let (_tmp, store) = open_tmp();
 
