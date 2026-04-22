@@ -826,6 +826,7 @@ fn build_tools_section(parts: &PromptParts, allowed_tools: &[String]) -> String 
         let contactable: Vec<&str> = cli.contactable.iter().map(String::as_str).collect();
         let creatable: Vec<&str> = cli.creatable.iter().map(String::as_str).collect();
         let memory_banks: Vec<&str> = cli.memory_banks.iter().map(String::as_str).collect();
+        let skills: Vec<&str> = cli.skills.iter().map(String::as_str).collect();
 
         body.push('\n');
         if has_bash {
@@ -837,12 +838,18 @@ fn build_tools_section(parts: &PromptParts, allowed_tools: &[String]) -> String 
                 &contactable,
                 &creatable,
                 &memory_banks,
+                &skills,
             ));
         } else {
             if let Some(w) = &cli.worker {
                 body.push_str(&tag_worker_preamble(&w.parent_id, &w.task));
             }
-            body.push_str(&tag_preamble(&contactable, &creatable, &memory_banks));
+            body.push_str(&tag_preamble(
+                &contactable,
+                &creatable,
+                &memory_banks,
+                &skills,
+            ));
         }
     }
 

@@ -268,6 +268,22 @@ pub enum RequestCmd {
     CronRemove {
         id: Uuid,
     },
+    /// List every skill in the caller's allowlist as `id — description`
+    /// lines. Scoped to the caller's assigned skills.
+    SkillList,
+    /// Filter the caller's assigned skills by case-insensitive
+    /// substring match against id + description. `query` is treated
+    /// as a single substring; returns matching entries as
+    /// `id — description` lines.
+    SkillSearch {
+        query: String,
+    },
+    /// Load an assigned skill's `SKILL.md` body. The orchestrator
+    /// enforces the caller's skill allowlist and prepends a
+    /// `{baseDir} = <abs-path>` header pointing at the skill folder.
+    SkillRun {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -890,6 +906,54 @@ mod tests {
                 assert_eq!(enabled, Some(false));
             }
             other => panic!("expected CronUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skill_run_roundtrips_with_snake_case_tag() {
+        let req = Request {
+            agent_id: Uuid::new_v4(),
+            cmd: RequestCmd::SkillRun {
+                name: "code-review".into(),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"skill_run\""), "got: {s}");
+        assert!(s.contains("\"name\":\"code-review\""), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::SkillRun { name } => assert_eq!(name, "code-review"),
+            other => panic!("expected SkillRun, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skill_list_roundtrips_with_snake_case_tag() {
+        let req = Request {
+            agent_id: Uuid::new_v4(),
+            cmd: RequestCmd::SkillList,
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"skill_list\""), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        assert!(matches!(back.cmd, RequestCmd::SkillList));
+    }
+
+    #[test]
+    fn skill_search_roundtrips_with_snake_case_tag() {
+        let req = Request {
+            agent_id: Uuid::new_v4(),
+            cmd: RequestCmd::SkillSearch {
+                query: "review".into(),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"skill_search\""), "got: {s}");
+        assert!(s.contains("\"query\":\"review\""), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::SkillSearch { query } => assert_eq!(query, "review"),
+            other => panic!("expected SkillSearch, got {other:?}"),
         }
     }
 

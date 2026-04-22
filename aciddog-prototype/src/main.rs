@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use aciddog::agent_ipc::{self, Request, RequestCmd};
 use aciddog::cli::{
-    AgentArgs, AgentCommand, Args, CommentCommand, CronCommand, MemoryCommand, TaskCommand,
-    TodoCommand, WorkerCommand,
+    AgentArgs, AgentCommand, Args, CommentCommand, CronCommand, MemoryCommand, SkillCommand,
+    TaskCommand, TodoCommand, WorkerCommand,
 };
 use aciddog::config::load_config;
 use aciddog::tui;
@@ -348,6 +348,15 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
         AgentCommand::Cron {
             cmd: CronCommand::Remove { id },
         } => RequestCmd::CronRemove { id },
+        AgentCommand::Skill {
+            cmd: SkillCommand::List,
+        } => RequestCmd::SkillList,
+        AgentCommand::Skill {
+            cmd: SkillCommand::Search { query },
+        } => RequestCmd::SkillSearch { query },
+        AgentCommand::Skill {
+            cmd: SkillCommand::Run { name },
+        } => RequestCmd::SkillRun { name },
     };
 
     let response = agent_ipc::client::send(&socket_path, &Request { agent_id, cmd })

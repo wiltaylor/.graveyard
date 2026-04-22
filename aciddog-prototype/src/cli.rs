@@ -82,6 +82,14 @@ pub enum AgentCommand {
         #[command(subcommand)]
         cmd: CronCommand,
     },
+    /// Load a pre-announced skill's `SKILL.md` body. The orchestrator
+    /// enforces the caller's skill allowlist and prepends a
+    /// `{baseDir} = <abs-path>` header pointing at the skill's folder
+    /// so the body can reference sibling files by that placeholder.
+    Skill {
+        #[command(subcommand)]
+        cmd: SkillCommand,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -454,6 +462,32 @@ pub enum WorkerCommand {
         /// Final message body to deliver to the parent.
         #[arg(long)]
         body: String,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum SkillCommand {
+    /// List every assigned skill as `id — description` lines. Output
+    /// is scoped to the caller's allowlist.
+    List,
+    /// Filter assigned skills by case-insensitive substring match
+    /// against id and description. Output matches the same shape as
+    /// `skill list`.
+    Search {
+        /// Substring to match against skill id or description.
+        #[arg(long)]
+        query: String,
+    },
+    /// Print the instructions you need to follow when running a
+    /// skill. Output is the skill's `SKILL.md` prefixed with
+    /// `{baseDir} = <abs-path>` on its own line followed by a blank
+    /// line — substitute that path wherever the instructions
+    /// reference `{baseDir}`.
+    Run {
+        /// Skill id as declared in the caller's `skills = [...]` list
+        /// and present on disk at `.aciddog/skills/<name>/SKILL.md`.
+        #[arg(long)]
+        name: String,
     },
 }
 

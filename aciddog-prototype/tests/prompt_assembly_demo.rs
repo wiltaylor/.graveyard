@@ -77,13 +77,13 @@ fn planner_prompt_has_role_team_tag_tools_and_instructions() {
         role: planner.role_description.clone(),
         team: Some(team),
         memory: None,
-        skills: None,
         instructions: planner.instructions.clone(),
         aciddog_cli: Some(AciddogCliCtx {
             binary: "/usr/local/bin/aciddog".into(),
             contactable: contactable.iter().map(|s| s.to_string()).collect(),
             creatable: creatable.iter().map(|s| s.to_string()).collect(),
             memory_banks: vec![],
+            skills: vec![],
             worker: None,
         }),
     };
@@ -158,13 +158,13 @@ fn coder_prompt_uses_cli_preamble_inside_tools() {
         role: coder.role_description.clone(),
         team: Some(build_team_block(&cfg, &contactable, &creatable)),
         memory: None,
-        skills: None,
         instructions: coder.instructions.clone(),
         aciddog_cli: Some(AciddogCliCtx {
             binary: "/usr/local/bin/aciddog".into(),
             contactable: contactable.iter().map(|s| s.to_string()).collect(),
             creatable: creatable.iter().map(|s| s.to_string()).collect(),
             memory_banks: vec![],
+            skills: vec![],
             worker: None,
         }),
     };
@@ -228,13 +228,13 @@ fn planner_prompt_includes_memory_block_and_cli_docs_for_allowed_banks() {
         role: planner.role_description.clone(),
         team: Some(build_team_block(&cfg, &contactable, &creatable)),
         memory: Some(memory_body),
-        skills: None,
         instructions: planner.instructions.clone(),
         aciddog_cli: Some(AciddogCliCtx {
             binary: "/usr/local/bin/aciddog".into(),
             contactable: contactable.iter().map(|s| s.to_string()).collect(),
             creatable: creatable.iter().map(|s| s.to_string()).collect(),
             memory_banks: bank_ids.clone(),
+            skills: vec![],
             worker: None,
         }),
     };

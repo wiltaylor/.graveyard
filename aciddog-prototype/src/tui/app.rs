@@ -371,42 +371,28 @@ fn build_memory_block(cfg: &AciddogConfig, actor_id: &str) -> Option<String> {
     Some(out)
 }
 
-/// Build the per-actor `<skills>` block. Always returns `Some(...)` so
-/// every agent is told the `.aciddog/skills/` folder exists and how to
-/// load a skill from it, even when no specific skills have been
-/// pre-announced in the actor's WCL `skills = [...]` list. Missing or
-/// unreadable `SKILL.md` files warn and render a placeholder line
-/// rather than aborting — same warn-and-continue style used for the
-/// disk-backed task store.
-fn build_skills_block(cfg: &AciddogConfig, actor_id: &str) -> Option<String> {
-    let allowed = cfg.skills_for(actor_id);
+/// Render the caller's assigned skills as `- <id> — <description>`
+/// lines, one per skill. Unreadable `SKILL.md` files warn and render
+/// a placeholder line rather than aborting. Returns a friendly
+/// "no skills assigned" sentence when `allowed` is empty so the
+/// caller (typically the `skill list` IPC handler) can forward it
+/// verbatim.
+fn render_skill_listing(actor_id: &str, allowed: &[String]) -> String {
+    if allowed.is_empty() {
+        return "No skills are assigned to you.".to_string();
+    }
     let root = crate::skills::skills_root();
     let mut out = String::new();
-    out.push_str(
-        "Skills are reusable prompt fragments kept in .aciddog/skills/<name>/SKILL.md. \
-         To load one, read its SKILL.md with your file tool and follow the instructions \
-         inside. Only load a skill when it clearly applies.",
-    );
-    if !allowed.is_empty() {
-        out.push_str("\n\nPre-announced skills for you:\n");
-        for id in &allowed {
-            match crate::skills::read_skill_description(&root, id) {
-                Ok(desc) => out.push_str(&format!("- {id} — {desc}\n")),
-                Err(e) => {
-                    warn!(skill = %id, actor = %actor_id, error = %e, "skill SKILL.md unreadable");
-                    out.push_str(&format!("- {id} — (SKILL.md unreadable)\n"));
-                }
+    for id in allowed {
+        match crate::skills::read_skill_description(&root, id) {
+            Ok(desc) => out.push_str(&format!("- {id} — {desc}\n")),
+            Err(e) => {
+                warn!(skill = %id, actor = %actor_id, error = %e, "skill SKILL.md unreadable");
+                out.push_str(&format!("- {id} — (SKILL.md unreadable)\n"));
             }
         }
-        out.push_str(
-            "\nYou can also list .aciddog/skills/ to discover any other skills not pre-announced here.",
-        );
-    } else {
-        out.push_str(
-            "\n\nList .aciddog/skills/ to see which skills are available in this project (the folder may not exist if none have been authored yet).",
-        );
     }
-    Some(out)
+    out
 }
 
 /// Render a dispatched `<aciddog-call>` (emitted by `ClaudeCodeCore`
@@ -564,6 +550,11 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         RequestCmd::CronShow { .. } => ChatBlock::from_tool_use("aciddog cron show", input),
         RequestCmd::CronUpdate { .. } => ChatBlock::from_tool_use("aciddog cron update", input),
         RequestCmd::CronRemove { .. } => ChatBlock::from_tool_use("aciddog cron remove", input),
+        RequestCmd::SkillList => ChatBlock::from_tool_use("aciddog skill list", input),
+        RequestCmd::SkillSearch { .. } => {
+            ChatBlock::from_tool_use("aciddog skill search", input)
+        }
+        RequestCmd::SkillRun { .. } => ChatBlock::from_tool_use("aciddog skill run", input),
     }
 }
 
@@ -1539,6 +1530,21 @@ impl App {
                     } else if let Some(task_cmd) = try_parse_aciddog_task(cmd, &binary) {
                         let (kind, subject, body) = task_op_summary(&task_cmd);
                         ChatBlock::task_op(kind, subject, body)
+                    } else if is_aciddog_skill_list(cmd, &binary) {
+                        ChatBlock::from_tool_use(
+                            "aciddog skill list",
+                            &serde_json::json!({}),
+                        )
+                    } else if let Some(query) = try_parse_aciddog_skill_search(cmd, &binary) {
+                        ChatBlock::from_tool_use(
+                            "aciddog skill search",
+                            &serde_json::json!({ "query": query }),
+                        )
+                    } else if let Some(skill_name) = try_parse_aciddog_skill_run(cmd, &binary) {
+                        ChatBlock::from_tool_use(
+                            "aciddog skill run",
+                            &serde_json::json!({ "name": skill_name }),
+                        )
                     } else {
                         ChatBlock::from_tool_use(&name, &input)
                     }
@@ -1779,6 +1785,15 @@ impl App {
             RequestCmd::Info => {
                 self.handle_info(reply);
             }
+            RequestCmd::SkillList => {
+                self.handle_skill_list(idx, reply);
+            }
+            RequestCmd::SkillSearch { query } => {
+                self.handle_skill_search(idx, query, reply);
+            }
+            RequestCmd::SkillRun { name } => {
+                self.handle_skill_run(idx, name, reply);
+            }
             RequestCmd::CronAdd {
                 target,
                 kind,
@@ -1932,19 +1947,19 @@ impl App {
             .map(|list| list.to_vec())
             .unwrap_or_default();
         let memory_block = build_memory_block(&self.config, &template);
-        let skills_block = build_skills_block(&self.config, &template);
+        let skills_for_worker = self.config.skills_for(&template);
 
         let parts = PromptParts {
             role: worker.role_description.clone(),
             team: Some(team_block),
             memory: memory_block,
-            skills: skills_block,
             instructions: worker.instructions.clone(),
             aciddog_cli: Some(AciddogCliCtx {
                 binary: self.aciddog_binary.clone(),
                 contactable: vec![sender_display.clone()],
                 creatable: creatable.iter().map(|s| s.to_string()).collect(),
                 memory_banks: memory_banks_for_worker,
+                skills: skills_for_worker,
                 worker: Some(WorkerCtx {
                     parent_id: sender_display.clone(),
                     task: task.clone(),
@@ -2550,6 +2565,155 @@ impl App {
     fn handle_info(&mut self, reply: tokio::sync::oneshot::Sender<Response>) {
         let body = crate::info::render(chrono::Utc::now());
         let _ = reply.send(Response::ok(body));
+    }
+
+    /// List every skill assigned to the calling actor as one
+    /// `- <id> — <description>` line per skill. Scoped to the
+    /// caller's allowlist; never reveals unassigned skills.
+    fn handle_skill_list(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(template_id) = self.sender_template_id(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        let allowed = self.config.skills_for(&template_id);
+        let body = render_skill_listing(&template_id, &allowed);
+        let _ = reply.send(Response::ok(body));
+    }
+
+    /// Case-insensitive substring search over the caller's assigned
+    /// skills. Matches against both skill id and description. Never
+    /// surfaces skills outside the allowlist.
+    fn handle_skill_search(
+        &mut self,
+        sender_idx: usize,
+        query: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(template_id) = self.sender_template_id(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        let needle = query.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            let _ = reply.send(Response::err("query must not be empty"));
+            return;
+        }
+        let allowed = self.config.skills_for(&template_id);
+        let root = crate::skills::skills_root();
+        let mut rows: Vec<(String, String)> = Vec::new();
+        for id in &allowed {
+            let desc = match crate::skills::read_skill_description(&root, id) {
+                Ok(d) => d,
+                Err(e) => {
+                    warn!(skill = %id, actor = %template_id, error = %e, "skill SKILL.md unreadable");
+                    "(SKILL.md unreadable)".to_string()
+                }
+            };
+            let hay = format!("{id} {desc}").to_ascii_lowercase();
+            if hay.contains(&needle) {
+                rows.push((id.clone(), desc));
+            }
+        }
+        let body = if rows.is_empty() {
+            format!("No assigned skills match `{}`.", query.trim())
+        } else {
+            let mut out = String::new();
+            for (id, desc) in rows {
+                out.push_str(&format!("- {id} — {desc}\n"));
+            }
+            out
+        };
+        let _ = reply.send(Response::ok(body));
+    }
+
+    /// Load a pre-announced skill's `SKILL.md` for the calling actor.
+    /// The response body is the file's contents verbatim, prefixed
+    /// with `{baseDir} = <absolute-path>` on its own line followed by
+    /// a blank line — so `SKILL.md` authors can reference sibling
+    /// files by that placeholder.
+    ///
+    /// Enforces the caller's `skills` allowlist. The
+    /// "not-in-allowlist" error is distinct from the on-disk
+    /// "not-found" error so agents can self-correct.
+    fn handle_skill_run(
+        &mut self,
+        sender_idx: usize,
+        name: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let template_id = match self.sender_template_id(sender_idx) {
+            Some(t) => t,
+            None => {
+                let _ = reply.send(Response::err("unknown sender"));
+                return;
+            }
+        };
+        if !crate::skills::is_valid_skill_name(&name) {
+            let _ = reply.send(Response::err(format!(
+                "skill name `{name}` is not a valid identifier"
+            )));
+            return;
+        }
+        let allowed = self.config.skills_for(&template_id);
+        if !allowed.iter().any(|id| id == &name) {
+            let _ = reply.send(Response::err(format!(
+                "skill `{name}` is not in your allowlist"
+            )));
+            return;
+        }
+        let dir = crate::skills::skills_root().join(&name);
+        let abs_dir = match std::fs::canonicalize(&dir) {
+            Ok(p) => p,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                warn!(
+                    skill = %name,
+                    actor = %template_id,
+                    "skill directory missing"
+                );
+                let _ = reply.send(Response::err(format!("skill `{name}` not found")));
+                return;
+            }
+            Err(e) => {
+                warn!(
+                    skill = %name,
+                    actor = %template_id,
+                    error = %e,
+                    "skill directory unreadable"
+                );
+                let _ = reply.send(Response::err(format!(
+                    "reading skill `{name}` directory: {e}"
+                )));
+                return;
+            }
+        };
+        let skill_md = abs_dir.join("SKILL.md");
+        let body = match std::fs::read_to_string(&skill_md) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                warn!(skill = %name, actor = %template_id, "SKILL.md missing");
+                let _ = reply.send(Response::err(format!("skill `{name}` has no SKILL.md")));
+                return;
+            }
+            Err(e) => {
+                warn!(
+                    skill = %name,
+                    actor = %template_id,
+                    error = %e,
+                    "SKILL.md unreadable"
+                );
+                let _ = reply.send(Response::err(format!(
+                    "reading SKILL.md for skill `{name}`: {e}"
+                )));
+                return;
+            }
+        };
+        let abs_str = abs_dir.to_string_lossy().into_owned();
+        let response = format!("{{baseDir}} = {abs_str}\n\n{body}");
+        let _ = reply.send(Response::ok(response));
     }
 
     /// Validate caller-side ACL invariants and return the caller's
@@ -4809,6 +4973,38 @@ fn try_parse_aciddog_task(cmd: &str, binary: &str) -> Option<crate::cli::TaskCom
     }
 }
 
+/// Parse an `aciddog skill run --name <id>` invocation back into the
+/// skill id. Returns `None` for other commands.
+fn try_parse_aciddog_skill_run(cmd: &str, binary: &str) -> Option<String> {
+    match try_parse_aciddog(cmd, binary)? {
+        AgentCommand::Skill {
+            cmd: crate::cli::SkillCommand::Run { name },
+        } => Some(name),
+        _ => None,
+    }
+}
+
+/// True when `cmd` is `aciddog skill list`.
+fn is_aciddog_skill_list(cmd: &str, binary: &str) -> bool {
+    matches!(
+        try_parse_aciddog(cmd, binary),
+        Some(AgentCommand::Skill {
+            cmd: crate::cli::SkillCommand::List
+        })
+    )
+}
+
+/// Parse an `aciddog skill search --query <text>` invocation back
+/// into the raw query string. Returns `None` for other commands.
+fn try_parse_aciddog_skill_search(cmd: &str, binary: &str) -> Option<String> {
+    match try_parse_aciddog(cmd, binary)? {
+        AgentCommand::Skill {
+            cmd: crate::cli::SkillCommand::Search { query },
+        } => Some(query),
+        _ => None,
+    }
+}
+
 /// Short-form UUID used in block subjects — first 8 chars of the
 /// UUID matches the ids in `format_task_detail` output so the
 /// operator can cross-reference at a glance.
@@ -5180,24 +5376,25 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
 
         let team_block = build_team_block(&app.config, &contactable, &creatable);
         let memory_block = build_memory_block(&app.config, &agent.id);
-        let skills_block = build_skills_block(&app.config, &agent.id);
         let memory_banks_for_agent: Vec<String> = agent
             .memory_banks
             .as_deref()
             .map(|list| list.to_vec())
             .unwrap_or_default();
 
+        let skills_for_agent = app.config.skills_for(&agent.id);
+
         let parts = PromptParts {
             role: agent.role_description.clone(),
             team: Some(team_block),
             memory: memory_block,
-            skills: skills_block,
             instructions: agent.instructions.clone(),
             aciddog_cli: Some(AciddogCliCtx {
                 binary: aciddog_binary_str.clone(),
                 contactable: contactable.iter().map(|s| s.to_string()).collect(),
                 creatable: creatable.iter().map(|s| s.to_string()).collect(),
                 memory_banks: memory_banks_for_agent,
+                skills: skills_for_agent,
                 worker: None,
             }),
         };
@@ -5478,6 +5675,23 @@ mod tests {
     fn app_starts_with_chat_focused() {
         let app = App::new(sample_config());
         assert_eq!(app.focus, Focus::Chat);
+    }
+
+    #[test]
+    fn render_skill_listing_reports_none_when_allowlist_empty() {
+        let out = render_skill_listing("a", &[]);
+        assert!(out.contains("No skills"), "friendly empty sentence: {out}");
+    }
+
+    #[test]
+    fn render_skill_listing_emits_one_dash_id_line_per_skill() {
+        // SKILL.md files won't exist for these ids at the test cwd, so
+        // `read_skill_description` fails and each line falls back to
+        // the placeholder. We only assert on id presence and line
+        // shape, not on the description payload.
+        let out = render_skill_listing("a", &["alpha".to_string(), "beta".to_string()]);
+        assert!(out.contains("- alpha —"), "missing alpha line: {out}");
+        assert!(out.contains("- beta —"), "missing beta line: {out}");
     }
 
     #[test]
@@ -7164,6 +7378,70 @@ mod tests {
         let cmd = r#"/opt/aciddog worker complete --body "all done""#;
         let body = try_parse_aciddog_worker_complete(cmd, "/opt/aciddog").unwrap();
         assert_eq!(body, "all done");
+    }
+
+    #[test]
+    fn try_parse_aciddog_skill_run_extracts_name() {
+        let cmd = "/opt/aciddog skill run --name code-review";
+        let name = try_parse_aciddog_skill_run(cmd, "/opt/aciddog").unwrap();
+        assert_eq!(name, "code-review");
+    }
+
+    #[test]
+    fn try_parse_aciddog_skill_run_rejects_other_commands() {
+        assert!(try_parse_aciddog_skill_run("ls -la", "/opt/aciddog").is_none());
+        assert!(try_parse_aciddog_skill_run("/opt/aciddog test", "/opt/aciddog").is_none());
+        assert!(try_parse_aciddog_skill_run(
+            "/opt/aciddog send --to coder --body hi",
+            "/opt/aciddog"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn try_parse_aciddog_skill_run_is_disabled_when_binary_empty() {
+        assert!(
+            try_parse_aciddog_skill_run("aciddog skill run --name foo", "").is_none()
+        );
+    }
+
+    #[test]
+    fn is_aciddog_skill_list_matches_only_list_invocations() {
+        assert!(is_aciddog_skill_list("/opt/aciddog skill list", "/opt/aciddog"));
+        assert!(!is_aciddog_skill_list("/opt/aciddog skill run --name a", "/opt/aciddog"));
+        assert!(!is_aciddog_skill_list(
+            "/opt/aciddog skill search --query foo",
+            "/opt/aciddog"
+        ));
+        assert!(!is_aciddog_skill_list("/opt/aciddog test", "/opt/aciddog"));
+        assert!(!is_aciddog_skill_list("/opt/aciddog skill list", ""));
+    }
+
+    #[test]
+    fn try_parse_aciddog_skill_search_extracts_query() {
+        let q = try_parse_aciddog_skill_search(
+            r#"/opt/aciddog skill search --query "code review""#,
+            "/opt/aciddog",
+        )
+        .unwrap();
+        assert_eq!(q, "code review");
+    }
+
+    #[test]
+    fn try_parse_aciddog_skill_search_rejects_other_commands() {
+        assert!(
+            try_parse_aciddog_skill_search("/opt/aciddog skill list", "/opt/aciddog").is_none()
+        );
+        assert!(try_parse_aciddog_skill_search(
+            "/opt/aciddog skill run --name a",
+            "/opt/aciddog"
+        )
+        .is_none());
+        assert!(try_parse_aciddog_skill_search(
+            "/opt/aciddog skill search --query foo",
+            ""
+        )
+        .is_none());
     }
 
     #[test]
@@ -8946,6 +9224,289 @@ mod tests {
         let t = app2.tasks.get(id).expect("task survived restart");
         assert_eq!(t.title, "persisted");
         assert_eq!(t.assignee.as_deref(), Some("b"));
+    }
+
+    // --------- Skill run ----------
+
+    /// Serialises CWD-mutating skill_run tests so they don't race with
+    /// each other or other cargo-test threads.
+    static SKILL_CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct CwdGuard {
+        prev: std::path::PathBuf,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl CwdGuard {
+        fn enter(p: &std::path::Path) -> Self {
+            let lock = SKILL_CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev = std::env::current_dir().expect("cwd");
+            std::env::set_current_dir(p).expect("cd into tempdir");
+            Self { prev, _lock: lock }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.prev);
+        }
+    }
+
+    #[tokio::test]
+    async fn skill_run_rejects_invalid_name_shape() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SkillRun {
+                    name: "../etc".into(),
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(
+            resp.error.unwrap().contains("not a valid identifier"),
+            "expected validation error"
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_run_rejects_when_skill_not_in_allowlist() {
+        let mut cfg = sample_config();
+        cfg.agents[0].skills = Some(vec!["other-skill".into()]);
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SkillRun {
+                    name: "not-assigned".into(),
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        let err = resp.error.unwrap();
+        assert!(err.contains("not in your allowlist"), "got: {err}");
+        assert!(!err.contains("not found"), "must not confuse not-found with not-allowed: {err}");
+    }
+
+    #[tokio::test]
+    async fn skill_run_reports_not_found_distinct_from_not_allowed() {
+        let mut cfg = sample_config();
+        cfg.agents[0].skills = Some(vec!["ghost".into()]);
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+
+        // Enter a tempdir with no .aciddog/skills at all.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _cwd = CwdGuard::enter(tmp.path());
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SkillRun {
+                    name: "ghost".into(),
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        let err = resp.error.unwrap();
+        assert!(err.contains("not found"), "got: {err}");
+        assert!(!err.contains("allowlist"), "wrong error kind: {err}");
+    }
+
+    #[tokio::test]
+    async fn skill_list_returns_friendly_message_when_no_skills_assigned() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SkillList,
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok);
+        assert!(resp.message.unwrap().contains("No skills"));
+    }
+
+    #[tokio::test]
+    async fn skill_list_emits_one_line_per_assigned_skill() {
+        let mut cfg = sample_config();
+        cfg.agents[0].skills = Some(vec!["alpha".into(), "beta".into()]);
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+
+        // No SKILL.md on disk — allowed, warn-and-placeholder path.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _cwd = CwdGuard::enter(tmp.path());
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SkillList,
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok);
+        let body = resp.message.unwrap();
+        assert!(body.contains("- alpha —"), "missing alpha: {body}");
+        assert!(body.contains("- beta —"), "missing beta: {body}");
+    }
+
+    #[tokio::test]
+    async fn skill_search_rejects_empty_query() {
+        let mut cfg = sample_config();
+        cfg.agents[0].skills = Some(vec!["alpha".into()]);
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SkillSearch { query: "   ".into() },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("empty"));
+    }
+
+    #[tokio::test]
+    async fn skill_search_filters_by_case_insensitive_substring_over_id_and_description() {
+        let mut cfg = sample_config();
+        cfg.agents[0].skills = Some(vec!["alpha".into(), "beta".into()]);
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+
+        // Lay out the SKILL.mds so we can match on description text.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skills_root = tmp.path().join(".aciddog/skills");
+        for (id, desc) in [("alpha", "Reviews code diffs"), ("beta", "Writes tests")] {
+            let d = skills_root.join(id);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join("SKILL.md"),
+                format!("---\ndescription: {desc}\n---\nbody\n"),
+            )
+            .unwrap();
+        }
+        let _cwd = CwdGuard::enter(tmp.path());
+
+        // "code" matches only alpha's description.
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SkillSearch {
+                    query: "CODE".into(),
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok);
+        let body = resp.message.unwrap();
+        assert!(body.contains("- alpha —"), "alpha should match: {body}");
+        assert!(!body.contains("- beta —"), "beta should not match: {body}");
+
+        // Match on id substring.
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SkillSearch {
+                    query: "bet".into(),
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok);
+        let body = resp.message.unwrap();
+        assert!(body.contains("- beta —"), "beta should match by id: {body}");
+        assert!(!body.contains("- alpha —"), "alpha should not match: {body}");
+
+        // Query with no hits.
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SkillSearch {
+                    query: "zzznope".into(),
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok);
+        assert!(resp.message.unwrap().contains("No assigned skills match"));
+    }
+
+    #[tokio::test]
+    async fn skill_run_returns_abs_basedir_header_and_verbatim_body() {
+        let mut cfg = sample_config();
+        cfg.agents[0].skills = Some(vec!["demo".into()]);
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let skill_dir = tmp.path().join(".aciddog/skills/demo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let md = "---\ndescription: demo skill\n---\n\n# Demo\n\nBody refers to {baseDir}/assets/x.py.\n";
+        std::fs::write(skill_dir.join("SKILL.md"), md).unwrap();
+        let expected_abs = std::fs::canonicalize(&skill_dir).unwrap();
+
+        let _cwd = CwdGuard::enter(tmp.path());
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SkillRun {
+                    name: "demo".into(),
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok, "error: {:?}", resp.error);
+        let body = resp.message.unwrap();
+        let first_line = body.lines().next().unwrap();
+        let header = format!("{{baseDir}} = {}", expected_abs.display());
+        assert_eq!(first_line, header, "header mismatch: {body}");
+        assert!(
+            body.starts_with(&format!("{header}\n\n")),
+            "expected header + blank line: {body}"
+        );
+        assert!(
+            expected_abs.is_absolute(),
+            "canonicalize must yield an absolute path"
+        );
+        assert!(body.ends_with(md), "body must contain verbatim SKILL.md contents: {body}");
     }
 
     // --------- Tasks screen (in-TUI) ----------

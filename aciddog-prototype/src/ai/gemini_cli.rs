@@ -310,6 +310,7 @@ impl GeminiCliCore {
             let contactable: Vec<&str> = cli.contactable.iter().map(String::as_str).collect();
             let creatable: Vec<&str> = cli.creatable.iter().map(String::as_str).collect();
             let memory_banks: Vec<&str> = cli.memory_banks.iter().map(String::as_str).collect();
+            let skills: Vec<&str> = cli.skills.iter().map(String::as_str).collect();
 
             body.push('\n');
             if has_bash {
@@ -321,12 +322,18 @@ impl GeminiCliCore {
                     &contactable,
                     &creatable,
                     &memory_banks,
+                    &skills,
                 ));
             } else {
                 if let Some(w) = &cli.worker {
                     body.push_str(&tag_worker_preamble(&w.parent_id, &w.task));
                 }
-                body.push_str(&tag_preamble(&contactable, &creatable, &memory_banks));
+                body.push_str(&tag_preamble(
+                    &contactable,
+                    &creatable,
+                    &memory_banks,
+                    &skills,
+                ));
             }
         }
 
@@ -1176,7 +1183,6 @@ mod tests {
             role: Some("be terse".into()),
             team: Some("you can message: bob".into()),
             memory: None,
-            skills: None,
             instructions: "do the thing".into(),
             aciddog_cli: None,
         };
@@ -1237,6 +1243,7 @@ mod tests {
                 contactable: vec!["bob".into()],
                 creatable: vec![],
                 memory_banks: vec![],
+                skills: vec![],
                 worker: None,
             }),
             ..PromptParts::default()
@@ -1268,6 +1275,7 @@ mod tests {
                 contactable: vec!["bob".into()],
                 creatable: vec![],
                 memory_banks: vec![],
+                skills: vec![],
                 worker: None,
             }),
             ..PromptParts::default()
@@ -1290,6 +1298,7 @@ mod tests {
                 contactable: vec!["coder".into()],
                 creatable: vec![],
                 memory_banks: vec![],
+                skills: vec![],
                 worker: Some(WorkerCtx {
                     parent_id: "coder".into(),
                     task: "find FOO".into(),

@@ -41,11 +41,6 @@ pub struct PromptParts {
     /// omitted. This section is purely informational; the operational
     /// `memory search` / `memory store` docs go inside `<tools>`.
     pub memory: Option<String>,
-    /// Per-actor skills block. Lists the skills pre-announced to this
-    /// actor (name + short description) plus a discovery hint pointing
-    /// at `.aciddog/skills/`. Emitted as `<skills>...</skills>`. `None`
-    /// or whitespace-only → block omitted.
-    pub skills: Option<String>,
     /// The WCL `instructions` string. Always emitted inside
     /// `<instructions>...</instructions>`.
     pub instructions: String,
@@ -66,6 +61,10 @@ pub struct AciddogCliCtx {
     /// `memory search` / `memory store` doc in the preamble. Empty ⇒
     /// those subcommands are shown as disabled.
     pub memory_banks: Vec<String>,
+    /// Skill ids the actor may load via `skill run` / `skill_run`. The
+    /// preamble renders the `### Skills` group only when this list is
+    /// non-empty; empty ⇒ group omitted entirely.
+    pub skills: Vec<String>,
     /// `Some` for workers — adds the parent + task + `worker complete`
     /// preamble before the general CLI/tag commands.
     pub worker: Option<WorkerCtx>,
@@ -197,11 +196,11 @@ impl ClaudeCodeCore {
     }
 
     /// Assemble the structured first-turn prompt: `<role>`, `<team>`,
-    /// `<memory>`, `<skills>`, `<tools>`, `<instructions>`. `<role>`,
-    /// `<team>`, `<memory>`, and `<skills>` are skipped when their
-    /// `PromptParts` field is `None` or whitespace-only; `<tools>` and
-    /// `<instructions>` are always emitted (even when empty) so the
-    /// model always sees its tool inventory and brief.
+    /// `<memory>`, `<tools>`, `<instructions>`. `<role>`, `<team>`,
+    /// and `<memory>` are skipped when their `PromptParts` field is
+    /// `None` or whitespace-only; `<tools>` and `<instructions>` are
+    /// always emitted (even when empty) so the model always sees its
+    /// tool inventory and brief.
     pub fn first_turn_prompt(&self) -> String {
         self.build_first_turn_prompt()
     }
@@ -235,15 +234,6 @@ impl ClaudeCodeCore {
         {
             sections.push(format!("<memory>\n{memory}\n</memory>"));
         }
-        if let Some(skills) = self
-            .prompt_parts
-            .skills
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            sections.push(format!("<skills>\n{skills}\n</skills>"));
-        }
         sections.push(self.build_tools_section());
         sections.push(format!(
             "<instructions>\n{}\n</instructions>",
@@ -268,6 +258,7 @@ impl ClaudeCodeCore {
             let contactable: Vec<&str> = cli.contactable.iter().map(String::as_str).collect();
             let creatable: Vec<&str> = cli.creatable.iter().map(String::as_str).collect();
             let memory_banks: Vec<&str> = cli.memory_banks.iter().map(String::as_str).collect();
+            let skills: Vec<&str> = cli.skills.iter().map(String::as_str).collect();
 
             body.push('\n');
             if has_bash {
@@ -279,12 +270,18 @@ impl ClaudeCodeCore {
                     &contactable,
                     &creatable,
                     &memory_banks,
+                    &skills,
                 ));
             } else {
                 if let Some(w) = &cli.worker {
                     body.push_str(&tag_worker_preamble(&w.parent_id, &w.task));
                 }
-                body.push_str(&tag_preamble(&contactable, &creatable, &memory_banks));
+                body.push_str(&tag_preamble(
+                    &contactable,
+                    &creatable,
+                    &memory_banks,
+                    &skills,
+                ));
             }
         }
 
@@ -738,7 +735,6 @@ mod tests {
             role: Some("be terse".into()),
             team: Some("you can message: bob".into()),
             memory: None,
-            skills: None,
             instructions: "do the thing".into(),
             aciddog_cli: None,
         };
@@ -780,6 +776,7 @@ mod tests {
                 contactable: vec!["bob".into()],
                 creatable: vec![],
                 memory_banks: vec![],
+                skills: vec![],
                 worker: None,
             }),
             ..PromptParts::default()
@@ -813,6 +810,7 @@ mod tests {
                 contactable: vec!["bob".into()],
                 creatable: vec![],
                 memory_banks: vec![],
+                skills: vec![],
                 worker: None,
             }),
             ..PromptParts::default()
@@ -835,6 +833,7 @@ mod tests {
                 contactable: vec!["coder".into()],
                 creatable: vec![],
                 memory_banks: vec![],
+                skills: vec![],
                 worker: Some(WorkerCtx {
                     parent_id: "coder".into(),
                     task: "find FOO".into(),
