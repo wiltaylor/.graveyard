@@ -2539,8 +2539,13 @@ impl App {
         }
 
         let from_label = sender.label().to_string();
+        // Transcript + disk store just the sender/body pair. The
+        // per-recipient payload below adds a reminder so models don't
+        // fall back to replying in assistant text (which would never
+        // reach the channel).
         let payload = format!(
-            "<ChannelMessage channel=\"{channel_id}\" from=\"{from_label}\">{body}</ChannelMessage>"
+            "<ChannelMessage channel=\"{channel_id}\" from=\"{from_label}\">{body}</ChannelMessage>\n\
+             <system-reminder>This is a channel message. To reply you MUST use the `channel send` tool with `id=\"{channel_id}\"` — text in your assistant response is NOT delivered to the channel and every other member will miss it. If you have nothing substantive to add, stay silent this turn.</system-reminder>"
         );
 
         // Find channel state + append display block + disk line.
@@ -7498,6 +7503,30 @@ mod tests {
         rxs
     }
 
+    /// Assert that a delivered channel payload starts with the
+    /// expected `<ChannelMessage …>body</ChannelMessage>` opening and
+    /// includes the system reminder that points agents at the
+    /// `channel send` tool. The exact reminder wording may evolve so
+    /// we only check for its load-bearing fragments.
+    fn assert_channel_payload(payload: &str, expected_head: &str, channel_id: &str) {
+        assert!(
+            payload.starts_with(expected_head),
+            "payload should start with {expected_head:?}, got {payload:?}"
+        );
+        assert!(
+            payload.contains("<system-reminder>"),
+            "payload should carry a system-reminder: {payload:?}"
+        );
+        assert!(
+            payload.contains("channel send"),
+            "reminder should name the `channel send` tool: {payload:?}"
+        );
+        assert!(
+            payload.contains(&format!("id=\"{channel_id}\"")),
+            "reminder should include the channel id: {payload:?}"
+        );
+    }
+
     #[tokio::test]
     async fn broadcast_without_mentions_goes_to_every_other_member() {
         let mut app = App::new(sample_config_with_channel());
@@ -7516,9 +7545,9 @@ mod tests {
         assert!(rxs[0].try_recv().is_err(), "sender should not self-echo");
         let b = rxs[1].recv().await.expect("b receives");
         let c = rxs[2].recv().await.expect("c receives");
-        let expected = r#"<ChannelMessage channel="room" from="a">hi team</ChannelMessage>"#;
-        assert_eq!(b, expected);
-        assert_eq!(c, expected);
+        let head = r#"<ChannelMessage channel="room" from="a">hi team</ChannelMessage>"#;
+        assert_channel_payload(&b, head, "room");
+        assert_channel_payload(&c, head, "room");
     }
 
     #[tokio::test]
@@ -7539,9 +7568,10 @@ mod tests {
         // channel member.
         assert!(rxs[0].try_recv().is_err());
         let payload = rxs[1].recv().await.expect("b receives");
-        assert_eq!(
-            payload,
-            r#"<ChannelMessage channel="room" from="a">@b heads up</ChannelMessage>"#
+        assert_channel_payload(
+            &payload,
+            r#"<ChannelMessage channel="room" from="a">@b heads up</ChannelMessage>"#,
+            "room",
         );
         assert!(rxs[2].try_recv().is_err(), "c should not receive");
     }
@@ -7564,9 +7594,9 @@ mod tests {
         // receives (self-echo rule only applies to agents).
         let b = rxs[1].recv().await.expect("b receives");
         let c = rxs[2].recv().await.expect("c receives");
-        let expected = r#"<ChannelMessage channel="room" from="user">@b @c ship it</ChannelMessage>"#;
-        assert_eq!(b, expected);
-        assert_eq!(c, expected);
+        let head = r#"<ChannelMessage channel="room" from="user">@b @c ship it</ChannelMessage>"#;
+        assert_channel_payload(&b, head, "room");
+        assert_channel_payload(&c, head, "room");
         assert!(rxs[0].try_recv().is_err(), "a should not receive");
     }
 
@@ -7612,9 +7642,10 @@ mod tests {
         // skip rule; only `b` receives.
         assert!(rxs[0].try_recv().is_err(), "sender should not self-echo");
         let b = rxs[1].recv().await.expect("b receives");
-        assert_eq!(
-            b,
-            r#"<ChannelMessage channel="room" from="a">@a @b note to self</ChannelMessage>"#
+        assert_channel_payload(
+            &b,
+            r#"<ChannelMessage channel="room" from="a">@a @b note to self</ChannelMessage>"#,
+            "room",
         );
         assert!(rxs[2].try_recv().is_err());
     }
