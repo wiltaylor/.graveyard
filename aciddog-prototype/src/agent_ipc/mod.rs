@@ -40,6 +40,38 @@ pub enum RequestCmd {
         id: String,
         body: String,
     },
+    /// Create an ephemeral runtime channel. The caller is auto-joined
+    /// so they can `channel send` to their own meeting immediately.
+    /// Errors if the id collides with an existing channel (WCL or
+    /// runtime) or violates identifier rules.
+    ChannelCreate {
+        id: String,
+    },
+    /// Add the calling agent to an existing channel. Works for both
+    /// ephemeral and WCL-declared channels — runtime-only membership
+    /// that does not persist across restarts.
+    ChannelJoin {
+        id: String,
+    },
+    /// Add another agent to a channel. The caller must themselves be
+    /// a member of the channel. Works for ephemeral and WCL-declared
+    /// channels (runtime-only — not persisted).
+    ChannelAdd {
+        id: String,
+        member: String,
+    },
+    /// Remove a member from a channel. The caller must be a member.
+    /// Works for ephemeral and WCL-declared channels (runtime-only —
+    /// WCL membership restored on restart).
+    ChannelKick {
+        id: String,
+        member: String,
+    },
+    /// Destroy an ephemeral channel. The caller must be a member.
+    /// Rejects WCL-declared channels.
+    ChannelEnd {
+        id: String,
+    },
     /// Spawn an ephemeral worker from a declared worker template.
     /// Enforces the caller's `can_create_workers` allowlist. Reply
     /// message carries the new worker's display id and session UUID.
@@ -933,7 +965,10 @@ mod tests {
         let s = serde_json::to_string(&req).unwrap();
         assert!(s.contains("\"cmd\":\"cron_update\""), "got: {s}");
         assert!(s.contains("\"payload\":\"revised\""), "got: {s}");
-        assert!(!s.contains("\"target\""), "None target should be omitted: {s}");
+        assert!(
+            !s.contains("\"target\""),
+            "None target should be omitted: {s}"
+        );
         let back: Request = serde_json::from_str(&s).unwrap();
         match back.cmd {
             RequestCmd::CronUpdate {

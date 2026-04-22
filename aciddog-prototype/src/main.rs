@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use aciddog::agent_ipc::{self, Request, RequestCmd};
 use aciddog::cli::{
-    self, AgentArgs, AgentCommand, Args, ChannelCommand, CommentCommand, CronCommand, MemoryCommand,
-    SkillCommand, TaskCommand, TodoCommand, WorkerCommand,
+    self, AgentArgs, AgentCommand, Args, ChannelCommand, CommentCommand, CronCommand,
+    MemoryCommand, SkillCommand, TaskCommand, TodoCommand, WorkerCommand,
 };
 use aciddog::config::load_config;
 use aciddog::tui;
@@ -382,6 +382,21 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
         AgentCommand::Channel {
             cmd: ChannelCommand::Send { id, body },
         } => RequestCmd::ChannelSend { id, body },
+        AgentCommand::Channel {
+            cmd: ChannelCommand::Create { id },
+        } => RequestCmd::ChannelCreate { id },
+        AgentCommand::Channel {
+            cmd: ChannelCommand::Join { id },
+        } => RequestCmd::ChannelJoin { id },
+        AgentCommand::Channel {
+            cmd: ChannelCommand::Add { id, member },
+        } => RequestCmd::ChannelAdd { id, member },
+        AgentCommand::Channel {
+            cmd: ChannelCommand::Kick { id, member },
+        } => RequestCmd::ChannelKick { id, member },
+        AgentCommand::Channel {
+            cmd: ChannelCommand::End { id },
+        } => RequestCmd::ChannelEnd { id },
         AgentCommand::Workflow {
             cmd: cli::WorkflowCommand::Run { id, properties },
         } => {

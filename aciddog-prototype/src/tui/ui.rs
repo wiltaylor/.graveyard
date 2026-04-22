@@ -400,15 +400,12 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
             // content actually change.
             if i < real_block_count {
                 let fingerprint = block_fingerprint(&chat.blocks[i]);
-                let cache_hit = chat
-                    .anchor_scratch
-                    .as_ref()
-                    .is_some_and(|c| {
-                        c.block_idx == i
-                            && c.width == inner.width
-                            && c.height == h
-                            && c.fingerprint == fingerprint
-                    });
+                let cache_hit = chat.anchor_scratch.as_ref().is_some_and(|c| {
+                    c.block_idx == i
+                        && c.width == inner.width
+                        && c.height == h
+                        && c.fingerprint == fingerprint
+                });
                 if !cache_hit {
                     let scratch_area = Rect::new(0, 0, inner.width, h);
                     let mut scratch = Buffer::empty(scratch_area);
@@ -601,8 +598,7 @@ fn translate_visible_buttons(
         let new_y = dst_y.saturating_add(clipped_top - view_start);
         let new_h = clipped_bot - clipped_top;
         let mut translated = b.clone();
-        translated.rect =
-            Rect::new(b.rect.x.saturating_add(dst_x), new_y, b.rect.width, new_h);
+        translated.rect = Rect::new(b.rect.x.saturating_add(dst_x), new_y, b.rect.width, new_h);
         out.push(translated);
     }
 }
@@ -1308,16 +1304,26 @@ fn render_channels_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
                 // the panel (mirrors the agent list's always-on selected
                 // highlight). The same highlight tracks the keyboard
                 // cursor when the panel is focused.
-                let style = if active || (focused && i == app.selected_channel) {
+                let mut style = if active || (focused && i == app.selected_channel) {
                     Style::default()
                         .bg(Color::Cyan)
                         .fg(Color::Black)
                         .add_modifier(Modifier::BOLD)
+                } else if c.is_ephemeral {
+                    // Ephemeral (meeting) channels render in yellow so
+                    // the operator can tell at a glance which rooms are
+                    // permanent (WCL-declared) vs dynamically created
+                    // and not persisted.
+                    Style::default().fg(Color::Yellow)
                 } else {
                     Style::default()
                 };
-                if !app.channels.is_empty()
-                    && i == app.selected_channel.min(app.channels.len() - 1)
+                // Italics in every state so ephemeral-ness remains
+                // visible even under the cyan selection highlight.
+                if c.is_ephemeral {
+                    style = style.add_modifier(Modifier::ITALIC);
+                }
+                if !app.channels.is_empty() && i == app.selected_channel.min(app.channels.len() - 1)
                 {
                     selected_row = Some(row_idx);
                 }
@@ -2432,21 +2438,19 @@ fn render_memory_bank(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
         ])
         .split(area);
 
-    let (bank_id, query, query_cursor, results, selected, bank_focus, pending) = match app
-        .memory_screen
-        .bank()
-    {
-        Some(b) => (
-            b.bank_id.clone(),
-            b.search.query.clone(),
-            b.search.cursor,
-            b.results.clone(),
-            b.selected_result,
-            b.focus,
-            app.memory_screen.pending.clone(),
-        ),
-        None => return,
-    };
+    let (bank_id, query, query_cursor, results, selected, bank_focus, pending) =
+        match app.memory_screen.bank() {
+            Some(b) => (
+                b.bank_id.clone(),
+                b.search.query.clone(),
+                b.search.cursor,
+                b.results.clone(),
+                b.selected_result,
+                b.focus,
+                app.memory_screen.pending.clone(),
+            ),
+            None => return,
+        };
 
     // Bank header.
     let header = Line::from(vec![
@@ -2556,12 +2560,7 @@ fn render_memory_bank(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
             if y >= results_inner.y + results_inner.height {
                 break;
             }
-            result_rects.push(Rect::new(
-                results_inner.x,
-                y,
-                results_inner.width,
-                1,
-            ));
+            result_rects.push(Rect::new(results_inner.x, y, results_inner.width, 1));
         }
         app.layout.memory_result_rows = result_rects;
 
@@ -2664,11 +2663,11 @@ fn render_memory_form(f: &mut Frame, area: Rect, app: &mut App) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Title
-            Constraint::Min(6),     // Body (expands)
-            Constraint::Length(3),  // Tags
-            Constraint::Length(1),  // Error
-            Constraint::Length(1),  // Buttons
+            Constraint::Length(3), // Title
+            Constraint::Min(6),    // Body (expands)
+            Constraint::Length(3), // Tags
+            Constraint::Length(1), // Error
+            Constraint::Length(1), // Buttons
         ])
         .split(inner);
 
@@ -2687,15 +2686,25 @@ fn render_memory_form(f: &mut Frame, area: Rect, app: &mut App) {
     let btn_row = sections[4];
     let btn_layout = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(1), Constraint::Length(12), Constraint::Length(12)])
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(12),
+            Constraint::Length(12),
+        ])
         .split(btn_row);
     let ok_style = if form.focused_field == NoteField::Ok {
-        Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+        Style::default()
+            .bg(Color::Cyan)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Cyan)
     };
     let cancel_style = if form.focused_field == NoteField::Cancel {
-        Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+        Style::default()
+            .bg(Color::Cyan)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Cyan)
     };
@@ -2762,11 +2771,7 @@ fn render_memory_form_body(f: &mut Frame, area: Rect, form: &NoteForm, app: &mut
 
     let wrap_width = inner.width;
     // Update the form's cached wrap width for key-handler consistency.
-    if let Some(f_mut) = app
-        .memory_screen
-        .bank_mut()
-        .and_then(|b| b.form.as_mut())
-    {
+    if let Some(f_mut) = app.memory_screen.bank_mut().and_then(|b| b.form.as_mut()) {
         f_mut.body_last_wrap_width = wrap_width;
         f_mut.body_last_visible_lines = inner.height;
         f_mut.body_ensure_visible(inner.height);
@@ -2782,7 +2787,11 @@ fn render_memory_form_body(f: &mut Frame, area: Rect, form: &NoteForm, app: &mut
         // Best-effort cursor: byte cursor → line + col assuming no wrap.
         let before = &form.body[..form.body_cursor.min(form.body.len())];
         let line_idx = before.chars().filter(|c| *c == '\n').count() as u16;
-        let col = before.rsplit('\n').next().map(|l| l.chars().count()).unwrap_or(0) as u16;
+        let col = before
+            .rsplit('\n')
+            .next()
+            .map(|l| l.chars().count())
+            .unwrap_or(0) as u16;
         let scroll = form.body_scroll;
         if line_idx >= scroll && line_idx < scroll + inner.height {
             let y = inner.y + (line_idx - scroll);
@@ -2847,7 +2856,9 @@ fn render_memory_detail(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         Line::from(Span::styled(
             format!(" {} ", hit.title),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
     };
     f.render_widget(Paragraph::new(title_line), sections[0]);
@@ -2974,7 +2985,9 @@ fn render_memory_links_overlay(f: &mut Frame, area: Rect, app: &mut App) {
             Span::styled(" source: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 src,
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
         ])),
         sections[0],
@@ -3021,12 +3034,7 @@ fn render_memory_links_overlay(f: &mut Frame, area: Rect, app: &mut App) {
             if y >= sections[1].y + sections[1].height {
                 break;
             }
-            link_rects.push(Rect::new(
-                sections[1].x,
-                y,
-                sections[1].width,
-                1,
-            ));
+            link_rects.push(Rect::new(sections[1].x, y, sections[1].width, 1));
         }
         app.layout.memory_link_rows = link_rects;
         let list = List::new(items);
@@ -3042,12 +3050,7 @@ fn render_memory_links_overlay(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-fn render_memory_link_picker(
-    f: &mut Frame,
-    area: Rect,
-    overlay: &LinksOverlay,
-    _app: &mut App,
-) {
+fn render_memory_link_picker(f: &mut Frame, area: Rect, overlay: &LinksOverlay, _app: &mut App) {
     let picker = match overlay.picker.as_ref() {
         Some(p) => p,
         None => return,
@@ -3169,8 +3172,6 @@ fn render_memory_link_picker(
     );
 }
 
-
-
 // ---------------------------------------------------------------------
 // Workflows sidebar: rows, list renderer, and placeholder main-area
 // views. Form + progress view rendering is fleshed out in task #3.
@@ -3182,8 +3183,13 @@ use crate::workflow::InstanceStatus as WfInstanceStatus;
 /// only beneath the header of the currently-selected workflow — same
 /// pattern as channel members under the active channel.
 pub(super) enum WorkflowRow {
-    Header { workflow_idx: usize },
-    Instance { instance_id: u64, status: WfInstanceStatus },
+    Header {
+        workflow_idx: usize,
+    },
+    Instance {
+        instance_id: u64,
+        status: WfInstanceStatus,
+    },
 }
 
 pub(super) fn workflow_rows(app: &App) -> Vec<WorkflowRow> {
@@ -3238,9 +3244,7 @@ fn render_workflows_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
                 let i = *workflow_idx;
                 let wf = &app.config.workflows[i];
                 let highlight_header = active_form_workflow == Some(i)
-                    || (active_instance.is_none()
-                        && focused
-                        && i == app.selected_workflow);
+                    || (active_instance.is_none() && focused && i == app.selected_workflow);
                 let style = if highlight_header {
                     Style::default()
                         .bg(Color::Cyan)
@@ -3259,12 +3263,12 @@ fn render_workflows_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
                 {
                     selected_row = Some(row_idx);
                 }
-                ListItem::new(Line::from(Span::styled(
-                    format!("▶ {}", wf.id),
-                    style,
-                )))
+                ListItem::new(Line::from(Span::styled(format!("▶ {}", wf.id), style)))
             }
-            WorkflowRow::Instance { instance_id, status } => {
+            WorkflowRow::Instance {
+                instance_id,
+                status,
+            } => {
                 let is_active = active_instance == Some(*instance_id);
                 if is_active {
                     selected_row = Some(row_idx);
@@ -3392,8 +3396,7 @@ fn render_workflow_form(f: &mut Frame, area: Rect, app: &mut App, workflow_idx: 
             label_style,
         )]));
         match field {
-            FieldEditor::Text { value, cursor, .. }
-            | FieldEditor::Number { value, cursor, .. } => {
+            FieldEditor::Text { value, cursor, .. } | FieldEditor::Number { value, cursor, .. } => {
                 let rendered = render_text_input(value, *cursor, is_focused);
                 let mut spans: Vec<Span> = vec![Span::raw("    ")];
                 spans.extend(rendered);
@@ -3471,14 +3474,8 @@ fn render_workflow_form(f: &mut Frame, area: Rect, app: &mut App, workflow_idx: 
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    format!(" [{kind}]"),
-                    Style::default().fg(Color::Magenta),
-                ),
-                Span::styled(
-                    format!(" {detail}"),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(format!(" [{kind}]"), Style::default().fg(Color::Magenta)),
+                Span::styled(format!(" {detail}"), Style::default().fg(Color::DarkGray)),
             ]));
         }
     }
@@ -3519,10 +3516,7 @@ fn render_workflow_form(f: &mut Frame, area: Rect, app: &mut App, workflow_idx: 
         height: 1,
     };
 
-    f.render_widget(
-        Paragraph::new(Span::styled(run_label, run_style)),
-        run_rect,
-    );
+    f.render_widget(Paragraph::new(Span::styled(run_label, run_style)), run_rect);
 
     app.layout
         .workflow_form_buttons
@@ -3660,14 +3654,9 @@ fn render_workflow_instance(
         ),
         Some(InstanceStatus::Failed) => (
             "failed",
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),
-        Some(InstanceStatus::Succeeded) | None => (
-            "done",
-            Style::default().fg(Color::Green),
-        ),
+        Some(InstanceStatus::Succeeded) | None => ("done", Style::default().fg(Color::Green)),
     };
     let title = match wf {
         Some(w) => format!(" {} · #{} · {} ", w.id, instance_id, status_label),
@@ -3709,23 +3698,15 @@ fn render_workflow_instance(
         if let Some(w) = wf {
             for p in &w.properties {
                 if let Some(v) = inst.vars.get(&p.id) {
-                    let hidden_tag = if matches!(
-                        p.kind,
-                        crate::config::PropertyKind::Hidden { .. }
-                    ) {
+                    let hidden_tag = if matches!(p.kind, crate::config::PropertyKind::Hidden { .. })
+                    {
                         Span::styled(" [hidden]", Style::default().fg(Color::DarkGray))
                     } else {
                         Span::raw("")
                     };
                     lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("  {} ", p.id),
-                            Style::default().fg(Color::White),
-                        ),
-                        Span::styled(
-                            "= ",
-                            Style::default().fg(Color::DarkGray),
-                        ),
+                        Span::styled(format!("  {} ", p.id), Style::default().fg(Color::White)),
+                        Span::styled("= ", Style::default().fg(Color::DarkGray)),
                         Span::styled(v.as_display(), Style::default().fg(Color::Yellow)),
                         hidden_tag,
                     ]));
@@ -3733,10 +3714,7 @@ fn render_workflow_instance(
             }
         } else {
             for (k, v) in &inst.vars {
-                lines.push(Line::from(Span::raw(format!(
-                    "  {k} = {}",
-                    v.as_display()
-                ))));
+                lines.push(Line::from(Span::raw(format!("  {k} = {}", v.as_display()))));
             }
         }
     }
@@ -3764,21 +3742,23 @@ fn render_workflow_instance(
             StepStatus::Failed => Color::Red,
             StepStatus::Retrying => Color::Magenta,
         };
-        let current_marker = if idx == inst.current_step && matches!(inst.status, InstanceStatus::Running) {
-            " ← current"
-        } else {
-            ""
-        };
+        let current_marker =
+            if idx == inst.current_step && matches!(inst.status, InstanceStatus::Running) {
+                " ← current"
+            } else {
+                ""
+            };
         let retry = if s.retry_count > 0 {
             format!(" · retry #{}", s.retry_count)
         } else {
             String::new()
         };
-        let reason = if let (Some(r), StepStatus::Failed | StepStatus::Retrying) = (&s.reason, s.status) {
-            format!(" ({})", r)
-        } else {
-            String::new()
-        };
+        let reason =
+            if let (Some(r), StepStatus::Failed | StepStatus::Retrying) = (&s.reason, s.status) {
+                format!(" ({})", r)
+            } else {
+                String::new()
+            };
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(format!("[{glyph}] "), Style::default().fg(color)),
@@ -3788,10 +3768,7 @@ fn render_workflow_instance(
             ),
             Span::styled(retry, Style::default().fg(Color::Magenta)),
             Span::styled(reason, Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                current_marker.to_string(),
-                Style::default().fg(Color::Cyan),
-            ),
+            Span::styled(current_marker.to_string(), Style::default().fg(Color::Cyan)),
         ]));
     }
     lines.push(Line::from(Span::raw("")));
@@ -3822,9 +3799,7 @@ fn render_workflow_instance(
                 "⚠ failed: {}",
                 inst.failure_reason.as_deref().unwrap_or("(no reason)")
             ),
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
             " press `d` to dismiss · esc back ",

@@ -22,6 +22,18 @@ pub enum CommandOutcome {
     /// declared defaults (or empty where undeclared). Useful for
     /// smoke-testing before the full property-entry form lands.
     RunWorkflow { workflow_id: String },
+    /// `/meeting <id>` — create an ephemeral channel at runtime.
+    /// Valid from any pane; the view switches to the new channel.
+    CreateMeeting { id: String },
+    /// `/add <agent>` — add an agent to the channel in the current
+    /// pane. Only valid from a channel pane.
+    AddAgent { agent: String },
+    /// `/kick <agent>` — remove an agent from the channel in the
+    /// current pane. Only valid from a channel pane.
+    KickAgent { agent: String },
+    /// `/leave` — destroy the current pane's ephemeral channel. Only
+    /// valid from a channel pane; rejected on WCL-declared channels.
+    LeaveChannel,
     /// Input didn't match any known command.
     Unknown { name: String, hint: String },
 }
@@ -63,9 +75,41 @@ pub fn dispatch(input: &str) -> Option<CommandOutcome> {
                 CommandOutcome::RunWorkflow { workflow_id: id }
             }
         }
+        "meeting" => {
+            if args.is_empty() {
+                CommandOutcome::Message(
+                    "usage: /meeting <id>  — creates an ephemeral meeting channel".into(),
+                )
+            } else {
+                let id = args.split_whitespace().next().unwrap_or("").to_string();
+                CommandOutcome::CreateMeeting { id }
+            }
+        }
+        "add" => {
+            if args.is_empty() {
+                CommandOutcome::Message(
+                    "usage: /add <agent>  — only valid from a channel pane".into(),
+                )
+            } else {
+                let agent = args.split_whitespace().next().unwrap_or("").to_string();
+                CommandOutcome::AddAgent { agent }
+            }
+        }
+        "kick" => {
+            if args.is_empty() {
+                CommandOutcome::Message(
+                    "usage: /kick <agent>  — only valid from a channel pane".into(),
+                )
+            } else {
+                let agent = args.split_whitespace().next().unwrap_or("").to_string();
+                CommandOutcome::KickAgent { agent }
+            }
+        }
+        "leave" => CommandOutcome::LeaveChannel,
         other => CommandOutcome::Unknown {
             name: other.to_string(),
-            hint: "try /version, /compact, /reset, /stop, /sleep, /awake, /run <wf>, or /exit"
+            hint: "try /version, /compact, /reset, /stop, /sleep, /awake, /run <wf>, \
+                   /meeting <id>, /add <agent>, /kick <agent>, /leave, or /exit"
                 .to_string(),
         },
     };
@@ -140,5 +184,85 @@ mod tests {
     fn awake_and_wake_both_return_awake() {
         assert_eq!(dispatch("/awake"), Some(CommandOutcome::Awake));
         assert_eq!(dispatch("/wake"), Some(CommandOutcome::Awake));
+    }
+
+    #[test]
+    fn meeting_without_id_returns_usage_message() {
+        let out = dispatch("/meeting").unwrap();
+        match out {
+            CommandOutcome::Message(msg) => assert!(msg.starts_with("usage: /meeting")),
+            other => panic!("expected usage Message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn meeting_with_id_returns_create_meeting() {
+        assert_eq!(
+            dispatch("/meeting standup"),
+            Some(CommandOutcome::CreateMeeting {
+                id: "standup".into()
+            })
+        );
+    }
+
+    #[test]
+    fn meeting_keeps_first_token_only() {
+        assert_eq!(
+            dispatch("/meeting standup extra ignored"),
+            Some(CommandOutcome::CreateMeeting {
+                id: "standup".into()
+            })
+        );
+    }
+
+    #[test]
+    fn add_without_agent_returns_usage_message() {
+        let out = dispatch("/add").unwrap();
+        match out {
+            CommandOutcome::Message(msg) => assert!(msg.starts_with("usage: /add")),
+            other => panic!("expected usage Message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_with_agent_returns_add_agent() {
+        assert_eq!(
+            dispatch("/add planner"),
+            Some(CommandOutcome::AddAgent {
+                agent: "planner".into()
+            })
+        );
+    }
+
+    #[test]
+    fn kick_without_agent_returns_usage_message() {
+        let out = dispatch("/kick").unwrap();
+        match out {
+            CommandOutcome::Message(msg) => assert!(msg.starts_with("usage: /kick")),
+            other => panic!("expected usage Message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn kick_with_agent_returns_kick_agent() {
+        assert_eq!(
+            dispatch("/kick planner"),
+            Some(CommandOutcome::KickAgent {
+                agent: "planner".into()
+            })
+        );
+    }
+
+    #[test]
+    fn leave_returns_leave_channel() {
+        assert_eq!(dispatch("/leave"), Some(CommandOutcome::LeaveChannel));
+    }
+
+    #[test]
+    fn leave_ignores_trailing_args() {
+        assert_eq!(
+            dispatch("/leave please"),
+            Some(CommandOutcome::LeaveChannel)
+        );
     }
 }

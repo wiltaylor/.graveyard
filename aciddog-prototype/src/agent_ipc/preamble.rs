@@ -86,40 +86,87 @@ pub fn cli_preamble(
         );
     }
 
-    if !channels.is_empty() {
-        let roster = channels
-            .iter()
-            .map(|c| {
-                if c.other_members.is_empty() {
-                    format!("#{} (you are the only member)", c.id)
-                } else {
-                    format!("#{} (with {})", c.id, c.other_members.join(", "))
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        push_group(
-            &mut out,
-            "Channels",
-            &[Row {
+    {
+        let management_rows = [
+            Row {
+                cmd: "channel create",
+                params: "`--id <channel-id>`",
+                desc: "Create an ephemeral meeting channel. You are auto-joined. \
+                       Dies when `channel end`-ed or on aciddog exit.",
+            },
+            Row {
+                cmd: "channel join",
+                params: "`--id <channel-id>`",
+                desc: "Add yourself to a channel.",
+            },
+            Row {
+                cmd: "channel add",
+                params: "`--id <channel-id>` `--member <agent-id>`",
+                desc: "Add another agent to a channel you are a member of.",
+            },
+            Row {
+                cmd: "channel kick",
+                params: "`--id <channel-id>` `--member <agent-id>`",
+                desc: "Remove a member from a channel you are a member of.",
+            },
+            Row {
+                cmd: "channel end",
+                params: "`--id <channel-id>`",
+                desc: "Destroy an ephemeral meeting channel you are in. \
+                       Rejects WCL-declared channels.",
+            },
+        ];
+        if channels.is_empty() {
+            push_group(
+                &mut out,
+                "Channels",
+                &management_rows,
+                Some(
+                    "You are not currently in any channel. You can still spin up an \
+                     ephemeral meeting with `channel create`. Runtime membership \
+                     changes (create/join/add/kick/end) do NOT persist — restarting \
+                     aciddog restores the WCL-declared channel state.",
+                ),
+            );
+        } else {
+            let roster = channels
+                .iter()
+                .map(|c| {
+                    if c.other_members.is_empty() {
+                        format!("#{} (you are the only member)", c.id)
+                    } else {
+                        format!("#{} (with {})", c.id, c.other_members.join(", "))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            let rows: Vec<Row> = std::iter::once(Row {
                 cmd: "channel send",
                 params: "`--id <channel-id>` `--body \"<text>\"`",
                 desc: "Broadcast to every other member of a channel you belong to.",
-            }],
-            Some(&format!(
-                "You are in: {roster}. Channel messages arrive wrapped as \
-                 `<ChannelMessage channel=\"<id>\" from=\"<sender>\">body</ChannelMessage>` \
-                 and are delivered at LOWER priority than direct `<Message>` \
-                 mailbox traffic. To target a subset of the channel, prefix \
-                 the body with one or more `@name` tokens (e.g. \
-                 `@planner @coder …`) — only those members receive the \
-                 message; unmentioned members stay silent. With no leading \
-                 `@` the message broadcasts to everyone. Only post when you \
-                 have something substantive to add — do NOT reply just to \
-                 acknowledge, do NOT echo each other in a loop. If a post \
-                 isn't for you, stay silent."
-            )),
-        );
+            })
+            .chain(management_rows.iter().cloned())
+            .collect();
+            push_group(
+                &mut out,
+                "Channels",
+                &rows,
+                Some(&format!(
+                    "You are in: {roster}. Channel messages arrive wrapped as \
+                     `<ChannelMessage channel=\"<id>\" from=\"<sender>\">body</ChannelMessage>` \
+                     and are delivered at LOWER priority than direct `<Message>` \
+                     mailbox traffic. To target a subset of the channel, prefix \
+                     the body with one or more `@name` tokens (e.g. \
+                     `@planner @coder …`) — only those members receive the \
+                     message; unmentioned members stay silent. With no leading \
+                     `@` the message broadcasts to everyone. Only post when you \
+                     have something substantive to add — do NOT reply just to \
+                     acknowledge, do NOT echo each other in a loop. If a post \
+                     isn't for you, stay silent. Runtime membership changes \
+                     (create/join/add/kick/end) do NOT persist across restarts."
+                )),
+            );
+        }
     }
 
     if !creatable.is_empty() {
@@ -375,40 +422,85 @@ pub fn tag_preamble(
         );
     }
 
-    if !channels.is_empty() {
-        let roster = channels
-            .iter()
-            .map(|c| {
-                if c.other_members.is_empty() {
-                    format!("#{} (you are the only member)", c.id)
-                } else {
-                    format!("#{} (with {})", c.id, c.other_members.join(", "))
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        push_group(
-            &mut out,
-            "Channels",
-            &[Row {
+    {
+        let management_rows = [
+            Row {
+                cmd: "channel_create",
+                params: "`\"id\":\"<channel-id>\"`",
+                desc: "Create an ephemeral meeting channel. You are auto-joined. Dies when `channel_end`-ed or on aciddog exit.",
+            },
+            Row {
+                cmd: "channel_join",
+                params: "`\"id\":\"<channel-id>\"`",
+                desc: "Add yourself to a channel.",
+            },
+            Row {
+                cmd: "channel_add",
+                params: "`\"id\":\"<channel-id>\"`, `\"member\":\"<agent-id>\"`",
+                desc: "Add another agent to a channel you are a member of.",
+            },
+            Row {
+                cmd: "channel_kick",
+                params: "`\"id\":\"<channel-id>\"`, `\"member\":\"<agent-id>\"`",
+                desc: "Remove a member from a channel you are a member of.",
+            },
+            Row {
+                cmd: "channel_end",
+                params: "`\"id\":\"<channel-id>\"`",
+                desc: "Destroy an ephemeral meeting channel you are in. Rejects WCL-declared channels.",
+            },
+        ];
+        if channels.is_empty() {
+            push_group(
+                &mut out,
+                "Channels",
+                &management_rows,
+                Some(
+                    "You are not currently in any channel. You can still spin up an \
+                     ephemeral meeting with `channel_create`. Runtime membership \
+                     changes (create/join/add/kick/end) do NOT persist — restarting \
+                     aciddog restores the WCL-declared channel state.",
+                ),
+            );
+        } else {
+            let roster = channels
+                .iter()
+                .map(|c| {
+                    if c.other_members.is_empty() {
+                        format!("#{} (you are the only member)", c.id)
+                    } else {
+                        format!("#{} (with {})", c.id, c.other_members.join(", "))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            let rows: Vec<Row> = std::iter::once(Row {
                 cmd: "channel_send",
                 params: "`\"id\":\"<channel-id>\"`, `\"body\":\"<text>\"`",
                 desc: "Broadcast to every other member of a channel you belong to.",
-            }],
-            Some(&format!(
-                "You are in: {roster}. Channel messages arrive wrapped as \
-                 `<ChannelMessage channel=\"<id>\" from=\"<sender>\">body</ChannelMessage>` \
-                 and are delivered at LOWER priority than direct `<Message>` \
-                 mailbox traffic. To target a subset of the channel, prefix \
-                 the body with one or more `@name` tokens (e.g. \
-                 `@planner @coder …`) — only those members receive the \
-                 message; unmentioned members stay silent. With no leading \
-                 `@` the message broadcasts to everyone. Only post when you \
-                 have something substantive to add — do NOT reply just to \
-                 acknowledge, do NOT echo each other in a loop. If a post \
-                 isn't for you, stay silent."
-            )),
-        );
+            })
+            .chain(management_rows.iter().cloned())
+            .collect();
+            push_group(
+                &mut out,
+                "Channels",
+                &rows,
+                Some(&format!(
+                    "You are in: {roster}. Channel messages arrive wrapped as \
+                     `<ChannelMessage channel=\"<id>\" from=\"<sender>\">body</ChannelMessage>` \
+                     and are delivered at LOWER priority than direct `<Message>` \
+                     mailbox traffic. To target a subset of the channel, prefix \
+                     the body with one or more `@name` tokens (e.g. \
+                     `@planner @coder …`) — only those members receive the \
+                     message; unmentioned members stay silent. With no leading \
+                     `@` the message broadcasts to everyone. Only post when you \
+                     have something substantive to add — do NOT reply just to \
+                     acknowledge, do NOT echo each other in a loop. If a post \
+                     isn't for you, stay silent. Runtime membership changes \
+                     (create/join/add/kick/end) do NOT persist across restarts."
+                )),
+            );
+        }
     }
 
     if !creatable.is_empty() {
@@ -682,6 +774,7 @@ pub fn tag_worker_preamble(parent_id: &str, task: &str) -> String {
 }
 
 /// A single command row in a grouped table.
+#[derive(Clone, Copy)]
 struct Row<'a> {
     cmd: &'a str,
     params: &'a str,
@@ -776,10 +869,7 @@ mod tests {
             "messaging group should be omitted: {p}"
         );
         assert!(!p.contains("| send |"), "send row should be omitted: {p}");
-        assert!(
-            !p.contains("— disabled"),
-            "no disabled stubs: {p}"
-        );
+        assert!(!p.contains("— disabled"), "no disabled stubs: {p}");
     }
 
     #[test]
@@ -880,10 +970,7 @@ mod tests {
     #[test]
     fn cli_preamble_memory_group_lists_commands_and_banks_when_present() {
         let p = cli_preamble("/a", &["coder"], &[], &["scratch", "incidents"], &[], &[]);
-        assert!(
-            p.contains("### Memory banks"),
-            "memory group missing: {p}"
-        );
+        assert!(p.contains("### Memory banks"), "memory group missing: {p}");
         for cmd in [
             "| memory search |",
             "| memory store |",
@@ -906,21 +993,43 @@ mod tests {
             !p.contains("### Skills"),
             "skills group should be omitted: {p}"
         );
-        assert!(!p.contains("| skill list |"), "skill list should be omitted: {p}");
-        assert!(!p.contains("| skill search |"), "skill search should be omitted: {p}");
-        assert!(!p.contains("| skill run |"), "skill run should be omitted: {p}");
+        assert!(
+            !p.contains("| skill list |"),
+            "skill list should be omitted: {p}"
+        );
+        assert!(
+            !p.contains("| skill search |"),
+            "skill search should be omitted: {p}"
+        );
+        assert!(
+            !p.contains("| skill run |"),
+            "skill run should be omitted: {p}"
+        );
     }
 
     #[test]
     fn cli_preamble_skills_group_lists_list_search_run_rows_when_present() {
-        let p = cli_preamble("/a", &["coder"], &[], &[], &["code-review", "research"], &[]);
+        let p = cli_preamble(
+            "/a",
+            &["coder"],
+            &[],
+            &[],
+            &["code-review", "research"],
+            &[],
+        );
         assert!(p.contains("### Skills"), "skills group missing: {p}");
         for row in ["| skill list |", "| skill search |", "| skill run |"] {
             assert!(p.contains(row), "missing row {row} in: {p}");
         }
         assert!(p.contains("`--name <id>`"), "run params missing: {p}");
-        assert!(p.contains("`--query \"<text>\"`"), "search params missing: {p}");
-        assert!(p.contains("{baseDir}"), "baseDir placeholder mention missing: {p}");
+        assert!(
+            p.contains("`--query \"<text>\"`"),
+            "search params missing: {p}"
+        );
+        assert!(
+            p.contains("{baseDir}"),
+            "baseDir placeholder mention missing: {p}"
+        );
         assert!(
             p.contains("instructions you must follow"),
             "skill_run desc should emphasize it prints instructions: {p}"
@@ -929,7 +1038,14 @@ mod tests {
 
     #[test]
     fn cli_preamble_skills_group_does_not_leak_skill_ids_into_prompt() {
-        let p = cli_preamble("/a", &["coder"], &[], &[], &["code-review", "research"], &[]);
+        let p = cli_preamble(
+            "/a",
+            &["coder"],
+            &[],
+            &[],
+            &["code-review", "research"],
+            &[],
+        );
         // The list of concrete ids must NOT appear in the prompt; the
         // model is expected to discover them at runtime via
         // `skill list` / `skill search`.
@@ -973,10 +1089,7 @@ mod tests {
             "must not frame as absence-of-shell-tool: {p}"
         );
         assert!(p.contains("<aciddog-call>"), "call tag missing: {p}");
-        assert!(
-            p.contains("<aciddog-response"),
-            "response tag missing: {p}"
-        );
+        assert!(p.contains("<aciddog-response"), "response tag missing: {p}");
     }
 
     #[test]
@@ -1012,10 +1125,7 @@ mod tests {
             !p.contains("| send_message |"),
             "send_message row should be omitted: {p}"
         );
-        assert!(
-            !p.contains("— disabled"),
-            "no disabled stubs: {p}"
-        );
+        assert!(!p.contains("— disabled"), "no disabled stubs: {p}");
     }
 
     #[test]
@@ -1133,8 +1243,14 @@ mod tests {
             assert!(p.contains(row), "missing row {row} in: {p}");
         }
         assert!(p.contains("\"name\":\"<id>\""), "run params missing: {p}");
-        assert!(p.contains("\"query\":\"<text>\""), "search params missing: {p}");
-        assert!(p.contains("{baseDir}"), "baseDir placeholder mention missing: {p}");
+        assert!(
+            p.contains("\"query\":\"<text>\""),
+            "search params missing: {p}"
+        );
+        assert!(
+            p.contains("{baseDir}"),
+            "baseDir placeholder mention missing: {p}"
+        );
         assert!(
             p.contains("instructions you must follow"),
             "skill_run desc should emphasize it prints instructions: {p}"

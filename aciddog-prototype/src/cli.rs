@@ -150,6 +150,53 @@ pub enum ChannelCommand {
         #[arg(long)]
         body: String,
     },
+    /// Create an ephemeral meeting channel. You are auto-joined so
+    /// you can `channel send --id <id>` to your own meeting
+    /// immediately. The channel dies when `channel end`-ed or when
+    /// aciddog exits — it is never written back to the config file.
+    Create {
+        /// New channel id. Must not collide with an existing channel;
+        /// identifier rules: letters / digits / `_` / `-`, starting
+        /// with a letter or `_`, ≤ 64 chars.
+        #[arg(long)]
+        id: String,
+    },
+    /// Add yourself to a channel (ephemeral or WCL-declared).
+    /// Runtime-only — WCL membership is restored on restart.
+    Join {
+        /// Channel id to join.
+        #[arg(long)]
+        id: String,
+    },
+    /// Add another agent to a channel. You must be a member of `<id>`
+    /// yourself. Target must be a declared `agent` (workers cannot be
+    /// channel members). Runtime-only — not persisted.
+    Add {
+        /// Channel id.
+        #[arg(long)]
+        id: String,
+        /// Agent id (not a worker template) to add.
+        #[arg(long)]
+        member: String,
+    },
+    /// Remove a member from a channel. You must be a member of `<id>`
+    /// yourself. Works on ephemeral and WCL-declared channels
+    /// (runtime-only — WCL state restored on restart).
+    Kick {
+        /// Channel id.
+        #[arg(long)]
+        id: String,
+        /// Agent id to remove.
+        #[arg(long)]
+        member: String,
+    },
+    /// Destroy an ephemeral meeting channel. You must be a member.
+    /// Rejects WCL-declared channels.
+    End {
+        /// Channel id to end.
+        #[arg(long)]
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -1267,7 +1314,15 @@ mod tests {
     fn agent_args_cron_add_requires_target_kind_payload_schedule() {
         assert!(AgentArgs::try_parse_from(["aciddog", "cron", "add"]).is_err());
         assert!(AgentArgs::try_parse_from([
-            "aciddog", "cron", "add", "--target", "r", "--kind", "message", "--payload", "p"
+            "aciddog",
+            "cron",
+            "add",
+            "--target",
+            "r",
+            "--kind",
+            "message",
+            "--payload",
+            "p"
         ])
         .is_err());
     }
@@ -1304,18 +1359,16 @@ mod tests {
     #[test]
     fn agent_args_parses_cron_show_remove() {
         let id = Uuid::new_v4();
-        let show =
-            AgentArgs::try_parse_from(["aciddog", "cron", "show", "--id", &id.to_string()])
-                .unwrap();
+        let show = AgentArgs::try_parse_from(["aciddog", "cron", "show", "--id", &id.to_string()])
+            .unwrap();
         assert!(matches!(
             show.cmd,
             AgentCommand::Cron {
                 cmd: CronCommand::Show { id: parsed }
             } if parsed == id
         ));
-        let rm =
-            AgentArgs::try_parse_from(["aciddog", "cron", "remove", "--id", &id.to_string()])
-                .unwrap();
+        let rm = AgentArgs::try_parse_from(["aciddog", "cron", "remove", "--id", &id.to_string()])
+            .unwrap();
         assert!(matches!(
             rm.cmd,
             AgentCommand::Cron {

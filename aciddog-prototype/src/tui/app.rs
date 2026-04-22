@@ -123,7 +123,16 @@ pub(super) fn build_core(
     socket_tx: Option<mpsc::Sender<AgentSocketEvent>>,
     resume: bool,
 ) -> Box<dyn AICore> {
-    build_core_with_extras(core_cfg, session_id, parts, tools, env, socket_tx, resume, Vec::new())
+    build_core_with_extras(
+        core_cfg,
+        session_id,
+        parts,
+        tools,
+        env,
+        socket_tx,
+        resume,
+        Vec::new(),
+    )
 }
 
 /// Same as `build_core` but allows injecting additional tools into the
@@ -471,14 +480,9 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             let summary = if properties.is_empty() {
                 format!("aciddog workflow run --id {workflow}")
             } else {
-                let pairs: Vec<String> = properties
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect();
-                format!(
-                    "aciddog workflow run --id {workflow} {}",
-                    pairs.join(" ")
-                )
+                let pairs: Vec<String> =
+                    properties.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                format!("aciddog workflow run --id {workflow} {}", pairs.join(" "))
             };
             ChatBlock::from_tool_use(&summary, input)
         }
@@ -624,11 +628,16 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         RequestCmd::CronUpdate { .. } => ChatBlock::from_tool_use("aciddog cron update", input),
         RequestCmd::CronRemove { .. } => ChatBlock::from_tool_use("aciddog cron remove", input),
         RequestCmd::SkillList => ChatBlock::from_tool_use("aciddog skill list", input),
-        RequestCmd::SkillSearch { .. } => {
-            ChatBlock::from_tool_use("aciddog skill search", input)
-        }
+        RequestCmd::SkillSearch { .. } => ChatBlock::from_tool_use("aciddog skill search", input),
         RequestCmd::SkillRun { .. } => ChatBlock::from_tool_use("aciddog skill run", input),
         RequestCmd::ChannelSend { .. } => ChatBlock::from_tool_use("aciddog channel send", input),
+        RequestCmd::ChannelCreate { .. } => {
+            ChatBlock::from_tool_use("aciddog channel create", input)
+        }
+        RequestCmd::ChannelJoin { .. } => ChatBlock::from_tool_use("aciddog channel join", input),
+        RequestCmd::ChannelAdd { .. } => ChatBlock::from_tool_use("aciddog channel add", input),
+        RequestCmd::ChannelKick { .. } => ChatBlock::from_tool_use("aciddog channel kick", input),
+        RequestCmd::ChannelEnd { .. } => ChatBlock::from_tool_use("aciddog channel end", input),
     }
 }
 
@@ -683,7 +692,11 @@ fn fmt_cron_job_short(j: &crate::cron::CronJob, config: &crate::config::AciddogC
         .unwrap_or_else(|| "—".to_string());
     let enabled = if j.enabled { "enabled" } else { "disabled" };
     let target_known = config.agents.iter().any(|a| a.id == j.target_agent);
-    let target_marker = if target_known { "" } else { " [target unknown]" };
+    let target_marker = if target_known {
+        ""
+    } else {
+        " [target unknown]"
+    };
     format!(
         "{id} {enabled} {kind} → {target}{marker}; {sched}; tz={tz}; next_run={next}",
         id = j.id,
@@ -714,7 +727,11 @@ fn fmt_cron_job_full(j: &crate::cron::CronJob, config: &crate::config::AciddogCo
     out.push_str(&format!("timezone:           {}\n", j.timezone.as_str()));
     out.push_str(&format!(
         "catchup_on_startup: {}\n",
-        if j.catchup_on_startup { "true" } else { "false" }
+        if j.catchup_on_startup {
+            "true"
+        } else {
+            "false"
+        }
     ));
     match &j.payload {
         crate::cron::CronPayload::Message { body } => {
@@ -986,6 +1003,13 @@ pub struct ChannelState {
     /// Append-only writer for this channel's JSONL file. `None` only
     /// in tests — the real TUI always supplies one via `tui::run`.
     pub log: Option<super::channel_log::ChannelLog>,
+    /// `true` when this channel was created at runtime (via `/meeting`
+    /// or `channel create`). Only ephemeral channels can be torn down
+    /// by `/leave` / `channel end`. Not persisted — `App::new`
+    /// rebuilds `app.channels` from `config.channels` as parsed from
+    /// the WCL file, so any runtime-added entries in
+    /// `self.config.channels` vanish on restart.
+    pub is_ephemeral: bool,
 }
 
 #[derive(Debug, Default)]
@@ -1439,10 +1463,7 @@ pub(crate) fn input_visual_rows(input: &dyn TextInput, width: u16) -> Vec<(usize
 /// Byte offset at the start of the caret's current visual row plus
 /// the caret's column (in chars) within that row. Mirrors
 /// [`AgentChat::input_cursor_visual`] but works on any [`TextInput`].
-pub(crate) fn input_cursor_visual(
-    input: &dyn TextInput,
-    width: u16,
-) -> (usize, usize, usize) {
+pub(crate) fn input_cursor_visual(input: &dyn TextInput, width: u16) -> (usize, usize, usize) {
     let rows = wrap_rows(input.buf(), width);
     if rows.is_empty() {
         return (0, 0, 0);
@@ -1653,7 +1674,8 @@ pub struct App {
     /// update, delete, link). Populated by `tui::run`; `None` only in
     /// unit tests that construct `App::new` directly and don't drive
     /// the memory view.
-    pub memory_event_tx: Option<tokio::sync::mpsc::UnboundedSender<super::memory_view::MemoryEvent>>,
+    pub memory_event_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<super::memory_view::MemoryEvent>>,
     /// Last left-click coord + timestamp, used only to detect
     /// double-clicks on task rows. A second click at the same
     /// (col,row) within `DOUBLE_CLICK_WINDOW` counts as double.
@@ -1730,12 +1752,8 @@ impl App {
                 let context_usage_mode = core
                     .map(|c| core_usage_mode(&c.kind))
                     .unwrap_or(ContextUsageMode::Replace);
-                let info = ChatBlock::agent_info(
-                    label,
-                    tools,
-                    agent.instructions.clone(),
-                    context_window,
-                );
+                let info =
+                    ChatBlock::agent_info(label, tools, agent.instructions.clone(), context_window);
                 AgentChat {
                     blocks: vec![info],
                     sticky_bottom: true,
@@ -1993,10 +2011,7 @@ impl App {
                         let (kind, subject, body) = task_op_summary(&task_cmd);
                         ChatBlock::task_op(kind, subject, body)
                     } else if is_aciddog_skill_list(cmd, &binary) {
-                        ChatBlock::from_tool_use(
-                            "aciddog skill list",
-                            &serde_json::json!({}),
-                        )
+                        ChatBlock::from_tool_use("aciddog skill list", &serde_json::json!({}))
                     } else if let Some(query) = try_parse_aciddog_skill_search(cmd, &binary) {
                         ChatBlock::from_tool_use(
                             "aciddog skill search",
@@ -2359,6 +2374,21 @@ impl App {
             RequestCmd::ChannelSend { id, body } => {
                 self.handle_channel_send_from_agent(idx, id, body, reply);
             }
+            RequestCmd::ChannelCreate { id } => {
+                self.handle_channel_create_from_agent(idx, id, reply);
+            }
+            RequestCmd::ChannelJoin { id } => {
+                self.handle_channel_join_from_agent(idx, id, reply);
+            }
+            RequestCmd::ChannelAdd { id, member } => {
+                self.handle_channel_add_from_agent(idx, id, member, reply);
+            }
+            RequestCmd::ChannelKick { id, member } => {
+                self.handle_channel_kick_from_agent(idx, id, member, reply);
+            }
+            RequestCmd::ChannelEnd { id } => {
+                self.handle_channel_end_from_agent(idx, id, reply);
+            }
         }
     }
 
@@ -2393,7 +2423,12 @@ impl App {
             )));
             return;
         }
-        let Some(workflow) = self.config.workflows.iter().find(|w| w.id == workflow_id).cloned()
+        let Some(workflow) = self
+            .config
+            .workflows
+            .iter()
+            .find(|w| w.id == workflow_id)
+            .cloned()
         else {
             let _ = reply.send(Response::err(format!(
                 "no workflow `{workflow_id}` declared"
@@ -2619,7 +2654,9 @@ impl App {
         };
 
         let core_label = core_display_label(core);
-        let context_window = core.runtime_model().and_then(crate::ai::model_context_window);
+        let context_window = core
+            .runtime_model()
+            .and_then(crate::ai::model_context_window);
         let context_usage_mode = core_usage_mode(&core.kind);
         let built_core: Box<dyn AICore> = build_core(
             core,
@@ -2672,13 +2709,7 @@ impl App {
         let (_wkr_ch_tx, wkr_ch_rx) = mpsc::channel::<String>(1);
         drop(_wkr_ch_tx);
         tokio::spawn(run_core(
-            new_idx,
-            built_core,
-            user_rx,
-            agent_rx,
-            wkr_ch_rx,
-            cancel_rx,
-            ai_tx,
+            new_idx, built_core, user_rx, agent_rx, wkr_ch_rx, cancel_rx, ai_tx,
         ));
 
         // Surface the spawn on the parent pane so the user can see it.
@@ -2871,12 +2902,7 @@ impl App {
         body: String,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
-        self.handle_send_message_with_origin(
-            MessageOrigin::Agent { sender_idx },
-            to,
-            body,
-            reply,
-        );
+        self.handle_send_message_with_origin(MessageOrigin::Agent { sender_idx }, to, body, reply);
     }
 
     /// IPC entry for `aciddog channel send`. Resolves the sender's
@@ -2902,6 +2928,199 @@ impl App {
         }
         let sender_name = sender_chat.display_name.clone();
         self.broadcast_to_channel(ChannelSender::Agent(sender_name), channel_id, body, reply);
+    }
+
+    /// Resolve the sender's agent id for a channel-management IPC call.
+    /// Rejects workers (workers are never channel members). Returns
+    /// the agent's display name on success; sends the error response
+    /// and returns `None` on failure.
+    fn resolve_channel_caller(
+        &self,
+        sender_idx: usize,
+        reply: &mut Option<tokio::sync::oneshot::Sender<Response>>,
+    ) -> Option<String> {
+        let Some(sender_chat) = self.chats.get(sender_idx) else {
+            if let Some(r) = reply.take() {
+                let _ = r.send(Response::err("unknown sender"));
+            }
+            return None;
+        };
+        if sender_chat.parent_idx.is_some() {
+            if let Some(r) = reply.take() {
+                let _ = r.send(Response::err(
+                    "workers cannot manage channels — only declared agents can",
+                ));
+            }
+            return None;
+        }
+        Some(sender_chat.display_name.clone())
+    }
+
+    /// IPC entry for `aciddog channel create`. Creates an ephemeral
+    /// channel and auto-joins the caller so they can `channel send`
+    /// to their own meeting immediately.
+    fn handle_channel_create_from_agent(
+        &mut self,
+        sender_idx: usize,
+        channel_id: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let mut reply = Some(reply);
+        let Some(caller) = self.resolve_channel_caller(sender_idx, &mut reply) else {
+            return;
+        };
+        let reply = reply.expect("caller resolution didn't consume reply");
+        match self.create_meeting(channel_id.clone()) {
+            Ok(_new_idx) => {
+                // Auto-join the creator. If this fails for any reason
+                // (shouldn't — we just created the channel) we still
+                // report the create as successful.
+                if let Err(e) = self.channel_join_by_id(&channel_id, &caller) {
+                    tracing::warn!(
+                        channel = %channel_id,
+                        agent = %caller,
+                        error = %e,
+                        "auto-join after channel create failed"
+                    );
+                }
+                let _ = reply.send(Response::ok(format!(
+                    "channel `{channel_id}` created (ephemeral)"
+                )));
+            }
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+            }
+        }
+    }
+
+    /// IPC entry for `aciddog channel join`. Adds the calling agent
+    /// to an existing channel. Works for both ephemeral and
+    /// WCL-declared channels (runtime-only — not persisted).
+    fn handle_channel_join_from_agent(
+        &mut self,
+        sender_idx: usize,
+        channel_id: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let mut reply = Some(reply);
+        let Some(caller) = self.resolve_channel_caller(sender_idx, &mut reply) else {
+            return;
+        };
+        let reply = reply.expect("caller resolution didn't consume reply");
+        match self.channel_join_by_id(&channel_id, &caller) {
+            Ok(()) => {
+                let _ = reply.send(Response::ok(format!("joined channel `{channel_id}`")));
+            }
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+            }
+        }
+    }
+
+    /// IPC entry for `aciddog channel add`. Caller must already be a
+    /// member of `channel_id`.
+    fn handle_channel_add_from_agent(
+        &mut self,
+        sender_idx: usize,
+        channel_id: String,
+        member: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let mut reply = Some(reply);
+        let Some(caller) = self.resolve_channel_caller(sender_idx, &mut reply) else {
+            return;
+        };
+        let reply = reply.expect("caller resolution didn't consume reply");
+        let Some(channel) = self.config.channel(&channel_id) else {
+            let _ = reply.send(Response::err(format!("unknown channel `{channel_id}`")));
+            return;
+        };
+        if !channel.members.iter().any(|m| m == &caller) {
+            let _ = reply.send(Response::err(format!(
+                "you are not a member of channel `{channel_id}`"
+            )));
+            return;
+        }
+        match self.channel_add_member_by_id(&channel_id, &member) {
+            Ok(()) => {
+                let _ = reply.send(Response::ok(format!(
+                    "added `{member}` to channel `{channel_id}`"
+                )));
+            }
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+            }
+        }
+    }
+
+    /// IPC entry for `aciddog channel kick`. Caller must already be a
+    /// member of `channel_id`. Self-kick is allowed (acts as "leave
+    /// without ending").
+    fn handle_channel_kick_from_agent(
+        &mut self,
+        sender_idx: usize,
+        channel_id: String,
+        member: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let mut reply = Some(reply);
+        let Some(caller) = self.resolve_channel_caller(sender_idx, &mut reply) else {
+            return;
+        };
+        let reply = reply.expect("caller resolution didn't consume reply");
+        let Some(channel) = self.config.channel(&channel_id) else {
+            let _ = reply.send(Response::err(format!("unknown channel `{channel_id}`")));
+            return;
+        };
+        if !channel.members.iter().any(|m| m == &caller) {
+            let _ = reply.send(Response::err(format!(
+                "you are not a member of channel `{channel_id}`"
+            )));
+            return;
+        }
+        match self.channel_kick_member_by_id(&channel_id, &member) {
+            Ok(()) => {
+                let _ = reply.send(Response::ok(format!(
+                    "kicked `{member}` from channel `{channel_id}`"
+                )));
+            }
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+            }
+        }
+    }
+
+    /// IPC entry for `aciddog channel end`. Caller must be a member.
+    /// Rejects WCL-declared channels.
+    fn handle_channel_end_from_agent(
+        &mut self,
+        sender_idx: usize,
+        channel_id: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let mut reply = Some(reply);
+        let Some(caller) = self.resolve_channel_caller(sender_idx, &mut reply) else {
+            return;
+        };
+        let reply = reply.expect("caller resolution didn't consume reply");
+        let Some(channel) = self.config.channel(&channel_id) else {
+            let _ = reply.send(Response::err(format!("unknown channel `{channel_id}`")));
+            return;
+        };
+        if !channel.members.iter().any(|m| m == &caller) {
+            let _ = reply.send(Response::err(format!(
+                "you are not a member of channel `{channel_id}`"
+            )));
+            return;
+        }
+        match self.channel_leave_by_id(&channel_id) {
+            Ok(()) => {
+                let _ = reply.send(Response::ok(format!("ended channel `{channel_id}`")));
+            }
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+            }
+        }
     }
 
     /// Core broadcast path: validate sender membership (for agents),
@@ -2956,15 +3175,10 @@ impl App {
         );
 
         // Find channel state + append display block + disk line.
-        if let Some(ch_state) = self
-            .channels
-            .iter_mut()
-            .find(|c| c.id == channel_id)
-        {
-            ch_state.blocks.push(ChatBlock::channel_message(
-                from_label.clone(),
-                body.clone(),
-            ));
+        if let Some(ch_state) = self.channels.iter_mut().find(|c| c.id == channel_id) {
+            ch_state
+                .blocks
+                .push(ChatBlock::channel_message(from_label.clone(), body.clone()));
             ch_state.sticky_bottom = true;
             if let Some(log) = ch_state.log.as_mut() {
                 if let Err(e) = log.append(&from_label, &body) {
@@ -3034,6 +3248,274 @@ impl App {
         let _ = reply.send(Response::ok("broadcast"));
     }
 
+    /// Validate a runtime-supplied channel id. Stricter than the WCL
+    /// parser: first char alpha/underscore, remainder alnum/`_`/`-`,
+    /// max 64 chars. The tight rules keep the id safe to use as a
+    /// filename for `ChannelLog::open`.
+    fn validate_meeting_id(id: &str) -> Result<(), String> {
+        if id.is_empty() {
+            return Err("channel id cannot be empty".into());
+        }
+        if id.len() > 64 {
+            return Err("channel id must be ≤ 64 characters".into());
+        }
+        let mut chars = id.chars();
+        let first = chars.next().expect("non-empty checked above");
+        if !(first.is_ascii_alphabetic() || first == '_') {
+            return Err("channel id must start with an ASCII letter or underscore".into());
+        }
+        for ch in chars {
+            if !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
+                return Err(format!(
+                    "channel id contains invalid character `{ch}` (allowed: letters, digits, `_`, `-`)"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Create an ephemeral runtime channel. Succeeds if the id is
+    /// valid and doesn't collide with an existing channel (WCL or
+    /// runtime). Mutates both `self.config.channels` (so the existing
+    /// `broadcast_to_channel` path works unchanged) and
+    /// `self.channels` (runtime state). Returns the new index into
+    /// `self.channels`.
+    pub(crate) fn create_meeting(&mut self, id: String) -> Result<usize, String> {
+        Self::validate_meeting_id(&id)?;
+        if self.config.channel(&id).is_some() {
+            return Err(format!("channel `{id}` already exists"));
+        }
+        self.config.channels.push(crate::config::Channel {
+            id: id.clone(),
+            description: None,
+            welcome: None,
+            members: Vec::new(),
+        });
+        let mut state = ChannelState {
+            id: id.clone(),
+            is_ephemeral: true,
+            sticky_bottom: true,
+            ..Default::default()
+        };
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        match super::channel_log::ChannelLog::open(&cwd, &id) {
+            Ok(log) => state.log = Some(log),
+            Err(e) => {
+                warn!(channel = %id, error = %e, "failed to open ephemeral channel log");
+            }
+        }
+        state.blocks.push(ChatBlock::system_info(format!(
+            "meeting channel `{id}` created (ephemeral — dies when ended or on exit)"
+        )));
+        self.channels.push(state);
+        Ok(self.channels.len() - 1)
+    }
+
+    /// Deliver a one-shot `<system-notice>` to a newly-added channel
+    /// member via their `channel_tx`, and flip their UI status to
+    /// working. Ignores send failures (queue full, closed, agent not
+    /// yet online) — the agent will still discover the channel on
+    /// the next inbound broadcast.
+    fn notify_agent_added_to_channel(&mut self, agent_name: &str, channel_id: &str) {
+        let Some(recipient_idx) = self
+            .chats
+            .iter()
+            .position(|c| c.display_name == *agent_name && c.parent_idx.is_none())
+        else {
+            return;
+        };
+        if self
+            .chats
+            .get(recipient_idx)
+            .map(|c| c.asleep)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let Some(tx) = self
+            .chats
+            .get(recipient_idx)
+            .and_then(|c| c.channel_tx.clone())
+        else {
+            return;
+        };
+        let pool_len = self.config.thinking_messages.len();
+        if let Some(chat) = self.chats.get_mut(recipient_idx) {
+            if chat.status != AgentStatus::Error {
+                chat.begin_working(pool_len);
+            }
+        }
+        let payload = format!(
+            "<system-notice>You have been added to channel `{channel_id}`. Use the \
+             `channel send` tool with `id=\"{channel_id}\"` to post. Stay silent \
+             unless you have something substantive to contribute.</system-notice>"
+        );
+        if let Err(e) = tx.try_send(payload) {
+            tracing::warn!(
+                recipient = %agent_name,
+                channel = %channel_id,
+                error = ?e,
+                "failed to deliver channel-add notice"
+            );
+        }
+    }
+
+    /// Add `agent` to channel `channel_id`. Validates agent exists
+    /// (declared `agent` block, not a worker template) and isn't
+    /// already a member. Mutates both `config.channels[c].members`
+    /// and `self.channels[idx].members`, delivers a one-shot
+    /// `<system-notice>` to the added agent, and pushes a system-info
+    /// block to the channel pane.
+    pub(crate) fn channel_add_member_by_id(
+        &mut self,
+        channel_id: &str,
+        agent: &str,
+    ) -> Result<(), String> {
+        if !self.config.agents.iter().any(|a| a.id == agent) {
+            return Err(format!(
+                "`{agent}` is not a declared agent (workers cannot be channel members)"
+            ));
+        }
+        let Some(cfg_idx) = self.config.channels.iter().position(|c| c.id == channel_id) else {
+            return Err(format!("unknown channel `{channel_id}`"));
+        };
+        if self.config.channels[cfg_idx]
+            .members
+            .iter()
+            .any(|m| m == agent)
+        {
+            return Err(format!(
+                "`{agent}` is already a member of channel `{channel_id}`"
+            ));
+        }
+        self.config.channels[cfg_idx]
+            .members
+            .push(agent.to_string());
+        if let Some(state_idx) = self.channels.iter().position(|c| c.id == channel_id) {
+            self.channels[state_idx].members.push(agent.to_string());
+            self.channels[state_idx]
+                .blocks
+                .push(ChatBlock::system_info(format!("added `{agent}`")));
+            self.channels[state_idx].sticky_bottom = true;
+        }
+        self.notify_agent_added_to_channel(agent, channel_id);
+        Ok(())
+    }
+
+    /// Remove `agent` from channel `channel_id`. Mutates both
+    /// membership mirrors and pushes a system-info block to the
+    /// channel pane. The removed agent gets no IPC notice — their
+    /// next `channel send` attempt will be rejected at the existing
+    /// membership check, which is a sufficient discovery path.
+    pub(crate) fn channel_kick_member_by_id(
+        &mut self,
+        channel_id: &str,
+        agent: &str,
+    ) -> Result<(), String> {
+        let Some(cfg_idx) = self.config.channels.iter().position(|c| c.id == channel_id) else {
+            return Err(format!("unknown channel `{channel_id}`"));
+        };
+        let Some(pos) = self.config.channels[cfg_idx]
+            .members
+            .iter()
+            .position(|m| m == agent)
+        else {
+            return Err(format!(
+                "`{agent}` is not a member of channel `{channel_id}`"
+            ));
+        };
+        self.config.channels[cfg_idx].members.remove(pos);
+        if let Some(state_idx) = self.channels.iter().position(|c| c.id == channel_id) {
+            if let Some(mirror_pos) = self.channels[state_idx]
+                .members
+                .iter()
+                .position(|m| m == agent)
+            {
+                self.channels[state_idx].members.remove(mirror_pos);
+            }
+            self.channels[state_idx]
+                .blocks
+                .push(ChatBlock::system_info(format!("kicked `{agent}`")));
+            self.channels[state_idx].sticky_bottom = true;
+        }
+        Ok(())
+    }
+
+    /// Add the calling agent to channel `channel_id` (the agent-side
+    /// "join" path). Works for ephemeral AND WCL-declared channels —
+    /// runtime-only membership that restarts will restore to WCL
+    /// state. No inbound system-notice (the agent just asked).
+    pub(crate) fn channel_join_by_id(
+        &mut self,
+        channel_id: &str,
+        agent: &str,
+    ) -> Result<(), String> {
+        if !self.config.agents.iter().any(|a| a.id == agent) {
+            return Err(format!(
+                "`{agent}` is not a declared agent (workers cannot be channel members)"
+            ));
+        }
+        let Some(cfg_idx) = self.config.channels.iter().position(|c| c.id == channel_id) else {
+            return Err(format!("unknown channel `{channel_id}`"));
+        };
+        if self.config.channels[cfg_idx]
+            .members
+            .iter()
+            .any(|m| m == agent)
+        {
+            return Err(format!(
+                "`{agent}` is already a member of channel `{channel_id}`"
+            ));
+        }
+        self.config.channels[cfg_idx]
+            .members
+            .push(agent.to_string());
+        if let Some(state_idx) = self.channels.iter().position(|c| c.id == channel_id) {
+            self.channels[state_idx].members.push(agent.to_string());
+            self.channels[state_idx]
+                .blocks
+                .push(ChatBlock::system_info(format!("`{agent}` joined")));
+            self.channels[state_idx].sticky_bottom = true;
+        }
+        Ok(())
+    }
+
+    /// Destroy an ephemeral channel. Rejects WCL-declared channels.
+    /// Removes from both `config.channels` and `self.channels`,
+    /// clamps `selected_channel`, and switches `active_view` to a
+    /// safe fallback when the ended channel was being viewed.
+    pub(crate) fn channel_leave_by_id(&mut self, channel_id: &str) -> Result<(), String> {
+        let Some(state_idx) = self.channels.iter().position(|c| c.id == channel_id) else {
+            return Err(format!("unknown channel `{channel_id}`"));
+        };
+        if !self.channels[state_idx].is_ephemeral {
+            return Err(format!(
+                "channel `{channel_id}` is declared in the WCL config and cannot be ended"
+            ));
+        }
+        // Drop the log handle before removal so the file closes.
+        self.channels[state_idx].log = None;
+        self.channels.remove(state_idx);
+        if let Some(cfg_idx) = self.config.channels.iter().position(|c| c.id == channel_id) {
+            self.config.channels.remove(cfg_idx);
+        }
+        // Clamp selection + fix active view.
+        if self.channels.is_empty() {
+            self.selected_channel = 0;
+            if matches!(self.active_view, ActiveView::Channel(_)) {
+                self.active_view = ActiveView::Chat;
+            }
+        } else {
+            if self.selected_channel >= self.channels.len() {
+                self.selected_channel = self.channels.len() - 1;
+            }
+            if matches!(self.active_view, ActiveView::Channel(_)) {
+                self.active_view = ActiveView::Channel(self.selected_channel);
+            }
+        }
+        Ok(())
+    }
+
     /// Core message-delivery path. Drives recipient resolution, ACL,
     /// hibernation wake-up, recipient Mail block, and the async
     /// `agent_tx` enqueue. The origin determines the `from=`
@@ -3056,10 +3538,7 @@ impl App {
                 let parent = sender_chat.parent_idx;
                 (id.clone(), id, false, parent)
             }
-            MessageOrigin::Cron {
-                job_id,
-                created_by,
-            } => {
+            MessageOrigin::Cron { job_id, created_by } => {
                 let short = job_id.to_string();
                 let short = short.get(..8).unwrap_or(&short);
                 let label = format!("cron:{created_by}:{short}");
@@ -4453,10 +4932,8 @@ impl App {
         };
 
         tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                registry.delete_entry(&bank_decl, id)
-            })
-            .await;
+            let result =
+                tokio::task::spawn_blocking(move || registry.delete_entry(&bank_decl, id)).await;
             match result {
                 Ok(Ok(true)) => {
                     let _ = reply.send(Response::ok(format!("removed {}", short_uuid(id))));
@@ -4628,6 +5105,29 @@ impl App {
                     chat.push_block(msg);
                 }
             }
+            CommandOutcome::CreateMeeting { id } => {
+                let result = self.create_meeting(id.clone());
+                match result {
+                    Ok(new_idx) => {
+                        self.selected_channel = new_idx;
+                        self.active_view = ActiveView::Channel(new_idx);
+                    }
+                    Err(msg) => {
+                        if let Some(chat) = self.chats.get_mut(idx) {
+                            chat.push_block(ChatBlock::system_warn(msg));
+                        }
+                    }
+                }
+            }
+            CommandOutcome::AddAgent { .. }
+            | CommandOutcome::KickAgent { .. }
+            | CommandOutcome::LeaveChannel => {
+                if let Some(chat) = self.chats.get_mut(idx) {
+                    chat.push_block(ChatBlock::system_info(
+                        "/add, /kick, /leave target channels — run them from a channel pane",
+                    ));
+                }
+            }
             CommandOutcome::Unknown { name, hint } => {
                 if let Some(chat) = self.chats.get_mut(idx) {
                     chat.push_block(ChatBlock::system_warn(format!(
@@ -4668,10 +5168,8 @@ impl App {
         // step templates referencing them will fail the render, which
         // is the right outcome for a "hit Enter on an incomplete form"
         // smoke test.
-        let initial_vars = crate::workflow::WorkflowEngine::seed_vars(
-            &workflow,
-            std::collections::HashMap::new(),
-        );
+        let initial_vars =
+            crate::workflow::WorkflowEngine::seed_vars(&workflow, std::collections::HashMap::new());
         engine.start_instance(instance_id, &workflow, initial_vars);
 
         // TUI mirror: the real `Started` event will populate vars, but
@@ -4799,10 +5297,8 @@ impl App {
                         .find(|i| i.id == instance_id)
                     {
                         view.status = InstanceStatus::Succeeded;
-                        view.remove_at = Some(
-                            std::time::Instant::now()
-                                + super::workflow_view::SUCCESS_LINGER,
-                        );
+                        view.remove_at =
+                            Some(std::time::Instant::now() + super::workflow_view::SUCCESS_LINGER);
                     }
                 } else if let Some(view) = self
                     .workflow_instances
@@ -5053,12 +5549,7 @@ impl App {
         }
     }
 
-    fn handle_key_workflow_form(
-        &mut self,
-        workflow_idx: usize,
-        code: KeyCode,
-        mods: KeyModifiers,
-    ) {
+    fn handle_key_workflow_form(&mut self, workflow_idx: usize, code: KeyCode, mods: KeyModifiers) {
         use super::workflow_view::{FieldEditor, FormButton, FormFocus};
         // Esc always closes the form without starting an instance.
         if matches!(code, KeyCode::Esc) {
@@ -5250,20 +5741,18 @@ impl App {
                     self.selected_view -= 1;
                 }
             }
-            KeyCode::Enter => {
-                match VIEW_ENTRIES.get(self.selected_view).copied() {
-                    Some("Tasks") => {
-                        self.active_view = ActiveView::Tasks;
-                        self.focus = Focus::Tasks;
-                        let rows = TasksScreen::rows(&self.tasks);
-                        self.tasks_screen.reclamp(&rows);
-                    }
-                    Some("Memory") => {
-                        self.open_memory_view();
-                    }
-                    _ => {}
+            KeyCode::Enter => match VIEW_ENTRIES.get(self.selected_view).copied() {
+                Some("Tasks") => {
+                    self.active_view = ActiveView::Tasks;
+                    self.focus = Focus::Tasks;
+                    let rows = TasksScreen::rows(&self.tasks);
+                    self.tasks_screen.reclamp(&rows);
                 }
-            }
+                Some("Memory") => {
+                    self.open_memory_view();
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -5339,7 +5828,12 @@ impl App {
         }
 
         // Form takes all input while open.
-        if self.memory_screen.bank().map(|b| b.form.is_some()).unwrap_or(false) {
+        if self
+            .memory_screen
+            .bank()
+            .map(|b| b.form.is_some())
+            .unwrap_or(false)
+        {
             self.handle_memory_form_key(code, mods);
             return;
         }
@@ -5389,14 +5883,16 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if selected + 1 < bank_count {
-                    self.memory_screen.stage =
-                        super::memory_view::MemoryStage::Banks { selected: selected + 1 };
+                    self.memory_screen.stage = super::memory_view::MemoryStage::Banks {
+                        selected: selected + 1,
+                    };
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if selected > 0 {
-                    self.memory_screen.stage =
-                        super::memory_view::MemoryStage::Banks { selected: selected - 1 };
+                    self.memory_screen.stage = super::memory_view::MemoryStage::Banks {
+                        selected: selected - 1,
+                    };
                 }
             }
             KeyCode::Enter => {
@@ -5412,7 +5908,11 @@ impl App {
 
     fn handle_memory_bank_key(&mut self, code: KeyCode, _mods: KeyModifiers) {
         // Search-input focus: most keys go to the text field.
-        let focus = self.memory_screen.bank().map(|b| b.focus).unwrap_or_default();
+        let focus = self
+            .memory_screen
+            .bank()
+            .map(|b| b.focus)
+            .unwrap_or_default();
         match (focus, code) {
             (_, KeyCode::Esc) => {
                 // Back to bank list.
@@ -5597,9 +6097,7 @@ impl App {
             }
             KeyCode::Up => {
                 if focused == NoteField::Body {
-                    if let Some(f) =
-                        self.memory_screen.bank_mut().and_then(|b| b.form.as_mut())
-                    {
+                    if let Some(f) = self.memory_screen.bank_mut().and_then(|b| b.form.as_mut()) {
                         if !f.body_move_line(-1) {
                             f.focus_prev();
                         }
@@ -5608,9 +6106,7 @@ impl App {
             }
             KeyCode::Down => {
                 if focused == NoteField::Body {
-                    if let Some(f) =
-                        self.memory_screen.bank_mut().and_then(|b| b.form.as_mut())
-                    {
+                    if let Some(f) = self.memory_screen.bank_mut().and_then(|b| b.form.as_mut()) {
                         if !f.body_move_line(1) {
                             f.focus_next();
                         }
@@ -5619,9 +6115,7 @@ impl App {
             }
             KeyCode::Char(c) => {
                 if !focused.is_button() {
-                    if let Some(f) =
-                        self.memory_screen.bank_mut().and_then(|b| b.form.as_mut())
-                    {
+                    if let Some(f) = self.memory_screen.bank_mut().and_then(|b| b.form.as_mut()) {
                         f.insert_char(c);
                     }
                 }
@@ -5846,10 +6340,8 @@ impl App {
                     match focus {
                         LinkPickerFocus::Query => {
                             if p.query_cursor > 0 {
-                                let n = super::tasks_view::utf8_char_len_prev(
-                                    &p.query,
-                                    p.query_cursor,
-                                );
+                                let n =
+                                    super::tasks_view::utf8_char_len_prev(&p.query, p.query_cursor);
                                 let start = p.query_cursor - n;
                                 p.query.drain(start..p.query_cursor);
                                 p.query_cursor = start;
@@ -5857,10 +6349,8 @@ impl App {
                         }
                         LinkPickerFocus::Kind => {
                             if p.kind_cursor > 0 {
-                                let n = super::tasks_view::utf8_char_len_prev(
-                                    &p.kind,
-                                    p.kind_cursor,
-                                );
+                                let n =
+                                    super::tasks_view::utf8_char_len_prev(&p.kind, p.kind_cursor);
                                 let start = p.kind_cursor - n;
                                 p.kind.drain(start..p.kind_cursor);
                                 p.kind_cursor = start;
@@ -5928,8 +6418,7 @@ impl App {
                 tags: crate::memory::TagFilter::default(),
                 limit,
             };
-            let result =
-                tokio::task::spawn_blocking(move || registry.search(&bank, opts)).await;
+            let result = tokio::task::spawn_blocking(move || registry.search(&bank, opts)).await;
             let normalised = match result {
                 Ok(Ok(hits)) => Ok(hits),
                 Ok(Err(e)) => Err(e.to_string()),
@@ -6039,19 +6528,20 @@ impl App {
         if !validated {
             return;
         }
-        let (kind, title, body, tags) = match self.memory_screen.bank().and_then(|b| b.form.as_ref()) {
-            Some(f) => (
-                f.kind,
-                if f.title.trim().is_empty() {
-                    None
-                } else {
-                    Some(f.title.trim().to_string())
-                },
-                f.body.clone(),
-                f.parsed_tags(),
-            ),
-            None => return,
-        };
+        let (kind, title, body, tags) =
+            match self.memory_screen.bank().and_then(|b| b.form.as_ref()) {
+                Some(f) => (
+                    f.kind,
+                    if f.title.trim().is_empty() {
+                        None
+                    } else {
+                        Some(f.title.trim().to_string())
+                    },
+                    f.body.clone(),
+                    f.parsed_tags(),
+                ),
+                None => return,
+            };
         match kind {
             super::memory_view::NoteFormKind::Add => self.dispatch_memory_store(body, title, tags),
             super::memory_view::NoteFormKind::Edit(id) => {
@@ -6176,8 +6666,7 @@ impl App {
                 tags: crate::memory::TagFilter::default(),
                 limit: 20,
             };
-            let result =
-                tokio::task::spawn_blocking(move || registry.search(&bank, opts)).await;
+            let result = tokio::task::spawn_blocking(move || registry.search(&bank, opts)).await;
             let normalised = match result {
                 Ok(Ok(hits)) => Ok(hits),
                 Ok(Err(e)) => Err(e.to_string()),
@@ -6282,7 +6771,9 @@ impl App {
         // so the spinner disappears.
         let current_bank = self.memory_screen.bank().map(|b| b.bank_id.clone());
         match event {
-            MemoryEvent::SearchDone { bank_id, result, .. } => {
+            MemoryEvent::SearchDone {
+                bank_id, result, ..
+            } => {
                 if current_bank.as_deref() != Some(&bank_id) {
                     return;
                 }
@@ -6343,7 +6834,9 @@ impl App {
                     }
                 }
             }
-            MemoryEvent::StoreDone { bank_id, result, .. } => {
+            MemoryEvent::StoreDone {
+                bank_id, result, ..
+            } => {
                 if current_bank.as_deref() != Some(&bank_id) {
                     return;
                 }
@@ -6358,10 +6851,7 @@ impl App {
                         self.dispatch_memory_search();
                     }
                     Err(e) => {
-                        if let Some(f) = self
-                            .memory_screen
-                            .bank_mut()
-                            .and_then(|b| b.form.as_mut())
+                        if let Some(f) = self.memory_screen.bank_mut().and_then(|b| b.form.as_mut())
                         {
                             f.error = Some(e.clone());
                         }
@@ -6389,10 +6879,7 @@ impl App {
                         self.dispatch_memory_search();
                     }
                     Err(e) => {
-                        if let Some(f) = self
-                            .memory_screen
-                            .bank_mut()
-                            .and_then(|b| b.form.as_mut())
+                        if let Some(f) = self.memory_screen.bank_mut().and_then(|b| b.form.as_mut())
                         {
                             f.error = Some(e.clone());
                         }
@@ -6417,10 +6904,8 @@ impl App {
                         self.dispatch_memory_search();
                     }
                     Ok(false) => {
-                        self.memory_screen.set_status(format!(
-                            "{} already gone",
-                            short_uuid(id)
-                        ));
+                        self.memory_screen
+                            .set_status(format!("{} already gone", short_uuid(id)));
                     }
                     Err(e) => {
                         self.memory_screen.set_status(format!("delete failed: {e}"));
@@ -6477,7 +6962,9 @@ impl App {
                     }
                 }
             }
-            MemoryEvent::LinkSearchDone { bank_id, result, .. } => {
+            MemoryEvent::LinkSearchDone {
+                bank_id, result, ..
+            } => {
                 if current_bank.as_deref() != Some(&bank_id) {
                     return;
                 }
@@ -7278,7 +7765,10 @@ impl App {
                 // forgetting history.
                 let keep_welcome = matches!(
                     ch.blocks.first(),
-                    Some(ChatBlock::ChannelMessage { is_welcome: true, .. })
+                    Some(ChatBlock::ChannelMessage {
+                        is_welcome: true,
+                        ..
+                    })
                 );
                 if keep_welcome {
                     ch.blocks.truncate(1);
@@ -7312,6 +7802,44 @@ impl App {
                         "workflow `{workflow_id}` started as instance #{id}"
                     ))),
                     Err(msg) => ch.blocks.push(ChatBlock::system_warn(msg)),
+                }
+            }
+            CommandOutcome::CreateMeeting { id } => {
+                let result = self.create_meeting(id.clone());
+                match result {
+                    Ok(new_idx) => {
+                        self.selected_channel = new_idx;
+                        self.active_view = ActiveView::Channel(new_idx);
+                    }
+                    Err(msg) => {
+                        if let Some(ch) = self.channels.get_mut(idx) {
+                            ch.blocks.push(ChatBlock::system_warn(msg));
+                        }
+                    }
+                }
+            }
+            CommandOutcome::AddAgent { agent } => {
+                let channel_id = ch.id.clone();
+                if let Err(msg) = self.channel_add_member_by_id(&channel_id, &agent) {
+                    if let Some(ch) = self.channels.get_mut(idx) {
+                        ch.blocks.push(ChatBlock::system_warn(msg));
+                    }
+                }
+            }
+            CommandOutcome::KickAgent { agent } => {
+                let channel_id = ch.id.clone();
+                if let Err(msg) = self.channel_kick_member_by_id(&channel_id, &agent) {
+                    if let Some(ch) = self.channels.get_mut(idx) {
+                        ch.blocks.push(ChatBlock::system_warn(msg));
+                    }
+                }
+            }
+            CommandOutcome::LeaveChannel => {
+                let channel_id = ch.id.clone();
+                if let Err(msg) = self.channel_leave_by_id(&channel_id) {
+                    if let Some(ch) = self.channels.get_mut(idx) {
+                        ch.blocks.push(ChatBlock::system_warn(msg));
+                    }
                 }
             }
             CommandOutcome::Unknown { name, hint } => {
@@ -7396,9 +7924,7 @@ impl App {
                 //     confirm-delete) capture all clicks. Clicks
                 //     outside the modal dismiss it, clicks inside
                 //     route to the specific handler.
-                if self.active_view == ActiveView::Memory
-                    && self.memory_screen.has_active_modal()
-                {
+                if self.active_view == ActiveView::Memory && self.memory_screen.has_active_modal() {
                     self.handle_mouse_memory_modal(pos);
                     return;
                 }
@@ -7770,9 +8296,7 @@ impl App {
                     b.selected_result = i;
                 }
                 let is_double = match self.last_click {
-                    Some((c, r, t)) => {
-                        c == col && r == row && t.elapsed() < DOUBLE_CLICK_WINDOW
-                    }
+                    Some((c, r, t)) => c == col && r == row && t.elapsed() < DOUBLE_CLICK_WINDOW,
                     None => false,
                 };
                 self.last_click = Some((col, row, Instant::now()));
@@ -7856,11 +8380,7 @@ impl App {
                 if rect_contains(*rect, pos) {
                     // Focus the field; buttons also trigger their
                     // action immediately.
-                    if let Some(f) = self
-                        .memory_screen
-                        .bank_mut()
-                        .and_then(|b| b.form.as_mut())
-                    {
+                    if let Some(f) = self.memory_screen.bank_mut().and_then(|b| b.form.as_mut()) {
                         f.focused_field = *field;
                     }
                     match field {
@@ -8665,7 +9185,8 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
                     Ok(lines) => {
                         info!(channel = %ch.id, loaded = lines.len(), "loaded channel transcript");
                         for line in lines {
-                            ch.blocks.push(ChatBlock::channel_message(line.sender, line.body));
+                            ch.blocks
+                                .push(ChatBlock::channel_message(line.sender, line.body));
                         }
                     }
                     Err(e) => {
@@ -8734,7 +9255,8 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     // drains the rx end in `event_loop`. Worker / Conditional steps
     // execute inline inside the engine using a cloned `AciddogConfig`,
     // so no further plumbing from App is needed.
-    let (wf_event_tx, mut wf_event_rx) = mpsc::unbounded_channel::<crate::workflow::WorkflowEvent>();
+    let (wf_event_tx, mut wf_event_rx) =
+        mpsc::unbounded_channel::<crate::workflow::WorkflowEvent>();
     app.workflow_engine = Some(crate::workflow::WorkflowEngine::new(
         std::sync::Arc::new(app.config.clone()),
         wf_event_tx,
@@ -9569,8 +10091,7 @@ mod tests {
         let chat = app.current_chat_mut().unwrap();
         // One very tall block followed by a short one. Only block 0 should
         // be the scroll target for the first several wheel ticks.
-        chat.blocks
-            .push(ChatBlock::user("line\n".repeat(200)));
+        chat.blocks.push(ChatBlock::user("line\n".repeat(200)));
         chat.blocks.push(ChatBlock::user("short"));
         chat.anchor = ScrollAnchor {
             block_idx: 0,
@@ -9600,8 +10121,7 @@ mod tests {
         let mut app = App::new(sample_config());
         app.layout.chat_history_inner = Some(Rect::new(0, 20, 80, 10));
         let chat = app.current_chat_mut().unwrap();
-        chat.blocks
-            .push(ChatBlock::user("line\n".repeat(200)));
+        chat.blocks.push(ChatBlock::user("line\n".repeat(200)));
         chat.blocks.push(ChatBlock::user("short"));
         chat.anchor = ScrollAnchor {
             block_idx: 0,
@@ -11205,15 +11725,19 @@ mod tests {
 
     #[test]
     fn try_parse_aciddog_skill_run_is_disabled_when_binary_empty() {
-        assert!(
-            try_parse_aciddog_skill_run("aciddog skill run --name foo", "").is_none()
-        );
+        assert!(try_parse_aciddog_skill_run("aciddog skill run --name foo", "").is_none());
     }
 
     #[test]
     fn is_aciddog_skill_list_matches_only_list_invocations() {
-        assert!(is_aciddog_skill_list("/opt/aciddog skill list", "/opt/aciddog"));
-        assert!(!is_aciddog_skill_list("/opt/aciddog skill run --name a", "/opt/aciddog"));
+        assert!(is_aciddog_skill_list(
+            "/opt/aciddog skill list",
+            "/opt/aciddog"
+        ));
+        assert!(!is_aciddog_skill_list(
+            "/opt/aciddog skill run --name a",
+            "/opt/aciddog"
+        ));
         assert!(!is_aciddog_skill_list(
             "/opt/aciddog skill search --query foo",
             "/opt/aciddog"
@@ -11237,16 +11761,13 @@ mod tests {
         assert!(
             try_parse_aciddog_skill_search("/opt/aciddog skill list", "/opt/aciddog").is_none()
         );
-        assert!(try_parse_aciddog_skill_search(
-            "/opt/aciddog skill run --name a",
-            "/opt/aciddog"
-        )
-        .is_none());
-        assert!(try_parse_aciddog_skill_search(
-            "/opt/aciddog skill search --query foo",
-            ""
-        )
-        .is_none());
+        assert!(
+            try_parse_aciddog_skill_search("/opt/aciddog skill run --name a", "/opt/aciddog")
+                .is_none()
+        );
+        assert!(
+            try_parse_aciddog_skill_search("/opt/aciddog skill search --query foo", "").is_none()
+        );
     }
 
     #[test]
@@ -13101,7 +13622,10 @@ mod tests {
         assert!(!resp.ok);
         let err = resp.error.unwrap();
         assert!(err.contains("not in your allowlist"), "got: {err}");
-        assert!(!err.contains("not found"), "must not confuse not-found with not-allowed: {err}");
+        assert!(
+            !err.contains("not found"),
+            "must not confuse not-found with not-allowed: {err}"
+        );
     }
 
     #[tokio::test]
@@ -13189,7 +13713,9 @@ mod tests {
         app.handle_agent_socket_event(AgentSocketEvent {
             request: crate::agent_ipc::Request {
                 agent_id: sender_uuid,
-                cmd: RequestCmd::SkillSearch { query: "   ".into() },
+                cmd: RequestCmd::SkillSearch {
+                    query: "   ".into(),
+                },
             },
             reply: tx,
         });
@@ -13252,7 +13778,10 @@ mod tests {
         assert!(resp.ok);
         let body = resp.message.unwrap();
         assert!(body.contains("- beta —"), "beta should match by id: {body}");
-        assert!(!body.contains("- alpha —"), "alpha should not match: {body}");
+        assert!(
+            !body.contains("- alpha —"),
+            "alpha should not match: {body}"
+        );
 
         // Query with no hits.
         let (tx, rx) = oneshot::channel();
@@ -13311,7 +13840,10 @@ mod tests {
             expected_abs.is_absolute(),
             "canonicalize must yield an absolute path"
         );
-        assert!(body.ends_with(md), "body must contain verbatim SKILL.md contents: {body}");
+        assert!(
+            body.ends_with(md),
+            "body must contain verbatim SKILL.md contents: {body}"
+        );
     }
 
     // --------- Tasks screen (in-TUI) ----------
@@ -14123,8 +14655,7 @@ mod tests {
 
         // Add a one-off message scheduled for 1s ago so it fires on the
         // next tick.
-        let past =
-            (chrono::Utc::now() - chrono::Duration::seconds(1)).naive_utc();
+        let past = (chrono::Utc::now() - chrono::Duration::seconds(1)).naive_utc();
         let past_str = past.format("%Y-%m-%dT%H:%M:%S").to_string();
         let (tx, rx) = oneshot::channel();
         app.handle_agent_socket_event(AgentSocketEvent {
@@ -14150,8 +14681,7 @@ mod tests {
         wire_up_agent_ids_and_channels(&mut app);
         let sender = app.chats[0].session_id.unwrap();
 
-        let past =
-            (chrono::Utc::now() - chrono::Duration::seconds(1)).naive_utc();
+        let past = (chrono::Utc::now() - chrono::Duration::seconds(1)).naive_utc();
         let past_str = past.format("%Y-%m-%dT%H:%M:%S").to_string();
         let (tx, rx) = oneshot::channel();
         app.handle_agent_socket_event(AgentSocketEvent {
@@ -14166,13 +14696,13 @@ mod tests {
         // command itself.
         let blocks = &app.chats[1].blocks;
         assert!(
-            blocks.iter().any(|b| matches!(b, ChatBlock::UserText { .. })),
+            blocks
+                .iter()
+                .any(|b| matches!(b, ChatBlock::UserText { .. })),
             "expected a user block on target chat, got: {blocks:?}"
         );
         assert!(
-            blocks
-                .iter()
-                .any(|b| matches!(b, ChatBlock::System { .. })),
+            blocks.iter().any(|b| matches!(b, ChatBlock::System { .. })),
             "expected /version system block on target chat, got: {blocks:?}"
         );
     }
@@ -14237,7 +14767,14 @@ mod tests {
         app.handle_agent_socket_event(AgentSocketEvent {
             // `coder#deadbeef` — looks like a worker display id; not a
             // configured agent, so it must be rejected.
-            request: cron_add_request(sender, "coder#deadbeef", "message", "ping", "0 9 * * *", false),
+            request: cron_add_request(
+                sender,
+                "coder#deadbeef",
+                "message",
+                "ping",
+                "0 9 * * *",
+                false,
+            ),
             reply: tx,
         });
         let resp = rx.await.unwrap();
@@ -14376,8 +14913,7 @@ mod tests {
         assert!(rx.await.unwrap().ok);
 
         // One-off targeting `c`, scheduled in the past so it's due.
-        let past =
-            (chrono::Utc::now() - chrono::Duration::seconds(1)).naive_utc();
+        let past = (chrono::Utc::now() - chrono::Duration::seconds(1)).naive_utc();
         let past_str = past.format("%Y-%m-%dT%H:%M:%S").to_string();
         let (tx, rx) = oneshot::channel();
         app.handle_agent_socket_event(AgentSocketEvent {
@@ -14399,9 +14935,7 @@ mod tests {
             let _ = app.cron.update(
                 j.id,
                 crate::cron::CronPatch {
-                    schedule: Some(crate::cron::CronSchedule::OneOff {
-                        run_at_local: past,
-                    }),
+                    schedule: Some(crate::cron::CronSchedule::OneOff { run_at_local: past }),
                     timezone: Some(crate::cron::CronTz::Utc),
                     enabled: Some(true),
                     ..Default::default()
@@ -14505,7 +15039,10 @@ mod tests {
 
         // "c" (chat 2) is awake and must receive. Use async recv so
         // the spawned send task gets a chance to run.
-        let _ = rxs[2].recv().await.expect("awake member receives broadcast");
+        let _ = rxs[2]
+            .recv()
+            .await
+            .expect("awake member receives broadcast");
         // "b" (chat 1) is asleep — never enqueued, so the channel is
         // empty even after letting the runtime tick.
         assert!(
@@ -14523,7 +15060,10 @@ mod tests {
         app.chats[0].asleep = true;
         app.handle_local_input(0, "hello".into());
         // No prompt should reach the agent's user channel.
-        assert!(urx.try_recv().is_err(), "asleep agent must not receive user prompt");
+        assert!(
+            urx.try_recv().is_err(),
+            "asleep agent must not receive user prompt"
+        );
         // Last block should be the system warn explaining why.
         match last_block(&app.chats[0]) {
             ChatBlock::System { text, kind } => {
