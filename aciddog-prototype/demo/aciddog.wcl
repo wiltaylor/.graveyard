@@ -49,6 +49,24 @@ schema "memory_bank" {
   embed_model: string @optional
 }
 
+// A virtual chat room shared by a named subset of agents plus the
+// human operator. Messages posted here are broadcast as
+// `<ChannelMessage channel="<id>" from="<sender>">body</ChannelMessage>`
+// to every listed member on their next turn, at a priority strictly
+// below direct mailbox messages so channel chatter can never starve
+// point-to-point tasking. `welcome` is cosmetic — rendered at the top
+// of the channel pane but never injected into any agent's context.
+// Transcripts are appended to `.aciddog/chat/<id>.jsonl` and the
+// latest tail is re-loaded for display on startup (but never replayed
+// into an agent's context). Workers cannot be members — only declared
+// agents.
+schema "channel" {
+  id: identifier @inline(0)
+  description: string @optional
+  welcome: string @optional
+  members: list(string)
+}
+
 // A named compaction policy controlling `/compact` behaviour for any
 // agent or worker that references it via their own `compaction`
 // attribute. `/reset` ignores this config and always drops the
@@ -463,4 +481,15 @@ thinking_messages {
     "kicking the tyres",
     "preparing a devastating comeback",
   ]
+}
+
+// A shared planning room for the core engineering agents. The
+// `welcome` string is cosmetic — visible in the TUI at the top of
+// the channel but never injected into any agent's context. Messages
+// sent here are delivered as <ChannelMessage> to every other member
+// on their next turn, at a priority below direct mailbox messages.
+channel planning {
+  description = "Shared planning and coordination for engineering work."
+  welcome     = "Welcome to #planning. Keep messages terse and on-topic; don't reply just to ack."
+  members     = ["planner", "coder", "tester"]
 }

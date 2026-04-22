@@ -90,6 +90,32 @@ pub enum AgentCommand {
         #[command(subcommand)]
         cmd: SkillCommand,
     },
+    /// Broadcast-style chat rooms. Any agent listed as a member of a
+    /// channel in the WCL config may post there; every other member
+    /// receives a `<ChannelMessage>` on their next turn at the lowest
+    /// message priority. Channels never auto-notify — only send when
+    /// you have something substantive to add.
+    Channel {
+        #[command(subcommand)]
+        cmd: ChannelCommand,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum ChannelCommand {
+    /// Broadcast a message to every other member of a channel you
+    /// belong to. The orchestrator wraps the body as
+    /// `<ChannelMessage channel="<id>" from="your-id">body</ChannelMessage>`
+    /// on each recipient side. Sender does NOT receive their own echo.
+    Send {
+        /// Channel id (e.g. `planning`). Must appear in the config and
+        /// have the calling agent listed in its `members`.
+        #[arg(long)]
+        id: String,
+        /// Message body to broadcast.
+        #[arg(long)]
+        body: String,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]

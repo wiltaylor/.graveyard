@@ -30,6 +30,16 @@ pub enum RequestCmd {
         to: String,
         body: String,
     },
+    /// Broadcast a message to every other member of a channel. The
+    /// orchestrator wraps the body as
+    /// `<ChannelMessage channel="<id>" from="<sender>">body</ChannelMessage>`
+    /// and enforces that the sender is a declared member of the channel.
+    /// Delivered at the lowest priority — below user input and direct
+    /// mailbox messages.
+    ChannelSend {
+        id: String,
+        body: String,
+    },
     /// Spawn an ephemeral worker from a declared worker template.
     /// Enforces the caller's `can_create_workers` allowlist. Reply
     /// message carries the new worker's display id and session UUID.

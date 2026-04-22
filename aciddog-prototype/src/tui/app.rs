@@ -559,6 +559,7 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             ChatBlock::from_tool_use("aciddog skill search", input)
         }
         RequestCmd::SkillRun { .. } => ChatBlock::from_tool_use("aciddog skill run", input),
+        RequestCmd::ChannelSend { .. } => ChatBlock::from_tool_use("aciddog channel send", input),
     }
 }
 
@@ -692,6 +693,28 @@ pub enum MessageOrigin {
     Cron { job_id: Uuid, created_by: String },
 }
 
+/// Origin of a channel post. `User` is the human operator typing in
+/// the TUI; `Agent(display_name)` is an agent-initiated broadcast via
+/// `aciddog channel send`. The variant controls how the `from=` attr
+/// is populated on the delivered `<ChannelMessage>` and which ACL
+/// checks run (the user never has to be a declared member).
+#[derive(Debug, Clone)]
+pub enum ChannelSender {
+    User,
+    Agent(String),
+}
+
+impl ChannelSender {
+    /// Rendered in the `from="..."` attribute on delivered messages
+    /// and as the `sender:` prefix in the TUI channel view.
+    pub fn label(&self) -> &str {
+        match self {
+            ChannelSender::User => "user",
+            ChannelSender::Agent(name) => name.as_str(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Agents,
@@ -702,15 +725,22 @@ pub enum Focus {
     /// The main area while `active_view == Tasks` — keyboard input
     /// goes to the tasks screen handler instead of the chat.
     Tasks,
+    /// The right-column "Channels" list (below the agents list).
+    /// Up/Down moves the selection, Enter sets the main area to
+    /// `ActiveView::Channel(idx)`.
+    Channels,
 }
 
 /// Which content the main (left) area is currently showing. Chat
-/// is the default per-agent view; Tasks is the in-TUI task board.
+/// is the default per-agent view; Tasks is the in-TUI task board;
+/// Channel routes the main area (and the chat input) to one of
+/// `App::channels` indexed by the payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ActiveView {
     #[default]
     Chat,
     Tasks,
+    Channel(usize),
 }
 
 /// Entries in the right-column Views list. Currently a single
@@ -727,6 +757,9 @@ pub struct LayoutRects {
     /// by `render()` so mouse clicks on a view entry can hit-test
     /// against the same geometry the UI drew.
     pub views_list_inner: Option<Rect>,
+    /// Inner rect of the "channels" panel on the right column.
+    /// `None` if no channels are declared in the config.
+    pub channels_list_inner: Option<Rect>,
     pub chat_buttons: Vec<ChatButton>,
     /// When a task form is open, every labelled field and button is
     /// given a clickable rect keyed by `FormField`. Populated each
@@ -768,6 +801,60 @@ pub enum AgentStatus {
     Hibernated,
 }
 
+/// Per-channel TUI state. Rendered in the main area when
+/// `active_view == Channel(idx)`. The `blocks` vector mirrors the
+/// disk-backed JSONL transcript (minus the cosmetic welcome banner,
+/// which is always index 0 when present). Channels are agent-only —
+/// the only non-agent participant is the human operator, who is
+/// represented in the rendered transcript as the literal sender
+/// "user" but has no entry in any `members` list.
+#[derive(Debug, Default)]
+pub struct ChannelState {
+    pub id: String,
+    /// Unused by the TUI today; preserved so future preamble updates
+    /// can inject a per-channel description line under the banner.
+    #[allow(dead_code)]
+    pub description: Option<String>,
+    /// Unused by the TUI today; the welcome block is materialized
+    /// into `blocks[0]` at init, so rendering doesn't need to read
+    /// this field again. Kept for /reset (clearing all non-welcome
+    /// blocks re-reads whether this was ever set).
+    #[allow(dead_code)]
+    pub welcome: Option<String>,
+    /// Agent ids that are members of this channel (verbatim from the
+    /// WCL config). Preserved for the `<channels>` prompt section and
+    /// for broadcast dispatch.
+    #[allow(dead_code)]
+    pub members: Vec<String>,
+    /// Rendered transcript. The welcome banner (if any) is always at
+    /// index 0 and is NOT persisted to disk. Everything else is a
+    /// `ChatBlock::ChannelMessage` whose text came from (a) loading
+    /// the JSONL tail at startup or (b) a live broadcast call.
+    pub blocks: Vec<ChatBlock>,
+    pub input: String,
+    pub input_cursor: usize,
+    /// Reserved for future wrap-aware channel input navigation;
+    /// v1 renders the buffer on a single row with char-level cursor.
+    #[allow(dead_code)]
+    pub anchor: ScrollAnchor,
+    pub sticky_bottom: bool,
+    /// Reserved for future per-block selection (copy/collapse);
+    /// channel messages are not collapsible today.
+    #[allow(dead_code)]
+    pub selected_block: Option<usize>,
+    #[allow(dead_code)]
+    pub anchor_scratch: Option<super::blocks::AnchorScratch>,
+    pub input_scroll: u16,
+    /// Reserved for future multi-line channel input rendering.
+    #[allow(dead_code)]
+    pub input_wrap_width: u16,
+    #[allow(dead_code)]
+    pub input_visible_rows: u16,
+    /// Append-only writer for this channel's JSONL file. `None` only
+    /// in tests — the real TUI always supplies one via `tui::run`.
+    pub log: Option<super::channel_log::ChannelLog>,
+}
+
 #[derive(Debug, Default)]
 pub struct AgentChat {
     pub blocks: Vec<ChatBlock>,
@@ -783,6 +870,11 @@ pub struct AgentChat {
     /// runaway sender can't exhaust memory; the socket handler awaits
     /// when full.
     pub agent_tx: Option<mpsc::Sender<String>>,
+    /// Channel broadcasts. Bounded like `agent_tx`. Drained strictly
+    /// after both `user_rx` and `agent_rx` by the biased select in
+    /// `run_core`, so channel chatter can never starve direct tasking.
+    /// `None` for workers (channels are agent-only).
+    pub channel_tx: Option<mpsc::Sender<String>>,
     pub status: AgentStatus,
     /// Session UUID shared with the AICore and the agent IPC layer. Set at
     /// spawn time; used to route inbound socket requests to the right chat.
@@ -1139,6 +1231,59 @@ fn effective_input_visible_rows(chat: &AgentChat) -> u16 {
     }
 }
 
+/// Minimal input editing for a channel's compose buffer. Channels
+/// don't yet support the full wrap-aware navigation agent chats have
+/// (up/down through visual rows, home/end on a wrapped row); this
+/// first pass just handles insert, backspace, char-level L/R, and
+/// clear. The channel input box is one line at a time in the TUI —
+/// users can still type newlines via Shift+Enter, they just don't
+/// get wrap-aware line navigation.
+fn channel_input_insert(ch_state: &mut ChannelState, ch: char) {
+    let idx = ch_state.input_cursor.min(ch_state.input.len());
+    ch_state.input.insert(idx, ch);
+    ch_state.input_cursor = idx + ch.len_utf8();
+}
+
+fn channel_input_backspace(ch_state: &mut ChannelState) {
+    if ch_state.input_cursor == 0 {
+        return;
+    }
+    let mut prev = ch_state.input_cursor - 1;
+    while prev > 0 && !ch_state.input.is_char_boundary(prev) {
+        prev -= 1;
+    }
+    ch_state.input.replace_range(prev..ch_state.input_cursor, "");
+    ch_state.input_cursor = prev;
+}
+
+fn channel_input_cursor_left(ch_state: &mut ChannelState) {
+    if ch_state.input_cursor == 0 {
+        return;
+    }
+    let mut prev = ch_state.input_cursor - 1;
+    while prev > 0 && !ch_state.input.is_char_boundary(prev) {
+        prev -= 1;
+    }
+    ch_state.input_cursor = prev;
+}
+
+fn channel_input_cursor_right(ch_state: &mut ChannelState) {
+    if ch_state.input_cursor >= ch_state.input.len() {
+        return;
+    }
+    let mut next = ch_state.input_cursor + 1;
+    while next < ch_state.input.len() && !ch_state.input.is_char_boundary(next) {
+        next += 1;
+    }
+    ch_state.input_cursor = next;
+}
+
+fn channel_reset_input(ch_state: &mut ChannelState) {
+    ch_state.input.clear();
+    ch_state.input_cursor = 0;
+    ch_state.input_scroll = 0;
+}
+
 fn input_insert(chat: &mut AgentChat, ch: char) {
     let idx = chat.input_cursor.min(chat.input.len());
     chat.input.insert(idx, ch);
@@ -1285,6 +1430,13 @@ pub struct App {
     pub active_view: ActiveView,
     /// Which row of the right-column Views list is highlighted.
     pub selected_view: usize,
+    /// Declared channels, one `ChannelState` per `channel` block.
+    /// Order matches `config.channels` (declaration order). Empty if
+    /// no channel blocks were declared.
+    pub channels: Vec<ChannelState>,
+    /// Which row of the right-column Channels list is highlighted.
+    /// Bounded to `0..channels.len()` (saturating).
+    pub selected_channel: usize,
     /// UI-local state for the Tasks screen: cursor, modals, prompts.
     pub tasks_screen: TasksScreen,
     /// Last left-click coord + timestamp, used only to detect
@@ -1308,6 +1460,30 @@ pub const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(500);
 
 impl App {
     pub fn new(config: AciddogConfig) -> Self {
+        let channels: Vec<ChannelState> = config
+            .channels
+            .iter()
+            .map(|c| {
+                // Seed the display buffer with the welcome banner so
+                // it sits above any live messages. Real disk history
+                // is loaded later by `tui::run`, which inserts those
+                // blocks after the welcome (index 1+).
+                let mut blocks: Vec<ChatBlock> = Vec::new();
+                if let Some(w) = c.welcome.as_ref().filter(|s| !s.trim().is_empty()) {
+                    blocks.push(ChatBlock::channel_welcome(w.clone()));
+                }
+                ChannelState {
+                    id: c.id.clone(),
+                    description: c.description.clone(),
+                    welcome: c.welcome.clone(),
+                    members: c.members.clone(),
+                    blocks,
+                    sticky_bottom: true,
+                    ..Default::default()
+                }
+            })
+            .collect();
+
         let chats: Vec<AgentChat> = config
             .agents
             .iter()
@@ -1357,6 +1533,8 @@ impl App {
             memory: None,
             active_view: ActiveView::default(),
             selected_view: 0,
+            channels,
+            selected_channel: 0,
             tasks_screen: TasksScreen::default(),
             last_click: None,
             frame_tick: 0,
@@ -1894,6 +2072,9 @@ impl App {
             RequestCmd::CronRemove { id } => {
                 self.handle_cron_remove(idx, id, reply);
             }
+            RequestCmd::ChannelSend { id, body } => {
+                self.handle_channel_send_from_agent(idx, id, body, reply);
+            }
         }
     }
 
@@ -1999,6 +2180,8 @@ impl App {
                 creatable: creatable.iter().map(|s| s.to_string()).collect(),
                 memory_banks: memory_banks_for_worker,
                 skills: skills_for_worker,
+                // Workers never participate in channels.
+                channels: Vec::new(),
                 worker: Some(WorkerCtx {
                     parent_id: sender_display.clone(),
                     task: task.clone(),
@@ -2082,7 +2265,19 @@ impl App {
             tracing::warn!(%display_name, "user_tx closed before initial task could be sent");
         }
 
-        tokio::spawn(run_core(new_idx, built_core, user_rx, agent_rx, ai_tx));
+        // Workers never participate in channels. Give `run_core` a
+        // pre-closed `channel_rx` so its biased select treats the
+        // channel branch as permanently disabled.
+        let (_wkr_ch_tx, wkr_ch_rx) = mpsc::channel::<String>(1);
+        drop(_wkr_ch_tx);
+        tokio::spawn(run_core(
+            new_idx,
+            built_core,
+            user_rx,
+            agent_rx,
+            wkr_ch_rx,
+            ai_tx,
+        ));
 
         // Surface the spawn on the parent pane so the user can see it.
         if let Some(parent) = self.chats.get_mut(sender_idx) {
@@ -2254,7 +2449,11 @@ impl App {
             chat.hibernated = false;
         }
 
-        tokio::spawn(run_core(idx, core, user_rx, agent_rx, ai_tx));
+        // Workers never participate in channels; give `run_core` a
+        // pre-closed channel_rx (see the spawn path above).
+        let (_wkr_ch_tx, wkr_ch_rx) = mpsc::channel::<String>(1);
+        drop(_wkr_ch_tx);
+        tokio::spawn(run_core(idx, core, user_rx, agent_rx, wkr_ch_rx, ai_tx));
         Ok(())
     }
 
@@ -2271,6 +2470,145 @@ impl App {
             body,
             reply,
         );
+    }
+
+    /// IPC entry for `aciddog channel send`. Resolves the sender's
+    /// config id from `agent_ids`, validates channel membership, and
+    /// defers to the shared broadcaster. See `broadcast_to_channel`.
+    fn handle_channel_send_from_agent(
+        &mut self,
+        sender_idx: usize,
+        channel_id: String,
+        body: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(sender_chat) = self.chats.get(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        // Workers are never channel members — fail fast for them.
+        if sender_chat.parent_idx.is_some() {
+            let _ = reply.send(Response::err(
+                "workers cannot post to channels — only declared agents are members",
+            ));
+            return;
+        }
+        let sender_name = sender_chat.display_name.clone();
+        self.broadcast_to_channel(ChannelSender::Agent(sender_name), channel_id, body, reply);
+    }
+
+    /// Core broadcast path: validate sender membership (for agents),
+    /// build the `<ChannelMessage>` payload, append a ChannelMessage
+    /// block to the channel's display log (and disk log), and enqueue
+    /// a non-blocking send on every other member's `channel_tx`.
+    /// Fully implemented after `ChannelState` exists; see task list.
+    pub(crate) fn broadcast_to_channel(
+        &mut self,
+        sender: ChannelSender,
+        channel_id: String,
+        body: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        // Resolve channel + validate sender.
+        let Some(channel) = self.config.channel(&channel_id).cloned() else {
+            let _ = reply.send(Response::err(format!("unknown channel `{channel_id}`")));
+            return;
+        };
+        if let ChannelSender::Agent(ref name) = sender {
+            if !channel.members.iter().any(|m| m == name) {
+                let _ = reply.send(Response::err(format!(
+                    "agent `{name}` is not a member of channel `{channel_id}`"
+                )));
+                return;
+            }
+        }
+
+        // Leading `@name` tokens narrow the recipient list. Unknown
+        // names are rejected so typos surface fast instead of being
+        // silently delivered to nobody.
+        let mentions = parse_leading_mentions(&body);
+        if !mentions.is_empty() {
+            for m in &mentions {
+                if !channel.members.iter().any(|member| member == m) {
+                    let _ = reply.send(Response::err(format!(
+                        "`@{m}` is not a member of channel `{channel_id}`"
+                    )));
+                    return;
+                }
+            }
+        }
+
+        let from_label = sender.label().to_string();
+        let payload = format!(
+            "<ChannelMessage channel=\"{channel_id}\" from=\"{from_label}\">{body}</ChannelMessage>"
+        );
+
+        // Find channel state + append display block + disk line.
+        if let Some(ch_state) = self
+            .channels
+            .iter_mut()
+            .find(|c| c.id == channel_id)
+        {
+            ch_state.blocks.push(ChatBlock::channel_message(
+                from_label.clone(),
+                body.clone(),
+            ));
+            ch_state.sticky_bottom = true;
+            if let Some(log) = ch_state.log.as_mut() {
+                if let Err(e) = log.append(&from_label, &body) {
+                    tracing::warn!(channel = %channel_id, error = %e, "failed to append channel log");
+                }
+            }
+        }
+
+        // Enqueue payload on every other member's channel_tx. When
+        // the message starts with `@mentions` those become the sole
+        // recipients (intersected with channel membership, which was
+        // validated above); otherwise it broadcasts to everyone.
+        let pool_len = self.config.thinking_messages.len();
+        let sender_label = match &sender {
+            ChannelSender::Agent(name) => Some(name.clone()),
+            ChannelSender::User => None,
+        };
+        for member in &channel.members {
+            if sender_label.as_deref() == Some(member.as_str()) {
+                continue;
+            }
+            if !mentions.is_empty() && !mentions.iter().any(|m| m == member) {
+                continue;
+            }
+            let Some(recipient_idx) = self
+                .chats
+                .iter()
+                .position(|c| c.display_name == *member && c.parent_idx.is_none())
+            else {
+                continue;
+            };
+            let Some(tx) = self
+                .chats
+                .get(recipient_idx)
+                .and_then(|c| c.channel_tx.clone())
+            else {
+                continue;
+            };
+            if let Some(chat) = self.chats.get_mut(recipient_idx) {
+                if chat.status != AgentStatus::Error {
+                    chat.begin_working(pool_len);
+                }
+            }
+            let payload = payload.clone();
+            let member_name = member.clone();
+            tokio::spawn(async move {
+                if tx.send(payload).await.is_err() {
+                    tracing::warn!(
+                        recipient = %member_name,
+                        "channel message dropped: recipient channel closed"
+                    );
+                }
+            });
+        }
+
+        let _ = reply.send(Response::ok("broadcast"));
     }
 
     /// Core message-delivery path. Drives recipient resolution, ACL,
@@ -3693,10 +4031,10 @@ impl App {
             return;
         }
 
-        // Tab cycles the three visible panels — UNLESS a Tasks-view
-        // modal (form / detail / prompt) is open, in which case Tab
-        // belongs to that modal's field navigation and must reach
-        // `handle_key_tasks`.
+        // Tab cycles the visible right-column panels plus the main
+        // area — UNLESS a Tasks-view modal (form / detail / prompt)
+        // is open, in which case Tab belongs to that modal's field
+        // navigation and must reach `handle_key_tasks`.
         let tasks_modal_open = self.active_view == ActiveView::Tasks
             && self.focus == Focus::Tasks
             && (self.tasks_screen.form.is_some()
@@ -3704,13 +4042,21 @@ impl App {
                 || self.tasks_screen.prompt.is_some());
         if matches!(code, KeyCode::Tab) && !tasks_modal_open {
             let main = match self.active_view {
-                ActiveView::Chat => Focus::Chat,
+                ActiveView::Chat | ActiveView::Channel(_) => Focus::Chat,
                 ActiveView::Tasks => Focus::Tasks,
             };
+            let has_channels = !self.channels.is_empty();
             self.focus = match self.focus {
                 f if f == main => Focus::Agents,
                 Focus::Agents => Focus::Views,
-                Focus::Views => main,
+                Focus::Views => {
+                    if has_channels {
+                        Focus::Channels
+                    } else {
+                        main
+                    }
+                }
+                Focus::Channels => main,
                 // If focus is on a main-area variant that doesn't
                 // match the current active_view (e.g. after a view
                 // switch), snap back to the right one.
@@ -3724,6 +4070,7 @@ impl App {
             Focus::Chat => self.handle_key_chat(code, mods),
             Focus::Views => self.handle_key_views(code, mods),
             Focus::Tasks => self.handle_key_tasks(code, mods),
+            Focus::Channels => self.handle_key_channels(code, mods),
         }
     }
 
@@ -3752,16 +4099,22 @@ impl App {
         }
     }
 
-    /// If the user is in the Tasks view and interacts with the
-    /// agents list, swap the main area back to chat. The operator
-    /// is clearly asking for an agent, so stop showing the task
-    /// board.
+    /// If the user is in any non-chat main view (Tasks or a Channel)
+    /// and interacts with the agents list, swap the main area back
+    /// to the agent chat. The operator is clearly asking for an
+    /// agent, so stop showing the alternate view.
     fn return_to_chat_if_viewing_tasks(&mut self) {
-        if self.active_view == ActiveView::Tasks {
-            self.active_view = ActiveView::Chat;
-            // Close any open Tasks modals so they don't get stranded
-            // off-screen.
-            self.tasks_screen.close_modal();
+        match self.active_view {
+            ActiveView::Tasks => {
+                self.active_view = ActiveView::Chat;
+                // Close any open Tasks modals so they don't get
+                // stranded off-screen.
+                self.tasks_screen.close_modal();
+            }
+            ActiveView::Channel(_) => {
+                self.active_view = ActiveView::Chat;
+            }
+            ActiveView::Chat => {}
         }
     }
 
@@ -3793,6 +4146,32 @@ impl App {
                     let rows = TasksScreen::rows(&self.tasks);
                     self.tasks_screen.reclamp(&rows);
                 }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_channels(&mut self, code: KeyCode, _mods: KeyModifiers) {
+        if self.channels.is_empty() {
+            return;
+        }
+        match code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.focus = Focus::Agents;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.selected_channel + 1 < self.channels.len() {
+                    self.selected_channel += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.selected_channel > 0 {
+                    self.selected_channel -= 1;
+                }
+            }
+            KeyCode::Enter => {
+                self.active_view = ActiveView::Channel(self.selected_channel);
+                self.focus = Focus::Chat;
             }
             _ => {}
         }
@@ -4352,6 +4731,13 @@ impl App {
     }
 
     fn handle_key_chat(&mut self, code: KeyCode, mods: KeyModifiers) {
+        // Route to the channel-input path if the main area is
+        // showing a channel rather than an agent chat.
+        if let ActiveView::Channel(idx) = self.active_view {
+            self.handle_key_channel_chat(idx, code, mods);
+            return;
+        }
+
         // Alt-modified keys address blocks, not the input buffer.
         if mods.contains(KeyModifiers::ALT) {
             match code {
@@ -4431,6 +4817,140 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Simplified channel-input key handler. No Alt+block selection,
+    /// no wrap-aware up/down — channel composing is a single-line
+    /// feel for v1. Shift+Enter still inserts a literal newline, so
+    /// users who need a multi-line post aren't blocked.
+    fn handle_key_channel_chat(&mut self, idx: usize, code: KeyCode, mods: KeyModifiers) {
+        let is_newline = (matches!(code, KeyCode::Enter) && mods.contains(KeyModifiers::SHIFT))
+            || (matches!(code, KeyCode::Char('j')) && mods.contains(KeyModifiers::CONTROL));
+        if is_newline {
+            if let Some(ch) = self.channels.get_mut(idx) {
+                channel_input_insert(ch, '\n');
+            }
+            return;
+        }
+        match code {
+            KeyCode::Esc => self.focus = Focus::Agents,
+            KeyCode::Enter => self.submit_channel_input(idx),
+            KeyCode::Backspace => {
+                if let Some(ch) = self.channels.get_mut(idx) {
+                    channel_input_backspace(ch);
+                }
+            }
+            KeyCode::Left => {
+                if let Some(ch) = self.channels.get_mut(idx) {
+                    channel_input_cursor_left(ch);
+                }
+            }
+            KeyCode::Right => {
+                if let Some(ch) = self.channels.get_mut(idx) {
+                    channel_input_cursor_right(ch);
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(ch) = self.channels.get_mut(idx) {
+                    channel_input_insert(ch, c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Consume the channel's compose buffer and broadcast it (or
+    /// dispatch a slash command). Mirrors `submit_input` for agents.
+    fn submit_channel_input(&mut self, idx: usize) {
+        let content = {
+            let Some(ch) = self.channels.get_mut(idx) else {
+                return;
+            };
+            let trimmed = ch.input.trim();
+            if trimmed.is_empty() {
+                return;
+            }
+            let content = trimmed.to_string();
+            channel_reset_input(ch);
+            content
+        };
+        self.handle_local_channel_input(idx, content);
+    }
+
+    /// Handle user-typed input on a channel: dispatch slash commands
+    /// (`/reset` clears the visible blocks; other commands emit a
+    /// helpful system note), or broadcast the message to all other
+    /// members.
+    pub(crate) fn handle_local_channel_input(&mut self, idx: usize, content: String) {
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let content = trimmed.to_string();
+
+        if content.starts_with('/') {
+            if let Some(outcome) = super::commands::dispatch(&content) {
+                self.apply_channel_command_for(idx, outcome);
+            }
+            return;
+        }
+
+        // Copy the channel id out because the broadcast path needs
+        // `&mut self` and we can't hold a reference into `channels`.
+        let Some(channel_id) = self.channels.get(idx).map(|c| c.id.clone()) else {
+            return;
+        };
+        let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+        self.broadcast_to_channel(ChannelSender::User, channel_id, content, reply_tx);
+    }
+
+    /// Apply a parsed slash command in the channel's context.
+    /// `/reset` wipes the in-memory display log (preserving the
+    /// welcome banner if any) without touching the disk JSONL.
+    /// `/compact` is a no-op with a friendly system note — there is
+    /// no agent session here to compact. Unknown commands get the
+    /// same hint string as the agent path.
+    fn apply_channel_command_for(&mut self, idx: usize, outcome: super::commands::CommandOutcome) {
+        use super::commands::CommandOutcome;
+        let Some(ch) = self.channels.get_mut(idx) else {
+            return;
+        };
+        match outcome {
+            CommandOutcome::Quit => self.should_quit = true,
+            CommandOutcome::Message(text) => {
+                ch.blocks.push(ChatBlock::system_info(text));
+            }
+            CommandOutcome::Reset => {
+                // Keep only the welcome banner (which always lives
+                // at index 0 if present). Disk log is NOT truncated
+                // — the operator is clearing their own screen, not
+                // forgetting history.
+                let keep_welcome = matches!(
+                    ch.blocks.first(),
+                    Some(ChatBlock::ChannelMessage { is_welcome: true, .. })
+                );
+                if keep_welcome {
+                    ch.blocks.truncate(1);
+                } else {
+                    ch.blocks.clear();
+                }
+                ch.blocks.push(ChatBlock::system_info(
+                    "channel cleared (disk log preserved)",
+                ));
+                ch.selected_block = None;
+                ch.sticky_bottom = true;
+            }
+            CommandOutcome::Compact => {
+                ch.blocks.push(ChatBlock::system_info(
+                    "/compact is a no-op in channels — there is no agent session here to compact",
+                ));
+            }
+            CommandOutcome::Unknown { name, hint } => {
+                ch.blocks.push(ChatBlock::system_warn(format!(
+                    "unknown command: /{name} — {hint}"
+                )));
+            }
         }
     }
 
@@ -4543,6 +5063,24 @@ impl App {
                     }
                 }
 
+                // 2b. Channels list: clicking a channel row both
+                //     focuses the panel and opens that channel in
+                //     the main area (same as Enter on the keyboard).
+                //     Clicks on empty rows just focus the panel.
+                if let Some(rect) = self.layout.channels_list_inner {
+                    if rect_contains(rect, pos) {
+                        let row_in_list = ev.row.saturating_sub(rect.y) as usize;
+                        if row_in_list < self.channels.len() {
+                            self.selected_channel = row_in_list;
+                            self.active_view = ActiveView::Channel(row_in_list);
+                            self.focus = Focus::Chat;
+                        } else {
+                            self.focus = Focus::Channels;
+                        }
+                        return;
+                    }
+                }
+
                 if let Some(rect) = self.layout.agent_list_inner {
                     if rect_contains(rect, pos) {
                         let row_in_list = ev.row.saturating_sub(rect.y) as usize;
@@ -4565,7 +5103,7 @@ impl App {
                         // Main area: Focus depends on which view is
                         // drawn there.
                         self.focus = match self.active_view {
-                            ActiveView::Chat => Focus::Chat,
+                            ActiveView::Chat | ActiveView::Channel(_) => Focus::Chat,
                             ActiveView::Tasks => Focus::Tasks,
                         };
                         // In Tasks view, clicking a row selects it;
@@ -4614,7 +5152,7 @@ impl App {
                 if let Some(rect) = self.layout.chat_input_inner {
                     if rect_contains(rect, pos) {
                         self.focus = match self.active_view {
-                            ActiveView::Chat => Focus::Chat,
+                            ActiveView::Chat | ActiveView::Channel(_) => Focus::Chat,
                             ActiveView::Tasks => Focus::Tasks,
                         };
                     }
@@ -4983,6 +5521,34 @@ pub fn rect_contains(rect: Rect, (x, y): (u16, u16)) -> bool {
 ///
 /// Parsing reuses `AgentArgs` (the same clap parser the agent-mode binary
 /// uses) so flag semantics stay in one place.
+/// Pull leading `@name` tokens off the front of a channel message
+/// body. Returns the list of target names (in encounter order,
+/// without the leading `@`) and the full original body unchanged —
+/// mentions are NOT stripped from the delivered message, they just
+/// narrow the recipient list.
+///
+/// A token is only a mention when it's at the start of a whitespace-
+/// separated run at the beginning of the body. `@` inside running
+/// prose (e.g. "ping @alice later") is ignored. Returns an empty
+/// Vec when the body has no leading `@`.
+fn parse_leading_mentions(body: &str) -> Vec<String> {
+    let mut mentions = Vec::new();
+    let mut rest = body.trim_start();
+    while let Some(stripped) = rest.strip_prefix('@') {
+        let end = stripped
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(stripped.len());
+        let name = &stripped[..end];
+        // A bare `@` with nothing after it is not a mention.
+        if name.is_empty() {
+            break;
+        }
+        mentions.push(name.to_string());
+        rest = stripped[end..].trim_start();
+    }
+    mentions
+}
+
 fn try_parse_aciddog_send(cmd: &str, binary: &str) -> Option<(String, String)> {
     match try_parse_aciddog(cmd, binary)? {
         AgentCommand::Send { to, body } => Some((to, body)),
@@ -5333,6 +5899,35 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         }
     }
 
+    // Open append-only JSONL transcripts for every declared channel,
+    // then tail the last ~500 lines into each `ChannelState` for
+    // display-only replay. The live messages are NEVER forwarded to
+    // any agent's `channel_tx` here — agents start fresh on each
+    // boot.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    for ch in app.channels.iter_mut() {
+        match super::channel_log::ChannelLog::open(&cwd, &ch.id) {
+            Ok(log) => {
+                let log_path = log.path().to_path_buf();
+                ch.log = Some(log);
+                match super::channel_log::tail(&log_path, 500) {
+                    Ok(lines) => {
+                        info!(channel = %ch.id, loaded = lines.len(), "loaded channel transcript");
+                        for line in lines {
+                            ch.blocks.push(ChatBlock::channel_message(line.sender, line.body));
+                        }
+                    }
+                    Err(e) => {
+                        warn!(channel = %ch.id, error = %e, "failed to tail channel transcript");
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(channel = %ch.id, error = %e, "failed to open channel log");
+            }
+        }
+    }
+
     // Construct the semantic-memory registry rooted at `.aciddog/memory/`.
     // Banks open lazily on first use, so this is just a handle creation —
     // no disk or model download cost unless an agent actually invokes
@@ -5381,8 +5976,10 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     for (idx, agent) in app.config.agents.iter().enumerate() {
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
         let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
+        let (channel_tx, channel_rx) = mpsc::channel::<String>(256);
         app.chats[idx].user_tx = Some(user_tx);
         app.chats[idx].agent_tx = Some(agent_tx);
+        app.chats[idx].channel_tx = Some(channel_tx);
 
         let ai_core = app
             .config
@@ -5431,6 +6028,21 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             .unwrap_or_default();
 
         let skills_for_agent = app.config.skills_for(&agent.id);
+        let channels_for_agent: Vec<crate::ai::ChannelPromptCtx> = app
+            .config
+            .channels_for_agent(&agent.id)
+            .iter()
+            .map(|c| crate::ai::ChannelPromptCtx {
+                id: c.id.clone(),
+                description: c.description.clone(),
+                other_members: c
+                    .members
+                    .iter()
+                    .filter(|m| m.as_str() != agent.id.as_str())
+                    .cloned()
+                    .collect(),
+            })
+            .collect();
 
         let parts = PromptParts {
             role: agent.role_description.clone(),
@@ -5443,6 +6055,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
                 creatable: creatable.iter().map(|s| s.to_string()).collect(),
                 memory_banks: memory_banks_for_agent,
                 skills: skills_for_agent,
+                channels: channels_for_agent,
                 worker: None,
             }),
         };
@@ -5483,7 +6096,14 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             *prompt = assembled;
         }
 
-        tokio::spawn(run_core(idx, core, user_rx, agent_rx, ai_tx.clone()));
+        tokio::spawn(run_core(
+            idx,
+            core,
+            user_rx,
+            agent_rx,
+            channel_rx,
+            ai_tx.clone(),
+        ));
     }
     drop(ai_tx);
     // `app.ai_tx` retains a sender clone so runtime worker spawns can
@@ -5517,15 +6137,22 @@ pub(super) async fn run_core(
     mut core: Box<dyn AICore>,
     mut user_rx: mpsc::UnboundedReceiver<String>,
     mut agent_rx: mpsc::Receiver<String>,
+    mut channel_rx: mpsc::Receiver<String>,
     ai_tx: mpsc::Sender<(usize, AIEvent)>,
 ) {
     loop {
-        // Biased select: user-typed prompts always preempt queued
-        // inter-agent messages when both are pending.
+        // Biased select. Strict priority ordering:
+        //   user_rx   > agent_rx > channel_rx
+        // so a user-typed prompt always wins over a mailbox message,
+        // and direct mailbox traffic always wins over channel
+        // chatter. Channel messages drain only when the other two
+        // queues are empty, making channel volume incapable of
+        // starving the agent from real work.
         let prompt = tokio::select! {
             biased;
             Some(m) = user_rx.recv() => m,
             Some(m) = agent_rx.recv() => m,
+            Some(m) = channel_rx.recv() => m,
             else => return,
         };
 
@@ -5714,6 +6341,7 @@ mod tests {
             }],
             memory_banks: vec![],
             compactions: vec![],
+            channels: vec![],
             thinking_messages: vec!["thinking".into()],
         }
     }
@@ -6789,6 +7417,209 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_messages_preempt_queued_channel_messages() {
+        // Extended biased select in run_core must drain user_rx first,
+        // then agent_rx, and only then channel_rx. A queued channel
+        // message must never jump ahead of a pending mailbox message.
+        let (user_tx, mut user_rx) = mpsc::unbounded_channel::<String>();
+        let (agent_tx, mut agent_rx) = mpsc::channel::<String>(16);
+        let (channel_tx, mut channel_rx) = mpsc::channel::<String>(16);
+
+        channel_tx.send("channel-first".into()).await.unwrap();
+        agent_tx.send("agent-first".into()).await.unwrap();
+        user_tx.send("user-first".into()).unwrap();
+
+        let first = tokio::select! {
+            biased;
+            Some(m) = user_rx.recv() => m,
+            Some(m) = agent_rx.recv() => m,
+            Some(m) = channel_rx.recv() => m,
+            else => unreachable!(),
+        };
+        let second = tokio::select! {
+            biased;
+            Some(m) = user_rx.recv() => m,
+            Some(m) = agent_rx.recv() => m,
+            Some(m) = channel_rx.recv() => m,
+            else => unreachable!(),
+        };
+        let third = tokio::select! {
+            biased;
+            Some(m) = user_rx.recv() => m,
+            Some(m) = agent_rx.recv() => m,
+            Some(m) = channel_rx.recv() => m,
+            else => unreachable!(),
+        };
+        assert_eq!(first, "user-first");
+        assert_eq!(second, "agent-first");
+        assert_eq!(third, "channel-first");
+    }
+
+    // --------- channel broadcast narrowing ----------
+
+    /// Build a sample config with a channel containing all three
+    /// agents, wire per-agent `channel_tx`/`_rx` pairs, and seed
+    /// `App::channels` by hand. Returns the bounded receivers in
+    /// agent-index order so tests can `try_recv()` without blocking.
+    fn sample_config_with_channel() -> AciddogConfig {
+        let mut cfg = sample_config();
+        cfg.channels = vec![crate::config::Channel {
+            id: "room".into(),
+            description: None,
+            welcome: None,
+            members: vec!["a".into(), "b".into(), "c".into()],
+        }];
+        cfg
+    }
+
+    fn wire_up_channels(app: &mut App) -> Vec<mpsc::Receiver<String>> {
+        let mut rxs = Vec::new();
+        for i in 0..app.chats.len() {
+            let (tx, rx) = mpsc::channel::<String>(16);
+            app.chats[i].channel_tx = Some(tx);
+            rxs.push(rx);
+        }
+        // `App::new` populates `channels` from `config.channels`, but
+        // let's make sure the state is present in case the helper is
+        // called on a freshly-mutated config.
+        if app.channels.is_empty() {
+            app.channels = app
+                .config
+                .channels
+                .iter()
+                .map(|c| ChannelState {
+                    id: c.id.clone(),
+                    members: c.members.clone(),
+                    sticky_bottom: true,
+                    ..Default::default()
+                })
+                .collect();
+        }
+        rxs
+    }
+
+    #[tokio::test]
+    async fn broadcast_without_mentions_goes_to_every_other_member() {
+        let mut app = App::new(sample_config_with_channel());
+        let mut rxs = wire_up_channels(&mut app);
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.broadcast_to_channel(
+            ChannelSender::Agent("a".into()),
+            "room".into(),
+            "hi team".into(),
+            reply_tx,
+        );
+        assert!(reply_rx.await.unwrap().ok);
+
+        // Sender `a` stays silent; `b` and `c` both receive.
+        assert!(rxs[0].try_recv().is_err(), "sender should not self-echo");
+        let b = rxs[1].recv().await.expect("b receives");
+        let c = rxs[2].recv().await.expect("c receives");
+        let expected = r#"<ChannelMessage channel="room" from="a">hi team</ChannelMessage>"#;
+        assert_eq!(b, expected);
+        assert_eq!(c, expected);
+    }
+
+    #[tokio::test]
+    async fn broadcast_with_single_mention_narrows_to_that_member() {
+        let mut app = App::new(sample_config_with_channel());
+        let mut rxs = wire_up_channels(&mut app);
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.broadcast_to_channel(
+            ChannelSender::Agent("a".into()),
+            "room".into(),
+            "@b heads up".into(),
+            reply_tx,
+        );
+        assert!(reply_rx.await.unwrap().ok);
+
+        // Only `b` receives; `c` is skipped even though they're a
+        // channel member.
+        assert!(rxs[0].try_recv().is_err());
+        let payload = rxs[1].recv().await.expect("b receives");
+        assert_eq!(
+            payload,
+            r#"<ChannelMessage channel="room" from="a">@b heads up</ChannelMessage>"#
+        );
+        assert!(rxs[2].try_recv().is_err(), "c should not receive");
+    }
+
+    #[tokio::test]
+    async fn broadcast_with_multiple_mentions_narrows_to_listed_members() {
+        let mut app = App::new(sample_config_with_channel());
+        let mut rxs = wire_up_channels(&mut app);
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.broadcast_to_channel(
+            ChannelSender::User,
+            "room".into(),
+            "@b @c ship it".into(),
+            reply_tx,
+        );
+        assert!(reply_rx.await.unwrap().ok);
+
+        // User is not a channel member, so every mentioned member
+        // receives (self-echo rule only applies to agents).
+        let b = rxs[1].recv().await.expect("b receives");
+        let c = rxs[2].recv().await.expect("c receives");
+        let expected = r#"<ChannelMessage channel="room" from="user">@b @c ship it</ChannelMessage>"#;
+        assert_eq!(b, expected);
+        assert_eq!(c, expected);
+        assert!(rxs[0].try_recv().is_err(), "a should not receive");
+    }
+
+    #[tokio::test]
+    async fn broadcast_rejects_mention_of_non_member() {
+        let mut app = App::new(sample_config_with_channel());
+        let mut rxs = wire_up_channels(&mut app);
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.broadcast_to_channel(
+            ChannelSender::User,
+            "room".into(),
+            "@ghost hello".into(),
+            reply_tx,
+        );
+        let resp = reply_rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(
+            resp.error.as_deref().unwrap_or("").contains("@ghost"),
+            "error should cite the bad mention: {resp:?}"
+        );
+        // No recipients should have received anything.
+        for rx in rxs.iter_mut() {
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn broadcast_with_self_mention_skips_sender_echo() {
+        let mut app = App::new(sample_config_with_channel());
+        let mut rxs = wire_up_channels(&mut app);
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.broadcast_to_channel(
+            ChannelSender::Agent("a".into()),
+            "room".into(),
+            "@a @b note to self".into(),
+            reply_tx,
+        );
+        assert!(reply_rx.await.unwrap().ok);
+
+        // `@a` in the recipient list is filtered out by the sender-
+        // skip rule; only `b` receives.
+        assert!(rxs[0].try_recv().is_err(), "sender should not self-echo");
+        let b = rxs[1].recv().await.expect("b receives");
+        assert_eq!(
+            b,
+            r#"<ChannelMessage channel="room" from="a">@a @b note to self</ChannelMessage>"#
+        );
+        assert!(rxs[2].try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn submit_input_does_not_drop_under_flood() {
         // Unbounded user channel: 10k pushes all arrive, none dropped.
         let mut app = App::new(sample_config());
@@ -6810,6 +7641,52 @@ mod tests {
     }
 
     // --------- Bash → Mail rewrite ----------
+
+    // --------- @mention parser ----------
+
+    #[test]
+    fn parse_leading_mentions_empty_when_no_at() {
+        assert!(parse_leading_mentions("hello world").is_empty());
+        assert!(parse_leading_mentions("").is_empty());
+        assert!(parse_leading_mentions("ping @alice later").is_empty());
+    }
+
+    #[test]
+    fn parse_leading_mentions_extracts_single_name() {
+        assert_eq!(parse_leading_mentions("@alice hi"), vec!["alice"]);
+    }
+
+    #[test]
+    fn parse_leading_mentions_extracts_multiple_names() {
+        assert_eq!(
+            parse_leading_mentions("@alice @bob @carol hi team"),
+            vec!["alice", "bob", "carol"]
+        );
+    }
+
+    #[test]
+    fn parse_leading_mentions_tolerates_extra_whitespace() {
+        assert_eq!(
+            parse_leading_mentions("  @alice   @bob   hi"),
+            vec!["alice", "bob"]
+        );
+    }
+
+    #[test]
+    fn parse_leading_mentions_ignores_bare_at() {
+        assert!(parse_leading_mentions("@ hi").is_empty());
+        assert_eq!(parse_leading_mentions("@alice @ later"), vec!["alice"]);
+    }
+
+    #[test]
+    fn parse_leading_mentions_stops_at_first_non_mention() {
+        // Once a non-`@` token appears the scan ends, even if a
+        // later `@name` shows up in the prose.
+        assert_eq!(
+            parse_leading_mentions("@alice here's the plan @bob"),
+            vec!["alice"]
+        );
+    }
 
     #[test]
     fn try_parse_aciddog_send_extracts_to_and_body() {
@@ -7134,6 +8011,7 @@ mod tests {
             }],
             memory_banks: vec![],
             compactions: vec![],
+            channels: vec![],
             thinking_messages: vec!["thinking".into()],
         }
     }

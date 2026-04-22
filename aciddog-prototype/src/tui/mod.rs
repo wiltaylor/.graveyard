@@ -1,5 +1,6 @@
 mod app;
 mod blocks;
+mod channel_log;
 mod clipboard;
 mod commands;
 mod compaction;

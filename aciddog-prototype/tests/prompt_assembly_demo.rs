@@ -84,6 +84,7 @@ fn planner_prompt_has_role_team_tag_tools_and_instructions() {
             creatable: creatable.iter().map(|s| s.to_string()).collect(),
             memory_banks: vec![],
             skills: vec![],
+            channels: vec![],
             worker: None,
         }),
     };
@@ -165,6 +166,7 @@ fn coder_prompt_uses_cli_preamble_inside_tools() {
             creatable: creatable.iter().map(|s| s.to_string()).collect(),
             memory_banks: vec![],
             skills: vec![],
+            channels: vec![],
             worker: None,
         }),
     };
@@ -235,6 +237,7 @@ fn planner_prompt_includes_memory_block_and_cli_docs_for_allowed_banks() {
             creatable: creatable.iter().map(|s| s.to_string()).collect(),
             memory_banks: bank_ids.clone(),
             skills: vec![],
+            channels: vec![],
             worker: None,
         }),
     };

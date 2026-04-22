@@ -21,6 +21,18 @@
 //! (`--flag <val>` / `[--flag]` / `[--flag]…` for CLI; `"key":"<val>"`
 //! / `["key":"<val>"]` for tag).
 
+/// Describes one channel an agent belongs to, for preamble rendering.
+/// Matches the minimum set of fields needed to tell the model what
+/// rooms exist and who else is listening.
+#[derive(Debug, Clone)]
+pub struct ChannelInfo<'a> {
+    pub id: &'a str,
+    pub description: Option<&'a str>,
+    /// Other members in the channel, excluding the caller. Used verbatim
+    /// so the model can pick a specific person to address if needed.
+    pub other_members: Vec<&'a str>,
+}
+
 /// CLI-mode preamble: the agent has a shell tool and invokes the
 /// aciddog binary directly.
 pub fn cli_preamble(
@@ -29,6 +41,7 @@ pub fn cli_preamble(
     creatable: &[&str],
     memory_banks: &[&str],
     skills: &[&str],
+    channels: &[ChannelInfo<'_>],
 ) -> String {
     let mut out = String::new();
     push_line(&mut out, "## aciddog tools");
@@ -69,6 +82,42 @@ pub fn cli_preamble(
                  queued and delivered on your next turn — user messages \
                  always take priority over queued agent messages.",
                 contactable.join(", ")
+            )),
+        );
+    }
+
+    if !channels.is_empty() {
+        let roster = channels
+            .iter()
+            .map(|c| {
+                if c.other_members.is_empty() {
+                    format!("#{} (you are the only member)", c.id)
+                } else {
+                    format!("#{} (with {})", c.id, c.other_members.join(", "))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        push_group(
+            &mut out,
+            "Channels",
+            &[Row {
+                cmd: "channel send",
+                params: "`--id <channel-id>` `--body \"<text>\"`",
+                desc: "Broadcast to every other member of a channel you belong to.",
+            }],
+            Some(&format!(
+                "You are in: {roster}. Channel messages arrive wrapped as \
+                 `<ChannelMessage channel=\"<id>\" from=\"<sender>\">body</ChannelMessage>` \
+                 and are delivered at LOWER priority than direct `<Message>` \
+                 mailbox traffic. To target a subset of the channel, prefix \
+                 the body with one or more `@name` tokens (e.g. \
+                 `@planner @coder …`) — only those members receive the \
+                 message; unmentioned members stay silent. With no leading \
+                 `@` the message broadcasts to everyone. Only post when you \
+                 have something substantive to add — do NOT reply just to \
+                 acknowledge, do NOT echo each other in a loop. If a post \
+                 isn't for you, stay silent."
             )),
         );
     }
@@ -270,6 +319,7 @@ pub fn tag_preamble(
     creatable: &[&str],
     memory_banks: &[&str],
     skills: &[&str],
+    channels: &[ChannelInfo<'_>],
 ) -> String {
     let mut out = String::new();
     push_line(&mut out, "## aciddog tools");
@@ -321,6 +371,42 @@ pub fn tag_preamble(
                  are queued and delivered on your next turn — user messages \
                  always take priority over queued agent messages.",
                 contactable.join(", ")
+            )),
+        );
+    }
+
+    if !channels.is_empty() {
+        let roster = channels
+            .iter()
+            .map(|c| {
+                if c.other_members.is_empty() {
+                    format!("#{} (you are the only member)", c.id)
+                } else {
+                    format!("#{} (with {})", c.id, c.other_members.join(", "))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        push_group(
+            &mut out,
+            "Channels",
+            &[Row {
+                cmd: "channel_send",
+                params: "`\"id\":\"<channel-id>\"`, `\"body\":\"<text>\"`",
+                desc: "Broadcast to every other member of a channel you belong to.",
+            }],
+            Some(&format!(
+                "You are in: {roster}. Channel messages arrive wrapped as \
+                 `<ChannelMessage channel=\"<id>\" from=\"<sender>\">body</ChannelMessage>` \
+                 and are delivered at LOWER priority than direct `<Message>` \
+                 mailbox traffic. To target a subset of the channel, prefix \
+                 the body with one or more `@name` tokens (e.g. \
+                 `@planner @coder …`) — only those members receive the \
+                 message; unmentioned members stay silent. With no leading \
+                 `@` the message broadcasts to everyone. Only post when you \
+                 have something substantive to add — do NOT reply just to \
+                 acknowledge, do NOT echo each other in a loop. If a post \
+                 isn't for you, stay silent."
             )),
         );
     }
@@ -627,7 +713,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_has_header_and_binary_path() {
-        let p = cli_preamble("/opt/aciddog/bin/aciddog", &["coder"], &[], &[], &[]);
+        let p = cli_preamble("/opt/aciddog/bin/aciddog", &["coder"], &[], &[], &[], &[]);
         assert!(p.starts_with("## aciddog tools"), "header: {p}");
         assert!(
             p.contains("`/opt/aciddog/bin/aciddog`"),
@@ -641,7 +727,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_preserves_weird_binary_path() {
-        let p = cli_preamble("/tmp/weird path/aciddog", &["coder"], &[], &[], &[]);
+        let p = cli_preamble("/tmp/weird path/aciddog", &["coder"], &[], &[], &[], &[]);
         assert!(
             p.contains("/tmp/weird path/aciddog"),
             "binary path verbatim: {p}"
@@ -650,7 +736,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_lists_send_row_and_contactable_ids() {
-        let p = cli_preamble("/a", &["coder", "reviewer"], &[], &[], &[]);
+        let p = cli_preamble("/a", &["coder", "reviewer"], &[], &[], &[], &[]);
         assert!(p.contains("### Messaging"), "messaging group missing: {p}");
         assert!(p.contains("| send |"), "send row missing: {p}");
         assert!(
@@ -669,7 +755,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_omits_messaging_group_when_allowlist_empty() {
-        let p = cli_preamble("/a", &[], &[], &[], &[]);
+        let p = cli_preamble("/a", &[], &[], &[], &[], &[]);
         assert!(
             !p.contains("### Messaging"),
             "messaging group should be omitted: {p}"
@@ -683,7 +769,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_lists_worker_create_when_creatable() {
-        let p = cli_preamble("/a", &["coder"], &["researcher", "tester"], &[], &[]);
+        let p = cli_preamble("/a", &["coder"], &["researcher", "tester"], &[], &[], &[]);
         assert!(p.contains("### Workers"), "workers group missing: {p}");
         assert!(
             p.contains("| worker create |"),
@@ -697,7 +783,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_omits_workers_group_when_creatable_empty() {
-        let p = cli_preamble("/a", &["coder"], &[], &[], &[]);
+        let p = cli_preamble("/a", &["coder"], &[], &[], &[], &[]);
         assert!(
             !p.contains("### Workers"),
             "workers group should be omitted: {p}"
@@ -710,7 +796,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_never_documents_worker_complete_for_plain_agents() {
-        let p = cli_preamble("/a", &["coder"], &["researcher"], &[], &[]);
+        let p = cli_preamble("/a", &["coder"], &["researcher"], &[], &[], &[]);
         assert!(
             !p.contains("worker complete"),
             "plain agents must not see worker complete: {p}"
@@ -719,7 +805,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_has_task_board_unconditionally() {
-        let p = cli_preamble("/a", &[], &[], &[], &[]);
+        let p = cli_preamble("/a", &[], &[], &[], &[], &[]);
         assert!(
             p.contains("### Task board"),
             "task board group missing: {p}"
@@ -734,7 +820,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_has_info_and_cron_groups_unconditionally() {
-        let p = cli_preamble("/a", &[], &[], &[], &[]);
+        let p = cli_preamble("/a", &[], &[], &[], &[], &[]);
         assert!(p.contains("### Meta"), "meta group missing: {p}");
         assert!(p.contains("| info |"), "info row missing: {p}");
         assert!(p.contains("### Cron"), "cron group missing: {p}");
@@ -743,7 +829,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_cron_prose_mentions_tz_blocklist_and_workers() {
-        let p = cli_preamble("/a", &[], &[], &[], &[]);
+        let p = cli_preamble("/a", &[], &[], &[], &[], &[]);
         let lower = p.to_lowercase();
         assert!(
             p.contains("`--tz` defaults to `local`"),
@@ -765,7 +851,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_memory_group_omitted_when_banks_empty() {
-        let p = cli_preamble("/a", &["coder"], &[], &[], &[]);
+        let p = cli_preamble("/a", &["coder"], &[], &[], &[], &[]);
         assert!(
             !p.contains("### Memory banks"),
             "memory group should be omitted: {p}"
@@ -778,7 +864,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_memory_group_lists_commands_and_banks_when_present() {
-        let p = cli_preamble("/a", &["coder"], &[], &["scratch", "incidents"], &[]);
+        let p = cli_preamble("/a", &["coder"], &[], &["scratch", "incidents"], &[], &[]);
         assert!(
             p.contains("### Memory banks"),
             "memory group missing: {p}"
@@ -800,7 +886,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_skills_group_omitted_when_skills_empty() {
-        let p = cli_preamble("/a", &["coder"], &[], &[], &[]);
+        let p = cli_preamble("/a", &["coder"], &[], &[], &[], &[]);
         assert!(
             !p.contains("### Skills"),
             "skills group should be omitted: {p}"
@@ -812,7 +898,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_skills_group_lists_list_search_run_rows_when_present() {
-        let p = cli_preamble("/a", &["coder"], &[], &[], &["code-review", "research"]);
+        let p = cli_preamble("/a", &["coder"], &[], &[], &["code-review", "research"], &[]);
         assert!(p.contains("### Skills"), "skills group missing: {p}");
         for row in ["| skill list |", "| skill search |", "| skill run |"] {
             assert!(p.contains(row), "missing row {row} in: {p}");
@@ -828,7 +914,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_skills_group_does_not_leak_skill_ids_into_prompt() {
-        let p = cli_preamble("/a", &["coder"], &[], &[], &["code-review", "research"]);
+        let p = cli_preamble("/a", &["coder"], &[], &[], &["code-review", "research"], &[]);
         // The list of concrete ids must NOT appear in the prompt; the
         // model is expected to discover them at runtime via
         // `skill list` / `skill search`.
@@ -865,7 +951,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_has_header_and_no_shell_tool_framing() {
-        let p = tag_preamble(&["coder"], &[], &[], &[]);
+        let p = tag_preamble(&["coder"], &[], &[], &[], &[]);
         assert!(p.starts_with("## aciddog tools"), "header: {p}");
         assert!(
             !p.contains("shell tool"),
@@ -880,7 +966,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_mentions_chain_cap() {
-        let p = tag_preamble(&["coder"], &[], &[], &[]);
+        let p = tag_preamble(&["coder"], &[], &[], &[], &[]);
         assert!(
             p.contains("8 consecutive"),
             "must tell the model about the 8-round cap: {p}"
@@ -889,7 +975,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_lists_send_message_row_and_contactable_ids() {
-        let p = tag_preamble(&["coder", "reviewer"], &[], &[], &[]);
+        let p = tag_preamble(&["coder", "reviewer"], &[], &[], &[], &[]);
         assert!(
             p.contains("| send_message |"),
             "send_message row missing: {p}"
@@ -902,7 +988,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_omits_messaging_when_allowlist_empty() {
-        let p = tag_preamble(&[], &[], &[], &[]);
+        let p = tag_preamble(&[], &[], &[], &[], &[]);
         assert!(
             !p.contains("### Messaging"),
             "messaging group should be omitted: {p}"
@@ -919,7 +1005,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_lists_worker_create_when_creatable() {
-        let p = tag_preamble(&["coder"], &["researcher", "tester"], &[], &[]);
+        let p = tag_preamble(&["coder"], &["researcher", "tester"], &[], &[], &[]);
         assert!(
             p.contains("| worker_create |"),
             "worker_create row missing: {p}"
@@ -932,7 +1018,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_omits_worker_create_when_empty() {
-        let p = tag_preamble(&["coder"], &[], &[], &[]);
+        let p = tag_preamble(&["coder"], &[], &[], &[], &[]);
         assert!(
             !p.contains("worker_create"),
             "worker_create should be omitted: {p}"
@@ -941,7 +1027,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_never_mentions_worker_complete_for_plain_agents() {
-        let p = tag_preamble(&["coder"], &["researcher"], &[], &[]);
+        let p = tag_preamble(&["coder"], &["researcher"], &[], &[], &[]);
         assert!(
             !p.contains("worker_complete"),
             "plain agents must not see worker_complete: {p}"
@@ -950,14 +1036,14 @@ mod tests {
 
     #[test]
     fn tag_preamble_has_task_board_unconditionally() {
-        let p = tag_preamble(&[], &[], &[], &[]);
+        let p = tag_preamble(&[], &[], &[], &[], &[]);
         assert!(p.contains("| task_add |"), "task_add row missing: {p}");
         assert!(p.contains("| task_take |"), "task_take row missing: {p}");
     }
 
     #[test]
     fn tag_preamble_has_info_and_cron_groups_unconditionally() {
-        let p = tag_preamble(&[], &[], &[], &[]);
+        let p = tag_preamble(&[], &[], &[], &[], &[]);
         assert!(p.contains("| info |"), "info row missing: {p}");
         assert!(p.contains("| cron_add |"), "cron_add row missing: {p}");
         assert!(p.contains("| cron_list |"), "cron_list row missing: {p}");
@@ -974,7 +1060,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_cron_prose_mentions_tz_and_blocklist() {
-        let p = tag_preamble(&[], &[], &[], &[]);
+        let p = tag_preamble(&[], &[], &[], &[], &[]);
         assert!(
             p.contains("`/exit` and `/quit` are blocked"),
             "slash blocklist note missing: {p}"
@@ -987,7 +1073,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_memory_group_omitted_when_banks_empty() {
-        let p = tag_preamble(&["coder"], &[], &[], &[]);
+        let p = tag_preamble(&["coder"], &[], &[], &[], &[]);
         assert!(
             !p.contains("memory_search"),
             "memory commands should be omitted: {p}"
@@ -996,7 +1082,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_memory_group_lists_commands_when_banks_present() {
-        let p = tag_preamble(&["coder"], &[], &["scratch"], &[]);
+        let p = tag_preamble(&["coder"], &[], &["scratch"], &[], &[]);
         for cmd in [
             "| memory_search |",
             "| memory_store |",
@@ -1011,7 +1097,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_skills_group_omitted_when_skills_empty() {
-        let p = tag_preamble(&["coder"], &[], &[], &[]);
+        let p = tag_preamble(&["coder"], &[], &[], &[], &[]);
         assert!(
             !p.contains("### Skills"),
             "skills group should be omitted: {p}"
@@ -1023,7 +1109,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_skills_group_lists_list_search_run_rows_when_present() {
-        let p = tag_preamble(&["coder"], &[], &[], &["code-review", "research"]);
+        let p = tag_preamble(&["coder"], &[], &[], &["code-review", "research"], &[]);
         assert!(p.contains("### Skills"), "skills group missing: {p}");
         for row in ["| skill_list |", "| skill_search |", "| skill_run |"] {
             assert!(p.contains(row), "missing row {row} in: {p}");
@@ -1039,7 +1125,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_skills_group_does_not_leak_skill_ids_into_prompt() {
-        let p = tag_preamble(&["coder"], &[], &[], &["code-review", "research"]);
+        let p = tag_preamble(&["coder"], &[], &[], &["code-review", "research"], &[]);
         assert!(!p.contains("code-review"), "skill id leaked: {p}");
         assert!(!p.contains("research"), "skill id leaked: {p}");
     }

@@ -30,7 +30,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // Input height: in Chat view, grow from 3 to 7 rows (1–5 usable +
     // 2 for borders) based on the wrapped line count of the current
     // chat's input buffer. Tasks view keeps the fixed 3 rows so
-    // `render_tasks_input` is unaffected.
+    // `render_tasks_input` is unaffected. Channel view uses the same
+    // fixed 3 rows as Tasks — the channel input is one-line-ish for v1.
     let input_rows = match app.active_view {
         ActiveView::Chat => {
             let inner_width = f.area().width.saturating_sub(2);
@@ -44,6 +45,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             usable + 2
         }
         ActiveView::Tasks => 3,
+        ActiveView::Channel(_) => 3,
     };
 
     let root = Layout::default()
@@ -69,25 +71,50 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let main_area = body_cols[0];
     let right_col = body_cols[1];
 
-    // Right column: Views list on top (small), agents list below.
-    // Views height = border (2) + one line per entry. Extending
-    // VIEW_ENTRIES just grows this proportionally.
+    // Right column: Views list on top (small), Agents in the middle,
+    // Channels list at the bottom (if any channels are declared).
+    // Each list's height = border (2) + one line per entry. Agents
+    // takes whatever's left.
     let views_height = (VIEW_ENTRIES.len() as u16).saturating_add(2).max(3);
-    let right_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(views_height), Constraint::Min(5)])
-        .split(right_col);
+    let channels_len = app.channels.len() as u16;
+    let channels_height = if channels_len > 0 {
+        channels_len.saturating_add(2).max(3)
+    } else {
+        0
+    };
+    let right_rows = if channels_height > 0 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(views_height),
+                Constraint::Min(5),
+                Constraint::Length(channels_height),
+            ])
+            .split(right_col)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(views_height), Constraint::Min(5)])
+            .split(right_col)
+    };
     let views_area = right_rows[0];
     let agents_area = right_rows[1];
+    let channels_area = if channels_height > 0 {
+        Some(right_rows[2])
+    } else {
+        None
+    };
 
     render_title(f, title_area, app);
 
     let main_inner = match app.active_view {
         ActiveView::Chat => render_agent_chat(f, main_area, app),
         ActiveView::Tasks => render_tasks_screen(f, main_area, app),
+        ActiveView::Channel(idx) => render_channel_chat(f, main_area, app, idx),
     };
     let views_inner = render_views_list(f, views_area, app);
     let list_inner = render_agent_list(f, agents_area, app);
+    let channels_inner = channels_area.map(|a| render_channels_list(f, a, app));
     let input_inner = render_chat_input(f, chat_input_area, app);
     render_status(f, status_area, app);
 
@@ -106,6 +133,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.layout.chat_history_inner = Some(main_inner);
     app.layout.chat_input_inner = Some(input_inner);
     app.layout.views_list_inner = Some(views_inner);
+    app.layout.channels_list_inner = channels_inner;
 }
 
 fn focus_border_style(focused: bool) -> Style {
@@ -149,6 +177,14 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
         .border_style(focus_border_style(focused));
     let inner = block.inner(area);
 
+    // The "selected agent" highlight only marks who's currently
+    // rendered in the main area. When the user is looking at Tasks
+    // or a Channel the agent list shouldn't claim one of its rows
+    // as active — only the sidebar panel whose content is currently
+    // displayed gets the persistent highlight. The keyboard cursor
+    // (focus) still shows while navigating with j/k.
+    let active_here = app.active_view == ActiveView::Chat;
+
     let order = app.visible_order();
     let items: Vec<ListItem> = order
         .iter()
@@ -160,7 +196,7 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
                 AgentStatus::Error => "🔴",
                 AgentStatus::Hibernated => "💤",
             };
-            let name_style = if i == app.selected {
+            let name_style = if i == app.selected && (active_here || focused) {
                 Style::default()
                     .bg(Color::Cyan)
                     .fg(Color::Black)
@@ -381,6 +417,93 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     inner
 }
 
+/// Render a single channel's transcript in the main area. Much
+/// simpler than `render_agent_chat` — channel blocks don't nest or
+/// collapse, there are no tool blocks or thinking indicator, and
+/// only one scroll anchor matters: sticky-bottom. For v1 we just
+/// render the last N blocks that fit vertically, bottom-aligned.
+fn render_channel_chat(f: &mut Frame, area: Rect, app: &mut App, idx: usize) -> Rect {
+    let focused = app.focus == Focus::Chat;
+    let title = match app.channels.get(idx) {
+        Some(c) => format!(" #{} ", c.id),
+        None => " channel ".to_string(),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(focus_border_style(focused));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let Some(ch) = app.channels.get(idx) else {
+        return inner;
+    };
+    if inner.width == 0 || inner.height == 0 || ch.blocks.is_empty() {
+        return inner;
+    }
+
+    // Compute each block's height at the current width.
+    let heights: Vec<u16> = ch.blocks.iter().map(|b| b.height(inner.width)).collect();
+
+    // Find the window of blocks that fits at the bottom of the viewport.
+    // We walk from the last block backwards accumulating heights until
+    // we've filled the viewport.
+    let mut start = ch.blocks.len();
+    let mut rows_used: u32 = 0;
+    for i in (0..ch.blocks.len()).rev() {
+        rows_used += heights[i] as u32;
+        start = i;
+        if rows_used >= inner.height as u32 {
+            break;
+        }
+    }
+
+    let total: u32 = heights[start..].iter().map(|h| *h as u32).sum();
+    // If we have fewer rows than viewport, we start from the top of the
+    // viewport; otherwise we skip `total - height` rows of the first
+    // block so the last row aligns to the bottom.
+    let mut y = inner.y;
+    let mut clip_rows = if total > inner.height as u32 {
+        (total - inner.height as u32) as u16
+    } else {
+        0
+    };
+    let end_y = inner.y.saturating_add(inner.height);
+    let mut tmp_buttons: Vec<ChatButton> = Vec::new();
+    for (offset, &h) in heights[start..].iter().enumerate() {
+        if y >= end_y {
+            break;
+        }
+        let real_h = if clip_rows >= h {
+            clip_rows -= h;
+            continue;
+        } else {
+            h - clip_rows
+        };
+        let visible_h = real_h.min(end_y - y);
+        let rect = Rect::new(inner.x, y, inner.width, visible_h);
+        if clip_rows > 0 {
+            // Partial: render into a scratch buffer and blit the
+            // tail rows.
+            let scratch_area = Rect::new(0, 0, inner.width, h);
+            let mut scratch = Buffer::empty(scratch_area);
+            ch.blocks[start + offset].render(&mut scratch, scratch_area, &mut tmp_buttons, 0, false);
+            blit_rows(&scratch, clip_rows, visible_h, f.buffer_mut(), inner.x, y);
+            clip_rows = 0;
+        } else {
+            ch.blocks[start + offset].render(
+                f.buffer_mut(),
+                rect,
+                &mut tmp_buttons,
+                0,
+                false,
+            );
+        }
+        y = y.saturating_add(visible_h);
+    }
+    inner
+}
+
 /// Copy `rows` rows (starting at `y_from` in `src`) to `dst` at `(dst_x, dst_y)`.
 /// Clips to both buffers' areas via `cell` / `cell_mut`.
 fn blit_rows(src: &Buffer, y_from: u16, rows: u16, dst: &mut Buffer, dst_x: u16, dst_y: u16) {
@@ -528,6 +651,9 @@ fn render_chat_input(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     if app.active_view == ActiveView::Tasks {
         return render_tasks_input(f, area, app);
     }
+    if let ActiveView::Channel(idx) = app.active_view {
+        return render_channel_input(f, area, app, idx);
+    }
 
     let focused = app.focus == Focus::Chat;
     let block = Block::default()
@@ -626,6 +752,56 @@ fn render_chat_input(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     inner
 }
 
+/// Input box rendered under a channel view. Simpler than the
+/// agent-chat input — single-line feel with a caret and an obvious
+/// placeholder. Multi-line input is still possible via Shift+Enter
+/// but we don't grow the box for v1.
+fn render_channel_input(f: &mut Frame, area: Rect, app: &App, idx: usize) -> Rect {
+    let focused = app.focus == Focus::Chat;
+    let Some(ch) = app.channels.get(idx) else {
+        let block = Block::default().borders(Borders::ALL).title(" input ");
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        return inner;
+    };
+    let title = format!(" message #{} ", ch.id);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(focus_border_style(focused));
+    let inner = block.inner(area);
+
+    if !focused && ch.input.is_empty() {
+        let placeholder = Line::from(Span::styled(
+            "click here or press Tab to talk in the channel",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ));
+        f.render_widget(Paragraph::new(placeholder).block(block), area);
+        return inner;
+    }
+
+    // Single-line caret injection. Build a Line by splitting the
+    // input at the byte cursor.
+    let (before, after) = ch.input.split_at(ch.input_cursor.min(ch.input.len()));
+    let mut spans = vec![Span::raw(before.to_string())];
+    if focused {
+        spans.push(Span::styled(
+            "▏",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.push(Span::raw(after.to_string()));
+    let para = Paragraph::new(Line::from(spans))
+        .block(block)
+        .wrap(Wrap { trim: false });
+    f.render_widget(para, area);
+    inner
+}
+
 fn render_tasks_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
     let focused = app.focus == Focus::Tasks;
     let (title, line) = if let Some(prompt) = &app.tasks_screen.prompt {
@@ -691,9 +867,13 @@ fn render_tasks_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
 fn render_status(f: &mut Frame, area: Rect, app: &App) {
     let focus_label = match app.focus {
         Focus::Agents => "agents",
-        Focus::Chat => "chat",
+        Focus::Chat => match app.active_view {
+            ActiveView::Channel(_) => "channel",
+            _ => "chat",
+        },
         Focus::Views => "views",
         Focus::Tasks => "tasks",
+        Focus::Channels => "channels",
     };
     let mut hint_spans: Vec<Span> = match app.focus {
         Focus::Agents => vec![
@@ -776,6 +956,22 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("esc", Style::default().fg(Color::Cyan)),
             Span::raw(" back"),
         ],
+        Focus::Channels => vec![
+            Span::styled(" focus: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                focus_label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("j/k", Style::default().fg(Color::Cyan)),
+            Span::raw(" nav  "),
+            Span::styled("⏎", Style::default().fg(Color::Cyan)),
+            Span::raw(" open  "),
+            Span::styled("tab", Style::default().fg(Color::Cyan)),
+            Span::raw(" next panel"),
+        ],
     };
 
     if app.copied_recently() {
@@ -807,14 +1003,15 @@ fn render_views_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
         .enumerate()
         .map(|(i, name)| {
             let active = matches!((*name, app.active_view), ("Tasks", ActiveView::Tasks));
-            let style = if i == app.selected_view && focused {
+            // Persistent highlight on the currently-displayed view so
+            // clicking it gives visible feedback even once focus
+            // leaves the panel (mirrors the agent list's always-on
+            // selected-agent highlight). The same highlight tracks
+            // the keyboard cursor when the panel is focused.
+            let style = if active || (focused && i == app.selected_view) {
                 Style::default()
                     .bg(Color::Cyan)
                     .fg(Color::Black)
-                    .add_modifier(Modifier::BOLD)
-            } else if active {
-                Style::default()
-                    .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
@@ -825,6 +1022,44 @@ fn render_views_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
     let list = List::new(items).block(block);
     let mut state = ListState::default();
     state.select(Some(app.selected_view));
+    f.render_stateful_widget(list, area, &mut state);
+    inner
+}
+
+fn render_channels_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
+    let focused = app.focus == Focus::Channels;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" channels ")
+        .border_style(focus_border_style(focused));
+    let inner = block.inner(area);
+    let items: Vec<ListItem> = app
+        .channels
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let active = matches!(app.active_view, ActiveView::Channel(j) if j == i);
+            // Persistent highlight on the currently-open channel so
+            // clicking it gives visible feedback once focus leaves
+            // the panel (mirrors the agent list's always-on selected
+            // highlight). The same highlight tracks the keyboard
+            // cursor when the panel is focused.
+            let style = if active || (focused && i == app.selected_channel) {
+                Style::default()
+                    .bg(Color::Cyan)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(Span::styled(format!("#{}", c.id), style)))
+        })
+        .collect();
+    let list = List::new(items).block(block);
+    let mut state = ListState::default();
+    if !app.channels.is_empty() {
+        state.select(Some(app.selected_channel.min(app.channels.len() - 1)));
+    }
     f.render_stateful_widget(list, area, &mut state);
     inner
 }

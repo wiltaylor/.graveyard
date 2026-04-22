@@ -496,6 +496,21 @@ impl App {
             .map(|list| list.to_vec())
             .unwrap_or_default();
         let skills_for_agent = self.config.skills_for(&agent.id);
+        let channels_for_agent: Vec<crate::ai::ChannelPromptCtx> = self
+            .config
+            .channels_for_agent(&agent.id)
+            .iter()
+            .map(|c| crate::ai::ChannelPromptCtx {
+                id: c.id.clone(),
+                description: c.description.clone(),
+                other_members: c
+                    .members
+                    .iter()
+                    .filter(|m| m.as_str() != agent.id.as_str())
+                    .cloned()
+                    .collect(),
+            })
+            .collect();
 
         let parts = PromptParts {
             role: agent.role_description.clone(),
@@ -508,6 +523,7 @@ impl App {
                 creatable: creatable.iter().map(|s| s.to_string()).collect(),
                 memory_banks: memory_banks_for_agent,
                 skills: skills_for_agent,
+                channels: channels_for_agent,
                 worker: None,
             }),
         };
@@ -539,6 +555,12 @@ impl App {
 
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
         let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
+        // Rebuilt channel queue so the agent keeps receiving channel
+        // broadcasts after `/reset` / `/compact`. Workers never reach
+        // this path (compaction is gated on `!hibernated` and non-
+        // worker), but we make the queue unconditionally to keep the
+        // spawn API uniform.
+        let (channel_tx, channel_rx) = mpsc::channel::<String>(256);
 
         // If there's a seed message, enqueue it now so it's the first
         // prompt the new core sees.
@@ -571,6 +593,7 @@ impl App {
         if let Some(chat) = self.chats.get_mut(idx) {
             chat.user_tx = Some(user_tx);
             chat.agent_tx = Some(agent_tx);
+            chat.channel_tx = Some(channel_tx);
             chat.session_id = Some(session_id);
             chat.status = AgentStatus::Ready;
             chat.context_used = None;
@@ -602,7 +625,9 @@ impl App {
 
         self.agent_ids.insert(session_id, agent.id.clone());
 
-        tokio::spawn(run_core(idx, core, user_rx, agent_rx, ai_tx));
+        tokio::spawn(run_core(
+            idx, core, user_rx, agent_rx, channel_rx, ai_tx,
+        ));
         Ok(())
     }
 }

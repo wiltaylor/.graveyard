@@ -770,6 +770,15 @@ fn build_tools_section(parts: &PromptParts, allowed_tools: &[String]) -> String 
         let creatable: Vec<&str> = cli.creatable.iter().map(String::as_str).collect();
         let memory_banks: Vec<&str> = cli.memory_banks.iter().map(String::as_str).collect();
         let skills: Vec<&str> = cli.skills.iter().map(String::as_str).collect();
+        let channel_infos: Vec<crate::agent_ipc::preamble::ChannelInfo<'_>> = cli
+            .channels
+            .iter()
+            .map(|c| crate::agent_ipc::preamble::ChannelInfo {
+                id: c.id.as_str(),
+                description: c.description.as_deref(),
+                other_members: c.other_members.iter().map(String::as_str).collect(),
+            })
+            .collect();
 
         body.push('\n');
         if has_bash {
@@ -782,6 +791,7 @@ fn build_tools_section(parts: &PromptParts, allowed_tools: &[String]) -> String 
                 &creatable,
                 &memory_banks,
                 &skills,
+                &channel_infos,
             ));
         } else {
             if let Some(w) = &cli.worker {
@@ -792,6 +802,7 @@ fn build_tools_section(parts: &PromptParts, allowed_tools: &[String]) -> String 
                 &creatable,
                 &memory_banks,
                 &skills,
+                &channel_infos,
             ));
         }
     }

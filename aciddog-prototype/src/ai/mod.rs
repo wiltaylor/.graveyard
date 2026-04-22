@@ -10,7 +10,7 @@ pub mod tag_call;
 pub mod tools;
 
 pub use anthropic_api::AnthropicApiCore;
-pub use claude_code::{AciddogCliCtx, ClaudeCodeCore, PromptParts, WorkerCtx};
+pub use claude_code::{AciddogCliCtx, ChannelPromptCtx, ClaudeCodeCore, PromptParts, WorkerCtx};
 pub use context_window::model_context_window;
 pub use copilot_cli::CopilotCliCore;
 pub use core::{AICore, AIError};

@@ -65,9 +65,23 @@ pub struct AciddogCliCtx {
     /// preamble renders the `### Skills` group only when this list is
     /// non-empty; empty ⇒ group omitted entirely.
     pub skills: Vec<String>,
+    /// Channels this actor belongs to, with the other members listed.
+    /// Drives the `### Channels` preamble group — empty ⇒ group
+    /// omitted entirely, so agents without channel membership never
+    /// see the `channel send` tool.
+    pub channels: Vec<ChannelPromptCtx>,
     /// `Some` for workers — adds the parent + task + `worker complete`
     /// preamble before the general CLI/tag commands.
     pub worker: Option<WorkerCtx>,
+}
+
+/// One channel row as rendered into the agent's first-turn prompt.
+#[derive(Debug, Clone)]
+pub struct ChannelPromptCtx {
+    pub id: String,
+    pub description: Option<String>,
+    /// Every other member of the channel (excludes the actor itself).
+    pub other_members: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +273,15 @@ impl ClaudeCodeCore {
             let creatable: Vec<&str> = cli.creatable.iter().map(String::as_str).collect();
             let memory_banks: Vec<&str> = cli.memory_banks.iter().map(String::as_str).collect();
             let skills: Vec<&str> = cli.skills.iter().map(String::as_str).collect();
+            let channel_infos: Vec<super::super::agent_ipc::preamble::ChannelInfo<'_>> = cli
+                .channels
+                .iter()
+                .map(|c| super::super::agent_ipc::preamble::ChannelInfo {
+                    id: c.id.as_str(),
+                    description: c.description.as_deref(),
+                    other_members: c.other_members.iter().map(String::as_str).collect(),
+                })
+                .collect();
 
             body.push('\n');
             if has_bash {
@@ -271,6 +294,7 @@ impl ClaudeCodeCore {
                     &creatable,
                     &memory_banks,
                     &skills,
+                    &channel_infos,
                 ));
             } else {
                 if let Some(w) = &cli.worker {
@@ -281,6 +305,7 @@ impl ClaudeCodeCore {
                     &creatable,
                     &memory_banks,
                     &skills,
+                    &channel_infos,
                 ));
             }
         }
@@ -777,6 +802,7 @@ mod tests {
                 creatable: vec![],
                 memory_banks: vec![],
                 skills: vec![],
+                channels: vec![],
                 worker: None,
             }),
             ..PromptParts::default()
@@ -811,6 +837,7 @@ mod tests {
                 creatable: vec![],
                 memory_banks: vec![],
                 skills: vec![],
+                channels: vec![],
                 worker: None,
             }),
             ..PromptParts::default()
@@ -834,6 +861,7 @@ mod tests {
                 creatable: vec![],
                 memory_banks: vec![],
                 skills: vec![],
+                channels: vec![],
                 worker: Some(WorkerCtx {
                     parent_id: "coder".into(),
                     task: "find FOO".into(),

@@ -4,4 +4,5 @@
 /demo/.aciddog/tasks.json
 /demo/.aciddog/cron.json
 /demo/.aciddog/memory/
+/demo/.aciddog/chat/
 Cargo.lock

@@ -94,6 +94,30 @@ pub struct Worker {
     pub compaction: Option<String>,
 }
 
+/// A virtual chat room shared by a named subset of agents plus the
+/// human operator. Messages posted into a channel are broadcast to
+/// every member (except the sender) as
+/// `<ChannelMessage channel="<id>" from="<sender>">body</ChannelMessage>`
+/// at the lowest priority of any inbound message (below user input and
+/// direct mailbox messages). Only declared `agent` ids can be members —
+/// workers are ephemeral and don't participate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Channel {
+    pub id: String,
+    /// Short human-readable description of the channel's purpose.
+    /// Surfaced in the `<channels>` block of each member's first-turn
+    /// prompt so the model knows what the room is for. `None` ⇒ no
+    /// description line emitted.
+    pub description: Option<String>,
+    /// Cosmetic banner rendered at the top of the channel pane in the
+    /// TUI. Never sent to any agent. `None` ⇒ no welcome block.
+    pub welcome: Option<String>,
+    /// Agent ids that belong to this channel. Validated at parse time
+    /// to reference declared `agent` blocks only (never worker
+    /// templates). Order is preserved for deterministic broadcast.
+    pub members: Vec<String>,
+}
+
 /// A named, persistent memory bank. Declared at the fleet level and
 /// referenced by agents/workers via their `memory_banks` allowlist.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -302,6 +326,10 @@ pub struct AciddogConfig {
     /// Named compaction policies. Agents/workers opt in by id via their
     /// `compaction` attribute.
     pub compactions: Vec<Compaction>,
+    /// Virtual chat rooms declared at the fleet level. An agent
+    /// participates in a channel iff its id appears in that channel's
+    /// `members` list.
+    pub channels: Vec<Channel>,
     /// Final pool of messages shown by the thinking indicator while an
     /// agent is `Working`. Already merged with built-ins per
     /// `team.replace_thinking_messages`; guaranteed non-empty.
@@ -431,6 +459,15 @@ pub enum ConfigError {
 
     #[error("`{from}` references unknown compaction `{to}` in `compaction`")]
     UnknownCompactionRef { from: String, to: String },
+
+    #[error("channel `{channel}` references unknown agent `{member}` in `members` (must be a declared `agent`, not a worker template)")]
+    UnknownChannelMember { channel: String, member: String },
+
+    #[error("channel `{channel}` has a duplicate member `{member}` in `members`")]
+    DuplicateChannelMember { channel: String, member: String },
+
+    #[error("duplicate channel id `{id}` — channel ids must be unique")]
+    DuplicateChannelId { id: String },
 
     #[error(
         "compaction `{id}` on `{actor}` uses strategy `harness`, but that \
@@ -603,6 +640,29 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
 
+    let channels = doc
+        .blocks_of_type_resolved("channel")
+        .iter()
+        .map(|b| {
+            let id = require_id(&b.id, &b.kind)?;
+            // `members` is required; treat "missing" as an explicit
+            // error so misspelled attributes don't silently produce a
+            // dead channel.
+            let members = optional_string_list(b, "members")?.ok_or_else(|| {
+                ConfigError::MissingAttribute {
+                    kind: b.kind.clone(),
+                    attr: "members".to_string(),
+                }
+            })?;
+            Ok(Channel {
+                id,
+                description: optional_string(b, "description"),
+                welcome: optional_string(b, "welcome"),
+                members,
+            })
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+
     validate_agent_refs(&agents)?;
     validate_worker_refs(&agents, &workers)?;
     validate_ai_core_refs(&team, &agents, &workers, &ai_cores)?;
@@ -610,6 +670,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
     validate_memory_bank_refs(&agents, &workers, &memory_banks)?;
     validate_skill_names(&agents, &workers)?;
     validate_compaction_refs(&team, &agents, &workers, &ai_cores, &compactions)?;
+    validate_channel_refs(&agents, &channels)?;
 
     let mut user_messages: Vec<String> = Vec::new();
     for block in doc.blocks_of_type_resolved("thinking_messages").iter() {
@@ -644,6 +705,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         ai_cores,
         memory_banks,
         compactions,
+        channels,
         thinking_messages,
     })
 }
@@ -896,6 +958,37 @@ fn validate_compaction_refs(
     Ok(())
 }
 
+/// Channel membership must reference declared `agent` ids (workers
+/// are ephemeral and cannot join), and each agent may appear at most
+/// once per channel. Channel ids themselves must be unique across the
+/// config.
+fn validate_channel_refs(agents: &[Agent], channels: &[Channel]) -> Result<(), ConfigError> {
+    let known: std::collections::HashSet<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+    let mut seen_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for c in channels {
+        if !seen_ids.insert(c.id.as_str()) {
+            return Err(ConfigError::DuplicateChannelId { id: c.id.clone() });
+        }
+        let mut seen_members: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for m in &c.members {
+            if !known.contains(m.as_str()) {
+                return Err(ConfigError::UnknownChannelMember {
+                    channel: c.id.clone(),
+                    member: m.clone(),
+                });
+            }
+            if !seen_members.insert(m.as_str()) {
+                return Err(ConfigError::DuplicateChannelMember {
+                    channel: c.id.clone(),
+                    member: m.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Every id in an agent's or worker's `can_create_workers` list must
 /// match a declared worker template.
 fn validate_worker_refs(agents: &[Agent], workers: &[Worker]) -> Result<(), ConfigError> {
@@ -1057,6 +1150,28 @@ impl AciddogConfig {
     /// Look up a declared compaction policy by id.
     pub fn compaction(&self, id: &str) -> Option<&Compaction> {
         self.compactions.iter().find(|c| c.id == id)
+    }
+
+    /// Look up a declared channel by id.
+    pub fn channel(&self, id: &str) -> Option<&Channel> {
+        self.channels.iter().find(|c| c.id == id)
+    }
+
+    /// Return every channel `agent_id` is a member of, in declaration
+    /// order. Unknown agent ids yield an empty vec.
+    pub fn channels_for_agent(&self, agent_id: &str) -> Vec<&Channel> {
+        self.channels
+            .iter()
+            .filter(|c| c.members.iter().any(|m| m == agent_id))
+            .collect()
+    }
+
+    /// True iff `agent_id` is a declared member of channel `channel_id`.
+    /// Unknown ids on either side return `false`.
+    pub fn is_channel_member(&self, channel_id: &str, agent_id: &str) -> bool {
+        self.channel(channel_id)
+            .map(|c| c.members.iter().any(|m| m == agent_id))
+            .unwrap_or(false)
     }
 
     /// Return the compaction policy attached to `actor_template_id`
@@ -1487,6 +1602,118 @@ mod tests {
             ConfigError::UnknownWorkerRef { from, to }
                 if from == "w" && to == "ghost"
         ));
+    }
+
+    #[test]
+    fn parses_channel_block_with_members() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            agent b { role = "r" instructions = "i" }
+            channel general {
+                description = "team-wide"
+                welcome = "hi"
+                members = ["a", "b"]
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).expect("parses");
+        assert_eq!(cfg.channels.len(), 1);
+        let ch = &cfg.channels[0];
+        assert_eq!(ch.id, "general");
+        assert_eq!(ch.description.as_deref(), Some("team-wide"));
+        assert_eq!(ch.welcome.as_deref(), Some("hi"));
+        assert_eq!(ch.members, vec!["a".to_string(), "b".to_string()]);
+
+        // Helpers work on the parsed config.
+        let channels_for_a = cfg.channels_for_agent("a");
+        assert_eq!(channels_for_a.len(), 1);
+        assert_eq!(channels_for_a[0].id, "general");
+        assert!(cfg.is_channel_member("general", "b"));
+        assert!(!cfg.is_channel_member("general", "ghost"));
+        assert!(cfg.channel("general").is_some());
+        assert!(cfg.channel("nope").is_none());
+    }
+
+    #[test]
+    fn rejects_channel_with_unknown_member() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            channel general {
+                members = ["a", "ghost"]
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ConfigError::UnknownChannelMember { ref channel, ref member }
+                    if channel == "general" && member == "ghost"
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_channel_with_worker_member() {
+        // Workers are ephemeral templates and cannot join channels —
+        // the parser must treat a worker id in `members` the same as
+        // an unknown agent id (since `members` only looks at agent
+        // block ids).
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            worker w { role = "r" instructions = "i" }
+            channel general {
+                members = ["a", "w"]
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ConfigError::UnknownChannelMember { ref channel, ref member }
+                    if channel == "general" && member == "w"
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_channel_with_duplicate_members() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            channel general {
+                members = ["a", "a"]
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ConfigError::DuplicateChannelMember { ref channel, ref member }
+                    if channel == "general" && member == "a"
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn channel_missing_members_is_an_error() {
+        let src = r#"
+            team default { description = "t" }
+            channel general { }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ConfigError::MissingAttribute { ref kind, ref attr }
+                    if kind == "channel" && attr == "members"
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]

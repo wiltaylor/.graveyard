@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use aciddog::agent_ipc::{self, Request, RequestCmd};
 use aciddog::cli::{
-    AgentArgs, AgentCommand, Args, CommentCommand, CronCommand, MemoryCommand, SkillCommand,
-    TaskCommand, TodoCommand, WorkerCommand,
+    AgentArgs, AgentCommand, Args, ChannelCommand, CommentCommand, CronCommand, MemoryCommand,
+    SkillCommand, TaskCommand, TodoCommand, WorkerCommand,
 };
 use aciddog::config::load_config;
 use aciddog::tui;
@@ -357,6 +357,9 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
         AgentCommand::Skill {
             cmd: SkillCommand::Run { name },
         } => RequestCmd::SkillRun { name },
+        AgentCommand::Channel {
+            cmd: ChannelCommand::Send { id, body },
+        } => RequestCmd::ChannelSend { id, body },
     };
 
     let response = agent_ipc::client::send(&socket_path, &Request { agent_id, cmd })

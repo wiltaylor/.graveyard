@@ -221,6 +221,15 @@ pub fn block_fingerprint(b: &ChatBlock) -> u64 {
             collapsed.hash(&mut h);
             pending.hash(&mut h);
         }
+        ChatBlock::ChannelMessage {
+            sender,
+            body,
+            is_welcome,
+        } => {
+            sender.hash(&mut h);
+            body.hash(&mut h);
+            is_welcome.hash(&mut h);
+        }
     }
 
     h.finish()
@@ -417,6 +426,16 @@ pub enum ChatBlock {
         collapsed: bool,
         pending: bool,
     },
+    /// A single line in a channel's transcript. `sender` is the
+    /// agent id that posted, or the literal string `"user"` for the
+    /// human operator. `is_welcome` flags the synthetic banner block
+    /// rendered at the top of a channel from the config's `welcome`
+    /// field — styled as muted system text and never persisted.
+    ChannelMessage {
+        sender: String,
+        body: String,
+        is_welcome: bool,
+    },
     /// Replaces the raw Bash block for any `aciddog task …` call.
     /// `subject` is the pre-formatted one-line header; `body` is
     /// the payload the agent sent (if any); `reply` is populated on
@@ -482,6 +501,7 @@ impl ChatBlock {
             Self::GenericTool { result_pretty, .. } => Some(result_pretty.clone()),
             Self::System { text, .. } => Some(text.clone()),
             Self::Mail { body, .. } => Some(body.clone()),
+            Self::ChannelMessage { body, .. } => Some(body.clone()),
             Self::WorkerSpawn { task, .. } => Some(task.clone()),
             Self::WorkerComplete { body, .. } => Some(body.clone()),
             Self::TaskOp {
@@ -586,6 +606,11 @@ impl ChatBlock {
             } => {
                 let subj = mail_subject(*direction, counterpart);
                 tool_body_height(&subj, body, *collapsed, w)
+            }
+            Self::ChannelMessage { body, .. } => {
+                // Header row ("sender:" or "⭐ welcome") plus wrapped
+                // body indented two columns.
+                1 + wrapped_rows(body, w.saturating_sub(2)).max(1)
             }
             Self::WorkerSpawn {
                 template,
@@ -895,6 +920,58 @@ impl ChatBlock {
                     None,
                     Some(("copy".into(), body.clone())),
                 );
+            }
+            Self::ChannelMessage {
+                sender,
+                body,
+                is_welcome,
+            } => {
+                if body_rect.height == 0 {
+                    return;
+                }
+                let (header_text, header_style) = if *is_welcome {
+                    (
+                        "⭐ welcome".to_string(),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::ITALIC),
+                    )
+                } else if sender == "user" {
+                    (
+                        format!("{sender}:"),
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    (
+                        format!("{sender}:"),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                };
+                let header_rect = Rect::new(body_rect.x, body_rect.y, body_rect.width, 1);
+                Paragraph::new(Line::from(vec![Span::styled(header_text, header_style)]))
+                    .render(header_rect, buf);
+                if body_rect.height > 1 {
+                    let content_rect = Rect::new(
+                        body_rect.x + 2,
+                        body_rect.y + 1,
+                        body_rect.width.saturating_sub(2),
+                        body_rect.height - 1,
+                    );
+                    let body_style = if *is_welcome {
+                        Style::default()
+                            .fg(Color::Gray)
+                            .add_modifier(Modifier::ITALIC)
+                    } else {
+                        Style::default()
+                    };
+                    Paragraph::new(Line::from(Span::styled(body.clone(), body_style)))
+                        .wrap(Wrap { trim: false })
+                        .render(content_rect, buf);
+                }
             }
             Self::WorkerSpawn {
                 template,
@@ -1768,6 +1845,26 @@ impl ChatBlock {
             is_error: false,
             collapsed: true,
             pending: false,
+        }
+    }
+
+    /// A single line in a channel transcript. `sender` is the agent
+    /// id, or the literal string `"user"` for the human operator.
+    pub fn channel_message(sender: impl Into<String>, body: impl Into<String>) -> Self {
+        Self::ChannelMessage {
+            sender: sender.into(),
+            body: body.into(),
+            is_welcome: false,
+        }
+    }
+
+    /// Cosmetic banner pinned at the top of a channel from its
+    /// `welcome` config field. Never persisted; never sent to agents.
+    pub fn channel_welcome(body: impl Into<String>) -> Self {
+        Self::ChannelMessage {
+            sender: String::new(),
+            body: body.into(),
+            is_welcome: true,
         }
     }
 
