@@ -1053,9 +1053,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("j/k", Style::default().fg(Color::Cyan)),
             Span::raw(" navigate  "),
             Span::styled("tab", Style::default().fg(Color::Cyan)),
-            Span::raw(" next panel  "),
-            Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit"),
+            Span::raw(" next panel"),
         ],
         Focus::Chat => vec![
             Span::styled(" focus: ", Style::default().fg(Color::DarkGray)),
@@ -1075,9 +1073,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("alt+⏎", Style::default().fg(Color::Cyan)),
             Span::raw(" toggle  "),
             Span::styled("alt+c", Style::default().fg(Color::Cyan)),
-            Span::raw(" copy  "),
-            Span::styled("ctrl-c", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit"),
+            Span::raw(" copy"),
         ],
         Focus::Views => vec![
             Span::styled(" focus: ", Style::default().fg(Color::DarkGray)),

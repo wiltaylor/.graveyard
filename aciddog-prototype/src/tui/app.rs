@@ -5525,13 +5525,6 @@ impl App {
     }
 
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        // Ctrl-C always quits, regardless of focus.
-        if matches!(code, KeyCode::Char('c')) && mods.contains(KeyModifiers::CONTROL) {
-            info!("ctrl-c received");
-            self.should_quit = true;
-            return;
-        }
-
         // Tab cycles the visible right-column panels plus the main
         // area — UNLESS a Tasks-view or Memory-view modal is open, in
         // which case Tab belongs to that modal's field navigation and
@@ -5599,10 +5592,6 @@ impl App {
 
     fn handle_key_agents(&mut self, code: KeyCode, _mods: KeyModifiers) {
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                info!("quit requested");
-                self.should_quit = true;
-            }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.select_next();
                 self.return_to_chat_if_viewing_tasks();
@@ -5904,9 +5893,6 @@ impl App {
 
     fn handle_key_views(&mut self, code: KeyCode, _mods: KeyModifiers) {
         match code {
-            KeyCode::Char('q') => {
-                self.should_quit = true;
-            }
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.selected_view + 1 < VIEW_ENTRIES.len() {
                     self.selected_view += 1;
