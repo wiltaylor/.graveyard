@@ -6,6 +6,7 @@ pub mod core;
 pub mod event;
 pub mod gemini_cli;
 pub mod openai_api;
+pub mod openai_chatgpt;
 pub mod tag_call;
 pub mod tools;
 
@@ -17,3 +18,4 @@ pub use core::{AICore, AIError};
 pub use event::{parse_line, AIEvent, TurnUsage};
 pub use gemini_cli::GeminiCliCore;
 pub use openai_api::OpenAiApiCore;
+pub use openai_chatgpt::OpenAiChatgptCore;

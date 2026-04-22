@@ -24,7 +24,7 @@ use clap::Parser;
 use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
 use crate::ai::{
     AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, CopilotCliCore,
-    GeminiCliCore, OpenAiApiCore, PromptParts, WorkerCtx,
+    GeminiCliCore, OpenAiApiCore, OpenAiChatgptCore, PromptParts, WorkerCtx,
 };
 use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::{AciddogConfig, AiCore, AiCoreKind};
@@ -61,6 +61,7 @@ pub(super) fn core_display_label(core: &AiCore) -> String {
         AiCoreKind::ClaudeCode { .. } => "claude-code",
         AiCoreKind::AnthropicApi { .. } => "anthropic-api",
         AiCoreKind::OpenAiApi { .. } => "openai-api",
+        AiCoreKind::OpenAiChatgpt { .. } => "openai-chatgpt",
         AiCoreKind::CopilotCli { .. } => "copilot-cli",
         AiCoreKind::GeminiCli { .. } => "gemini-cli",
     };
@@ -71,7 +72,9 @@ pub(super) fn core_display_label(core: &AiCore) -> String {
 /// them) or cumulative session totals (so we replace).
 pub(super) fn core_usage_mode(kind: &AiCoreKind) -> ContextUsageMode {
     match kind {
-        AiCoreKind::AnthropicApi { .. } | AiCoreKind::OpenAiApi { .. } => ContextUsageMode::Add,
+        AiCoreKind::AnthropicApi { .. }
+        | AiCoreKind::OpenAiApi { .. }
+        | AiCoreKind::OpenAiChatgpt { .. } => ContextUsageMode::Add,
         AiCoreKind::ClaudeCode { .. }
         | AiCoreKind::CopilotCli { .. }
         | AiCoreKind::GeminiCli { .. } => ContextUsageMode::Replace,
@@ -96,6 +99,7 @@ fn shell_tool_name_for_core(core: &AiCore) -> Option<&'static str> {
         AiCoreKind::ClaudeCode { .. }
         | AiCoreKind::AnthropicApi { .. }
         | AiCoreKind::OpenAiApi { .. }
+        | AiCoreKind::OpenAiChatgpt { .. }
         | AiCoreKind::CopilotCli { .. }
         | AiCoreKind::GeminiCli { .. } => Some("Bash"),
     }
@@ -107,6 +111,77 @@ pub(super) fn uses_tag_ipc(tools: &[String], core: &AiCore) -> bool {
     match shell_tool_name_for_core(core) {
         Some(name) => !tools.iter().any(|t| t == name),
         None => true,
+    }
+}
+
+/// Handle `/auth login <provider> <name>` from inside the TUI.
+/// The OAuth flow opens a browser and blocks on a callback for up to
+/// five minutes, so we kick it off on a tokio task and return a
+/// one-line status message for the chat. Users poll with
+/// `/auth status <name>` to see whether the flow completed.
+fn handle_auth_login(provider: &str, name: &str) -> String {
+    if provider != "chatgpt" {
+        return format!("unknown provider `{provider}` (try `chatgpt`)");
+    }
+    let name = name.to_string();
+    let log_name = name.clone();
+    tokio::spawn(async move {
+        match crate::openai_auth::login_chatgpt(&log_name).await {
+            Ok(t) => tracing::info!(
+                credential = %log_name,
+                account_id = %t.account_id,
+                "openai_auth: TUI login succeeded"
+            ),
+            Err(e) => tracing::warn!(
+                credential = %log_name,
+                error = %e,
+                "openai_auth: TUI login failed"
+            ),
+        }
+    });
+    format!(
+        "starting OpenAI ChatGPT login for credential `{name}`. A browser tab will open; \
+         if it doesn't, watch aciddog.log for the URL. When done, run `/auth status {name}`."
+    )
+}
+
+fn handle_auth_logout(name: &str) -> String {
+    match crate::openai_auth::remove(name) {
+        Ok(path) => format!("removed credential `{name}` ({})", path.display()),
+        Err(e) => format!("logout failed: {e}"),
+    }
+}
+
+fn handle_auth_list() -> String {
+    match crate::openai_auth::list() {
+        Ok(entries) if entries.is_empty() => "(no stored credentials)".to_string(),
+        Ok(entries) => {
+            let mut out = String::from("stored credentials:\n");
+            for e in entries {
+                out.push_str(&format!(
+                    "  {name:<18}  provider={prov}  account={acc}  expires={exp}\n",
+                    name = e.name,
+                    prov = e.provider,
+                    acc = e.account_id,
+                    exp = e.expires_at
+                ));
+            }
+            out
+        }
+        Err(e) => format!("list failed: {e}"),
+    }
+}
+
+fn handle_auth_status(name: Option<&str>) -> String {
+    match name {
+        Some(n) => match crate::openai_auth::get_chatgpt(n) {
+            Ok(t) => format!(
+                "{n}: provider=openai_chatgpt account={} expires={}",
+                t.account_id, t.expires_at
+            ),
+            Err(e) => format!("{e}"),
+        },
+        None => handle_auth_list(),
     }
 }
 
@@ -206,6 +281,33 @@ pub(super) fn build_core_with_extras(
                 api_url.clone(),
                 api_key_env.clone(),
                 model.clone(),
+                parts,
+                tools,
+                system_prompt.clone(),
+            )
+            .with_env(env)
+            .with_extra_tools(extra_tools);
+            if resume {
+                c = c.mark_started();
+            }
+            if let Some(tx) = socket_tx {
+                c = c.with_socket_tx(tx);
+            }
+            Box::new(c)
+        }
+        AiCoreKind::OpenAiChatgpt {
+            credential,
+            model,
+            system_prompt,
+            reasoning_effort,
+            ..
+        } => {
+            let effort = reasoning_effort.as_deref().unwrap_or("medium");
+            let mut c = OpenAiChatgptCore::new(
+                session_id,
+                credential.clone(),
+                model.clone(),
+                effort,
                 parts,
                 tools,
                 system_prompt.clone(),
@@ -5128,6 +5230,30 @@ impl App {
                     ));
                 }
             }
+            CommandOutcome::AuthLogin { provider, name } => {
+                let msg = handle_auth_login(&provider, &name);
+                if let Some(chat) = self.chats.get_mut(idx) {
+                    chat.push_block(ChatBlock::system_info(msg));
+                }
+            }
+            CommandOutcome::AuthLogout { name } => {
+                let msg = handle_auth_logout(&name);
+                if let Some(chat) = self.chats.get_mut(idx) {
+                    chat.push_block(ChatBlock::system_info(msg));
+                }
+            }
+            CommandOutcome::AuthList => {
+                let msg = handle_auth_list();
+                if let Some(chat) = self.chats.get_mut(idx) {
+                    chat.push_block(ChatBlock::system_info(msg));
+                }
+            }
+            CommandOutcome::AuthStatus { name } => {
+                let msg = handle_auth_status(name.as_deref());
+                if let Some(chat) = self.chats.get_mut(idx) {
+                    chat.push_block(ChatBlock::system_info(msg));
+                }
+            }
             CommandOutcome::Unknown { name, hint } => {
                 if let Some(chat) = self.chats.get_mut(idx) {
                     chat.push_block(ChatBlock::system_warn(format!(
@@ -7841,6 +7967,22 @@ impl App {
                         ch.blocks.push(ChatBlock::system_warn(msg));
                     }
                 }
+            }
+            CommandOutcome::AuthLogin { provider, name } => {
+                let msg = handle_auth_login(&provider, &name);
+                ch.blocks.push(ChatBlock::system_info(msg));
+            }
+            CommandOutcome::AuthLogout { name } => {
+                let msg = handle_auth_logout(&name);
+                ch.blocks.push(ChatBlock::system_info(msg));
+            }
+            CommandOutcome::AuthList => {
+                let msg = handle_auth_list();
+                ch.blocks.push(ChatBlock::system_info(msg));
+            }
+            CommandOutcome::AuthStatus { name } => {
+                let msg = handle_auth_status(name.as_deref());
+                ch.blocks.push(ChatBlock::system_info(msg));
             }
             CommandOutcome::Unknown { name, hint } => {
                 ch.blocks.push(ChatBlock::system_warn(format!(

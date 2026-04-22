@@ -1,18 +1,74 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "aciddog", version, about = "Agentic orchestrator TUI")]
 pub struct Args {
     /// Path to the aciddog.wcl config file.
-    #[arg(short, long, default_value = "aciddog.wcl")]
+    #[arg(short, long, default_value = "aciddog.wcl", global = true)]
     pub config: PathBuf,
 
     /// Log level filter (e.g. `info`, `aciddog=debug`). Overrides `RUST_LOG`.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub log_level: Option<String>,
+
+    /// Optional subcommand. When absent, aciddog launches the TUI.
+    /// Subcommands like `auth login` run to completion and exit without
+    /// opening the TUI.
+    #[command(subcommand)]
+    pub command: Option<RootCommand>,
+}
+
+/// Top-level subcommands that run outside the TUI (OAuth login flows,
+/// credential management, future `config` / `doctor` helpers). Agent
+/// subcommands live in `AgentArgs`, which is only parsed when the
+/// `ACIDDOG_AGENT_ID` environment variable is set.
+#[derive(Debug, Clone, Subcommand)]
+pub enum RootCommand {
+    /// Manage OAuth credentials for providers that don't use API
+    /// keys. Currently: `chatgpt` (OpenAI ChatGPT subscription).
+    Auth {
+        #[command(subcommand)]
+        cmd: AuthCommand,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum AuthCommand {
+    /// Open a browser to complete OAuth for the given provider and
+    /// persist the tokens under `--name`. The same name is referenced
+    /// by `ai_core ... { credential = "<name>" }` blocks in
+    /// `aciddog.wcl`.
+    Login {
+        /// Provider to authenticate (currently only `chatgpt`).
+        #[arg(value_enum)]
+        provider: AuthProvider,
+        /// Credential name to save the tokens under (e.g. `personal`,
+        /// `work`). Must match `[a-z0-9_-]+`, length 1..=64.
+        #[arg(long)]
+        name: String,
+    },
+    /// Remove a stored credential.
+    Logout {
+        #[arg(long)]
+        name: String,
+    },
+    /// List every stored credential with provider + expiry.
+    List,
+    /// Show the stored credential's provider, account id, and expiry
+    /// without revealing tokens. `--name` filters to a single entry.
+    Status {
+        #[arg(long)]
+        name: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum AuthProvider {
+    /// OpenAI ChatGPT subscription (`chatgpt.com/backend-api/codex`).
+    Chatgpt,
 }
 
 impl Args {

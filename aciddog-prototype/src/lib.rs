@@ -5,6 +5,7 @@ pub mod config;
 pub mod cron;
 pub mod info;
 pub mod memory;
+pub mod openai_auth;
 pub mod skills;
 pub mod tasks;
 pub mod tui;

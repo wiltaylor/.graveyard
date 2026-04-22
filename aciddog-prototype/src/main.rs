@@ -8,10 +8,11 @@ use uuid::Uuid;
 
 use aciddog::agent_ipc::{self, Request, RequestCmd};
 use aciddog::cli::{
-    self, AgentArgs, AgentCommand, Args, ChannelCommand, CommentCommand, CronCommand,
-    MemoryCommand, SkillCommand, TaskCommand, TodoCommand, WorkerCommand,
+    self, AgentArgs, AgentCommand, Args, AuthCommand, AuthProvider, ChannelCommand, CommentCommand,
+    CronCommand, MemoryCommand, RootCommand, SkillCommand, TaskCommand, TodoCommand, WorkerCommand,
 };
 use aciddog::config::load_config;
+use aciddog::openai_auth;
 use aciddog::tui;
 
 #[tokio::main]
@@ -50,19 +51,132 @@ async fn main() -> ExitCode {
             );
             ExitCode::from(2)
         }
-        (None, None) => match run_tui().await {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("aciddog: {e:#}");
-                ExitCode::from(1)
+        (None, None) => {
+            let args = Args::parse();
+            // Dispatch top-level subcommands (auth login/logout/…)
+            // before touching the TUI or the config file. They run to
+            // completion and exit.
+            if let Some(command) = &args.command {
+                return match run_root_command(command.clone()).await {
+                    Ok(code) => code,
+                    Err(e) => {
+                        eprintln!("aciddog: {e:#}");
+                        ExitCode::from(1)
+                    }
+                };
             }
+            match run_tui(args).await {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("aciddog: {e:#}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+    }
+}
+
+async fn run_root_command(cmd: RootCommand) -> Result<ExitCode> {
+    match cmd {
+        RootCommand::Auth { cmd } => run_auth_command(cmd).await,
+    }
+}
+
+async fn run_auth_command(cmd: AuthCommand) -> Result<ExitCode> {
+    match cmd {
+        AuthCommand::Login {
+            provider: AuthProvider::Chatgpt,
+            name,
+        } => match openai_auth::login_chatgpt(&name).await {
+            Ok(tokens) => {
+                println!(
+                    "Signed in. credential={name} account_id={} expires_at={}",
+                    tokens.account_id, tokens.expires_at
+                );
+                Ok(ExitCode::SUCCESS)
+            }
+            Err(e) => {
+                eprintln!("aciddog: login failed: {e}");
+                Ok(ExitCode::from(1))
+            }
+        },
+        AuthCommand::Logout { name } => match openai_auth::remove(&name) {
+            Ok(path) => {
+                println!("Removed credential `{name}` from {}", path.display());
+                Ok(ExitCode::SUCCESS)
+            }
+            Err(e) => {
+                eprintln!("aciddog: logout failed: {e}");
+                Ok(ExitCode::from(1))
+            }
+        },
+        AuthCommand::List => match openai_auth::list() {
+            Ok(entries) => {
+                if entries.is_empty() {
+                    println!("(no stored credentials)");
+                } else {
+                    for e in entries {
+                        println!(
+                            "{name:<20}  provider={prov:<20}  account={acc}  expires={exp}",
+                            name = e.name,
+                            prov = e.provider,
+                            acc = e.account_id,
+                            exp = e.expires_at
+                        );
+                    }
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            Err(e) => {
+                eprintln!("aciddog: list failed: {e}");
+                Ok(ExitCode::from(1))
+            }
+        },
+        AuthCommand::Status { name } => match name {
+            Some(n) => match openai_auth::get_chatgpt(&n) {
+                Ok(t) => {
+                    println!(
+                        "{n:<20}  provider=openai_chatgpt  account={}  expires={}",
+                        t.account_id, t.expires_at
+                    );
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(e) => {
+                    eprintln!("aciddog: {e}");
+                    Ok(ExitCode::from(1))
+                }
+            },
+            None => match openai_auth::list() {
+                Ok(entries) => {
+                    if entries.is_empty() {
+                        println!("(no stored credentials)");
+                    } else {
+                        let (path, _) = openai_auth::resolve_load_path();
+                        if let Some(p) = path {
+                            println!("auth file: {}", p.display());
+                        }
+                        for e in entries {
+                            println!(
+                                "  {name:<18}  provider={prov}  account={acc}  expires={exp}",
+                                name = e.name,
+                                prov = e.provider,
+                                acc = e.account_id,
+                                exp = e.expires_at
+                            );
+                        }
+                    }
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(e) => {
+                    eprintln!("aciddog: {e}");
+                    Ok(ExitCode::from(1))
+                }
+            },
         },
     }
 }
 
-async fn run_tui() -> Result<()> {
-    let args = Args::parse();
-
+async fn run_tui(args: Args) -> Result<()> {
     let file_appender = tracing_appender::rolling::never(".", "aciddog.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 

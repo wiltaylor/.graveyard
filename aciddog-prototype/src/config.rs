@@ -218,6 +218,40 @@ pub enum AiCoreKind {
         /// Glob, Grep) — see `validate_ai_core_tools`.
         default_tools: Option<Vec<String>>,
     },
+    /// OpenAI ChatGPT-subscription core — targets the Codex
+    /// `/responses` surface on `chatgpt.com/backend-api/codex`, gated
+    /// by the user's ChatGPT Plus/Pro/Team entitlement. Authentication
+    /// is OAuth 2.0 (Authorization Code + PKCE) against
+    /// `auth.openai.com`; the login flow runs separately (`aciddog
+    /// auth login chatgpt --name <credential>`) and persists tokens
+    /// keyed by `credential`. Tools use the Responses API top-level
+    /// shape; the ChatGPT endpoint enforces a `store: false` stateless
+    /// contract, so history is resent on every turn.
+    OpenAiChatgpt {
+        /// Credential name stored in `auth.json` (e.g. `personal`,
+        /// `work`). Validated as a safe identifier at parse time; the
+        /// credential's presence is checked lazily at first turn so
+        /// users can edit config before completing login.
+        credential: String,
+        /// Model id sent in the `model` request field (e.g.
+        /// `gpt-5.1-codex`). Also drives which bundled Codex prompt
+        /// file is sent as `instructions`.
+        model: String,
+        /// Optional user-supplied system prompt. **Not** placed in the
+        /// Responses API `instructions` field (which the backend
+        /// expects to be the Codex prompt verbatim); instead
+        /// delivered as a `role: "developer"` message at the head of
+        /// `input[]` on every turn.
+        system_prompt: Option<String>,
+        /// Per-core default tool allowlist. Same allowlist as
+        /// `AnthropicApi`/`OpenAiApi` — unknown names rejected at
+        /// parse time.
+        default_tools: Option<Vec<String>>,
+        /// `low` / `medium` (default) / `high`. `minimal` is rejected
+        /// at parse time because the ChatGPT endpoint returns HTTP
+        /// 400 for it.
+        reasoning_effort: Option<String>,
+    },
     /// Generic OpenAI-chat-completions-compatible core. Works against
     /// api.openai.com, OpenRouter, Ollama's OpenAI-compatible endpoint,
     /// or any other vendor that implements `/chat/completions`.
@@ -251,6 +285,7 @@ impl AiCore {
             AiCoreKind::ClaudeCode { default_tools, .. }
             | AiCoreKind::AnthropicApi { default_tools, .. }
             | AiCoreKind::OpenAiApi { default_tools, .. }
+            | AiCoreKind::OpenAiChatgpt { default_tools, .. }
             | AiCoreKind::CopilotCli { default_tools, .. }
             | AiCoreKind::GeminiCli { default_tools, .. } => default_tools.as_deref(),
         }
@@ -263,9 +298,9 @@ impl AiCore {
     pub fn runtime_model(&self) -> Option<&str> {
         match &self.kind {
             AiCoreKind::ClaudeCode { .. } => None,
-            AiCoreKind::AnthropicApi { model, .. } | AiCoreKind::OpenAiApi { model, .. } => {
-                Some(model.as_str())
-            }
+            AiCoreKind::AnthropicApi { model, .. }
+            | AiCoreKind::OpenAiApi { model, .. }
+            | AiCoreKind::OpenAiChatgpt { model, .. } => Some(model.as_str()),
             AiCoreKind::CopilotCli { model, .. } | AiCoreKind::GeminiCli { model, .. } => {
                 model.as_deref()
             }
@@ -722,6 +757,14 @@ pub enum ConfigError {
 
     #[error("`{from}` references unknown workflow `{to}` in `can_run_workflows`")]
     UnknownWorkflowRef { from: String, to: String },
+
+    #[error("ai_core `{core}` credential `{credential}` is invalid (must match `[a-z0-9_-]+`, length 1..=64)")]
+    InvalidCredentialName { core: String, credential: String },
+
+    #[error(
+        "ai_core `{core}` reasoningEffort `{value}` is invalid (expected `low`, `medium`, `high`; `minimal` is rejected by the ChatGPT endpoint)"
+    )]
+    InvalidReasoningEffort { core: String, value: String },
 }
 
 pub fn load_config(path: &Path) -> Result<AciddogConfig, ConfigError> {
@@ -838,6 +881,31 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                     system_prompt: optional_string(b, "systemPrompt"),
                     default_tools: optional_string_list(b, "default_tools")?,
                 },
+                "openAiChatgpt" => {
+                    let credential = require_string(b, "credential")?;
+                    if !is_valid_credential_name(&credential) {
+                        return Err(ConfigError::InvalidCredentialName {
+                            core: id.clone(),
+                            credential,
+                        });
+                    }
+                    let reasoning_effort = optional_string(b, "reasoningEffort");
+                    if let Some(v) = &reasoning_effort {
+                        if !matches!(v.as_str(), "low" | "medium" | "high") {
+                            return Err(ConfigError::InvalidReasoningEffort {
+                                core: id.clone(),
+                                value: v.clone(),
+                            });
+                        }
+                    }
+                    AiCoreKind::OpenAiChatgpt {
+                        credential,
+                        model: require_string(b, "model")?,
+                        system_prompt: optional_string(b, "systemPrompt"),
+                        default_tools: optional_string_list(b, "default_tools")?,
+                        reasoning_effort,
+                    }
+                }
                 "copilotCli" => AiCoreKind::CopilotCli {
                     model: optional_string(b, "model"),
                     default_tools: optional_string_list(b, "default_tools")?,
@@ -1137,6 +1205,18 @@ fn validate_ai_core_refs(
     Ok(())
 }
 
+/// Validate an OAuth credential name: non-empty, ≤64 chars, and
+/// consists of `[a-z0-9_-]+`. Used to check the `credential` field
+/// on `openAiChatgpt` cores against the on-disk `auth.json` keys.
+/// Conservative so names survive shell, WCL, and JSON round-trips.
+fn is_valid_credential_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
 /// Ensure every tool name declared in an `AnthropicApi` core's
 /// `default_tools` resolves to a known built-in. `ClaudeCode` cores
 /// skip this check because tool names there are decided by the
@@ -1162,6 +1242,9 @@ fn validate_ai_core_tools(cores: &[AiCore]) -> Result<(), ConfigError> {
             }
             AiCoreKind::OpenAiApi { default_tools, .. } => {
                 ("openAiApi", default_tools.as_deref(), &api_known)
+            }
+            AiCoreKind::OpenAiChatgpt { default_tools, .. } => {
+                ("openAiChatgpt", default_tools.as_deref(), &api_known)
             }
             AiCoreKind::CopilotCli { default_tools, .. } => {
                 ("copilotCli", default_tools.as_deref(), &copilot_known)
@@ -1287,6 +1370,7 @@ fn validate_compaction_refs(
                 Some(AiCoreKind::GeminiCli { .. }) => "geminiCli",
                 Some(AiCoreKind::AnthropicApi { .. }) => "anthropicApi",
                 Some(AiCoreKind::OpenAiApi { .. }) => "openAiApi",
+                Some(AiCoreKind::OpenAiChatgpt { .. }) => "openAiChatgpt",
                 // No core resolvable — treat as "unknown", let the
                 // core-ref validator surface a better error. Compaction
                 // validation stays conservative here.
@@ -2666,6 +2750,116 @@ mod tests {
         "#;
         let cfg = parse_config(src, &dummy_path()).unwrap();
         assert_eq!(cfg.ai_cores[0].runtime_model(), Some("openai/gpt-5.4-mini"));
+    }
+
+    #[test]
+    fn parses_ai_core_block_with_openai_chatgpt_variant() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core chatgpt {
+                type = :openAiChatgpt
+                credential = "personal"
+                model = "gpt-5.1-codex"
+                reasoningEffort = "medium"
+                systemPrompt = "be concise"
+                default_tools = ["Read", "Bash"]
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].kind,
+            AiCoreKind::OpenAiChatgpt {
+                credential: "personal".into(),
+                model: "gpt-5.1-codex".into(),
+                system_prompt: Some("be concise".into()),
+                default_tools: Some(vec!["Read".into(), "Bash".into()]),
+                reasoning_effort: Some("medium".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn openai_chatgpt_requires_credential_and_model() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core chatgpt { type = :openAiChatgpt }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(err, ConfigError::MissingAttribute { .. }));
+    }
+
+    #[test]
+    fn openai_chatgpt_rejects_bad_credential_name() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core chatgpt {
+                type = :openAiChatgpt
+                credential = "Has Spaces"
+                model = "gpt-5.1-codex"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::InvalidCredentialName { credential, .. }
+                if credential == "Has Spaces"
+        ));
+    }
+
+    #[test]
+    fn openai_chatgpt_rejects_minimal_reasoning_effort() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core chatgpt {
+                type = :openAiChatgpt
+                credential = "personal"
+                model = "gpt-5.1-codex"
+                reasoningEffort = "minimal"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::InvalidReasoningEffort { value, .. } if value == "minimal"
+        ));
+    }
+
+    #[test]
+    fn openai_chatgpt_rejects_unknown_tool_name() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core chatgpt {
+                type = :openAiChatgpt
+                credential = "personal"
+                model = "gpt-5.1-codex"
+                default_tools = ["Read", "NotARealTool"]
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownTool { tool, .. } if tool == "NotARealTool"
+        ));
+    }
+
+    #[test]
+    fn openai_chatgpt_runtime_model_returns_configured_model() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core chatgpt {
+                type = :openAiChatgpt
+                credential = "personal"
+                model = "gpt-5.1-codex"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.ai_cores[0].runtime_model(), Some("gpt-5.1-codex"));
     }
 
     #[test]

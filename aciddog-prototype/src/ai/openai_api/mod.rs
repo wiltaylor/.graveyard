@@ -781,7 +781,7 @@ fn render_message(m: &Message) -> Value {
     Value::Object(obj)
 }
 
-fn build_first_turn_prompt(parts: &PromptParts, allowed_tools: &[String]) -> String {
+pub(crate) fn build_first_turn_prompt(parts: &PromptParts, allowed_tools: &[String]) -> String {
     let mut sections: Vec<String> = Vec::new();
     if let Some(role) = parts
         .role

@@ -34,6 +34,17 @@ pub enum CommandOutcome {
     /// `/leave` — destroy the current pane's ephemeral channel. Only
     /// valid from a channel pane; rejected on WCL-declared channels.
     LeaveChannel,
+    /// `/auth login chatgpt <name>` — run the OAuth flow for a named
+    /// credential. Currently only `chatgpt` is supported.
+    AuthLogin { provider: String, name: String },
+    /// `/auth logout <name>` — remove a stored credential.
+    AuthLogout { name: String },
+    /// `/auth list` — print every stored credential (provider +
+    /// account id + expiry, no tokens).
+    AuthList,
+    /// `/auth status [<name>]` — print the provider / account id /
+    /// expiry for a single credential (or all if `name` is None).
+    AuthStatus { name: Option<String> },
     /// Input didn't match any known command.
     Unknown { name: String, hint: String },
 }
@@ -106,14 +117,64 @@ pub fn dispatch(input: &str) -> Option<CommandOutcome> {
             }
         }
         "leave" => CommandOutcome::LeaveChannel,
+        "auth" => parse_auth(args),
         other => CommandOutcome::Unknown {
             name: other.to_string(),
             hint: "try /version, /compact, /reset, /stop, /sleep, /awake, /run <wf>, \
-                   /meeting <id>, /add <agent>, /kick <agent>, /leave, or /exit"
+                   /meeting <id>, /add <agent>, /kick <agent>, /leave, /auth, or /exit"
                 .to_string(),
         },
     };
     Some(outcome)
+}
+
+/// Parse the tail of an `/auth …` command. Accepts
+/// `login <provider> <name>`, `logout <name>`, `list`, or
+/// `status [<name>]`. Everything else returns a usage-message
+/// `CommandOutcome`.
+fn parse_auth(args: &str) -> CommandOutcome {
+    let mut it = args.split_whitespace();
+    let Some(sub) = it.next() else {
+        return CommandOutcome::Message(auth_usage().into());
+    };
+    match sub {
+        "login" => {
+            let provider = it.next().unwrap_or("");
+            let name = it.next().unwrap_or("");
+            if provider.is_empty() || name.is_empty() {
+                return CommandOutcome::Message(
+                    "usage: /auth login <provider> <name>  — provider: chatgpt".into(),
+                );
+            }
+            CommandOutcome::AuthLogin {
+                provider: provider.to_string(),
+                name: name.to_string(),
+            }
+        }
+        "logout" => {
+            let name = it.next().unwrap_or("");
+            if name.is_empty() {
+                return CommandOutcome::Message(
+                    "usage: /auth logout <name>  — removes the credential".into(),
+                );
+            }
+            CommandOutcome::AuthLogout {
+                name: name.to_string(),
+            }
+        }
+        "list" => CommandOutcome::AuthList,
+        "status" => CommandOutcome::AuthStatus {
+            name: it.next().map(str::to_string),
+        },
+        other => CommandOutcome::Message(format!(
+            "unknown /auth subcommand `{other}`. {}",
+            auth_usage()
+        )),
+    }
+}
+
+fn auth_usage() -> &'static str {
+    "usage: /auth <login|logout|list|status> …  (e.g. /auth login chatgpt personal)"
 }
 
 #[cfg(test)]
@@ -263,6 +324,67 @@ mod tests {
         assert_eq!(
             dispatch("/leave please"),
             Some(CommandOutcome::LeaveChannel)
+        );
+    }
+
+    #[test]
+    fn auth_login_parses_provider_and_name() {
+        assert_eq!(
+            dispatch("/auth login chatgpt personal"),
+            Some(CommandOutcome::AuthLogin {
+                provider: "chatgpt".into(),
+                name: "personal".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn auth_login_missing_args_returns_usage() {
+        let out = dispatch("/auth login").unwrap();
+        match out {
+            CommandOutcome::Message(msg) => assert!(msg.starts_with("usage: /auth login")),
+            other => panic!("expected Message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auth_logout_requires_name() {
+        assert_eq!(
+            dispatch("/auth logout work"),
+            Some(CommandOutcome::AuthLogout {
+                name: "work".into()
+            })
+        );
+        let out = dispatch("/auth logout").unwrap();
+        assert!(matches!(out, CommandOutcome::Message(m) if m.starts_with("usage: /auth logout")));
+    }
+
+    #[test]
+    fn auth_list_and_status() {
+        assert_eq!(dispatch("/auth list"), Some(CommandOutcome::AuthList));
+        assert_eq!(
+            dispatch("/auth status"),
+            Some(CommandOutcome::AuthStatus { name: None })
+        );
+        assert_eq!(
+            dispatch("/auth status personal"),
+            Some(CommandOutcome::AuthStatus {
+                name: Some("personal".into())
+            })
+        );
+    }
+
+    #[test]
+    fn auth_without_subcommand_returns_usage() {
+        let out = dispatch("/auth").unwrap();
+        assert!(matches!(out, CommandOutcome::Message(m) if m.starts_with("usage: /auth")));
+    }
+
+    #[test]
+    fn auth_unknown_subcommand_returns_message() {
+        let out = dispatch("/auth wat").unwrap();
+        assert!(
+            matches!(out, CommandOutcome::Message(m) if m.contains("unknown /auth subcommand"))
         );
     }
 }

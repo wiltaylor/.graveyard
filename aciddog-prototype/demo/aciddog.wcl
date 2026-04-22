@@ -211,6 +211,36 @@ schema "ai_core" {
     // tools (Bash, Read, Write, Edit, Glob, Grep, WebFetch).
     default_tools: list(string) @optional
   }
+
+  // OpenAI ChatGPT-subscription core. Targets the Codex `/responses`
+  // surface on `chatgpt.com/backend-api/codex`, gated by the user's
+  // ChatGPT Plus/Pro/Team entitlement rather than per-token billing.
+  // Authenticates via OAuth 2.0 against auth.openai.com — run
+  // `aciddog auth login chatgpt --name <credential>` first so the
+  // tokens live in `~/.config/aciddog/auth.json`. No apiKeyEnv here;
+  // the `credential` field names the stored token set instead.
+  variant "openAiChatgpt" {
+    // Credential name stored in auth.json (e.g. "personal", "work").
+    // Create/refresh it with `aciddog auth login chatgpt --name <n>`.
+    credential: string
+    // Model id sent in the `model` request field (e.g. `gpt-5.1-codex`,
+    // `gpt-5.4`). Also selects which bundled Codex prompt file is sent
+    // as `instructions` — codex-suffixed ids get the Codex prompt,
+    // others get a generic coding-agent prompt.
+    model: string
+    // Optional user system prompt. Delivered as a `role: "developer"`
+    // message at the head of `input[]` every turn — **not** placed in
+    // the Responses API `instructions` field (the backend expects that
+    // to be the Codex prompt verbatim).
+    systemPrompt: string @optional
+    // Fallback tool allowlist — names must resolve to built-in native
+    // tools (Bash, Read, Write, Edit, Glob, Grep, WebFetch).
+    default_tools: list(string) @optional
+    // Reasoning depth on the response. Accepts `low` / `medium` /
+    // `high`; `minimal` is rejected at parse time because the ChatGPT
+    // endpoint returns HTTP 400 for it. Defaults to `medium`.
+    reasoningEffort: string @optional
+  }
 }
 
 ai_core default_core {
@@ -273,6 +303,27 @@ ai_core openrouter {
     You are a code agent operating in a terminal. You help with software engineering tasks by reading, writing, and modifying code, and by executing commands.
 
     Follow your first-turn `<role>` / `<team>` / `<tools>` / `<instructions>` sections. Prefer tool calls that actually inspect or change the workspace over reasoning about what files might contain.
+  EOT
+}
+
+// ChatGPT-subscription core using GPT-5.4. Authenticates via OAuth
+// against auth.openai.com — before first use run:
+//   aciddog auth login chatgpt --name personal
+// which opens a browser, completes the Codex OAuth handshake, and
+// saves tokens to ~/.config/aciddog/auth.json under the `personal`
+// key. Tokens are refreshed automatically when they expire; if the
+// refresh token is invalidated the core emits a clear error pointing
+// at this same login command.
+ai_core chatgpt_gpt54 {
+  type = :openAiChatgpt
+  credential = "personal"
+  model = "gpt-5.4"
+  reasoningEffort = "medium"
+  default_tools = ["Read"]
+  systemPrompt = <<EOT
+    You are a code agent operating in a terminal. You help with software engineering tasks by reading, writing, and modifying code.
+
+    Follow your first-turn `<role>` / `<team>` / `<tools>` / `<instructions>` sections. Prefer tool calls that actually inspect the workspace over reasoning about what files might contain.
   EOT
 }
 
@@ -437,6 +488,23 @@ agent humblemoonbeam {
   instructions = "When sent a topic, respond with 2-3 sentences of pure corporate-speak that 'add value' while saying almost nothing concrete. If the topic arrived via your inbox (wrapped in `<Message from=\"...\">`), use `send` to route the reply back to the original sender. No preamble, no apologies, no meta-commentary — the buzzword soup is the entire deliverable."
   tools = ["Read"]
   ai_core = "gemini_flash"
+}
+
+// ChatGPT-subscription-backed agent — exercises the `openAiChatgpt`
+// code path using GPT-5.4 via the user's ChatGPT Plus/Pro/Team
+// entitlement. `tools = ["Read"]` keeps the agent on the tag-IPC
+// protocol so mailbox routing through the Responses API gets tested
+// too. Requires a completed OAuth login — run
+// `aciddog auth login chatgpt --name personal` before first use.
+agent scribe {
+  role = "scribe"
+  role_description = <<EOT
+    You are the team's scribe. Other agents send you a short topic, a file path, or a change summary, and you reply with a concise written note: two or three sentences that capture the gist, written in clear prose with no hedging. You read files when the request names one; you never edit code or run commands. Keep notes tight — if it takes more than three sentences, trim.
+  EOT
+  instructions = "When sent a topic, reply with a concise 2-3 sentence note capturing the essential point. If a file path is mentioned, read it before writing. If the request came through your mailbox (wrapped in `<Message from=\"...\">`), use `send` to route the note back to the original sender. No preamble, no commentary — the note is the entire deliverable."
+  tools = ["Read"]
+  ai_core = "chatgpt_gpt54"
+  compaction = "drop_compact"
 }
 
 // Low-stakes morale agent wired through the GitHub Copilot CLI core

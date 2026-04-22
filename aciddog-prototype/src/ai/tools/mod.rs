@@ -174,6 +174,34 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Responses-API-shaped spec array for the `tools` request field:
+    /// `[{ "type": "function", "name": .., "description": .., "parameters": .., "strict": false }]`.
+    /// Unlike the Chat Completions shape used by `openai_tools()`,
+    /// Responses API puts `name` / `description` / `parameters` at
+    /// the top level (no nested `function` object).
+    ///
+    /// `strict: false` intentionally. The backend's strict mode
+    /// requires `additionalProperties: false` at every object level
+    /// plus every declared property in `required` — neither of which
+    /// our tool schemas are authored for (they match the
+    /// Anthropic/OpenAI conventions where optional properties omit
+    /// from `required` and `additionalProperties` is unset). Enabling
+    /// strict would reject every tool with `invalid_function_parameters`.
+    pub fn responses_tools(&self) -> Vec<Value> {
+        self.tools
+            .values()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "name": t.name(),
+                    "description": t.description(),
+                    "parameters": t.input_schema(),
+                    "strict": false,
+                })
+            })
+            .collect()
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.get(name).cloned()
     }
@@ -244,5 +272,22 @@ mod tests {
         // outer level — those only appear on Anthropic's shape.
         assert!(t.get("name").is_none());
         assert!(t.get("input_schema").is_none());
+    }
+
+    #[test]
+    fn responses_tools_emits_top_level_function_shape() {
+        let (reg, _) = ToolRegistry::from_allowed(&["Read".to_string()]);
+        let tools = reg.responses_tools();
+        assert_eq!(tools.len(), 1);
+        let t = &tools[0];
+        assert_eq!(t["type"], "function");
+        assert_eq!(t["name"], "Read");
+        assert!(t["description"].is_string());
+        assert!(t["parameters"].is_object());
+        // `strict` is false because our existing tool schemas aren't
+        // authored for the backend's strict-mode constraints.
+        assert_eq!(t["strict"], false);
+        // No nested `function` object — that's the Chat Completions shape.
+        assert!(t.get("function").is_none());
     }
 }
