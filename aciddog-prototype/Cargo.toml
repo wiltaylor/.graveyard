@@ -6,7 +6,7 @@ description = "Agentic orchestrator TUI driven by an aciddog.wcl config"
 license = "MIT"
 
 [dependencies]
-ratatui = "0.29"
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 wcl_lang = "0.9.0-alpha"
 tokio = { version = "1", features = ["full"] }

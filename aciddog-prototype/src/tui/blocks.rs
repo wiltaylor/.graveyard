@@ -509,13 +509,22 @@ impl ChatBlock {
         let w = width.max(1);
         match self {
             Self::AgentInfo {
+                core,
                 tools,
                 prompt,
                 collapsed,
                 context_used,
                 context_window,
                 ..
-            } => agent_info_height(tools, prompt, *collapsed, *context_used, *context_window, w),
+            } => agent_info_height(
+                core,
+                tools,
+                prompt,
+                *collapsed,
+                *context_used,
+                *context_window,
+                w,
+            ),
             Self::UserText { text } => wrapped_rows(text, w.saturating_sub(2)).max(1),
             Self::AiMarkdown { parsed, .. } => 1 + parsed_md_height(parsed, w),
             Self::BashTool {
@@ -1101,6 +1110,7 @@ fn render_bar(used: u64, total: u64, width: usize) -> String {
 }
 
 fn agent_info_height(
+    core: &str,
     tools: &[String],
     prompt: &str,
     collapsed: bool,
@@ -1108,15 +1118,29 @@ fn agent_info_height(
     context_window: Option<u32>,
     width: u16,
 ) -> u16 {
-    // Rows: detail(1..) + context(1, wrapped) + prompt-header(1) + optional prompt body
-    let detail_text = agent_info_detail_line(tools, "");
-    let detail_rows = wrapped_rows(&detail_text, width.saturating_sub(2)).max(1);
+    // Row budget: detail(1..wrapped) + context(1..wrapped) + prompt
+    // header(1) + optional prompt body.
+    //
+    // `ChatBlock::render` always shifts its incoming rect by
+    // `+1/-1` to reserve column 0 for the selection indicator (even
+    // when not selected), so `render_agent_info` actually draws into a
+    // rect that's one narrower than the `width` we were given. Every
+    // wrap calc here has to subtract that extra column — otherwise a
+    // long line reports fewer rows than the render produces and the
+    // bottom of the block gets clipped (classic symptom: the closing
+    // `</instructions>` disappears).
+    //
+    //   detail/context:   rect.x+2, width-2  → effective width-3
+    //   prompt body:      Borders::LEFT inside rect.x+2, width-2
+    //                     → effective width-4 (extra -1 for the border)
+    let detail_text = agent_info_detail_line(tools, core);
+    let detail_rows = wrapped_rows(&detail_text, width.saturating_sub(3)).max(1);
     let context_text = format_context_line(context_used, context_window);
-    let context_rows = wrapped_rows(&context_text, width.saturating_sub(2)).max(1);
+    let context_rows = wrapped_rows(&context_text, width.saturating_sub(3)).max(1);
     let prompt_body = if collapsed {
         0
     } else {
-        wrapped_rows(prompt, width.saturating_sub(2))
+        wrapped_rows(prompt, width.saturating_sub(4))
     };
     detail_rows + context_rows + 1 + prompt_body
 }
@@ -1208,8 +1232,11 @@ fn render_agent_info(
     // Prompt body. Pass the String directly so ratatui splits on newlines
     // into individual Lines; a single Span would treat `\n` as a glyph and
     // collapse the body onto one wrapped line.
+    // The `Borders::LEFT` block reserves one column for the border, so
+    // the paragraph's effective wrap width is `body_w - 1`. Use that
+    // for the row count or the tail of long prompts gets clipped.
     let body_w = rect.width.saturating_sub(2);
-    let body_rows = wrapped_rows(prompt, body_w);
+    let body_rows = wrapped_rows(prompt, body_w.saturating_sub(1));
     let available = end_y.saturating_sub(y);
     let draw_h = body_rows.min(available);
     let body_rect = Rect::new(rect.x + 2, y, body_w, draw_h);
@@ -1303,22 +1330,21 @@ fn parsed_md_height(parsed: &ParsedMd, width: u16) -> u16 {
     total.max(1)
 }
 
+/// Count the rows a paragraph occupies when rendered with
+/// `Wrap { trim: false }` at the given width. Delegates to ratatui's
+/// own word-wrapper so this matches the actual render exactly — a
+/// naïve `chars / width` estimate under-counts whenever a word
+/// doesn't fit on its current row and gets pushed to the next
+/// (leaving trailing blanks), which shows up as the last row of the
+/// block getting clipped.
 fn wrapped_rows(text: &str, width: u16) -> u16 {
     if width == 0 {
         return 1;
     }
-    let w = width as usize;
-    let mut rows = 0u16;
-    for line in text.split('\n') {
-        let chars = line.chars().count();
-        let r = if chars == 0 {
-            1
-        } else {
-            chars.div_ceil(w) as u16
-        };
-        rows = rows.saturating_add(r);
-    }
-    rows.max(1)
+    let count = Paragraph::new(text.to_string())
+        .wrap(Wrap { trim: false })
+        .line_count(width);
+    (count as u16).max(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -2173,13 +2199,13 @@ mod tests {
     fn agent_info_height_grows_with_context_line() {
         // Same prompt + tools, just toggling the new context line; the
         // height should grow by exactly one row (the new "context:" row).
-        let h_no_ctx =
-            agent_info_height(&["Bash".into()], "p", true, None, None, 80);
+        let h_no_ctx = agent_info_height("core", &["Bash".into()], "p", true, None, None, 80);
         let u = crate::ai::TurnUsage {
             input_tokens: 5000,
             ..Default::default()
         };
         let h_with_ctx = agent_info_height(
+            "core",
             &["Bash".into()],
             "p",
             true,
@@ -2532,5 +2558,139 @@ mod tests {
         assert_eq!(task_op_shown_body("sent", ""), "sent");
         assert_eq!(task_op_shown_body("", "reply"), "reply");
         assert_eq!(task_op_shown_body("sent", "reply"), "sent\n\n---\nreply");
+    }
+
+    #[test]
+    fn expanded_agent_info_block_renders_final_prompt_line() {
+        // Renders a realistic AgentInfo block (long core label + long
+        // prompt) into a scratch buffer sized to the block's reported
+        // height, and checks that the last non-empty row contains the
+        // prompt's closing tag. Regression guard for the "dropping
+        // the last row of </instructions>" bug.
+        let prompt = "<role>\nbe terse\n</role>\n\n<team>\nsome teammates and worker templates listed here one per line\n</team>\n\n<tools>\n- `Bash` — shell\n- `Read` — read files\n- `Edit` — edit files\n- `Grep` — search\n- `Glob` — match paths\n</tools>\n\n<instructions>\nBreak the user request into steps and delegate work to other agents. If the team needs a morale boost, either `send` a topic to the `jokemaster` agent (OpenRouter-backed one-liner) or spawn a `jokester` worker (ephemeral joke + cleanup). If the user wants corporate-speak buzzword bingo, `send` a topic to `humblemoonbeam` (Gemini-backed bs talker). All three return their punchline and stop.\n</instructions>";
+        let block = ChatBlock::AgentInfo {
+            core: "claude-code (default_core)".into(),
+            tools: vec![
+                "Bash".into(),
+                "Read".into(),
+                "Edit".into(),
+                "Grep".into(),
+                "Glob".into(),
+            ],
+            prompt: prompt.into(),
+            context_used: None,
+            context_window: Some(200_000),
+            collapsed: false,
+        };
+        // Sweep every width in a wide range so we catch the specific
+        // column counts where word-wrap produces a row count that
+        // diverges from the naïve estimate.
+        for width in 40u16..=160 {
+            let h = block.height(width);
+            // Render into a TALLER buffer than the block thinks it
+            // needs — if ratatui wants more rows than h, we'll see
+            // them spill past row h and know the height calc lied.
+            let tall = h + 10;
+            let area = Rect::new(0, 0, width, tall);
+            let mut buf = Buffer::empty(area);
+            let mut btns = Vec::new();
+            block.render(&mut buf, area, &mut btns, 0, false);
+            let mut last_row_text = String::new();
+            let mut last_row_y = 0u16;
+            for y in (0..tall).rev() {
+                let mut line = String::new();
+                for x in 0..width {
+                    line.push_str(buf[(x, y)].symbol());
+                }
+                if !line.trim().is_empty() {
+                    last_row_text = line;
+                    last_row_y = y;
+                    break;
+                }
+            }
+            assert!(
+                last_row_text.contains("</instructions>"),
+                "width={width}: expected last non-empty row to contain \
+                 </instructions>, got row {last_row_y}={last_row_text:?} \
+                 (reported h={h}, tall={tall})"
+            );
+            assert!(
+                last_row_y < h,
+                "width={width}: content overflowed computed height — \
+                 content at row {last_row_y} exceeds h={h}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_info_height_accounts_for_wrapping_core_label() {
+        // A long core label should push the detail line onto a second
+        // row at narrow widths, and `agent_info_height` must include
+        // that extra row — otherwise the expanded prompt body at the
+        // bottom of the block gets clipped by one row.
+        let tools: Vec<String> = vec!["Bash".into(), "Read".into(), "Edit".into()];
+        let core = "anthropic-api (very-long-core-id)";
+        let prompt = "short prompt";
+        let h_short = agent_info_height("cc", &tools, prompt, false, None, None, 40);
+        let h_long = agent_info_height(core, &tools, prompt, false, None, None, 40);
+        assert!(
+            h_long > h_short,
+            "long core label {core:?} should add at least one wrapped row \
+             to the detail line (short={h_short}, long={h_long})"
+        );
+    }
+
+    /// Diagnostic: the very prompt that the `expanded_agent_info_block_*`
+    /// test uses. Render only the body-paragraph portion (with the
+    /// same block/wrap settings that `render_agent_info` uses) and
+    /// compare its real row count against `wrapped_rows`.
+
+
+    /// Diagnostic: measure the row count ratatui actually uses for a
+    /// Paragraph with `Borders::LEFT` and `Wrap { trim: false }`, and
+    /// compare it against `wrapped_rows(prompt, width - 1)` — which is
+    /// what `agent_info_height` uses to size the block. A mismatch
+    /// means long prompts get clipped.
+    #[test]
+    fn paragraph_with_left_border_matches_wrapped_rows_estimate() {
+        // Use a deliberately long multi-paragraph prompt that will
+        // definitely wrap at common widths.
+        let prompt = (0..20)
+            .map(|i| {
+                format!(
+                    "Line {i} is a long one with several words so it will wrap across multiple rows at narrow widths."
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for total_width in [40u16, 60, 80, 100, 120] {
+            let body_w = total_width - 2;
+            let predicted = wrapped_rows(&prompt, body_w.saturating_sub(1));
+            // Render into a very tall buffer so ratatui never clips.
+            let huge_height = predicted * 2 + 4;
+            let area = Rect::new(0, 0, body_w, huge_height);
+            let mut buf = Buffer::empty(area);
+            let block = Block::default().borders(Borders::LEFT);
+            Paragraph::new(prompt.clone())
+                .block(block)
+                .wrap(Wrap { trim: false })
+                .render(area, &mut buf);
+            // Count rows that ratatui actually painted non-empty content
+            // into (skipping the left-border column).
+            let mut actual = 0u16;
+            for y in 0..huge_height {
+                let any = (1..body_w).any(|x| {
+                    let cell = &buf[(x, y)];
+                    !cell.symbol().trim().is_empty() && cell.symbol() != " "
+                });
+                if any {
+                    actual = actual.saturating_add(1);
+                }
+            }
+            assert_eq!(
+                actual, predicted,
+                "width={total_width}: ratatui drew {actual} rows, wrapped_rows predicted {predicted}"
+            );
+        }
     }
 }
