@@ -844,6 +844,12 @@ pub struct AgentChat {
     /// status-bar consumers don't need to reach into `blocks[0]`.
     #[allow(dead_code)]
     pub context_window: Option<u32>,
+    /// Cached full-height render of the current anchor block. Reused
+    /// across frames so mouse-wheel scrolling inside a tall block only
+    /// re-blits rows, rather than re-rendering the whole block each
+    /// tick. Invalidated in `render_agent_chat` when width, height,
+    /// block index, or a cheap content fingerprint changes.
+    pub anchor_scratch: Option<super::blocks::AnchorScratch>,
 }
 
 /// How an agent's running token total should incorporate each new
@@ -4613,21 +4619,12 @@ impl App {
             return;
         };
         chat.sticky_bottom = false;
-        let max_block = chat.blocks.len().saturating_sub(1);
-        for _ in 0..amount {
-            if chat.anchor.block_idx < max_block {
-                chat.anchor.within += 1;
-                // Height not known here; the renderer will clamp visually.
-                // If the within grows too large it'll auto-advance next time
-                // the renderer reconciles. Cap at something sane to avoid drift.
-                if chat.anchor.within > 64 {
-                    chat.anchor.block_idx += 1;
-                    chat.anchor.within = 0;
-                }
-            } else {
-                break;
-            }
-        }
+        // `reconcile_anchor` (ui.rs) rolls `within` forward into the next
+        // block using the actual rendered heights and clamps to the last
+        // block when we reach the end, so we only need to grow `within`
+        // here. The renderer's scratch-buffer path gives us true per-row
+        // scroll; the anchor always lands inside a valid block.
+        chat.anchor.within = chat.anchor.within.saturating_add(amount);
     }
 
     fn mouse_in_chat_scroll_zone(&self, pos: (u16, u16)) -> bool {
@@ -5827,6 +5824,67 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert!(app.current_chat().unwrap().sticky_bottom);
+    }
+
+    /// Scrolling inside a tall first block must advance `within` without
+    /// jumping past the block. This is the regression the smooth-scroll
+    /// fix was written for.
+    #[test]
+    fn scroll_wheel_inside_tall_first_block_advances_within_smoothly() {
+        let mut app = App::new(sample_config());
+        app.layout.chat_history_inner = Some(Rect::new(0, 20, 80, 10));
+        let chat = app.current_chat_mut().unwrap();
+        // One very tall block followed by a short one. Only block 0 should
+        // be the scroll target for the first several wheel ticks.
+        chat.blocks
+            .push(ChatBlock::user("line\n".repeat(200)));
+        chat.blocks.push(ChatBlock::user("short"));
+        chat.anchor = ScrollAnchor {
+            block_idx: 0,
+            within: 0,
+        };
+        chat.sticky_bottom = false;
+
+        // Three wheel-ticks (each = 3 rows) should land well inside the
+        // first block: within grows by 9, block_idx stays at 0.
+        for _ in 0..3 {
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 5,
+                row: 25,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
+        let a = app.current_chat().unwrap().anchor;
+        assert_eq!(a.block_idx, 0, "must not jump past the first block");
+        assert_eq!(a.within, 9, "within should advance 3 rows per tick");
+    }
+
+    /// Scrolling back up after sitting inside a tall block should walk
+    /// `within` back to zero before moving to an earlier block.
+    #[test]
+    fn scroll_wheel_up_inside_tall_block_decrements_within_first() {
+        let mut app = App::new(sample_config());
+        app.layout.chat_history_inner = Some(Rect::new(0, 20, 80, 10));
+        let chat = app.current_chat_mut().unwrap();
+        chat.blocks
+            .push(ChatBlock::user("line\n".repeat(200)));
+        chat.blocks.push(ChatBlock::user("short"));
+        chat.anchor = ScrollAnchor {
+            block_idx: 0,
+            within: 30,
+        };
+        chat.sticky_bottom = false;
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 5,
+            row: 25,
+            modifiers: KeyModifiers::NONE,
+        });
+        let a = app.current_chat().unwrap().anchor;
+        assert_eq!(a.block_idx, 0);
+        assert_eq!(a.within, 27, "one tick = 3 rows back up");
     }
 
     #[test]

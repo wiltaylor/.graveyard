@@ -6,11 +6,11 @@
 //! buttons (expand/collapse, copy) push their hit rects into the shared
 //! [`ChatButton`] list the app consults on mouse events.
 
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
+use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
 
 use super::markdown::{self, MdChunk, ParsedMd};
 
@@ -19,6 +19,211 @@ use super::markdown::{self, MdChunk, ParsedMd};
 pub struct ScrollAnchor {
     pub block_idx: usize,
     pub within: u16,
+}
+
+/// Cached full-height render of the anchor block, kept between frames so
+/// mouse-wheel scrolling only re-blits slices instead of re-rendering the
+/// whole block each tick. Invalidated on width/height/content changes.
+#[derive(Debug, Clone)]
+pub struct AnchorScratch {
+    pub block_idx: usize,
+    pub width: u16,
+    pub height: u16,
+    pub fingerprint: u64,
+    pub buffer: Buffer,
+    pub buttons: Vec<ChatButton>,
+}
+
+/// Cheap per-frame fingerprint of a block's visible content. Only the
+/// fields that affect rendering are fed into the hasher; this is what the
+/// anchor-scratch cache compares on every frame to decide whether it can
+/// skip re-rendering.
+pub fn block_fingerprint(b: &ChatBlock) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut h = DefaultHasher::new();
+    // Discriminant so two variants with the same-shaped bytes don't collide.
+    std::mem::discriminant(b).hash(&mut h);
+
+    let hash_usage = |h: &mut DefaultHasher, u: &Option<crate::ai::TurnUsage>| {
+        match u {
+            Some(u) => {
+                1u8.hash(h);
+                u.input_tokens.hash(h);
+                u.output_tokens.hash(h);
+                u.cache_read_input_tokens.hash(h);
+                u.cache_creation_input_tokens.hash(h);
+            }
+            None => 0u8.hash(h),
+        }
+    };
+
+    match b {
+        ChatBlock::AgentInfo {
+            core,
+            tools,
+            prompt,
+            collapsed,
+            context_used,
+            context_window,
+        } => {
+            core.hash(&mut h);
+            tools.hash(&mut h);
+            prompt.hash(&mut h);
+            collapsed.hash(&mut h);
+            hash_usage(&mut h, context_used);
+            context_window.hash(&mut h);
+        }
+        ChatBlock::UserText { text } => text.hash(&mut h),
+        ChatBlock::AiMarkdown { raw, .. } => raw.hash(&mut h),
+        ChatBlock::BashTool {
+            command,
+            stdout,
+            is_error,
+            collapsed,
+            pending,
+        } => {
+            command.hash(&mut h);
+            stdout.hash(&mut h);
+            is_error.hash(&mut h);
+            collapsed.hash(&mut h);
+            pending.hash(&mut h);
+        }
+        ChatBlock::EditTool {
+            file_path,
+            diff,
+            is_error,
+            collapsed,
+            pending,
+        }
+        | ChatBlock::WriteTool {
+            file_path,
+            diff,
+            is_error,
+            collapsed,
+            pending,
+        } => {
+            file_path.hash(&mut h);
+            diff.hash(&mut h);
+            is_error.hash(&mut h);
+            collapsed.hash(&mut h);
+            pending.hash(&mut h);
+        }
+        ChatBlock::ReadTool {
+            file_path,
+            range,
+            is_error,
+            pending,
+        } => {
+            file_path.hash(&mut h);
+            range.hash(&mut h);
+            is_error.hash(&mut h);
+            pending.hash(&mut h);
+        }
+        ChatBlock::GrepTool {
+            pattern,
+            path,
+            matches,
+            is_error,
+            collapsed,
+            pending,
+        }
+        | ChatBlock::GlobTool {
+            pattern,
+            path,
+            matches,
+            is_error,
+            collapsed,
+            pending,
+        } => {
+            pattern.hash(&mut h);
+            path.hash(&mut h);
+            matches.hash(&mut h);
+            is_error.hash(&mut h);
+            collapsed.hash(&mut h);
+            pending.hash(&mut h);
+        }
+        ChatBlock::GenericTool {
+            name,
+            input_pretty,
+            result_pretty,
+            is_error,
+            collapsed,
+            pending,
+        } => {
+            name.hash(&mut h);
+            input_pretty.hash(&mut h);
+            result_pretty.hash(&mut h);
+            is_error.hash(&mut h);
+            collapsed.hash(&mut h);
+            pending.hash(&mut h);
+        }
+        ChatBlock::System { text, kind } => {
+            text.hash(&mut h);
+            (*kind as u8).hash(&mut h);
+        }
+        ChatBlock::Mail {
+            direction,
+            counterpart,
+            body,
+            is_error,
+            collapsed,
+            pending,
+        } => {
+            (*direction as u8).hash(&mut h);
+            counterpart.hash(&mut h);
+            body.hash(&mut h);
+            is_error.hash(&mut h);
+            collapsed.hash(&mut h);
+            pending.hash(&mut h);
+        }
+        ChatBlock::WorkerSpawn {
+            template,
+            worker_id,
+            task,
+            is_error,
+            collapsed,
+            pending,
+        } => {
+            template.hash(&mut h);
+            worker_id.hash(&mut h);
+            task.hash(&mut h);
+            is_error.hash(&mut h);
+            collapsed.hash(&mut h);
+            pending.hash(&mut h);
+        }
+        ChatBlock::WorkerComplete {
+            body,
+            is_error,
+            collapsed,
+            pending,
+        } => {
+            body.hash(&mut h);
+            is_error.hash(&mut h);
+            collapsed.hash(&mut h);
+            pending.hash(&mut h);
+        }
+        ChatBlock::TaskOp {
+            kind,
+            subject,
+            body,
+            reply,
+            is_error,
+            collapsed,
+            pending,
+        } => {
+            (*kind as u8).hash(&mut h);
+            subject.hash(&mut h);
+            body.hash(&mut h);
+            reply.hash(&mut h);
+            is_error.hash(&mut h);
+            collapsed.hash(&mut h);
+            pending.hash(&mut h);
+        }
+    }
+
+    h.finish()
 }
 
 /// Kind of system-info block — controls colour only.
@@ -402,7 +607,7 @@ impl ChatBlock {
     /// Paint this block into `rect`. Registers any buttons into `buttons`.
     pub fn render(
         &self,
-        frame: &mut Frame,
+        buf: &mut Buffer,
         rect: Rect,
         buttons: &mut Vec<ChatButton>,
         block_idx: usize,
@@ -415,7 +620,7 @@ impl ChatBlock {
         let body_rect = if selected {
             let ind_rect = Rect::new(rect.x, rect.y, 1, rect.height);
             let para = Paragraph::new("▎").style(Style::default().fg(Color::Cyan));
-            frame.render_widget(para, ind_rect);
+            para.render(ind_rect, buf);
             Rect::new(
                 rect.x + 1,
                 rect.y,
@@ -440,7 +645,7 @@ impl ChatBlock {
                 context_used,
                 context_window,
             } => render_agent_info(
-                frame,
+                buf,
                 body_rect,
                 buttons,
                 block_idx,
@@ -452,7 +657,7 @@ impl ChatBlock {
                 *context_window,
             ),
             Self::UserText { text } => self.render_prefix_text(
-                frame,
+                buf,
                 body_rect,
                 "👤 ",
                 text,
@@ -465,20 +670,18 @@ impl ChatBlock {
                     return;
                 }
                 let header = Rect::new(body_rect.x, body_rect.y, body_rect.width, 1);
-                frame.render_widget(
-                    Paragraph::new(Line::from(vec![Span::styled(
-                        "🤖 ",
-                        Style::default().fg(Color::Cyan),
-                    )])),
-                    header,
-                );
+                Paragraph::new(Line::from(vec![Span::styled(
+                    "🤖 ",
+                    Style::default().fg(Color::Cyan),
+                )]))
+                .render(header, buf);
                 let content = Rect::new(
                     body_rect.x,
                     body_rect.y + 1,
                     body_rect.width,
                     body_rect.height - 1,
                 );
-                render_parsed(parsed, frame, content, buttons, block_idx);
+                render_parsed(parsed, buf, content, buttons, block_idx);
             }
             Self::BashTool {
                 command,
@@ -488,7 +691,7 @@ impl ChatBlock {
                 pending,
                 ..
             } => render_tool_block(
-                frame,
+                buf,
                 body_rect,
                 buttons,
                 block_idx,
@@ -511,7 +714,7 @@ impl ChatBlock {
                 pending,
                 ..
             } => render_tool_block(
-                frame,
+                buf,
                 body_rect,
                 buttons,
                 block_idx,
@@ -534,7 +737,7 @@ impl ChatBlock {
                 pending,
                 ..
             } => render_tool_block(
-                frame,
+                buf,
                 body_rect,
                 buttons,
                 block_idx,
@@ -559,7 +762,7 @@ impl ChatBlock {
                     Some(r) => format!("{file_path}:{r}"),
                     None => file_path.clone(),
                 };
-                render_tool_header(frame, body_rect, "📄", &subj, *is_error, *pending);
+                render_tool_header(buf, body_rect, "📄", &subj, *is_error, *pending);
             }
             Self::GrepTool {
                 pattern,
@@ -575,7 +778,7 @@ impl ChatBlock {
                     None => format!("\"{pattern}\""),
                 };
                 render_tool_block(
-                    frame,
+                    buf,
                     body_rect,
                     buttons,
                     block_idx,
@@ -605,7 +808,7 @@ impl ChatBlock {
                     None => pattern.clone(),
                 };
                 render_tool_block(
-                    frame,
+                    buf,
                     body_rect,
                     buttons,
                     block_idx,
@@ -632,7 +835,7 @@ impl ChatBlock {
             } => {
                 let subj = format!("{name} {input_pretty}");
                 render_tool_block(
-                    frame,
+                    buf,
                     body_rect,
                     buttons,
                     block_idx,
@@ -656,7 +859,7 @@ impl ChatBlock {
                     SystemKind::Warn => Style::default().fg(Color::Yellow),
                     SystemKind::Error => Style::default().fg(Color::Red),
                 };
-                self.render_prefix_text(frame, body_rect, "⚙ ", text, style);
+                self.render_prefix_text(buf, body_rect, "⚙ ", text, style);
             }
             Self::Mail {
                 direction,
@@ -668,7 +871,7 @@ impl ChatBlock {
             } => {
                 let subj = mail_subject(*direction, counterpart);
                 render_tool_block(
-                    frame,
+                    buf,
                     body_rect,
                     buttons,
                     block_idx,
@@ -694,7 +897,7 @@ impl ChatBlock {
             } => {
                 let subj = worker_spawn_subject(template, worker_id.as_deref());
                 render_tool_block(
-                    frame,
+                    buf,
                     body_rect,
                     buttons,
                     block_idx,
@@ -717,7 +920,7 @@ impl ChatBlock {
                 pending,
             } => {
                 render_tool_block(
-                    frame,
+                    buf,
                     body_rect,
                     buttons,
                     block_idx,
@@ -758,7 +961,7 @@ impl ChatBlock {
                     None
                 };
                 render_tool_block(
-                    frame,
+                    buf,
                     body_rect,
                     buttons,
                     block_idx,
@@ -779,7 +982,7 @@ impl ChatBlock {
 
     fn render_prefix_text(
         &self,
-        frame: &mut Frame,
+        buf: &mut Buffer,
         rect: Rect,
         prefix: &str,
         text: &str,
@@ -790,7 +993,7 @@ impl ChatBlock {
             Span::raw(text.to_string()),
         ]);
         let para = Paragraph::new(line).wrap(Wrap { trim: false });
-        frame.render_widget(para, rect);
+        para.render(rect, buf);
     }
 }
 
@@ -920,7 +1123,7 @@ fn agent_info_height(
 
 #[allow(clippy::too_many_arguments)]
 fn render_agent_info(
-    frame: &mut Frame,
+    buf: &mut Buffer,
     rect: Rect,
     buttons: &mut Vec<ChatButton>,
     block_idx: usize,
@@ -944,11 +1147,9 @@ fn render_agent_info(
     let available = end_y.saturating_sub(y);
     let draw_h = detail_rows.min(available);
     let detail_rect = Rect::new(rect.x + 2, y, detail_w, draw_h);
-    frame.render_widget(
-        Paragraph::new(Span::styled(detail, Style::default().fg(Color::DarkGray)))
-            .wrap(Wrap { trim: false }),
-        detail_rect,
-    );
+    Paragraph::new(Span::styled(detail, Style::default().fg(Color::DarkGray)))
+        .wrap(Wrap { trim: false })
+        .render(detail_rect, buf);
     y = y.saturating_add(draw_h);
     if y >= end_y {
         return;
@@ -962,11 +1163,9 @@ fn render_agent_info(
     let draw_h = context_rows.min(available);
     let context_rect = Rect::new(rect.x + 2, y, context_w, draw_h);
     let context_color = context_line_color(context_used, context_window);
-    frame.render_widget(
-        Paragraph::new(Span::styled(context_text, Style::default().fg(context_color)))
-            .wrap(Wrap { trim: false }),
-        context_rect,
-    );
+    Paragraph::new(Span::styled(context_text, Style::default().fg(context_color)))
+        .wrap(Wrap { trim: false })
+        .render(context_rect, buf);
     y = y.saturating_add(draw_h);
     if y >= end_y {
         return;
@@ -976,30 +1175,26 @@ fn render_agent_info(
     let toggle_label = if collapsed { "[ + ]" } else { "[ - ]" };
     let tw = toggle_label.chars().count() as u16;
     let prompt_row = Rect::new(rect.x, y, rect.width, 1);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "prompt ",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("({} chars)", prompt.chars().count()),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ])),
-        prompt_row,
-    );
+    Paragraph::new(Line::from(vec![
+        Span::styled(
+            "prompt ",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("({} chars)", prompt.chars().count()),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]))
+    .render(prompt_row, buf);
     if rect.width > tw + 1 {
         let btn_rect = Rect::new(rect.x + rect.width - tw, y, tw, 1);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                toggle_label.to_string(),
-                Style::default().fg(Color::Cyan),
-            ))),
-            btn_rect,
-        );
+        Paragraph::new(Line::from(Span::styled(
+            toggle_label.to_string(),
+            Style::default().fg(Color::Cyan),
+        )))
+        .render(btn_rect, buf);
         buttons.push(ChatButton {
             rect: btn_rect,
             action: BlockAction::ToggleCollapse(block_idx),
@@ -1021,13 +1216,11 @@ fn render_agent_info(
     let block = Block::default()
         .borders(Borders::LEFT)
         .border_style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(
-        Paragraph::new(prompt.to_string())
-            .style(Style::default().fg(Color::Gray))
-            .block(block)
-            .wrap(Wrap { trim: false }),
-        body_rect,
-    );
+    Paragraph::new(prompt.to_string())
+        .style(Style::default().fg(Color::Gray))
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .render(body_rect, buf);
 }
 
 /// Build the combined display body for a `TaskOp` block. Shows the
@@ -1134,7 +1327,7 @@ fn wrapped_rows(text: &str, width: u16) -> u16 {
 
 /// Render a one-line tool header with no body or buttons.
 fn render_tool_header(
-    frame: &mut Frame,
+    buf: &mut Buffer,
     rect: Rect,
     icon: &str,
     subject: &str,
@@ -1167,12 +1360,12 @@ fn render_tool_header(
             rect.width.saturating_sub(4) as usize,
         )),
     ]);
-    frame.render_widget(Paragraph::new(header_line), header_rect);
+    Paragraph::new(header_line).render(header_rect, buf);
 }
 
 #[allow(clippy::too_many_arguments)]
 fn render_tool_block(
-    frame: &mut Frame,
+    buf: &mut Buffer,
     rect: Rect,
     buttons: &mut Vec<ChatButton>,
     block_idx: usize,
@@ -1241,7 +1434,7 @@ fn render_tool_block(
         Span::styled(format!("{icon} "), Style::default().fg(Color::Magenta)),
         Span::raw(truncated_subject),
     ]);
-    frame.render_widget(Paragraph::new(header_line), header_rect);
+    Paragraph::new(header_line).render(header_rect, buf);
 
     // Buttons live on the rightmost end of the header row.
     let mut bx = rect.x + rect.width.saturating_sub(buttons_width);
@@ -1252,10 +1445,8 @@ fn render_tool_block(
             BlockAction::ToggleCollapse(_) => Style::default().fg(Color::Cyan),
             BlockAction::CopyText(_) => Style::default().fg(Color::LightBlue),
         };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(label.clone(), style))),
-            brect,
-        );
+        Paragraph::new(Line::from(Span::styled(label.clone(), style)))
+            .render(brect, buf);
         buttons.push(ChatButton {
             rect: brect,
             action: action.clone(),
@@ -1280,15 +1471,13 @@ fn render_tool_block(
         } else {
             format!("(no {body_label})")
         };
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                hint,
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            )),
-            body_rect,
-        );
+        Paragraph::new(Span::styled(
+            hint,
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ))
+        .render(body_rect, buf);
         return;
     }
 
@@ -1331,7 +1520,7 @@ fn render_tool_block(
     let para = Paragraph::new(lines)
         .block(style_block)
         .wrap(Wrap { trim: false });
-    frame.render_widget(para, body_rect);
+    para.render(body_rect, buf);
 }
 
 fn truncate_display(s: &str, max: usize) -> String {
@@ -1377,7 +1566,7 @@ fn styled_body_line(text: &str, label: &str) -> Line<'static> {
 
 pub fn render_parsed(
     parsed: &ParsedMd,
-    frame: &mut Frame,
+    buf: &mut Buffer,
     rect: Rect,
     buttons: &mut Vec<ChatButton>,
     block_idx: usize,
@@ -1403,7 +1592,7 @@ pub fn render_parsed(
                 }
                 let rect_here = Rect::new(rect.x, y, rect.width, draw_height);
                 let para = Paragraph::new(lines.clone()).wrap(Wrap { trim: false });
-                frame.render_widget(para, rect_here);
+                para.render(rect_here, buf);
                 y = y.saturating_add(draw_height);
             }
             MdChunk::Fence { lang, body } => {
@@ -1418,7 +1607,7 @@ pub fn render_parsed(
                 }
                 let h = needed.min(end_y - y);
                 let fence_rect = Rect::new(rect.x, y, rect.width, h);
-                render_fence(frame, fence_rect, buttons, block_idx, lang, body);
+                render_fence(buf, fence_rect, buttons, block_idx, lang, body);
                 y = y.saturating_add(h);
             }
         }
@@ -1426,7 +1615,7 @@ pub fn render_parsed(
 }
 
 fn render_fence(
-    frame: &mut Frame,
+    buf: &mut Buffer,
     rect: Rect,
     buttons: &mut Vec<ChatButton>,
     block_idx: usize,
@@ -1442,20 +1631,18 @@ fn render_fence(
             format!(" {lang} ")
         });
     let inner = block.inner(rect);
-    frame.render_widget(block, rect);
+    block.render(rect, buf);
 
     // Copy button in the top-right of the header border.
     let label = "[ copy ]";
     let w = label.chars().count() as u16;
     if rect.width > w + 2 {
         let btn_rect = Rect::new(rect.x + rect.width - w - 1, rect.y, w, 1);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                label.to_string(),
-                Style::default().fg(Color::LightBlue),
-            ))),
-            btn_rect,
-        );
+        Paragraph::new(Line::from(Span::styled(
+            label.to_string(),
+            Style::default().fg(Color::LightBlue),
+        )))
+        .render(btn_rect, buf);
         buttons.push(ChatButton {
             rect: btn_rect,
             action: BlockAction::CopyText(body.to_string()),
@@ -1477,7 +1664,7 @@ fn render_fence(
         })
         .collect();
     let para = Paragraph::new(lines).wrap(Wrap { trim: false });
-    frame.render_widget(para, inner);
+    para.render(inner, buf);
 }
 
 // ---------------------------------------------------------------------------

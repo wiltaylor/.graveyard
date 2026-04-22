@@ -1,16 +1,17 @@
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Wrap,
+    ScrollbarState, Widget, Wrap,
 };
 use ratatui::Frame;
 
 use super::app::{
     format_task_detail, ActiveView, AgentChat, AgentStatus, App, Focus, VIEW_ENTRIES,
 };
-use super::blocks::ScrollAnchor;
+use super::blocks::{block_fingerprint, AnchorScratch, ChatButton, ScrollAnchor};
 use super::tasks_view::{FormField, TaskForm, TaskFormKind, TaskRow, TasksPrompt, TasksScreen};
 
 const APP_NAME: &str = "aciddog";
@@ -280,6 +281,7 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
 
     let real_block_count = chat.blocks.len();
     let start_idx = chat.anchor.block_idx;
+    let within = chat.anchor.within;
     let mut y = inner.y;
     let end_y = inner.y.saturating_add(inner.height);
 
@@ -287,32 +289,153 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
         if y >= end_y {
             break;
         }
-        let visible_h = h.min(end_y - y);
+        let is_anchor = i == start_idx && within > 0 && within < h;
+        let natural_h = if is_anchor { h - within } else { h };
+        let visible_h = natural_h.min(end_y - y);
         if visible_h == 0 {
             continue;
         }
-        let rect = Rect::new(inner.x, y, inner.width, visible_h);
-        if i < real_block_count {
-            let selected = chat.selected_block == Some(i);
-            chat.blocks[i].render(f, rect, &mut layout.chat_buttons, i, selected);
+
+        if is_anchor {
+            // Full-block render into a scratch buffer so we can blit
+            // rows [within, within + visible_h) to the frame at
+            // (inner.x, y). Cached on the chat — re-rendering a 500-row
+            // expanded prompt each mouse-wheel tick pegs the UI thread
+            // in debug builds, so we only re-render when dimensions or
+            // content actually change.
+            if i < real_block_count {
+                let fingerprint = block_fingerprint(&chat.blocks[i]);
+                let cache_hit = chat
+                    .anchor_scratch
+                    .as_ref()
+                    .is_some_and(|c| {
+                        c.block_idx == i
+                            && c.width == inner.width
+                            && c.height == h
+                            && c.fingerprint == fingerprint
+                    });
+                if !cache_hit {
+                    let scratch_area = Rect::new(0, 0, inner.width, h);
+                    let mut scratch = Buffer::empty(scratch_area);
+                    let mut scratch_btns: Vec<ChatButton> = Vec::new();
+                    let selected = chat.selected_block == Some(i);
+                    chat.blocks[i].render(
+                        &mut scratch,
+                        scratch_area,
+                        &mut scratch_btns,
+                        i,
+                        selected,
+                    );
+                    chat.anchor_scratch = Some(AnchorScratch {
+                        block_idx: i,
+                        width: inner.width,
+                        height: h,
+                        fingerprint,
+                        buffer: scratch,
+                        buttons: scratch_btns,
+                    });
+                }
+                let cache = chat.anchor_scratch.as_ref().expect("just populated above");
+                blit_rows(&cache.buffer, within, visible_h, f.buffer_mut(), inner.x, y);
+                translate_visible_buttons(
+                    &cache.buttons,
+                    within,
+                    visible_h,
+                    inner.x,
+                    y,
+                    &mut layout.chat_buttons,
+                );
+            } else {
+                // Thinking row animates via `frame_tick`, so caching
+                // would freeze the spinner. Render straight into a
+                // one-shot scratch buffer instead.
+                let scratch_area = Rect::new(0, 0, inner.width, h);
+                let mut scratch = Buffer::empty(scratch_area);
+                render_thinking_row(
+                    &mut scratch,
+                    scratch_area,
+                    &config.thinking_messages,
+                    chat.thinking_message_idx,
+                    frame_tick,
+                );
+                blit_rows(&scratch, within, visible_h, f.buffer_mut(), inner.x, y);
+            }
         } else {
-            render_thinking_row(
-                f,
-                rect,
-                &config.thinking_messages,
-                chat.thinking_message_idx,
-                frame_tick,
-            );
+            let rect = Rect::new(inner.x, y, inner.width, visible_h);
+            if i < real_block_count {
+                let selected = chat.selected_block == Some(i);
+                chat.blocks[i].render(f.buffer_mut(), rect, &mut layout.chat_buttons, i, selected);
+            } else {
+                render_thinking_row(
+                    f.buffer_mut(),
+                    rect,
+                    &config.thinking_messages,
+                    chat.thinking_message_idx,
+                    frame_tick,
+                );
+            }
         }
+
         y = y.saturating_add(visible_h);
     }
     inner
 }
 
+/// Copy `rows` rows (starting at `y_from` in `src`) to `dst` at `(dst_x, dst_y)`.
+/// Clips to both buffers' areas via `cell` / `cell_mut`.
+fn blit_rows(src: &Buffer, y_from: u16, rows: u16, dst: &mut Buffer, dst_x: u16, dst_y: u16) {
+    let width = src.area.width;
+    for dy in 0..rows {
+        let sy = src.area.y.saturating_add(y_from).saturating_add(dy);
+        let ty = dst_y.saturating_add(dy);
+        for dx in 0..width {
+            let sx = src.area.x.saturating_add(dx);
+            let tx = dst_x.saturating_add(dx);
+            let Some(cell) = src.cell((sx, sy)).cloned() else {
+                continue;
+            };
+            if let Some(slot) = dst.cell_mut((tx, ty)) {
+                *slot = cell;
+            }
+        }
+    }
+}
+
+/// Translate buttons registered against a scratch buffer at `(0, 0)` into
+/// frame coordinates at `(dst_x, dst_y)`, keeping only those whose row falls
+/// inside the visible slice `[skip_y, skip_y + visible_h)`.
+fn translate_visible_buttons(
+    src: &[ChatButton],
+    skip_y: u16,
+    visible_h: u16,
+    dst_x: u16,
+    dst_y: u16,
+    out: &mut Vec<ChatButton>,
+) {
+    let view_start = skip_y;
+    let view_end = skip_y.saturating_add(visible_h);
+    for b in src {
+        let b_top = b.rect.y;
+        let b_bot = b.rect.y.saturating_add(b.rect.height);
+        if b_bot <= view_start || b_top >= view_end {
+            continue;
+        }
+        // Clip the button rect to the visible slice, then shift into frame coords.
+        let clipped_top = b_top.max(view_start);
+        let clipped_bot = b_bot.min(view_end);
+        let new_y = dst_y.saturating_add(clipped_top - view_start);
+        let new_h = clipped_bot - clipped_top;
+        let mut translated = b.clone();
+        translated.rect =
+            Rect::new(b.rect.x.saturating_add(dst_x), new_y, b.rect.width, new_h);
+        out.push(translated);
+    }
+}
+
 const THINKING_SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 fn render_thinking_row(
-    f: &mut Frame,
+    buf: &mut Buffer,
     area: Rect,
     pool: &[String],
     idx: Option<usize>,
@@ -340,7 +463,7 @@ fn render_thinking_row(
                 .add_modifier(Modifier::ITALIC),
         ),
     ]);
-    f.render_widget(Paragraph::new(line), area);
+    Paragraph::new(line).render(area, buf);
 }
 
 /// Make sure the scroll anchor points somewhere sensible given the block
