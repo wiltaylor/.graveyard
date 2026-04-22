@@ -857,6 +857,9 @@ pub enum AgentStatus {
     /// `ClaudeCodeCore` is gone, but the session UUID and chat history
     /// are retained so the parent can resume it later.
     Hibernated,
+    /// User invoked `/sleep`. Mailbox/channel deliveries are refused
+    /// and locally-typed plain text is rejected until `/awake`.
+    Asleep,
 }
 
 /// Per-channel TUI state. Rendered in the main area when
@@ -956,6 +959,18 @@ pub struct AgentChat {
     /// stays visible. Next inbound message triggers resurrection via
     /// `App::resurrect_worker`.
     pub hibernated: bool,
+    /// True between `/sleep` and `/awake`. While set, `handle_send_message`
+    /// returns an "agent is asleep" error to the sender, channel
+    /// broadcasts skip the agent, hibernated workers are NOT auto-
+    /// resurrected, and locally-typed plain-text messages are
+    /// rejected with a banner. Slash commands still run.
+    pub asleep: bool,
+    /// One-shot signal to the agent's `run_core` task that the
+    /// current turn (if any) should be cancelled. Bounded with
+    /// capacity 1 so `try_send` returns `Ok` for the first signal
+    /// and silently drops follow-up signals while one is pending.
+    /// `None` for hibernated workers (no `run_core` task is alive).
+    pub cancel_tx: Option<mpsc::Sender<()>>,
     /// Byte offset of the caret inside `input`. Always on a UTF-8 char
     /// boundary.
     pub input_cursor: usize,
@@ -1812,6 +1827,19 @@ impl App {
             return;
         }
 
+        // Plain-text path: refuse to deliver if the agent is asleep.
+        // The user's typed message has already been echoed as a user
+        // block above; follow it with a banner explaining why nothing
+        // happened so the conversation stays self-explanatory.
+        if self.chats.get(idx).map(|c| c.asleep).unwrap_or(false) {
+            if let Some(chat) = self.chats.get_mut(idx) {
+                chat.push_block(ChatBlock::system_warn(
+                    "agent is asleep — type /awake to resume before sending messages",
+                ));
+            }
+            return;
+        }
+
         let pool_len = self.config.thinking_messages.len();
         let Some(chat) = self.chats.get_mut(idx) else {
             return;
@@ -1956,6 +1984,17 @@ impl App {
                 chat.push_block(ChatBlock::system_error(message));
                 chat.status = AgentStatus::Error;
                 chat.end_working();
+            }
+            AIEvent::Stopped => {
+                chat.push_block(ChatBlock::system_info("[stopped]"));
+                if chat.status == AgentStatus::Working {
+                    chat.status = if chat.asleep {
+                        AgentStatus::Asleep
+                    } else {
+                        AgentStatus::Ready
+                    };
+                    chat.end_working();
+                }
             }
             AIEvent::Other(v) => {
                 debug!(event = ?v, agent_idx = idx, "unhandled ai event");
@@ -2382,11 +2421,13 @@ impl App {
         let info_block =
             ChatBlock::agent_info(core_label, tools.clone(), assembled_prompt, context_window);
         let pool_len = self.config.thinking_messages.len();
+        let (cancel_tx, cancel_rx) = mpsc::channel::<()>(1);
         let mut chat = AgentChat {
             blocks: vec![info_block],
             sticky_bottom: true,
             user_tx: Some(user_tx.clone()),
             agent_tx: Some(agent_tx),
+            cancel_tx: Some(cancel_tx),
             session_id: Some(session_id),
             status: AgentStatus::Working,
             thinking_message_idx: Some(pseudo_random(pool_len)),
@@ -2423,6 +2464,7 @@ impl App {
             user_rx,
             agent_rx,
             wkr_ch_rx,
+            cancel_rx,
             ai_tx,
         ));
 
@@ -2501,6 +2543,7 @@ impl App {
             });
             chat.user_tx = None;
             chat.agent_tx = None;
+            chat.cancel_tx = None;
             chat.status = AgentStatus::Hibernated;
             chat.hibernated = true;
             chat.end_working();
@@ -2587,11 +2630,13 @@ impl App {
 
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
         let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
+        let (cancel_tx, cancel_rx) = mpsc::channel::<()>(1);
 
         let pool_len = self.config.thinking_messages.len();
         if let Some(chat) = self.chats.get_mut(idx) {
             chat.user_tx = Some(user_tx);
             chat.agent_tx = Some(agent_tx);
+            chat.cancel_tx = Some(cancel_tx);
             chat.begin_working(pool_len);
             chat.hibernated = false;
         }
@@ -2600,7 +2645,9 @@ impl App {
         // pre-closed channel_rx (see the spawn path above).
         let (_wkr_ch_tx, wkr_ch_rx) = mpsc::channel::<String>(1);
         drop(_wkr_ch_tx);
-        tokio::spawn(run_core(idx, core, user_rx, agent_rx, wkr_ch_rx, ai_tx));
+        tokio::spawn(run_core(
+            idx, core, user_rx, agent_rx, wkr_ch_rx, cancel_rx, ai_tx,
+        ));
         Ok(())
     }
 
@@ -2736,6 +2783,17 @@ impl App {
             else {
                 continue;
             };
+            // Asleep members silently skip the broadcast — the
+            // sender's response stays `ok` and other members still
+            // receive the message normally.
+            if self
+                .chats
+                .get(recipient_idx)
+                .map(|c| c.asleep)
+                .unwrap_or(false)
+            {
+                continue;
+            }
             let Some(tx) = self
                 .chats
                 .get(recipient_idx)
@@ -2844,6 +2902,20 @@ impl App {
                     return;
                 }
             }
+        }
+
+        // Asleep gate must precede the auto-resurrect path: an asleep
+        // hibernated worker should NOT be resurrected just because
+        // somebody messaged it. The sender gets a clear "asleep"
+        // error and the recipient stays paused until /awake.
+        if self
+            .chats
+            .get(recipient_idx)
+            .map(|c| c.asleep)
+            .unwrap_or(false)
+        {
+            let _ = reply.send(Response::err(format!("agent `{to}` is asleep")));
+            return;
         }
 
         // Auto-resurrect a hibernated recipient before delivering.
@@ -4251,6 +4323,25 @@ impl App {
         }
     }
 
+    /// Signal the target agent's `run_core` to abort the in-flight
+    /// turn (if any). The cancel channel has capacity 1, so a stale
+    /// signal queued before the next turn starts is consumed as a
+    /// no-op. Pushes `reason` as a system info block so the user sees
+    /// what happened. Hibernated workers have no `cancel_tx`; this is
+    /// a no-op for them aside from the message.
+    fn stop_turn(&mut self, idx: usize, reason: &str) {
+        let cancel = self
+            .chats
+            .get(idx)
+            .and_then(|c| c.cancel_tx.as_ref().cloned());
+        if let Some(tx) = cancel {
+            let _ = tx.try_send(());
+        }
+        if let Some(chat) = self.chats.get_mut(idx) {
+            chat.push_block(ChatBlock::system_info(reason.to_string()));
+        }
+    }
+
     /// Apply a parsed slash-command outcome against a specific chat
     /// `idx`. The keystroke path (`submit_input` → `handle_local_input`)
     /// passes `self.selected`; cron passes the target job's `idx`
@@ -4276,6 +4367,41 @@ impl App {
             }
             CommandOutcome::Reset => {
                 self.begin_compaction(idx, true);
+            }
+            CommandOutcome::Stop => {
+                self.stop_turn(idx, "[stopped by /stop]");
+            }
+            CommandOutcome::Sleep => {
+                self.stop_turn(idx, "[stopped by /sleep]");
+                if let Some(chat) = self.chats.get_mut(idx) {
+                    if !chat.asleep {
+                        chat.asleep = true;
+                        // Don't clobber Hibernated — a hibernated worker
+                        // stays Hibernated visually; the asleep flag
+                        // itself prevents auto-resurrection.
+                        if chat.status != AgentStatus::Hibernated {
+                            chat.status = AgentStatus::Asleep;
+                        }
+                        chat.push_block(ChatBlock::system_info(
+                            "agent is now asleep — type /awake to resume",
+                        ));
+                    } else {
+                        chat.push_block(ChatBlock::system_info("agent is already asleep"));
+                    }
+                }
+            }
+            CommandOutcome::Awake => {
+                if let Some(chat) = self.chats.get_mut(idx) {
+                    if chat.asleep {
+                        chat.asleep = false;
+                        if chat.status == AgentStatus::Asleep {
+                            chat.status = AgentStatus::Ready;
+                        }
+                        chat.push_block(ChatBlock::system_info("agent awake"));
+                    } else {
+                        chat.push_block(ChatBlock::system_info("agent is not asleep"));
+                    }
+                }
             }
             CommandOutcome::Unknown { name, hint } => {
                 if let Some(chat) = self.chats.get_mut(idx) {
@@ -6452,6 +6578,14 @@ impl App {
                     "/compact is a no-op in channels — there is no agent session here to compact",
                 ));
             }
+            CommandOutcome::Stop | CommandOutcome::Sleep | CommandOutcome::Awake => {
+                // These commands target a single agent's run_core
+                // loop. A channel pane has no agent of its own, so
+                // there's nothing to stop or sleep here.
+                ch.blocks.push(ChatBlock::system_info(
+                    "/stop, /sleep, /awake target agents — run them from an agent's pane",
+                ));
+            }
             CommandOutcome::Unknown { name, hint } => {
                 ch.blocks.push(ChatBlock::system_warn(format!(
                     "unknown command: /{name} — {hint}"
@@ -7825,9 +7959,14 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
         let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
         let (channel_tx, channel_rx) = mpsc::channel::<String>(256);
+        // Capacity 1: a single pending `/stop` is enough to cancel
+        // the current turn; subsequent /stop spam is silently dropped
+        // by `try_send` until the first signal is consumed.
+        let (cancel_tx, cancel_rx) = mpsc::channel::<()>(1);
         app.chats[idx].user_tx = Some(user_tx);
         app.chats[idx].agent_tx = Some(agent_tx);
         app.chats[idx].channel_tx = Some(channel_tx);
+        app.chats[idx].cancel_tx = Some(cancel_tx);
 
         let ai_core = app
             .config
@@ -7950,6 +8089,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             user_rx,
             agent_rx,
             channel_rx,
+            cancel_rx,
             ai_tx.clone(),
         ));
     }
@@ -7987,30 +8127,68 @@ pub(super) async fn run_core(
     mut user_rx: mpsc::UnboundedReceiver<String>,
     mut agent_rx: mpsc::Receiver<String>,
     mut channel_rx: mpsc::Receiver<String>,
+    mut cancel_rx: mpsc::Receiver<()>,
     ai_tx: mpsc::Sender<(usize, AIEvent)>,
 ) {
     loop {
         // Biased select. Strict priority ordering:
-        //   user_rx   > agent_rx > channel_rx
-        // so a user-typed prompt always wins over a mailbox message,
+        //   cancel_rx > user_rx > agent_rx > channel_rx
+        // The cancel branch sits first so any `/stop` signal queued
+        // between turns is consumed as a no-op rather than being
+        // delivered to the next turn. Among prompts:
+        // a user-typed prompt always wins over a mailbox message,
         // and direct mailbox traffic always wins over channel
         // chatter. Channel messages drain only when the other two
         // queues are empty, making channel volume incapable of
         // starving the agent from real work.
         let prompt = tokio::select! {
             biased;
+            _ = cancel_rx.recv() => continue,
             Some(m) = user_rx.recv() => m,
             Some(m) = agent_rx.recv() => m,
             Some(m) = channel_rx.recv() => m,
             else => return,
         };
 
-        match core.turn(&prompt).await {
+        // Race the turn setup against `/stop`. If the user cancels
+        // before the core hands back its event stream, drop the
+        // pending `turn()` future (Rust async cancellation via Drop)
+        // and return to the outer select.
+        let turn_result = tokio::select! {
+            biased;
+            _ = cancel_rx.recv() => {
+                let _ = ai_tx.send((idx, AIEvent::Stopped)).await;
+                continue;
+            }
+            res = core.turn(&prompt) => res,
+        };
+
+        match turn_result {
             Ok(mut stream) => {
-                while let Some(ev) = stream.next().await {
-                    if ai_tx.send((idx, ev)).await.is_err() {
-                        return;
+                let mut cancelled = false;
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = cancel_rx.recv() => {
+                            // Mark cancelled and break; the stream is
+                            // dropped at the end of this `match` arm,
+                            // which (via `kill_on_drop` on any tool
+                            // child) terminates in-flight tool calls.
+                            cancelled = true;
+                            break;
+                        }
+                        ev = stream.next() => match ev {
+                            Some(ev) => {
+                                if ai_tx.send((idx, ev)).await.is_err() {
+                                    return;
+                                }
+                            }
+                            None => break,
+                        }
                     }
+                }
+                if cancelled {
+                    let _ = ai_tx.send((idx, AIEvent::Stopped)).await;
                 }
             }
             Err(e) => {
@@ -13438,6 +13616,120 @@ mod tests {
             0,
             "both jobs should be pruned (one-off targets vanished)"
         );
+    }
+
+    #[test]
+    fn sleep_command_marks_chat_asleep_and_signals_cancel() {
+        use super::super::commands::CommandOutcome;
+        let mut app = fresh_app();
+        // Wire a cancel channel so we can assert the signal was sent.
+        let (cancel_tx, mut cancel_rx) = mpsc::channel::<()>(1);
+        app.chats[0].cancel_tx = Some(cancel_tx);
+        assert!(!app.chats[0].asleep);
+        app.apply_command_for(0, CommandOutcome::Sleep);
+        assert!(app.chats[0].asleep, "sleep should set asleep=true");
+        assert_eq!(app.chats[0].status, AgentStatus::Asleep);
+        // try_recv: the cancel signal must be queued.
+        assert!(cancel_rx.try_recv().is_ok(), "stop signal not delivered");
+    }
+
+    #[test]
+    fn awake_command_clears_asleep() {
+        use super::super::commands::CommandOutcome;
+        let mut app = fresh_app();
+        app.chats[0].asleep = true;
+        app.chats[0].status = AgentStatus::Asleep;
+        app.apply_command_for(0, CommandOutcome::Awake);
+        assert!(!app.chats[0].asleep);
+        assert_eq!(app.chats[0].status, AgentStatus::Ready);
+    }
+
+    #[test]
+    fn awake_on_non_asleep_chat_only_emits_notice() {
+        use super::super::commands::CommandOutcome;
+        let mut app = fresh_app();
+        let blocks_before = app.chats[0].blocks.len();
+        app.apply_command_for(0, CommandOutcome::Awake);
+        assert!(!app.chats[0].asleep);
+        // One info block appended; status untouched.
+        assert_eq!(app.chats[0].blocks.len(), blocks_before + 1);
+    }
+
+    #[tokio::test]
+    async fn send_message_to_asleep_agent_returns_error() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        // Mark recipient (chat 1, "b") asleep.
+        app.chats[1].asleep = true;
+        let sender = app.chats[0].session_id.unwrap();
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::SendMessage {
+                    to: "b".into(),
+                    body: "ping".into(),
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok, "asleep recipient must reject send");
+        assert!(
+            resp.error.as_deref().unwrap_or("").contains("asleep"),
+            "error should mention asleep, got {:?}",
+            resp.error
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_broadcast_silently_skips_asleep_member() {
+        let mut app = App::new(sample_config_with_channel());
+        let mut rxs = wire_up_channels(&mut app);
+        // Mark "b" (chat 1) asleep.
+        app.chats[1].asleep = true;
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.broadcast_to_channel(
+            ChannelSender::Agent("a".into()),
+            "room".into(),
+            "hi team".into(),
+            reply_tx,
+        );
+        assert!(
+            reply_rx.await.unwrap().ok,
+            "broadcast should succeed even when a member is asleep"
+        );
+
+        // "c" (chat 2) is awake and must receive. Use async recv so
+        // the spawned send task gets a chance to run.
+        let _ = rxs[2].recv().await.expect("awake member receives broadcast");
+        // "b" (chat 1) is asleep — never enqueued, so the channel is
+        // empty even after letting the runtime tick.
+        assert!(
+            rxs[1].try_recv().is_err(),
+            "asleep agent should not receive channel broadcast"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_text_input_to_asleep_agent_is_rejected() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let (utx, mut urx) = mpsc::unbounded_channel::<String>();
+        app.chats[0].user_tx = Some(utx);
+        app.chats[0].asleep = true;
+        app.handle_local_input(0, "hello".into());
+        // No prompt should reach the agent's user channel.
+        assert!(urx.try_recv().is_err(), "asleep agent must not receive user prompt");
+        // Last block should be the system warn explaining why.
+        match last_block(&app.chats[0]) {
+            ChatBlock::System { text, kind } => {
+                assert!(text.contains("asleep"));
+                assert!(matches!(kind, super::super::blocks::SystemKind::Warn));
+            }
+            other => panic!("expected System Warn block, got {other:?}"),
+        }
     }
 
     #[tokio::test]

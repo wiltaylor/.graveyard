@@ -561,6 +561,9 @@ impl App {
         // worker), but we make the queue unconditionally to keep the
         // spawn API uniform.
         let (channel_tx, channel_rx) = mpsc::channel::<String>(256);
+        // Fresh cancel channel for the new run_core task. Capacity 1:
+        // see the static-agent spawn in `run` for the rationale.
+        let (cancel_tx, cancel_rx) = mpsc::channel::<()>(1);
 
         // If there's a seed message, enqueue it now so it's the first
         // prompt the new core sees.
@@ -594,6 +597,7 @@ impl App {
             chat.user_tx = Some(user_tx);
             chat.agent_tx = Some(agent_tx);
             chat.channel_tx = Some(channel_tx);
+            chat.cancel_tx = Some(cancel_tx);
             chat.session_id = Some(session_id);
             chat.status = AgentStatus::Ready;
             chat.context_used = None;
@@ -626,7 +630,7 @@ impl App {
         self.agent_ids.insert(session_id, agent.id.clone());
 
         tokio::spawn(run_core(
-            idx, core, user_rx, agent_rx, channel_rx, ai_tx,
+            idx, core, user_rx, agent_rx, channel_rx, cancel_rx, ai_tx,
         ));
         Ok(())
     }

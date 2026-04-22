@@ -220,6 +220,7 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
                 AgentStatus::Working => "🟡",
                 AgentStatus::Error => "🔴",
                 AgentStatus::Hibernated => "💤",
+                AgentStatus::Asleep => "🌙",
             };
             let name_style = if i == app.selected && (active_here || focused) {
                 Style::default()

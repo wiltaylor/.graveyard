@@ -69,6 +69,10 @@ pub enum AIEvent {
         message: String,
         raw: Option<Value>,
     },
+    /// Emitted by the orchestrator (not the core itself) when an
+    /// in-flight turn is cancelled via `/stop` or `/sleep`. Lets the
+    /// TUI render a `[stopped]` marker and reset agent status to Ready.
+    Stopped,
     Other(Value),
 }
 

@@ -10,6 +10,14 @@ pub enum CommandOutcome {
     /// Unconditionally drop the target agent's session and re-seed
     /// with the first-turn preamble.
     Reset,
+    /// Cancel the target agent's currently running turn (if any),
+    /// killing in-flight tool calls. Agent stays online.
+    Stop,
+    /// Stop any running turn, then refuse mailbox/channel deliveries
+    /// until `/awake` is invoked.
+    Sleep,
+    /// Clear the asleep flag so the agent receives messages again.
+    Awake,
     /// Input didn't match any known command.
     Unknown { name: String, hint: String },
 }
@@ -33,9 +41,12 @@ pub fn dispatch(input: &str) -> Option<CommandOutcome> {
         "exit" | "quit" => CommandOutcome::Quit,
         "compact" => CommandOutcome::Compact,
         "reset" => CommandOutcome::Reset,
+        "stop" => CommandOutcome::Stop,
+        "sleep" => CommandOutcome::Sleep,
+        "awake" | "wake" => CommandOutcome::Awake,
         other => CommandOutcome::Unknown {
             name: other.to_string(),
-            hint: "try /version, /compact, /reset or /exit".to_string(),
+            hint: "try /version, /compact, /reset, /stop, /sleep, /awake or /exit".to_string(),
         },
     };
     Some(outcome)
@@ -93,5 +104,21 @@ mod tests {
     #[test]
     fn reset_returns_reset_outcome() {
         assert_eq!(dispatch("/reset"), Some(CommandOutcome::Reset));
+    }
+
+    #[test]
+    fn stop_returns_stop_outcome() {
+        assert_eq!(dispatch("/stop"), Some(CommandOutcome::Stop));
+    }
+
+    #[test]
+    fn sleep_returns_sleep_outcome() {
+        assert_eq!(dispatch("/sleep"), Some(CommandOutcome::Sleep));
+    }
+
+    #[test]
+    fn awake_and_wake_both_return_awake() {
+        assert_eq!(dispatch("/awake"), Some(CommandOutcome::Awake));
+        assert_eq!(dispatch("/wake"), Some(CommandOutcome::Awake));
     }
 }
