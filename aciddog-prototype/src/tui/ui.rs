@@ -8,9 +8,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use super::app::{
-    format_task_detail, ActiveView, AgentChat, AgentStatus, App, Focus, VIEW_ENTRIES,
-};
+use super::app::{format_task_detail, ActiveView, AgentStatus, App, Focus, VIEW_ENTRIES};
 use super::blocks::{block_fingerprint, AnchorScratch, ChatButton, ScrollAnchor};
 use super::tasks_view::{FormField, TaskForm, TaskFormKind, TaskRow, TasksPrompt, TasksScreen};
 
@@ -303,28 +301,37 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
         return inner;
     }
 
-    // Compute heights at the current viewport width.
-    let mut heights: Vec<u16> = chat
-        .blocks
-        .iter()
-        .map(|b| b.height(inner.width).max(1))
-        .collect();
-    if thinking_visible {
-        heights.push(1);
-    }
-
-    reconcile_anchor(chat, &heights, inner.height);
-
+    // Lazy per-index height cache. The old eager
+    // `blocks.iter().map(height).collect()` cost O(total blocks) in
+    // wrap math per frame — painful once a long-running chat
+    // accumulated hundreds of blocks and the 10 Hz thinking ticker
+    // kept it redrawing. Both `reconcile_anchor` and the render loop
+    // only touch O(visible) indices in practice (sticky-bottom walks
+    // back from the last block; the render loop stops as soon as it
+    // fills the viewport), so computing on demand keeps per-frame
+    // work bounded by viewport height.
     let real_block_count = chat.blocks.len();
+    let mut heights = LazyHeights::new(&chat.blocks, inner.width, thinking_visible);
+
+    reconcile_anchor(
+        &mut chat.anchor,
+        chat.sticky_bottom,
+        chat.blocks.len(),
+        &mut heights,
+        inner.height,
+    );
+
     let start_idx = chat.anchor.block_idx;
     let within = chat.anchor.within;
     let mut y = inner.y;
     let end_y = inner.y.saturating_add(inner.height);
 
-    for (i, &h) in heights.iter().enumerate().skip(start_idx) {
+    let total_rows = heights.len();
+    for i in start_idx..total_rows {
         if y >= end_y {
             break;
         }
+        let h = heights.get(i);
         let is_anchor = i == start_idx && within > 0 && within < h;
         let natural_h = if is_anchor { h - within } else { h };
         let visible_h = natural_h.min(end_y - y);
@@ -442,62 +449,55 @@ fn render_channel_chat(f: &mut Frame, area: Rect, app: &mut App, idx: usize) -> 
         return inner;
     }
 
-    // Compute each block's height at the current width.
-    let heights: Vec<u16> = ch.blocks.iter().map(|b| b.height(inner.width)).collect();
-
-    // Find the window of blocks that fits at the bottom of the viewport.
-    // We walk from the last block backwards accumulating heights until
-    // we've filled the viewport.
-    let mut start = ch.blocks.len();
-    let mut rows_used: u32 = 0;
+    // Find the window of blocks that fits at the bottom of the
+    // viewport, computing heights lazily from the end. Historically
+    // this pass computed heights for the whole transcript up-front,
+    // which turned into a per-frame O(N) wrap-math tax once a channel
+    // loaded its full 500-line tail from disk — noticeable as lag
+    // whenever the ticker fires at 10 Hz for a Working agent.
+    let mut window: Vec<(usize, u16)> = Vec::new();
+    let mut total_rows: u32 = 0;
     for i in (0..ch.blocks.len()).rev() {
-        rows_used += heights[i] as u32;
-        start = i;
-        if rows_used >= inner.height as u32 {
+        let h = ch.blocks[i].height(inner.width);
+        total_rows = total_rows.saturating_add(h as u32);
+        window.push((i, h));
+        if total_rows >= inner.height as u32 {
             break;
         }
     }
+    window.reverse();
 
-    let total: u32 = heights[start..].iter().map(|h| *h as u32).sum();
-    // If we have fewer rows than viewport, we start from the top of the
-    // viewport; otherwise we skip `total - height` rows of the first
-    // block so the last row aligns to the bottom.
-    let mut y = inner.y;
-    let mut clip_rows = if total > inner.height as u32 {
-        (total - inner.height as u32) as u16
+    // If the visible run overflows the viewport, clip rows off the
+    // top of the first block so the last row aligns to the bottom.
+    let mut clip_rows = if total_rows > inner.height as u32 {
+        (total_rows - inner.height as u32) as u16
     } else {
         0
     };
+    let mut y = inner.y;
     let end_y = inner.y.saturating_add(inner.height);
     let mut tmp_buttons: Vec<ChatButton> = Vec::new();
-    for (offset, &h) in heights[start..].iter().enumerate() {
+    for &(block_idx, h) in &window {
         if y >= end_y {
             break;
         }
-        let real_h = if clip_rows >= h {
-            clip_rows -= h;
+        // By construction clip_rows < heights[first] once we reach
+        // here (we stopped accumulating as soon as we filled the
+        // viewport), so at most the first block gets a partial crop.
+        let real_h = h.saturating_sub(clip_rows);
+        if real_h == 0 {
             continue;
-        } else {
-            h - clip_rows
-        };
+        }
         let visible_h = real_h.min(end_y - y);
-        let rect = Rect::new(inner.x, y, inner.width, visible_h);
         if clip_rows > 0 {
-            // Partial: render into a scratch buffer and blit the
-            // tail rows.
             let scratch_area = Rect::new(0, 0, inner.width, h);
             let mut scratch = Buffer::empty(scratch_area);
-            ch.blocks[start + offset].render(&mut scratch, scratch_area, &mut tmp_buttons, 0, false);
+            ch.blocks[block_idx].render(&mut scratch, scratch_area, &mut tmp_buttons, 0, false);
             blit_rows(&scratch, clip_rows, visible_h, f.buffer_mut(), inner.x, y);
             clip_rows = 0;
         } else {
-            ch.blocks[start + offset].render(
-                f.buffer_mut(),
-                rect,
-                &mut tmp_buttons,
-                0,
-                false,
-            );
+            let rect = Rect::new(inner.x, y, inner.width, visible_h);
+            ch.blocks[block_idx].render(f.buffer_mut(), rect, &mut tmp_buttons, 0, false);
         }
         y = y.saturating_add(visible_h);
     }
@@ -592,53 +592,109 @@ fn render_thinking_row(
 /// Make sure the scroll anchor points somewhere sensible given the block
 /// list and viewport height. Handles sticky-bottom and clamps the anchor
 /// inside valid bounds.
-fn reconcile_anchor(chat: &mut AgentChat, heights: &[u16], viewport_h: u16) {
-    if chat.blocks.is_empty() || viewport_h == 0 {
-        chat.anchor = ScrollAnchor::default();
+///
+/// Takes the anchor + sticky flag + block count as separate args
+/// rather than `&mut AgentChat` so the caller can hold an
+/// immutable borrow of `chat.blocks` (via `LazyHeights`) at the
+/// same time. Uses `LazyHeights` so callers pay only for the
+/// block heights this function actually inspects — the
+/// sticky-bottom walk touches O(visible) entries from the end,
+/// and the anchor roll-forward usually touches one.
+fn reconcile_anchor(
+    anchor: &mut ScrollAnchor,
+    sticky_bottom: bool,
+    blocks_len: usize,
+    heights: &mut LazyHeights<'_>,
+    viewport_h: u16,
+) {
+    if blocks_len == 0 || viewport_h == 0 {
+        *anchor = ScrollAnchor::default();
         return;
     }
 
-    let last = chat.blocks.len() - 1;
+    let last = blocks_len - 1;
 
     // Clamp anchor to valid block index.
-    if chat.anchor.block_idx > last {
-        chat.anchor.block_idx = last;
-        chat.anchor.within = 0;
+    if anchor.block_idx > last {
+        anchor.block_idx = last;
+        anchor.within = 0;
     }
 
     // Roll forward if `within` has overshot the current block's height.
     loop {
-        let h = heights[chat.anchor.block_idx];
-        if chat.anchor.within < h {
+        let h = heights.get(anchor.block_idx);
+        if anchor.within < h {
             break;
         }
-        if chat.anchor.block_idx == last {
-            chat.anchor.within = h.saturating_sub(1);
+        if anchor.block_idx == last {
+            anchor.within = h.saturating_sub(1);
             break;
         }
-        chat.anchor.within -= h;
-        chat.anchor.block_idx += 1;
+        anchor.within -= h;
+        anchor.block_idx += 1;
     }
 
-    if chat.sticky_bottom {
+    if sticky_bottom {
         // Pick the anchor so the last block ends flush with the viewport's bottom.
         let mut remaining = viewport_h;
         let mut idx = last;
         loop {
-            let h = heights[idx];
+            let h = heights.get(idx);
             if h >= remaining {
-                chat.anchor.block_idx = idx;
-                chat.anchor.within = h - remaining;
+                anchor.block_idx = idx;
+                anchor.within = h - remaining;
                 return;
             }
             remaining -= h;
             if idx == 0 {
-                chat.anchor.block_idx = 0;
-                chat.anchor.within = 0;
+                anchor.block_idx = 0;
+                anchor.within = 0;
                 return;
             }
             idx -= 1;
         }
+    }
+}
+
+/// Per-index height cache used by the agent-chat renderer and
+/// `reconcile_anchor`. Heights are computed on first `get()` call
+/// for an index and memoized for the rest of the frame. The
+/// `thinking_visible` flag bumps the virtual length by one so
+/// callers can treat the animated thinking row as a trailing
+/// block of height 1 without having to special-case it everywhere.
+struct LazyHeights<'a> {
+    blocks: &'a [super::blocks::ChatBlock],
+    width: u16,
+    cache: Vec<Option<u16>>,
+    thinking_visible: bool,
+}
+
+impl<'a> LazyHeights<'a> {
+    fn new(blocks: &'a [super::blocks::ChatBlock], width: u16, thinking_visible: bool) -> Self {
+        Self {
+            blocks,
+            width,
+            cache: vec![None; blocks.len()],
+            thinking_visible,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.blocks.len() + if self.thinking_visible { 1 } else { 0 }
+    }
+
+    fn get(&mut self, i: usize) -> u16 {
+        // Thinking row (or out-of-bounds query on an empty chat):
+        // always height 1, matches the old eager `heights.push(1)`.
+        if i >= self.blocks.len() {
+            return 1;
+        }
+        if let Some(h) = self.cache[i] {
+            return h;
+        }
+        let h = self.blocks[i].height(self.width).max(1);
+        self.cache[i] = Some(h);
+        h
     }
 }
 
