@@ -179,10 +179,7 @@ fn coder_prompt_uses_cli_preamble_inside_tools() {
         p.contains("/usr/local/bin/aciddog test"),
         "expected CLI preamble header (binary path) inside <tools>: {p}"
     );
-    assert!(
-        p.contains("| send |"),
-        "CLI-mode send row missing: {p}"
-    );
+    assert!(p.contains("| send |"), "CLI-mode send row missing: {p}");
     assert!(
         !p.contains("<aciddog-call>"),
         "should not include tag preamble: {p}"

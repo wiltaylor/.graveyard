@@ -46,17 +46,15 @@ pub fn block_fingerprint(b: &ChatBlock) -> u64 {
     // Discriminant so two variants with the same-shaped bytes don't collide.
     std::mem::discriminant(b).hash(&mut h);
 
-    let hash_usage = |h: &mut DefaultHasher, u: &Option<crate::ai::TurnUsage>| {
-        match u {
-            Some(u) => {
-                1u8.hash(h);
-                u.input_tokens.hash(h);
-                u.output_tokens.hash(h);
-                u.cache_read_input_tokens.hash(h);
-                u.cache_creation_input_tokens.hash(h);
-            }
-            None => 0u8.hash(h),
+    let hash_usage = |h: &mut DefaultHasher, u: &Option<crate::ai::TurnUsage>| match u {
+        Some(u) => {
+            1u8.hash(h);
+            u.input_tokens.hash(h);
+            u.output_tokens.hash(h);
+            u.cache_read_input_tokens.hash(h);
+            u.cache_creation_input_tokens.hash(h);
         }
+        None => 0u8.hash(h),
     };
 
     match b {
@@ -1139,10 +1137,7 @@ pub(crate) fn format_context_line(
 
 /// Pick a colour for the context line based on how full the window is.
 /// Falls back to dark gray when there's nothing useful to colour.
-pub(crate) fn context_line_color(
-    used: Option<crate::ai::TurnUsage>,
-    window: Option<u32>,
-) -> Color {
+pub(crate) fn context_line_color(used: Option<crate::ai::TurnUsage>, window: Option<u32>) -> Color {
     match (used, window) {
         (Some(u), Some(w)) if w > 0 => {
             let pct = (u.total_tokens().saturating_mul(100)) / w as u64;
@@ -1264,9 +1259,12 @@ fn render_agent_info(
     let draw_h = context_rows.min(available);
     let context_rect = Rect::new(rect.x + 2, y, context_w, draw_h);
     let context_color = context_line_color(context_used, context_window);
-    Paragraph::new(Span::styled(context_text, Style::default().fg(context_color)))
-        .wrap(Wrap { trim: false })
-        .render(context_rect, buf);
+    Paragraph::new(Span::styled(
+        context_text,
+        Style::default().fg(context_color),
+    ))
+    .wrap(Wrap { trim: false })
+    .render(context_rect, buf);
     y = y.saturating_add(draw_h);
     if y >= end_y {
         return;
@@ -1548,8 +1546,7 @@ fn render_tool_block(
             BlockAction::ToggleCollapse(_) => Style::default().fg(Color::Cyan),
             BlockAction::CopyText(_) => Style::default().fg(Color::LightBlue),
         };
-        Paragraph::new(Line::from(Span::styled(label.clone(), style)))
-            .render(brect, buf);
+        Paragraph::new(Line::from(Span::styled(label.clone(), style))).render(brect, buf);
         buttons.push(ChatButton {
             rect: brect,
             action: action.clone(),
@@ -2240,10 +2237,7 @@ mod tests {
 
     #[test]
     fn format_context_line_unknown_when_no_usage() {
-        assert_eq!(
-            format_context_line(None, Some(200_000)),
-            "context: unknown"
-        );
+        assert_eq!(format_context_line(None, Some(200_000)), "context: unknown");
         assert_eq!(format_context_line(None, None), "context: unknown");
     }
 
@@ -2741,7 +2735,6 @@ mod tests {
     /// test uses. Render only the body-paragraph portion (with the
     /// same block/wrap settings that `render_agent_info` uses) and
     /// compare its real row count against `wrapped_rows`.
-
 
     /// Diagnostic: measure the row count ratatui actually uses for a
     /// Paragraph with `Borders::LEFT` and `Wrap { trim: false }`, and

@@ -188,8 +188,8 @@ mod tests {
 
     #[test]
     fn coerce_text_from_number_json() {
-        let v = WorkflowSetTool::coerce(&PropertyKind::Text { default: None }, &json!(42))
-            .expect("ok");
+        let v =
+            WorkflowSetTool::coerce(&PropertyKind::Text { default: None }, &json!(42)).expect("ok");
         assert_eq!(v, PropertyValue::Text("42".into()));
     }
 
@@ -238,8 +238,7 @@ mod tests {
             options: vec!["a".into(), "b".into(), "c".into()],
             default: None,
         };
-        let v1 =
-            WorkflowSetTool::coerce(&p, &json!(["a", "c"])).expect("array ok");
+        let v1 = WorkflowSetTool::coerce(&p, &json!(["a", "c"])).expect("array ok");
         assert_eq!(v1, PropertyValue::Multi(vec!["a".into(), "c".into()]));
         let v2 = WorkflowSetTool::coerce(&p, &json!("a, c")).expect("csv ok");
         assert_eq!(v2, PropertyValue::Multi(vec!["a".into(), "c".into()]));

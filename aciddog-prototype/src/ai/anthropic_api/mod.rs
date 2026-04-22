@@ -107,10 +107,7 @@ impl AnthropicApiCore {
     /// of the `allowed_tools` allowlist. Used to hand a workflow step's
     /// worker the per-instance `check_successful` / `workflow_get` /
     /// `workflow_set` tools without adding them to `BUILT_IN_TOOL_NAMES`.
-    pub fn with_extra_tools(
-        mut self,
-        tools: Vec<Arc<dyn crate::ai::tools::Tool>>,
-    ) -> Self {
+    pub fn with_extra_tools(mut self, tools: Vec<Arc<dyn crate::ai::tools::Tool>>) -> Self {
         self.extra_tools = tools;
         self
     }

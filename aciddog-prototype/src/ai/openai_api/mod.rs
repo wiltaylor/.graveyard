@@ -104,10 +104,7 @@ impl OpenAiApiCore {
 
     /// Inject additional tools into every turn's `ToolRegistry` on top
     /// of the `allowed_tools` allowlist. Mirrors `AnthropicApiCore`.
-    pub fn with_extra_tools(
-        mut self,
-        tools: Vec<Arc<dyn crate::ai::tools::Tool>>,
-    ) -> Self {
+    pub fn with_extra_tools(mut self, tools: Vec<Arc<dyn crate::ai::tools::Tool>>) -> Self {
         self.extra_tools = tools;
         self
     }

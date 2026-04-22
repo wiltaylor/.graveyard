@@ -39,10 +39,7 @@ impl ChannelLog {
         let dir = cwd.join(".aciddog").join("chat");
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{channel_id}.jsonl"));
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Self { file, path })
     }
 

@@ -414,7 +414,10 @@ pub enum StepKind {
     /// when the worker calls `aciddog worker complete`.
     Worker { worker: String, prompt: String },
     /// Run `/bin/sh -c <rendered>`. Non-zero exit fails the instance.
-    Command { command: String, cwd: Option<String> },
+    Command {
+        command: String,
+        cwd: Option<String>,
+    },
     /// Spawn a worker that must call `check_successful` to pass. Any
     /// other outcome (pass=false, or hibernation without the call)
     /// counts as a failure and jumps back to `target`, bounded by
@@ -470,7 +473,10 @@ impl CheckOp {
     }
 
     pub fn needs_value(self) -> bool {
-        matches!(self, CheckOp::Equals | CheckOp::NotEquals | CheckOp::Contains)
+        matches!(
+            self,
+            CheckOp::Equals | CheckOp::NotEquals | CheckOp::Contains
+        )
     }
 }
 
@@ -669,7 +675,9 @@ pub enum ConfigError {
         default: String,
     },
 
-    #[error("workflow `{workflow}` property `{property}` has min ({min}) greater than max ({max})")]
+    #[error(
+        "workflow `{workflow}` property `{property}` has min ({min}) greater than max ({max})"
+    )]
     InvalidPropertyRange {
         workflow: String,
         property: String,
@@ -1331,8 +1339,7 @@ fn validate_channel_refs(agents: &[Agent], channels: &[Channel]) -> Result<(), C
         if !seen_ids.insert(c.id.as_str()) {
             return Err(ConfigError::DuplicateChannelId { id: c.id.clone() });
         }
-        let mut seen_members: std::collections::HashSet<&str> =
-            std::collections::HashSet::new();
+        let mut seen_members: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for m in &c.members {
             if !known.contains(m.as_str()) {
                 return Err(ConfigError::UnknownChannelMember {
@@ -1827,10 +1834,7 @@ fn optional_f64(block: &wcl_lang::BlockRef, attr: &str) -> Result<Option<f64>, C
 }
 
 /// Required list-of-strings attribute: errors if missing OR wrong type.
-fn require_string_list(
-    block: &wcl_lang::BlockRef,
-    attr: &str,
-) -> Result<Vec<String>, ConfigError> {
+fn require_string_list(block: &wcl_lang::BlockRef, attr: &str) -> Result<Vec<String>, ConfigError> {
     optional_string_list(block, attr)?.ok_or_else(|| ConfigError::MissingAttribute {
         kind: block.kind.clone(),
         attr: attr.to_string(),
@@ -2927,7 +2931,10 @@ mod tests {
         "#;
         let cfg = parse_config(src, &dummy_path()).unwrap();
         let skills = cfg.agents[0].skills.as_ref().unwrap();
-        assert_eq!(skills, &vec!["research".to_string(), "summariser".to_string()]);
+        assert_eq!(
+            skills,
+            &vec!["research".to_string(), "summariser".to_string()]
+        );
         assert_eq!(
             cfg.skills_for("one"),
             vec!["research".to_string(), "summariser".to_string()]
@@ -2946,7 +2953,10 @@ mod tests {
             }
         "#;
         let cfg = parse_config(src, &dummy_path()).unwrap();
-        assert_eq!(cfg.workers[0].skills.as_deref(), Some(&["research".to_string()][..]));
+        assert_eq!(
+            cfg.workers[0].skills.as_deref(),
+            Some(&["research".to_string()][..])
+        );
         assert_eq!(cfg.skills_for("fetcher"), vec!["research".to_string()]);
     }
 

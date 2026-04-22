@@ -103,7 +103,10 @@ mod tests {
 
     #[test]
     fn gemini_2_5_is_1m() {
-        assert_eq!(model_context_window("gemini-2.5-flash-lite"), Some(1_000_000));
+        assert_eq!(
+            model_context_window("gemini-2.5-flash-lite"),
+            Some(1_000_000)
+        );
     }
 
     #[test]

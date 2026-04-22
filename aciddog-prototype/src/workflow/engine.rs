@@ -284,10 +284,7 @@ async fn run_command_step(
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                let _ = tx.send(WorkflowEvent::StepOutput {
-                    instance_id,
-                    line,
-                });
+                let _ = tx.send(WorkflowEvent::StepOutput { instance_id, line });
             }
         });
     }
@@ -425,8 +422,8 @@ async fn run_worker_step(
             tx
         };
         drop(forward_tx); // unused — see `conditional_collect`.
-        // We don't forward here; instead the `sink_rx` is used below
-        // inside `conditional_collect` to observe the signal directly.
+                          // We don't forward here; instead the `sink_rx` is used below
+                          // inside `conditional_collect` to observe the signal directly.
         return run_conditional_turn(
             instance_id,
             step_id,
@@ -472,13 +469,19 @@ async fn run_plain_worker_turn(
         Err(e) => return StepAction::Fail { reason: e },
     };
 
-    match tokio::time::timeout(WORKER_TURN_TIMEOUT, drive_turn(core, prompt, instance_id, event_tx))
-        .await
+    match tokio::time::timeout(
+        WORKER_TURN_TIMEOUT,
+        drive_turn(core, prompt, instance_id, event_tx),
+    )
+    .await
     {
         Ok(Ok(())) => StepAction::Advance,
         Ok(Err(e)) => StepAction::Fail { reason: e },
         Err(_) => StepAction::Fail {
-            reason: format!("worker turn timed out after {}s", WORKER_TURN_TIMEOUT.as_secs()),
+            reason: format!(
+                "worker turn timed out after {}s",
+                WORKER_TURN_TIMEOUT.as_secs()
+            ),
         },
     }
 }
@@ -532,7 +535,10 @@ async fn run_conditional_turn(
         }
         Err(_) => {
             return StepAction::Fail {
-                reason: format!("worker turn timed out after {}s", WORKER_TURN_TIMEOUT.as_secs()),
+                reason: format!(
+                    "worker turn timed out after {}s",
+                    WORKER_TURN_TIMEOUT.as_secs()
+                ),
             };
         }
     }
@@ -615,9 +621,14 @@ fn build_workflow_core(
 /// instructions. Memory banks / channels / team context are omitted
 /// because a workflow step is a one-shot execution rather than a
 /// persistent agent session.
-fn build_worker_prompt_parts(worker: &crate::config::Worker) -> crate::ai::claude_code::PromptParts {
+fn build_worker_prompt_parts(
+    worker: &crate::config::Worker,
+) -> crate::ai::claude_code::PromptParts {
     crate::ai::claude_code::PromptParts {
-        role: worker.role_description.clone().or(Some(worker.role.clone())),
+        role: worker
+            .role_description
+            .clone()
+            .or(Some(worker.role.clone())),
         instructions: worker.instructions.clone(),
         ..Default::default()
     }
@@ -872,7 +883,14 @@ mod tests {
                 _ => {}
             }
         }
-        assert!(saw_retry, "expected a Retrying event after the first gate failure");
-        assert_eq!(finished_ok, Some(false), "expected terminal failure after retries exhausted");
+        assert!(
+            saw_retry,
+            "expected a Retrying event after the first gate failure"
+        );
+        assert_eq!(
+            finished_ok,
+            Some(false),
+            "expected terminal failure after retries exhausted"
+        );
     }
 }

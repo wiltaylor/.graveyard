@@ -142,11 +142,7 @@ impl MemoryRegistry {
 
     /// Fetch a single entry by id. Returns `Ok(None)` when the entry
     /// is absent.
-    pub fn get_entry(
-        &self,
-        bank: &MemoryBank,
-        id: uuid::Uuid,
-    ) -> Result<Option<Hit>, MemoryError> {
+    pub fn get_entry(&self, bank: &MemoryBank, id: uuid::Uuid) -> Result<Option<Hit>, MemoryError> {
         self.open_bank(bank)?.get_entry(id)
     }
 
@@ -166,11 +162,7 @@ impl MemoryRegistry {
     /// Remove an entry and every tag/link row that references it.
     /// Returns `true` when an entry was removed, `false` when `id`
     /// didn't exist.
-    pub fn delete_entry(
-        &self,
-        bank: &MemoryBank,
-        id: uuid::Uuid,
-    ) -> Result<bool, MemoryError> {
+    pub fn delete_entry(&self, bank: &MemoryBank, id: uuid::Uuid) -> Result<bool, MemoryError> {
         self.open_bank(bank)?.delete_entry(id)
     }
 

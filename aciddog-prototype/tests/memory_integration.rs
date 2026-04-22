@@ -401,7 +401,10 @@ fn update_unknown_entry_errors() {
     let err = store
         .update_entry(ghost, "anything", None, &[])
         .expect_err("unknown entry");
-    assert!(err.to_string().to_lowercase().contains("unknown"), "got {err}");
+    assert!(
+        err.to_string().to_lowercase().contains("unknown"),
+        "got {err}"
+    );
 }
 
 #[test]
@@ -436,12 +439,20 @@ fn delete_entry_cascades_to_tags_and_links() {
     };
     let hits = store.search(opts).expect("search core");
     let ids: Vec<_> = hits.iter().map(|h| h.id).collect();
-    assert!(!ids.contains(&hub), "deleted entry leaked through tag filter: {ids:?}");
+    assert!(
+        !ids.contains(&hub),
+        "deleted entry leaked through tag filter: {ids:?}"
+    );
 
     // Links gone: querying from either side returns nothing for hub.
     let empty = aciddog::memory::TagFilter::default();
-    let out = store.links(peer, LinkDirection::Both, &empty).expect("peer links");
-    assert!(!out.iter().any(|l| l.peer_id == hub), "hub still referenced: {out:?}");
+    let out = store
+        .links(peer, LinkDirection::Both, &empty)
+        .expect("peer links");
+    assert!(
+        !out.iter().any(|l| l.peer_id == hub),
+        "hub still referenced: {out:?}"
+    );
 }
 
 #[test]

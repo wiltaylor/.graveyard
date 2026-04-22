@@ -254,7 +254,6 @@ impl FieldEditor {
             _ => {}
         }
     }
-
 }
 
 /// Convert a Unicode-char index to the corresponding byte offset.
@@ -382,10 +381,7 @@ impl WorkflowFormState {
     /// own counter so arrow keys feel consistent. Stored alongside the
     /// form so it survives focus cycles without adding another struct.
     pub fn multi_cursor(&self, field_idx: usize) -> usize {
-        self.multi_cursors
-            .get(&field_idx)
-            .copied()
-            .unwrap_or(0)
+        self.multi_cursors.get(&field_idx).copied().unwrap_or(0)
     }
 
     pub fn set_multi_cursor(&mut self, field_idx: usize, cursor: usize) {
@@ -422,9 +418,9 @@ impl WorkflowFormState {
                         }
                         continue;
                     }
-                    let parsed: f64 = value.parse().map_err(|_| {
-                        format!("`{}` must be a number, got `{}`", prop.id, value)
-                    })?;
+                    let parsed: f64 = value
+                        .parse()
+                        .map_err(|_| format!("`{}` must be a number, got `{}`", prop.id, value))?;
                     if let Some(m) = min {
                         if parsed < *m {
                             return Err(format!("`{}` must be ≥ {m}", prop.id));

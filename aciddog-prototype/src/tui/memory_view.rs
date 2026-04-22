@@ -45,9 +45,7 @@ pub struct MemoryScreen {
 
 #[derive(Debug)]
 pub enum MemoryStage {
-    Banks {
-        selected: usize,
-    },
+    Banks { selected: usize },
     Bank(BankStage),
 }
 
@@ -125,7 +123,6 @@ impl SearchInput {
             self.cursor = self.cursor.saturating_sub(n);
         }
     }
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

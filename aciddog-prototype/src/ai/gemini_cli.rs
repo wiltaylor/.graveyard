@@ -1007,7 +1007,9 @@ fn parse_gemini_usage(value: &Value) -> Option<TurnUsage> {
     ];
 
     for cont in containers.iter().flatten() {
-        let Some(obj) = cont.as_object() else { continue };
+        let Some(obj) = cont.as_object() else {
+            continue;
+        };
         for (k, v) in obj {
             let Some(n) = v.as_u64() else { continue };
             match k.as_str() {

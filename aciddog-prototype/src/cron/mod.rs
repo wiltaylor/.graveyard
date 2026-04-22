@@ -562,8 +562,7 @@ pub fn validate_schedule(s: &CronSchedule) -> Result<(), CronError> {
 /// scheduler. The normalized form is what gets stored.
 pub fn parse_recurring(expression: &str) -> Result<CronSchedule, CronError> {
     let normalized = normalize_cron_expression(expression);
-    Schedule::from_str(&normalized)
-        .map_err(|e| CronError::InvalidExpression(e.to_string()))?;
+    Schedule::from_str(&normalized).map_err(|e| CronError::InvalidExpression(e.to_string()))?;
     Ok(CronSchedule::Recurring {
         expression: normalized,
     })
@@ -735,8 +734,8 @@ mod tests {
 
     #[test]
     fn compute_next_run_oneoff_utc_yields_exact_instant() {
-        let when = NaiveDateTime::parse_from_str("2026-04-22T14:35:00", "%Y-%m-%dT%H:%M:%S")
-            .unwrap();
+        let when =
+            NaiveDateTime::parse_from_str("2026-04-22T14:35:00", "%Y-%m-%dT%H:%M:%S").unwrap();
         let s = CronSchedule::OneOff { run_at_local: when };
         let got = compute_next_run(&s, CronTz::Utc, Utc::now()).unwrap();
         assert_eq!(got, Utc.from_utc_datetime(&when));

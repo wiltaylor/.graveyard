@@ -128,7 +128,11 @@ fn extract_frontmatter_description(line: &str) -> Option<String> {
     let unquoted = trimmed
         .strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
-        .or_else(|| trimmed.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .or_else(|| {
+            trimmed
+                .strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+        })
         .unwrap_or(trimmed);
     if unquoted.is_empty() {
         None
@@ -172,7 +176,8 @@ mod tests {
 
     #[test]
     fn description_from_frontmatter() {
-        let src = "---\ndescription: Quick literature lookups\nother: value\n---\n\n# body\nbody line\n";
+        let src =
+            "---\ndescription: Quick literature lookups\nother: value\n---\n\n# body\nbody line\n";
         assert_eq!(
             parse_description_from_markdown(src).as_deref(),
             Some("Quick literature lookups")
@@ -200,13 +205,19 @@ mod tests {
     #[test]
     fn description_from_body_skipping_blank_lines() {
         let src = "\n\nHello.\n";
-        assert_eq!(parse_description_from_markdown(src).as_deref(), Some("Hello."));
+        assert_eq!(
+            parse_description_from_markdown(src).as_deref(),
+            Some("Hello.")
+        );
     }
 
     #[test]
     fn description_empty_body_returns_none() {
         assert_eq!(parse_description_from_markdown("").as_deref(), None);
-        assert_eq!(parse_description_from_markdown("# only heading\n").as_deref(), None);
+        assert_eq!(
+            parse_description_from_markdown("# only heading\n").as_deref(),
+            None
+        );
     }
 
     #[test]
