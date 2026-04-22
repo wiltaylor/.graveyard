@@ -17,7 +17,12 @@ fn loads_demo_config_end_to_end() {
     for agent in &cfg.agents {
         assert!(!agent.role.is_empty());
         assert!(!agent.instructions.is_empty());
-        assert!(!agent.model.is_empty());
+        // Agents may leave `model` unset; the resolved ai_core's
+        // `model` (or the child CLI's own default) kicks in at
+        // core-construction time.
+        if let Some(m) = agent.model.as_deref() {
+            assert!(!m.is_empty());
+        }
     }
 
     // Workers declared in the demo config should parse and be referenced

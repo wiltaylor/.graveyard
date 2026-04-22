@@ -191,6 +191,7 @@ fn handle_auth_status(name: Option<&str>) -> String {
 /// and (optionally) the tag-IPC socket. `resume` tells the factory to
 /// skip the first-turn preamble — used by `resurrect_worker` so a
 /// hibernated worker resumes cleanly.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_core(
     core_cfg: &AiCore,
     session_id: Uuid,
@@ -199,6 +200,7 @@ pub(super) fn build_core(
     env: Vec<(String, String)>,
     socket_tx: Option<mpsc::Sender<AgentSocketEvent>>,
     resume: bool,
+    agent_model: Option<&str>,
 ) -> Box<dyn AICore> {
     build_core_with_extras(
         core_cfg,
@@ -209,6 +211,7 @@ pub(super) fn build_core(
         socket_tx,
         resume,
         Vec::new(),
+        agent_model,
     )
 }
 
@@ -222,6 +225,7 @@ pub(super) fn build_core(
 /// delegate to the external binary), so extras are silently dropped
 /// for those variants — workflows targeting them fall back to plain
 /// worker execution.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_core_with_extras(
     core_cfg: &AiCore,
     session_id: Uuid,
@@ -231,15 +235,23 @@ pub(super) fn build_core_with_extras(
     socket_tx: Option<mpsc::Sender<AgentSocketEvent>>,
     resume: bool,
     extra_tools: Vec<std::sync::Arc<dyn crate::ai::tools::Tool>>,
+    agent_model: Option<&str>,
 ) -> Box<dyn AICore> {
     match &core_cfg.kind {
-        AiCoreKind::ClaudeCode { system_prompt, .. } => {
+        AiCoreKind::ClaudeCode {
+            system_prompt,
+            model,
+            ..
+        } => {
             let mut cc = if resume {
                 ClaudeCodeCore::with_session_id(session_id, tools, system_prompt.clone())
             } else {
                 ClaudeCodeCore::new(session_id, parts, tools, system_prompt.clone())
             }
             .with_env(env);
+            if let Some(m) = agent_model.map(str::to_string).or_else(|| model.clone()) {
+                cc = cc.with_model(m);
+            }
             if let Some(tx) = socket_tx {
                 cc = cc.with_socket_tx(tx);
             }
@@ -252,11 +264,14 @@ pub(super) fn build_core_with_extras(
             system_prompt,
             ..
         } => {
+            let resolved_model = agent_model
+                .map(str::to_string)
+                .unwrap_or_else(|| model.clone());
             let mut c = AnthropicApiCore::new(
                 session_id,
                 api_url.clone(),
                 api_key_env.clone(),
-                model.clone(),
+                resolved_model,
                 parts,
                 tools,
                 system_prompt.clone(),
@@ -278,11 +293,14 @@ pub(super) fn build_core_with_extras(
             system_prompt,
             ..
         } => {
+            let resolved_model = agent_model
+                .map(str::to_string)
+                .unwrap_or_else(|| model.clone());
             let mut c = OpenAiApiCore::new(
                 session_id,
                 api_url.clone(),
                 api_key_env.clone(),
-                model.clone(),
+                resolved_model,
                 parts,
                 tools,
                 system_prompt.clone(),
@@ -305,10 +323,13 @@ pub(super) fn build_core_with_extras(
             ..
         } => {
             let effort = reasoning_effort.as_deref().unwrap_or("medium");
+            let resolved_model = agent_model
+                .map(str::to_string)
+                .unwrap_or_else(|| model.clone());
             let mut c = OpenAiChatgptCore::new(
                 session_id,
                 credential.clone(),
-                model.clone(),
+                resolved_model,
                 effort,
                 parts,
                 tools,
@@ -331,8 +352,8 @@ pub(super) fn build_core_with_extras(
                 CopilotCliCore::new(session_id, parts, tools)
             }
             .with_env(env);
-            if let Some(m) = model {
-                c = c.with_model(m.clone());
+            if let Some(m) = agent_model.map(str::to_string).or_else(|| model.clone()) {
+                c = c.with_model(m);
             }
             if let Some(tx) = socket_tx {
                 c = c.with_socket_tx(tx);
@@ -352,8 +373,8 @@ pub(super) fn build_core_with_extras(
                 GeminiCliCore::new(session_id, parts, tools)
             }
             .with_env(env);
-            if let Some(m) = model {
-                c = c.with_model(m.clone());
+            if let Some(m) = agent_model.map(str::to_string).or_else(|| model.clone()) {
+                c = c.with_model(m);
             }
             if let Some(tx) = socket_tx {
                 c = c.with_socket_tx(tx);
@@ -1868,7 +1889,7 @@ impl App {
                 let label = core
                     .map(core_display_label)
                     .unwrap_or_else(|| "claude-code".to_string());
-                let model = core.and_then(|c| c.runtime_model());
+                let model = config.effective_model(agent.model.as_deref(), core);
                 let context_window = model.and_then(crate::ai::model_context_window);
                 let context_usage_mode = core
                     .map(|c| core_usage_mode(&c.kind))
@@ -2777,9 +2798,10 @@ impl App {
         };
 
         let core_label = core_display_label(core);
-        let context_window = core
-            .runtime_model()
-            .and_then(crate::ai::model_context_window);
+        let effective_model = self
+            .config
+            .effective_model(worker.model.as_deref(), Some(core));
+        let context_window = effective_model.and_then(crate::ai::model_context_window);
         let context_usage_mode = core_usage_mode(&core.kind);
         let built_core: Box<dyn AICore> = build_core(
             core,
@@ -2789,6 +2811,7 @@ impl App {
             env,
             socket_tx_for_core,
             false,
+            worker.model.as_deref(),
         );
         let assembled_prompt = built_core.first_turn_prompt();
         let info_block =
@@ -2993,6 +3016,7 @@ impl App {
             env,
             socket_tx_for_core,
             true,
+            worker.model.as_deref(),
         );
 
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
@@ -9643,6 +9667,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             env,
             socket_tx_for_core,
             false,
+            agent.model.as_deref(),
         );
 
         // Reflect the assembled first-turn prompt in the top AgentInfo
@@ -9906,7 +9931,7 @@ mod tests {
                     id: "a".into(),
                     role: "r".into(),
                     role_description: None,
-                    model: "m".into(),
+                    model: Some("m".into()),
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: None,
@@ -9921,7 +9946,7 @@ mod tests {
                     id: "b".into(),
                     role: "r".into(),
                     role_description: None,
-                    model: "m".into(),
+                    model: Some("m".into()),
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: None,
@@ -9936,7 +9961,7 @@ mod tests {
                     id: "c".into(),
                     role: "r".into(),
                     role_description: None,
-                    model: "m".into(),
+                    model: Some("m".into()),
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: None,
@@ -9953,6 +9978,7 @@ mod tests {
                 id: "default".into(),
                 kind: crate::config::AiCoreKind::ClaudeCode {
                     system_prompt: None,
+                    model: None,
                     default_tools: None,
                 },
                 usage_provider: None,
@@ -11592,7 +11618,7 @@ mod tests {
                     id: "coder".into(),
                     role: "r".into(),
                     role_description: None,
-                    model: "m".into(),
+                    model: Some("m".into()),
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: Some(vec!["researcher".into()]),
@@ -11607,7 +11633,7 @@ mod tests {
                     id: "planner".into(),
                     role: "r".into(),
                     role_description: None,
-                    model: "m".into(),
+                    model: Some("m".into()),
                     instructions: "i".into(),
                     can_message: None,
                     can_create_workers: None,
@@ -11624,7 +11650,7 @@ mod tests {
                     id: "researcher".into(),
                     role: "investigator".into(),
                     role_description: None,
-                    model: "m".into(),
+                    model: Some("m".into()),
                     instructions: "look stuff up".into(),
                     tools: None,
                     can_create_workers: None,
@@ -11638,7 +11664,7 @@ mod tests {
                     id: "fetcher".into(),
                     role: "fetcher".into(),
                     role_description: None,
-                    model: "m".into(),
+                    model: Some("m".into()),
                     instructions: "fetch".into(),
                     tools: None,
                     can_create_workers: None,
@@ -11653,6 +11679,7 @@ mod tests {
                 id: "default".into(),
                 kind: crate::config::AiCoreKind::ClaudeCode {
                     system_prompt: None,
+                    model: None,
                     default_tools: None,
                 },
                 usage_provider: None,

@@ -301,21 +301,21 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
             // role/model pair from an `agent` config block.
             if let Some(template) = &chat.worker_template {
                 if let Some(w) = app.config.worker(template) {
+                    let core = app.config.effective_ai_core(w.ai_core.as_deref());
                     let model = app
                         .config
-                        .effective_ai_core(w.ai_core.as_deref())
-                        .and_then(|c| c.runtime_model())
-                        .unwrap_or(&w.model);
+                        .effective_model(w.model.as_deref(), core)
+                        .unwrap_or("(default)");
                     format!(" {} · worker · {} · {} ", chat.display_name, w.role, model)
                 } else {
                     format!(" {} · worker ", chat.display_name)
                 }
             } else if let Some(a) = app.config.agents.get(selected_agent) {
+                let core = app.config.effective_ai_core(a.ai_core.as_deref());
                 let model = app
                     .config
-                    .effective_ai_core(a.ai_core.as_deref())
-                    .and_then(|c| c.runtime_model())
-                    .unwrap_or(&a.model);
+                    .effective_model(a.model.as_deref(), core)
+                    .unwrap_or("(default)");
                 format!(" {} · {} · {} ", a.id, a.role, model)
             } else {
                 format!(" {} ", chat.display_name)

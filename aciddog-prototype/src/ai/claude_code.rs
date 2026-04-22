@@ -108,6 +108,9 @@ pub struct ClaudeCodeCore {
     /// `None`, no system prompt file is created and claude uses its
     /// default system prompt.
     system_prompt: Option<String>,
+    /// When `Some`, passed as `--model <id>` to the `claude` CLI on
+    /// every turn. `None` lets claude pick its own default.
+    model: Option<String>,
     env: Vec<(String, String)>,
     /// Set to `Some` only when the agent lacks a shell tool and must
     /// coordinate through inline `<aciddog-call>` tags. When present,
@@ -133,6 +136,7 @@ impl ClaudeCodeCore {
             prompt_parts,
             allowed_tools,
             system_prompt,
+            model: None,
             env: Vec::new(),
             socket_tx: None,
             started: false,
@@ -154,6 +158,7 @@ impl ClaudeCodeCore {
             prompt_parts: PromptParts::default(),
             allowed_tools,
             system_prompt,
+            model: None,
             env: Vec::new(),
             socket_tx: None,
             started: true,
@@ -171,6 +176,15 @@ impl ClaudeCodeCore {
     /// agent can call back into aciddog via the IPC socket.
     pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
         self.env = env;
+        self
+    }
+
+    /// Set the model id forwarded to the `claude` CLI as
+    /// `--model <id>`. When unset the flag is omitted and claude
+    /// uses its own default. Agent/worker-level overrides flow in
+    /// through `build_core` in the TUI layer.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
         self
     }
 
@@ -340,6 +354,7 @@ impl AICore for ClaudeCodeCore {
             binary: self.binary.clone(),
             session_id: self.session_id,
             allowed_tools: self.allowed_tools.clone(),
+            model: self.model.clone(),
             env: self.env.clone(),
             system_prompt_path: system_prompt_file.as_ref().map(|t| t.path().to_path_buf()),
         });
@@ -385,6 +400,7 @@ struct RoundCtx {
     binary: String,
     session_id: Uuid,
     allowed_tools: Vec<String>,
+    model: Option<String>,
     env: Vec<(String, String)>,
     system_prompt_path: Option<std::path::PathBuf>,
 }
@@ -437,6 +453,10 @@ async fn run_round(
 
     if !tools_arg.is_empty() {
         cmd.arg("--tools").arg(&tools_arg);
+    }
+
+    if let Some(model) = &ctx.model {
+        cmd.arg("--model").arg(model);
     }
 
     if !ctx.env.is_empty() {
@@ -731,6 +751,18 @@ mod tests {
     fn accepts_valid_tool_names() {
         let core = fresh("i", vec!["Bash".into(), "Edit".into()]);
         assert!(core.validate_tools().is_ok());
+    }
+
+    #[test]
+    fn with_model_stores_model_id() {
+        let core = fresh("i", vec![]).with_model("claude-haiku-4.5");
+        assert_eq!(core.model.as_deref(), Some("claude-haiku-4.5"));
+    }
+
+    #[test]
+    fn new_core_has_no_model_by_default() {
+        let core = fresh("i", vec![]);
+        assert!(core.model.is_none());
     }
 
     #[test]

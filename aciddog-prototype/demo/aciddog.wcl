@@ -13,7 +13,12 @@ schema "agent" {
   id: identifier @inline(0)
   role: string
   role_description: string @optional
-  model: string @optional @default("claude-opus-4-7")
+  // Per-agent model override. Omit to inherit the resolved ai_core's
+  // `model`. Direct-API cores require a model somewhere — here or on
+  // the core. CLI-harness cores (claudeCode, copilotCli, geminiCli)
+  // fall through to the child binary's own default when both are
+  // unset.
+  model: string @optional
   instructions: string
   can_message: list(string) @optional
   can_create_workers: list(string) @optional
@@ -29,7 +34,10 @@ schema "worker" {
   id: identifier @inline(0)
   role: string
   role_description: string @optional
-  model: string @optional @default("claude-opus-4-7")
+  // Per-worker-template model override. Same semantics as
+  // `schema "agent"`'s `model` field — overrides the resolved
+  // ai_core's model for instances of this template.
+  model: string @optional
   instructions: string
   tools: list(string) @optional
   can_create_workers: list(string) @optional
@@ -141,6 +149,10 @@ schema "ai_core" {
     // Written to a temporary file and passed to claude via
     // `--system-prompt-file` on every turn.
     systemPrompt: string @optional
+    // Optional `--model <id>` passed to the `claude` CLI on every
+    // turn. Agents/workers can override this per-actor via their own
+    // `model` field. Omit both and claude picks its own default.
+    model: string @optional
     // Fallback tool allowlist for agents/workers using this core that
     // don't declare their own `tools`. Tool names are core-specific,
     // which is why this default lives on the core.
@@ -416,6 +428,9 @@ agent planner {
   role_description = <<EOT
     You are the team coordinator. Understand what the user wants, decompose it into delegable units, and route each unit to the right teammate via `send`. Do not implement work yourself when you can route it. Spawn an ephemeral worker only when the job is genuinely throwaway (one question, one artifact, one joke). Confirm receipts and report final outcomes back to the user — nothing in between.
   EOT
+  // Opus for planning — broader reasoning helps with decomposition
+  // and routing. Passed to the `claude` CLI as `--model`.
+  model = "claude-opus-4-7"
   instructions = "Break the user request into steps and delegate work to other agents. If the team needs a morale boost, either `send` a topic to the `jokemaster` agent (OpenRouter-backed one-liner) or spawn a `jokester` worker (ephemeral joke + cleanup). If the user wants corporate-speak buzzword bingo, `send` a topic to `humblemoonbeam` (Gemini-backed bs talker). All three return their punchline and stop."
   // Omit `can_message` to allow messaging every other agent.
   // Example: restrict to a subset with `can_message = ["coder"]`.
@@ -437,6 +452,10 @@ agent coder {
   role_description = <<EOT
     You are the team's implementer. Other agents send you concrete change requests; you read the relevant code, make the smallest correct edit, and verify with quick sanity checks (build, type check, test) when practical. When you genuinely lack context — an unfamiliar file, an unclear API, a missing fact — spawn a `researcher` worker rather than guessing or doing wide investigation inline.
   EOT
+  // Sonnet for implementation — fast edit/verify cycles without
+  // paying Opus latency on every turn. Passed to the `claude` CLI
+  // as `--model`.
+  model = "claude-sonnet-4-6"
   instructions = "Implement code changes requested by the planner. When you need to investigate something you don't have context for, spawn a `researcher` worker rather than doing the legwork inline."
   can_create_workers = ["researcher"]
   memory_banks = ["project_context"]

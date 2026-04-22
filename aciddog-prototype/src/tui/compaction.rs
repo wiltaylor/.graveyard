@@ -352,6 +352,7 @@ impl App {
                 env,
                 None,
                 false,
+                None,
             );
             let text_result = run_one_shot_turn(&mut *core, &full_prompt).await;
             let ev = match text_result {
@@ -550,6 +551,7 @@ impl App {
             env,
             socket_tx,
             false,
+            agent.model.as_deref(),
         );
         let assembled_prompt = core.first_turn_prompt();
 
@@ -576,8 +578,9 @@ impl App {
         let pool_len = self.config.thinking_messages.len();
         let new_label = core_display_label(&ai_core);
         let new_usage_mode = core_usage_mode(&ai_core.kind);
-        let new_context_window = ai_core
-            .runtime_model()
+        let new_context_window = self
+            .config
+            .effective_model(agent.model.as_deref(), Some(&ai_core))
             .and_then(crate::ai::model_context_window);
 
         // Remove the old session id from the routing map *before* we

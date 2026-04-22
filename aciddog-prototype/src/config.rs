@@ -26,7 +26,12 @@ pub struct Agent {
     /// `<role>...</role>` block on the first turn so the model can read
     /// it as primary behavioural direction. `None` ⇒ no `<role>` block.
     pub role_description: Option<String>,
-    pub model: String,
+    /// Per-agent model override. `None` falls back to the resolved
+    /// ai_core's own `model` (via `AiCore::runtime_model`). Honoured
+    /// by every core variant — direct-API variants override the
+    /// `model` field in the request body; CLI variants pass it as
+    /// `--model <id>` to the underlying binary.
+    pub model: Option<String>,
     pub instructions: String,
     /// Allowlist of agent ids this agent may send messages to.
     /// `None` means unrestricted (can message anyone).
@@ -75,7 +80,11 @@ pub struct Worker {
     /// `<role>...</role>` block on the first turn so the model can read
     /// it as primary behavioural direction. `None` ⇒ no `<role>` block.
     pub role_description: Option<String>,
-    pub model: String,
+    /// Per-worker-template model override. Same semantics as
+    /// `Agent::model`: `None` falls back to the resolved ai_core's own
+    /// `model`; otherwise replaces it for instances spawned from this
+    /// template.
+    pub model: Option<String>,
     pub instructions: String,
     /// Optional per-template tool allowlist. `None` falls back to the
     /// resolved ai_core's own `default_tools`, then the built-in
@@ -180,6 +189,10 @@ pub enum AiCoreKind {
         /// Content for `--system-prompt-file`. When `None`, the flag is
         /// omitted and claude uses its default system prompt.
         system_prompt: Option<String>,
+        /// Optional `--model <id>` passed to the `claude` CLI. `None`
+        /// lets claude pick its own default. Agent/worker-level
+        /// `model` overrides this value.
+        model: Option<String>,
         /// Per-core default tool allowlist applied when an agent or
         /// worker using this core doesn't declare its own `tools`.
         /// Tool names depend on the core, which is why the default
@@ -321,7 +334,7 @@ impl AiCore {
     /// configured `model` field.
     pub fn runtime_model(&self) -> Option<&str> {
         match &self.kind {
-            AiCoreKind::ClaudeCode { .. } => None,
+            AiCoreKind::ClaudeCode { model, .. } => model.as_deref(),
             AiCoreKind::AnthropicApi { model, .. }
             | AiCoreKind::OpenAiApi { model, .. }
             | AiCoreKind::OpenAiChatgpt { model, .. } => Some(model.as_str()),
@@ -850,7 +863,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 id: require_id(&b.id, &b.kind)?,
                 role: require_string(b, "role")?,
                 role_description: optional_string(b, "role_description"),
-                model: optional_string(b, "model").unwrap_or_else(|| "claude-opus-4-7".to_string()),
+                model: optional_string(b, "model"),
                 instructions: require_string(b, "instructions")?,
                 can_message: optional_string_list(b, "can_message")?,
                 can_create_workers: optional_string_list(b, "can_create_workers")?,
@@ -872,7 +885,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 id: require_id(&b.id, &b.kind)?,
                 role: require_string(b, "role")?,
                 role_description: optional_string(b, "role_description"),
-                model: optional_string(b, "model").unwrap_or_else(|| "claude-opus-4-7".to_string()),
+                model: optional_string(b, "model"),
                 instructions: require_string(b, "instructions")?,
                 tools: optional_string_list(b, "tools")?,
                 can_create_workers: optional_string_list(b, "can_create_workers")?,
@@ -906,6 +919,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
             let kind = match type_name.as_str() {
                 "claudeCode" => AiCoreKind::ClaudeCode {
                     system_prompt: optional_string(b, "systemPrompt"),
+                    model: optional_string(b, "model"),
                     default_tools: optional_string_list(b, "default_tools")?,
                 },
                 "anthropicApi" => AiCoreKind::AnthropicApi {
@@ -1825,6 +1839,21 @@ impl AciddogConfig {
         self.ai_cores.iter().find(|c| c.id == id)
     }
 
+    /// Resolve the model id used at inference time for an agent or
+    /// worker. Precedence: the actor's own `model` (if set) → the
+    /// resolved `ai_core`'s `runtime_model()`. Returns `None` when
+    /// neither is specified — acceptable for CLI-harness cores
+    /// (`claudeCode`, `copilotCli`, `geminiCli`) that let the child
+    /// binary pick its own default, and unreachable for direct-API
+    /// cores because their `model` field is required at parse time.
+    pub fn effective_model<'a>(
+        &self,
+        actor_model: Option<&'a str>,
+        core: Option<&'a AiCore>,
+    ) -> Option<&'a str> {
+        actor_model.or_else(|| core.and_then(|c| c.runtime_model()))
+    }
+
     /// Look up a declared compaction policy by id.
     pub fn compaction(&self, id: &str) -> Option<&Compaction> {
         self.compactions.iter().find(|c| c.id == id)
@@ -2058,9 +2087,9 @@ mod tests {
     }
 
     #[test]
-    fn applies_default_model_when_absent() {
+    fn agent_model_is_none_when_omitted() {
         let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
-        assert_eq!(cfg.agents[0].model, "claude-opus-4-7");
+        assert!(cfg.agents[0].model.is_none());
     }
 
     #[test]
@@ -2074,7 +2103,7 @@ mod tests {
             }
         "#;
         let cfg = parse_config(src, &dummy_path()).unwrap();
-        assert_eq!(cfg.agents[0].model, "claude-sonnet-4-6");
+        assert_eq!(cfg.agents[0].model.as_deref(), Some("claude-sonnet-4-6"));
     }
 
     #[test]
@@ -2267,7 +2296,7 @@ mod tests {
         assert_eq!(cfg.workers.len(), 1);
         assert_eq!(cfg.workers[0].id, "researcher");
         assert_eq!(cfg.workers[0].role, "investigator");
-        assert_eq!(cfg.workers[0].model, "claude-opus-4-7");
+        assert!(cfg.workers[0].model.is_none());
         assert!(cfg.workers[0].tools.is_none());
         assert!(cfg.workers[0].can_create_workers.is_none());
     }
@@ -2651,6 +2680,7 @@ mod tests {
             cfg.ai_cores[0].kind,
             AiCoreKind::ClaudeCode {
                 system_prompt: Some("be concise".into()),
+                model: None,
                 default_tools: None,
             }
         );
@@ -2759,6 +2789,7 @@ mod tests {
             cfg.ai_cores[0].kind,
             AiCoreKind::ClaudeCode {
                 system_prompt: None,
+                model: None,
                 default_tools: None,
             }
         );
@@ -3206,6 +3237,84 @@ mod tests {
     fn effective_ai_core_returns_none_when_nothing_configured() {
         let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
         assert!(cfg.effective_ai_core(None).is_none());
+    }
+
+    #[test]
+    fn effective_model_falls_back_to_core_when_actor_unset() {
+        let src = r#"
+            team default {
+                description = "t"
+                default_ai_core = "main"
+            }
+            agent alpha {
+                role = "r"
+                instructions = "i"
+            }
+            ai_core main {
+                type = :anthropicApi
+                apiUrl = "https://api.anthropic.com"
+                apiKeyEnv = "ANTHROPIC_API_KEY"
+                model = "claude-sonnet-4-6"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        let core = cfg.effective_ai_core(cfg.agents[0].ai_core.as_deref());
+        assert_eq!(
+            cfg.effective_model(cfg.agents[0].model.as_deref(), core),
+            Some("claude-sonnet-4-6"),
+        );
+    }
+
+    #[test]
+    fn effective_model_agent_override_wins_over_core() {
+        let src = r#"
+            team default {
+                description = "t"
+                default_ai_core = "main"
+            }
+            agent alpha {
+                role = "r"
+                model = "claude-opus-4-7"
+                instructions = "i"
+            }
+            ai_core main {
+                type = :anthropicApi
+                apiUrl = "https://api.anthropic.com"
+                apiKeyEnv = "ANTHROPIC_API_KEY"
+                model = "claude-sonnet-4-6"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        let core = cfg.effective_ai_core(cfg.agents[0].ai_core.as_deref());
+        assert_eq!(
+            cfg.effective_model(cfg.agents[0].model.as_deref(), core),
+            Some("claude-opus-4-7"),
+        );
+    }
+
+    #[test]
+    fn claude_code_core_model_is_optional_in_wcl() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core local {
+                type = :claudeCode
+                model = "claude-haiku-4.5"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.ai_cores[0].runtime_model(), Some("claude-haiku-4.5"));
+    }
+
+    #[test]
+    fn claude_code_core_without_model_returns_none_runtime_model() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core local { type = :claudeCode }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert!(cfg.ai_cores[0].runtime_model().is_none());
     }
 
     #[test]
