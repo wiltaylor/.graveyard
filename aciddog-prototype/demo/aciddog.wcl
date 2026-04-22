@@ -21,6 +21,7 @@ schema "agent" {
   ai_core: string @optional
   memory_banks: list(string) @optional
   skills: list(string) @optional
+  compaction: string @optional
 }
 
 schema "worker" {
@@ -34,6 +35,7 @@ schema "worker" {
   ai_core: string @optional
   memory_banks: list(string) @optional
   skills: list(string) @optional
+  compaction: string @optional
 }
 
 // Memory banks are semantic, embedding-indexed stores shared across a
@@ -45,6 +47,42 @@ schema "memory_bank" {
   description: string
   // fastembed model id. Omit to use the default (BGE-small-en-v1.5).
   embed_model: string @optional
+}
+
+// A named compaction policy controlling `/compact` behaviour for any
+// agent or worker that references it via their own `compaction`
+// attribute. `/reset` ignores this config and always drops the
+// session; agents with no `compaction` fall back to the `drop`
+// strategy when `/compact` fires.
+//
+// Four strategies:
+//   - harness        forward the literal `/compact` to the backing CLI.
+//                    Only `claudeCode` actually processes `/compact` in
+//                    non-interactive (`-p`) mode; `geminiCli`,
+//                    `copilotCli`, and direct-API cores reject at parse
+//                    time (they'd either treat the string as a user
+//                    prompt or have no slash-command concept at all).
+//   - drop           discard the session and re-seed with the first-
+//                    turn preamble.
+//   - promptAndDrop  send one last `prompt` to the existing session,
+//                    capture the reply, then drop + re-seed.
+//   - summarise      serialise the transcript, run it through a
+//                    throwaway core using `prompt` (on `ai_core` if
+//                    supplied, else the agent's own core), then drop +
+//                    re-seed and deliver the summary as the first user
+//                    message of the new session.
+@tagged(field = "strategy")
+schema "compaction" {
+  id: identifier @inline(0)
+  strategy: symbol
+
+  variant "harness"       { }
+  variant "drop"          { }
+  variant "promptAndDrop" { prompt: string }
+  variant "summarise" {
+    prompt: string
+    ai_core: string @optional
+  }
 }
 
 // Configuration for a named AI runtime. The `type` symbol discriminates
@@ -244,6 +282,39 @@ memory_bank project_context {
   description = "Durable facts about the project the team is working on: conventions, decisions, quirks, and anything worth a future agent's attention."
 }
 
+// Compaction policies. One per strategy, wired to different demo
+// agents below so `just run` exercises every `/compact` code path.
+// `/reset` on any agent always runs the built-in `drop` regardless of
+// these.
+compaction harness_compact {
+  strategy = :harness
+}
+
+compaction drop_compact {
+  strategy = :drop
+}
+
+compaction last_word {
+  strategy = :promptAndDrop
+  prompt   = <<EOT
+    Final turn before the session is dropped. In ≤3 short sentences,
+    give the user a plain-text summary of what was discussed and any
+    unresolved thread they should bring to the next session. No
+    preamble.
+  EOT
+}
+
+compaction running_notes {
+  strategy = :summarise
+  prompt   = <<EOT
+    You are a summariser. The JSON transcript that follows is a full
+    agent session. Produce a short markdown digest suitable for
+    injection as the first turn of a fresh session — include: (1) the
+    user's overall goal, (2) key facts established or decisions made,
+    (3) any open questions. Aim for ≤400 words. Plain prose, no JSON.
+  EOT
+}
+
 agent planner {
   role = "coordinator"
   role_description = <<EOT
@@ -257,6 +328,8 @@ agent planner {
   // (via `send`) whenever a command needs to run.
   tools = ["Read", "Edit", "Grep", "Glob"]
   memory_banks = ["project_context"]
+  // Forward `/compact` to claude-code's own compaction.
+  compaction = "harness_compact"
 }
 
 agent coder {
@@ -267,6 +340,8 @@ agent coder {
   instructions = "Implement code changes requested by the planner. When you need to investigate something you don't have context for, spawn a `researcher` worker rather than doing the legwork inline."
   can_create_workers = ["researcher"]
   memory_banks = ["project_context"]
+  // Ask claude for a handoff note before dropping the session.
+  compaction = "last_word"
 }
 
 agent tester {
@@ -285,6 +360,10 @@ agent tester {
   // as `coder`, to keep the Anthropic-API code path exercised from a
   // second agent with a distinct role.
   ai_core = "z_ai"
+  // Direct-API core can't forward `/compact`, so this agent runs the
+  // summarise strategy instead — serialise the transcript through the
+  // default core and inject the digest into a fresh session.
+  compaction = "running_notes"
 }
 
 // Persistent humorist, wired to the OpenRouter core so the OpenAI-API
@@ -299,6 +378,8 @@ agent jokemaster {
   instructions = "When sent a topic, reply with exactly one short clean joke about it. No setup outside the joke, no commentary — just the punchline. Make sure to use the mailbox tool to send the joke back to the sender if you recieved the joke via your inbox instead of directly from a user."
   tools = ["Read"]
   ai_core = "openrouter"
+  // Plain drop — cheapest way to reset the humourist's context.
+  compaction = "drop_compact"
 }
 
 // Corporate-speak bs talker wired through the Google Gemini CLI core.

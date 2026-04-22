@@ -53,6 +53,10 @@ pub struct Agent {
     /// `SKILL.md`. Unlisted skills remain discoverable by browsing the
     /// folder. `None` ⇒ no skills section in the prompt.
     pub skills: Option<Vec<String>>,
+    /// Optional id of a declared `compaction` block driving `/compact`
+    /// for this agent. `None` ⇒ `/compact` falls back to the built-in
+    /// `drop` strategy.
+    pub compaction: Option<String>,
 }
 
 /// A template for an ephemeral worker. Unlike `Agent`, a `Worker` is not
@@ -84,6 +88,10 @@ pub struct Worker {
     /// Skills pre-announced to instances of this worker template. Same
     /// semantics as `Agent::skills`.
     pub skills: Option<Vec<String>>,
+    /// Optional id of a declared `compaction` block driving `/compact`
+    /// for instances of this template. Same semantics as
+    /// `Agent::compaction`.
+    pub compaction: Option<String>,
 }
 
 /// A named, persistent memory bank. Declared at the fleet level and
@@ -233,6 +241,55 @@ impl AiCore {
     }
 }
 
+/// A named compaction policy. Referenced by id from an agent or worker
+/// via their `compaction` attribute. The `strategy` tagged union picks
+/// which variant's fields apply.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Compaction {
+    pub id: String,
+    pub strategy: CompactionStrategy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "strategy", rename_all = "camelCase")]
+pub enum CompactionStrategy {
+    /// Forward `/compact` to the backing CLI harness as the next user
+    /// prompt. Rejected at parse time for `anthropicApi` / `openAiApi`
+    /// cores, which have no slash-command concept.
+    Harness,
+    /// Drop the current session and re-seed a fresh one with the
+    /// first-turn preamble.
+    Drop,
+    /// Send one final prompt to the existing session (capturing the
+    /// reply), then drop + re-seed as in `Drop`.
+    PromptAndDrop { prompt: String },
+    /// Serialize the TUI transcript, run it through a throwaway core
+    /// with the configured summary prompt, then drop + re-seed and
+    /// deliver the summary as the first user message of the new
+    /// session.
+    Summarise {
+        prompt: String,
+        /// ai_core id for the summary pass. `None` falls back to the
+        /// target agent's own core (which in turn falls back to
+        /// `team.default_ai_core`).
+        ai_core: Option<String>,
+    },
+}
+
+impl CompactionStrategy {
+    /// Short name used in log messages and the post-compaction marker
+    /// block. Must match the tag used in the WCL `strategy` symbol so
+    /// users recognise it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            CompactionStrategy::Harness => "harness",
+            CompactionStrategy::Drop => "drop",
+            CompactionStrategy::PromptAndDrop { .. } => "promptAndDrop",
+            CompactionStrategy::Summarise { .. } => "summarise",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AciddogConfig {
     pub team: Team,
@@ -242,6 +299,9 @@ pub struct AciddogConfig {
     /// Named memory banks available to this team. Agents/workers opt in
     /// to specific banks via their `memory_banks` allowlist.
     pub memory_banks: Vec<MemoryBank>,
+    /// Named compaction policies. Agents/workers opt in by id via their
+    /// `compaction` attribute.
+    pub compactions: Vec<Compaction>,
     /// Final pool of messages shown by the thinking indicator while an
     /// agent is `Working`. Already merged with built-ins per
     /// `team.replace_thinking_messages`; guaranteed non-empty.
@@ -365,6 +425,24 @@ pub enum ConfigError {
 
     #[error("`{from}` references skill `{name}` whose id is not a valid identifier")]
     InvalidSkillName { from: String, name: String },
+
+    #[error("compaction `{core}` has unknown strategy `{strategy}`")]
+    UnknownCompactionStrategy { core: String, strategy: String },
+
+    #[error("`{from}` references unknown compaction `{to}` in `compaction`")]
+    UnknownCompactionRef { from: String, to: String },
+
+    #[error(
+        "compaction `{id}` on `{actor}` uses strategy `harness`, but that \
+         agent/worker resolves to ai_core type `{core_type}`. Only \
+         `claudeCode` actually processes `/compact` in non-interactive \
+         mode — use `drop` or `summarise` for {core_type} cores."
+    )]
+    CompactionHarnessUnsupportedCore {
+        id: String,
+        actor: String,
+        core_type: String,
+    },
 }
 
 pub fn load_config(path: &Path) -> Result<AciddogConfig, ConfigError> {
@@ -417,6 +495,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 ai_core: optional_string(b, "ai_core"),
                 memory_banks: optional_string_list(b, "memory_banks")?,
                 skills: optional_string_list(b, "skills")?,
+                compaction: optional_string(b, "compaction"),
             })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -436,6 +515,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 ai_core: optional_string(b, "ai_core"),
                 memory_banks: optional_string_list(b, "memory_banks")?,
                 skills: optional_string_list(b, "skills")?,
+                compaction: optional_string(b, "compaction"),
             })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -496,12 +576,40 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
 
+    let compactions = doc
+        .blocks_of_type_resolved("compaction")
+        .iter()
+        .map(|b| {
+            let id = require_id(&b.id, &b.kind)?;
+            let strategy_name = require_symbol(b, "strategy")?;
+            let strategy = match strategy_name.as_str() {
+                "harness" => CompactionStrategy::Harness,
+                "drop" => CompactionStrategy::Drop,
+                "promptAndDrop" => CompactionStrategy::PromptAndDrop {
+                    prompt: require_string(b, "prompt")?,
+                },
+                "summarise" => CompactionStrategy::Summarise {
+                    prompt: require_string(b, "prompt")?,
+                    ai_core: optional_string(b, "ai_core"),
+                },
+                other => {
+                    return Err(ConfigError::UnknownCompactionStrategy {
+                        core: id,
+                        strategy: other.to_string(),
+                    })
+                }
+            };
+            Ok(Compaction { id, strategy })
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+
     validate_agent_refs(&agents)?;
     validate_worker_refs(&agents, &workers)?;
     validate_ai_core_refs(&team, &agents, &workers, &ai_cores)?;
     validate_ai_core_tools(&ai_cores)?;
     validate_memory_bank_refs(&agents, &workers, &memory_banks)?;
     validate_skill_names(&agents, &workers)?;
+    validate_compaction_refs(&team, &agents, &workers, &ai_cores, &compactions)?;
 
     let mut user_messages: Vec<String> = Vec::new();
     for block in doc.blocks_of_type_resolved("thinking_messages").iter() {
@@ -535,6 +643,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         workers,
         ai_cores,
         memory_banks,
+        compactions,
         thinking_messages,
     })
 }
@@ -706,6 +815,87 @@ fn validate_skill_names(agents: &[Agent], workers: &[Worker]) -> Result<(), Conf
     Ok(())
 }
 
+/// Every `compaction` reference from an agent or worker must resolve
+/// to a declared `compaction` block, and `strategy = :harness` is only
+/// valid when the actor's resolved `ai_core` is a CLI-harness variant
+/// (ClaudeCode / CopilotCli / GeminiCli). Direct API cores have no
+/// slash-command concept, so we reject at parse time.
+fn validate_compaction_refs(
+    team: &Team,
+    agents: &[Agent],
+    workers: &[Worker],
+    cores: &[AiCore],
+    compactions: &[Compaction],
+) -> Result<(), ConfigError> {
+    let known: std::collections::HashMap<&str, &Compaction> =
+        compactions.iter().map(|c| (c.id.as_str(), c)).collect();
+    let resolve_core = |override_id: Option<&str>| -> Option<&AiCore> {
+        let id = override_id.or(team.default_ai_core.as_deref())?;
+        cores.iter().find(|c| c.id == id)
+    };
+    let check = |actor: &str,
+                 compaction_id: &str,
+                 core_override: Option<&str>|
+     -> Result<(), ConfigError> {
+        let Some(compaction) = known.get(compaction_id) else {
+            return Err(ConfigError::UnknownCompactionRef {
+                from: actor.to_string(),
+                to: compaction_id.to_string(),
+            });
+        };
+        if matches!(compaction.strategy, CompactionStrategy::Harness) {
+            // Only claude-code's CLI actually honours `/compact` when
+            // invoked via `-p` / non-interactive mode. Gemini and
+            // Copilot treat the literal string as a user prompt, so
+            // the model just responds "you invoked /compact" without
+            // any real compaction — better to reject at parse time.
+            let core_type = match resolve_core(core_override).map(|c| &c.kind) {
+                Some(AiCoreKind::ClaudeCode { .. }) => return Ok(()),
+                Some(AiCoreKind::CopilotCli { .. }) => "copilotCli",
+                Some(AiCoreKind::GeminiCli { .. }) => "geminiCli",
+                Some(AiCoreKind::AnthropicApi { .. }) => "anthropicApi",
+                Some(AiCoreKind::OpenAiApi { .. }) => "openAiApi",
+                // No core resolvable — treat as "unknown", let the
+                // core-ref validator surface a better error. Compaction
+                // validation stays conservative here.
+                None => return Ok(()),
+            };
+            return Err(ConfigError::CompactionHarnessUnsupportedCore {
+                id: compaction.id.clone(),
+                actor: actor.to_string(),
+                core_type: core_type.to_string(),
+            });
+        }
+        // Summarise may reference an ai_core for the summary pass; if
+        // so, it must resolve too.
+        if let CompactionStrategy::Summarise {
+            ai_core: Some(core_id),
+            ..
+        } = &compaction.strategy
+        {
+            if !cores.iter().any(|c| c.id == *core_id) {
+                return Err(ConfigError::UnknownAiCoreRef {
+                    from: compaction.id.clone(),
+                    attr: "ai_core".to_string(),
+                    to: core_id.clone(),
+                });
+            }
+        }
+        Ok(())
+    };
+    for a in agents {
+        if let Some(id) = &a.compaction {
+            check(&a.id, id, a.ai_core.as_deref())?;
+        }
+    }
+    for w in workers {
+        if let Some(id) = &w.compaction {
+            check(&w.id, id, w.ai_core.as_deref())?;
+        }
+    }
+    Ok(())
+}
+
 /// Every id in an agent's or worker's `can_create_workers` list must
 /// match a declared worker template.
 fn validate_worker_refs(agents: &[Agent], workers: &[Worker]) -> Result<(), ConfigError> {
@@ -862,6 +1052,27 @@ impl AciddogConfig {
     pub fn effective_ai_core(&self, override_id: Option<&str>) -> Option<&AiCore> {
         let id = override_id.or(self.team.default_ai_core.as_deref())?;
         self.ai_cores.iter().find(|c| c.id == id)
+    }
+
+    /// Look up a declared compaction policy by id.
+    pub fn compaction(&self, id: &str) -> Option<&Compaction> {
+        self.compactions.iter().find(|c| c.id == id)
+    }
+
+    /// Return the compaction policy attached to `actor_template_id`
+    /// (an agent config id, or a worker template id), if any. Returns
+    /// `None` when the actor is unknown, has no `compaction` attribute
+    /// declared, or the referenced policy was removed — callers should
+    /// fall back to the built-in `Drop` strategy.
+    pub fn compaction_for(&self, actor_template_id: &str) -> Option<&Compaction> {
+        let id = if let Some(a) = self.agents.iter().find(|a| a.id == actor_template_id) {
+            a.compaction.as_deref()?
+        } else if let Some(w) = self.workers.iter().find(|w| w.id == actor_template_id) {
+            w.compaction.as_deref()?
+        } else {
+            return None;
+        };
+        self.compaction(id)
     }
 }
 
@@ -1947,5 +2158,211 @@ mod tests {
     fn skills_for_unknown_actor_is_empty() {
         let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
         assert!(cfg.skills_for("ghost").is_empty());
+    }
+
+    #[test]
+    fn parses_all_four_compaction_strategies() {
+        let src = r#"
+            team default { description = "t" }
+            compaction just_harness { strategy = :harness }
+            compaction just_drop    { strategy = :drop }
+            compaction with_prompt  {
+                strategy = :promptAndDrop
+                prompt   = "final thoughts?"
+            }
+            compaction summary_pass {
+                strategy = :summarise
+                prompt   = "summarise"
+                ai_core  = "backup"
+            }
+            ai_core backup {
+                type = :anthropicApi
+                apiUrl = "https://x"
+                apiKeyEnv = "K"
+                model = "m"
+            }
+            agent alpha { role = "a" instructions = "b" }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.compactions.len(), 4);
+        assert!(matches!(
+            cfg.compaction("just_harness").unwrap().strategy,
+            CompactionStrategy::Harness
+        ));
+        assert!(matches!(
+            cfg.compaction("just_drop").unwrap().strategy,
+            CompactionStrategy::Drop
+        ));
+        match &cfg.compaction("with_prompt").unwrap().strategy {
+            CompactionStrategy::PromptAndDrop { prompt } => {
+                assert_eq!(prompt, "final thoughts?")
+            }
+            other => panic!("expected PromptAndDrop, got {other:?}"),
+        }
+        match &cfg.compaction("summary_pass").unwrap().strategy {
+            CompactionStrategy::Summarise { prompt, ai_core } => {
+                assert_eq!(prompt, "summarise");
+                assert_eq!(ai_core.as_deref(), Some("backup"));
+            }
+            other => panic!("expected Summarise, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_compaction_attribute_is_parsed() {
+        let src = r#"
+            team default { description = "t" }
+            compaction c { strategy = :drop }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                compaction = "c"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.agents[0].compaction.as_deref(), Some("c"));
+        let resolved = cfg.compaction_for("alpha").expect("resolves");
+        assert_eq!(resolved.id, "c");
+    }
+
+    #[test]
+    fn rejects_unknown_compaction_ref() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                compaction = "ghost"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownCompactionRef { from, to }
+                if from == "alpha" && to == "ghost"
+        ));
+    }
+
+    #[test]
+    fn rejects_harness_strategy_on_direct_api_core() {
+        let src = r#"
+            team default {
+                description = "t"
+                default_ai_core = "direct"
+            }
+            ai_core direct {
+                type = :anthropicApi
+                apiUrl = "https://x"
+                apiKeyEnv = "K"
+                model = "m"
+            }
+            compaction h { strategy = :harness }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                compaction = "h"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::CompactionHarnessUnsupportedCore { actor, core_type, .. }
+                if actor == "alpha" && core_type == "anthropicApi"
+        ));
+    }
+
+    #[test]
+    fn rejects_harness_strategy_on_gemini_cli_core() {
+        let src = r#"
+            team default {
+                description = "t"
+                default_ai_core = "g"
+            }
+            ai_core g { type = :geminiCli }
+            compaction h { strategy = :harness }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                compaction = "h"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::CompactionHarnessUnsupportedCore { actor, core_type, .. }
+                if actor == "alpha" && core_type == "geminiCli"
+        ));
+    }
+
+    #[test]
+    fn rejects_harness_strategy_on_copilot_cli_core() {
+        let src = r#"
+            team default {
+                description = "t"
+                default_ai_core = "c"
+            }
+            ai_core c { type = :copilotCli }
+            compaction h { strategy = :harness }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                compaction = "h"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::CompactionHarnessUnsupportedCore { actor, core_type, .. }
+                if actor == "alpha" && core_type == "copilotCli"
+        ));
+    }
+
+    #[test]
+    fn accepts_harness_strategy_on_claude_code_core() {
+        let src = r#"
+            team default {
+                description = "t"
+                default_ai_core = "cc"
+            }
+            ai_core cc { type = :claudeCode }
+            compaction h { strategy = :harness }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                compaction = "h"
+            }
+        "#;
+        parse_config(src, &dummy_path()).expect("claudeCode + harness is fine");
+    }
+
+    #[test]
+    fn rejects_summarise_with_unknown_ai_core() {
+        let src = r#"
+            team default { description = "t" }
+            compaction s {
+                strategy = :summarise
+                prompt   = "s"
+                ai_core  = "ghost"
+            }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                compaction = "s"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownAiCoreRef { attr, to, .. }
+                if attr == "ai_core" && to == "ghost"
+        ));
+    }
+
+    #[test]
+    fn compaction_for_unknown_actor_returns_none() {
+        let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
+        assert!(cfg.compaction_for("ghost").is_none());
+        // Known agent, no compaction attribute set.
+        assert!(cfg.compaction_for("alpha").is_none());
     }
 }

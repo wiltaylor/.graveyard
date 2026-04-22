@@ -4,6 +4,12 @@ pub enum CommandOutcome {
     Message(String),
     /// Terminate the TUI.
     Quit,
+    /// Run the target agent's configured compaction strategy (falling
+    /// back to `drop` when unconfigured).
+    Compact,
+    /// Unconditionally drop the target agent's session and re-seed
+    /// with the first-turn preamble.
+    Reset,
     /// Input didn't match any known command.
     Unknown { name: String, hint: String },
 }
@@ -25,9 +31,11 @@ pub fn dispatch(input: &str) -> Option<CommandOutcome> {
     let outcome = match name {
         "version" => CommandOutcome::Message(format!("aciddog v{}", env!("CARGO_PKG_VERSION"))),
         "exit" | "quit" => CommandOutcome::Quit,
+        "compact" => CommandOutcome::Compact,
+        "reset" => CommandOutcome::Reset,
         other => CommandOutcome::Unknown {
             name: other.to_string(),
-            hint: "try /version or /exit".to_string(),
+            hint: "try /version, /compact, /reset or /exit".to_string(),
         },
     };
     Some(outcome)
@@ -75,5 +83,15 @@ mod tests {
         // `/version extra words` still matches `version`.
         let out = dispatch("/version something").unwrap();
         assert!(matches!(out, CommandOutcome::Message(_)));
+    }
+
+    #[test]
+    fn compact_returns_compact_outcome() {
+        assert_eq!(dispatch("/compact"), Some(CommandOutcome::Compact));
+    }
+
+    #[test]
+    fn reset_returns_reset_outcome() {
+        assert_eq!(dispatch("/reset"), Some(CommandOutcome::Reset));
     }
 }

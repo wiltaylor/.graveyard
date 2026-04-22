@@ -56,7 +56,7 @@ const COPIED_TOAST_MS: u64 = 1500;
 /// `<variant> (<wcl-id>)` so the user can see both the runtime kind
 /// and which specific `ai_core` block in aciddog.wcl is backing this
 /// agent (e.g. `anthropic-api (z_ai)`).
-fn core_display_label(core: &AiCore) -> String {
+pub(super) fn core_display_label(core: &AiCore) -> String {
     let kind = match &core.kind {
         AiCoreKind::ClaudeCode { .. } => "claude-code",
         AiCoreKind::AnthropicApi { .. } => "anthropic-api",
@@ -69,7 +69,7 @@ fn core_display_label(core: &AiCore) -> String {
 
 /// Whether this core kind reports per-round token deltas (so we sum
 /// them) or cumulative session totals (so we replace).
-fn core_usage_mode(kind: &AiCoreKind) -> ContextUsageMode {
+pub(super) fn core_usage_mode(kind: &AiCoreKind) -> ContextUsageMode {
     match kind {
         AiCoreKind::AnthropicApi { .. } | AiCoreKind::OpenAiApi { .. } => ContextUsageMode::Add,
         AiCoreKind::ClaudeCode { .. }
@@ -103,7 +103,7 @@ fn shell_tool_name_for_core(core: &AiCore) -> Option<&'static str> {
 
 /// Whether an agent with this core and tool set must use the tag-based
 /// IPC protocol (because it has no shell tool to call the aciddog CLI).
-fn uses_tag_ipc(tools: &[String], core: &AiCore) -> bool {
+pub(super) fn uses_tag_ipc(tools: &[String], core: &AiCore) -> bool {
     match shell_tool_name_for_core(core) {
         Some(name) => !tools.iter().any(|t| t == name),
         None => true,
@@ -114,7 +114,7 @@ fn uses_tag_ipc(tools: &[String], core: &AiCore) -> bool {
 /// and (optionally) the tag-IPC socket. `resume` tells the factory to
 /// skip the first-turn preamble — used by `resurrect_worker` so a
 /// hibernated worker resumes cleanly.
-fn build_core(
+pub(super) fn build_core(
     core_cfg: &AiCore,
     session_id: Uuid,
     parts: PromptParts,
@@ -230,7 +230,11 @@ fn build_core(
 /// spawn. Each section is omitted when its allowlist is empty so an
 /// isolated agent gets only the team description. Agent and worker
 /// short `role` strings are looked up against `cfg`.
-fn build_team_block(cfg: &AciddogConfig, contactable: &[&str], creatable: &[&str]) -> String {
+pub(super) fn build_team_block(
+    cfg: &AciddogConfig,
+    contactable: &[&str],
+    creatable: &[&str],
+) -> String {
     let mut out = String::new();
     out.push_str(&format!("Team: {}\n", cfg.team.description));
 
@@ -354,7 +358,7 @@ fn format_memory_links(id: uuid::Uuid, links: &[crate::memory::Link]) -> String 
 /// line per bank the actor is allowed to read/write, with the bank's
 /// description. Returns `None` when the actor has zero banks so the
 /// `<memory>` tag is omitted cleanly.
-fn build_memory_block(cfg: &AciddogConfig, actor_id: &str) -> Option<String> {
+pub(super) fn build_memory_block(cfg: &AciddogConfig, actor_id: &str) -> Option<String> {
     let banks = cfg.memory_banks_for(actor_id);
     if banks.is_empty() {
         return None;
@@ -841,6 +845,10 @@ pub struct AgentChat {
     /// tick. Invalidated in `render_agent_chat` when width, height,
     /// block index, or a cheap content fingerprint changes.
     pub anchor_scratch: Option<super::blocks::AnchorScratch>,
+    /// Compaction work queued up while the current turn finishes. Set
+    /// by `promptAndDrop` after the final prompt is enqueued; consumed
+    /// in `handle_ai_event` on `TurnResult` to trigger teardown.
+    pub pending_compaction: Option<super::compaction::PendingCompaction>,
 }
 
 /// How an agent's running token total should incorporate each new
@@ -865,11 +873,30 @@ impl Default for ContextUsageMode {
 }
 
 impl AgentChat {
-    fn push_block(&mut self, block: ChatBlock) -> usize {
+    pub(super) fn push_block(&mut self, block: ChatBlock) -> usize {
         let idx = self.blocks.len();
         self.blocks.push(block);
         self.sticky_bottom = true;
         idx
+    }
+
+    /// Trim the chat back to the opening `AgentInfo` block (if any),
+    /// append a `system_info` marker explaining the compaction, and
+    /// reset scroll/selection so the user sees the fresh start. Used
+    /// by every compaction strategy.
+    pub(super) fn reset_to_init(&mut self, note: impl Into<String>) {
+        let keep = self
+            .blocks
+            .iter()
+            .position(|b| matches!(b, ChatBlock::AgentInfo { .. }))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        self.blocks.truncate(keep);
+        self.tool_index.clear();
+        self.selected_block = None;
+        self.anchor_scratch = None;
+        self.sticky_bottom = true;
+        self.push_block(ChatBlock::system_info(note.into()));
     }
 
     /// Fold a fresh `TurnUsage` into the running session totals,
@@ -1269,6 +1296,10 @@ pub struct App {
     /// only when at least one chat is `Working`, so idle terminals don't
     /// redraw.
     pub frame_tick: u64,
+    /// Sender for results produced by background compaction tasks
+    /// (currently just the summarise strategy). Populated by `run`
+    /// alongside `ai_tx`; drained in `event_loop`.
+    pub compaction_tx: Option<mpsc::Sender<super::compaction::CompactionEvent>>,
 }
 
 /// Time window for detecting a double-click. Matches the typical
@@ -1329,6 +1360,7 @@ impl App {
             tasks_screen: TasksScreen::default(),
             last_click: None,
             frame_tick: 0,
+            compaction_tx: None,
         }
     }
 
@@ -1601,6 +1633,13 @@ impl App {
                 if chat.status == AgentStatus::Working {
                     chat.status = AgentStatus::Ready;
                     chat.end_working();
+                }
+                // `promptAndDrop` and `summarise` may have queued a
+                // teardown to run once the current turn completes.
+                // Early-return so the `chat` borrow ends before we
+                // call back into `self`.
+                if chat.pending_compaction.is_some() {
+                    self.finish_pending_compaction(idx);
                 }
             }
             AIEvent::Error { message, .. } => {
@@ -3630,6 +3669,12 @@ impl App {
                 info!("quit requested via /exit");
                 self.should_quit = true;
             }
+            CommandOutcome::Compact => {
+                self.begin_compaction(idx, false);
+            }
+            CommandOutcome::Reset => {
+                self.begin_compaction(idx, true);
+            }
             CommandOutcome::Unknown { name, hint } => {
                 if let Some(chat) = self.chats.get_mut(idx) {
                     chat.push_block(ChatBlock::system_warn(format!(
@@ -5329,6 +5374,9 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     // the socket side has backpressure.
     let (ai_tx, ai_rx) = mpsc::channel::<(usize, AIEvent)>(256);
     app.ai_tx = Some(ai_tx.clone());
+    let (compaction_tx, mut compaction_rx) =
+        mpsc::channel::<super::compaction::CompactionEvent>(16);
+    app.compaction_tx = Some(compaction_tx);
     let all_ids: Vec<String> = app.config.agents.iter().map(|a| a.id.clone()).collect();
     for (idx, agent) in app.config.agents.iter().enumerate() {
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
@@ -5443,7 +5491,14 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     // either when a new worker's `run_core` captures it, or when the
     // event loop exits and `App` is dropped.
 
-    let result = event_loop(&mut terminal, &mut app, ai_rx, &mut socket.events).await;
+    let result = event_loop(
+        &mut terminal,
+        &mut app,
+        ai_rx,
+        &mut socket.events,
+        &mut compaction_rx,
+    )
+    .await;
 
     execute!(
         terminal.backend_mut(),
@@ -5457,7 +5512,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     result
 }
 
-async fn run_core(
+pub(super) async fn run_core(
     idx: usize,
     mut core: Box<dyn AICore>,
     mut user_rx: mpsc::UnboundedReceiver<String>,
@@ -5502,6 +5557,7 @@ async fn event_loop<B: ratatui::backend::Backend>(
     app: &mut App,
     mut ai_rx: mpsc::Receiver<(usize, AIEvent)>,
     socket_rx: &mut mpsc::Receiver<AgentSocketEvent>,
+    compaction_rx: &mut mpsc::Receiver<super::compaction::CompactionEvent>,
 ) -> Result<()> {
     let mut events = EventStream::new();
     terminal.draw(|f| ui::render(f, app))?;
@@ -5546,6 +5602,9 @@ async fn event_loop<B: ratatui::backend::Backend>(
             }
             Some(event) = socket_rx.recv() => {
                 app.handle_agent_socket_event(event);
+            }
+            Some(comp_ev) = compaction_rx.recv() => {
+                app.handle_compaction_event(comp_ev);
             }
             _ = spinner_tick.tick() => {
                 // Only redraw when something is actually animating.
@@ -5614,6 +5673,7 @@ mod tests {
                     ai_core: None,
                     memory_banks: None,
                     skills: None,
+                    compaction: None,
                 },
                 Agent {
                     id: "b".into(),
@@ -5627,6 +5687,7 @@ mod tests {
                     ai_core: None,
                     memory_banks: None,
                     skills: None,
+                    compaction: None,
                 },
                 Agent {
                     id: "c".into(),
@@ -5640,6 +5701,7 @@ mod tests {
                     ai_core: None,
                     memory_banks: None,
                     skills: None,
+                    compaction: None,
                 },
             ],
             workers: vec![],
@@ -5651,6 +5713,7 @@ mod tests {
                 },
             }],
             memory_banks: vec![],
+            compactions: vec![],
             thinking_messages: vec!["thinking".into()],
         }
     }
@@ -7017,6 +7080,7 @@ mod tests {
                     ai_core: None,
                     memory_banks: None,
                     skills: None,
+                    compaction: None,
                 },
                 Agent {
                     id: "planner".into(),
@@ -7030,6 +7094,7 @@ mod tests {
                     ai_core: None,
                     memory_banks: None,
                     skills: None,
+                    compaction: None,
                 },
             ],
             workers: vec![
@@ -7044,6 +7109,7 @@ mod tests {
                     ai_core: None,
                     memory_banks: None,
                     skills: None,
+                    compaction: None,
                 },
                 Worker {
                     id: "fetcher".into(),
@@ -7056,6 +7122,7 @@ mod tests {
                     ai_core: None,
                     memory_banks: None,
                     skills: None,
+                    compaction: None,
                 },
             ],
             ai_cores: vec![crate::config::AiCore {
@@ -7066,6 +7133,7 @@ mod tests {
                 },
             }],
             memory_banks: vec![],
+            compactions: vec![],
             thinking_messages: vec!["thinking".into()],
         }
     }

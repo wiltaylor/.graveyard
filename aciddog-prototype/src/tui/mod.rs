@@ -2,6 +2,7 @@ mod app;
 mod blocks;
 mod clipboard;
 mod commands;
+mod compaction;
 mod diff;
 mod markdown;
 mod tasks_view;
