@@ -34,11 +34,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.layout.memory_link_rows.clear();
     app.layout.memory_modal_outer = None;
 
-    // Input height: in Chat view, grow from 3 to 7 rows (1–5 usable +
-    // 2 for borders) based on the wrapped line count of the current
-    // chat's input buffer. Tasks view keeps the fixed 3 rows so
-    // `render_tasks_input` is unaffected. Channel view uses the same
-    // fixed 3 rows as Tasks — the channel input is one-line-ish for v1.
+    // Input height: in Chat and Channel views, grow from 3 to 7 rows
+    // (1–5 usable + 2 for borders) based on the wrapped line count of
+    // the current input buffer. Tasks / Memory keep the fixed 3 rows
+    // so their bottom-bar hints stay on a single row.
     let input_rows = match app.active_view {
         ActiveView::Chat => {
             let inner_width = f.area().width.saturating_sub(2);
@@ -51,8 +50,19 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 .unwrap_or(1);
             usable + 2
         }
+        ActiveView::Channel(idx) => {
+            let inner_width = f.area().width.saturating_sub(2);
+            let usable = app
+                .channels
+                .get(idx)
+                .map(|ch| {
+                    let rows = super::app::input_visual_rows(ch, inner_width);
+                    (rows.len() as u16).clamp(1, 5)
+                })
+                .unwrap_or(1);
+            usable + 2
+        }
         ActiveView::Tasks => 3,
-        ActiveView::Channel(_) => 3,
         ActiveView::Memory => 3,
     };
 
@@ -825,13 +835,14 @@ fn render_chat_input(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     inner
 }
 
-/// Input box rendered under a channel view. Simpler than the
-/// agent-chat input — single-line feel with a caret and an obvious
-/// placeholder. Multi-line input is still possible via Shift+Enter
-/// but we don't grow the box for v1.
-fn render_channel_input(f: &mut Frame, area: Rect, app: &App, idx: usize) -> Rect {
+/// Multi-line input box for a channel view. Mirrors the agent-chat
+/// input: word-wraps to the box width, injects a caret span, grows
+/// 3→7 rows, and shows a scrollbar when the buffer overflows the
+/// visible window. The buffer caches its wrap width and visible row
+/// count so key handlers stay in sync with what's rendered.
+fn render_channel_input(f: &mut Frame, area: Rect, app: &mut App, idx: usize) -> Rect {
     let focused = app.focus == Focus::Chat;
-    let Some(ch) = app.channels.get(idx) else {
+    let Some(ch) = app.channels.get_mut(idx) else {
         let block = Block::default().borders(Borders::ALL).title(" input ");
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -844,6 +855,11 @@ fn render_channel_input(f: &mut Frame, area: Rect, app: &App, idx: usize) -> Rec
         .border_style(focus_border_style(focused));
     let inner = block.inner(area);
 
+    // Cache the layout so the key handlers wrap the buffer the same
+    // way the renderer does.
+    ch.input_wrap_width = inner.width;
+    ch.input_visible_rows = inner.height;
+
     if !focused && ch.input.is_empty() {
         let placeholder = Line::from(Span::styled(
             "click here or press Tab to talk in the channel",
@@ -855,23 +871,68 @@ fn render_channel_input(f: &mut Frame, area: Rect, app: &App, idx: usize) -> Rec
         return inner;
     }
 
-    // Single-line caret injection. Build a Line by splitting the
-    // input at the byte cursor.
-    let (before, after) = ch.input.split_at(ch.input_cursor.min(ch.input.len()));
-    let mut spans = vec![Span::raw(before.to_string())];
-    if focused {
-        spans.push(Span::styled(
-            "▏",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
+    let rows = super::app::input_visual_rows(ch, inner.width);
+    let total = rows.len() as u16;
+    let visible = inner.height.max(1);
+    let max_scroll = total.saturating_sub(visible);
+    if ch.input_scroll > max_scroll {
+        ch.input_scroll = max_scroll;
     }
-    spans.push(Span::raw(after.to_string()));
-    let para = Paragraph::new(Line::from(spans))
-        .block(block)
-        .wrap(Wrap { trim: false });
+    let scroll = ch.input_scroll;
+
+    let (cursor_row, _cursor_row_start, cursor_col) =
+        super::app::input_cursor_visual(ch, inner.width);
+
+    let first = scroll as usize;
+    let last = (first + visible as usize).min(rows.len());
+    let mut lines: Vec<Line> = Vec::with_capacity(last - first);
+    for (i, &(r_start, r_end)) in rows[first..last].iter().enumerate() {
+        let row_idx = first + i;
+        let row_text = &ch.input[r_start..r_end];
+        if focused && row_idx == cursor_row {
+            let char_count = row_text.chars().count();
+            let caret_col = cursor_col.min(char_count);
+            let caret_byte: usize = row_text
+                .char_indices()
+                .nth(caret_col)
+                .map(|(off, _)| off)
+                .unwrap_or(row_text.len());
+            let before = &row_text[..caret_byte];
+            let after = &row_text[caret_byte..];
+            lines.push(Line::from(vec![
+                Span::raw(before.to_string()),
+                Span::styled(
+                    "▏",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(after.to_string()),
+            ]));
+        } else {
+            lines.push(Line::from(Span::raw(row_text.to_string())));
+        }
+    }
+
+    let para = Paragraph::new(lines).block(block);
     f.render_widget(para, area);
+
+    if total > visible {
+        let mut sb_state = ScrollbarState::new(total as usize)
+            .viewport_content_length(visible as usize)
+            .position(scroll as usize);
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        let sb_area = Rect {
+            x: area.x + area.width.saturating_sub(1),
+            y: inner.y,
+            width: 1,
+            height: inner.height,
+        };
+        f.render_stateful_widget(sb, sb_area, &mut sb_state);
+    }
+
     inner
 }
 

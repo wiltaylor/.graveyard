@@ -903,10 +903,12 @@ pub struct ChannelState {
     #[allow(dead_code)]
     pub anchor_scratch: Option<super::blocks::AnchorScratch>,
     pub input_scroll: u16,
-    /// Reserved for future multi-line channel input rendering.
-    #[allow(dead_code)]
+    /// Cached wrap width from the last render. Key handlers read this
+    /// so cursor-move/scroll math stays consistent with what's on
+    /// screen. Zero until the first frame.
     pub input_wrap_width: u16,
-    #[allow(dead_code)]
+    /// Cached visible row count from the last render. Used for scroll
+    /// clamping. Zero until the first frame.
     pub input_visible_rows: u16,
     /// Append-only writer for this channel's JSONL file. `None` only
     /// in tests — the real TUI always supplies one via `tui::run`.
@@ -1269,169 +1271,232 @@ fn advance_chars(s: &str, from: usize, count: usize, cap: usize) -> usize {
     cap
 }
 
+/// Abstracts over the two compose buffers we maintain (the per-agent
+/// chat input and the per-channel input) so all the wrap-aware
+/// helpers below — insert, backspace, caret navigation, scroll
+/// clamping — can share the exact same logic. Both renderers cache
+/// the wrap width and visible-row count they used on the last frame;
+/// the key handlers read those back so their math matches what's on
+/// screen.
+pub(crate) trait TextInput {
+    fn buf(&self) -> &str;
+    fn buf_mut(&mut self) -> &mut String;
+    fn cursor(&self) -> usize;
+    fn set_cursor(&mut self, c: usize);
+    fn scroll(&self) -> u16;
+    fn set_scroll(&mut self, s: u16);
+    fn wrap_width_cached(&self) -> u16;
+    fn visible_rows_cached(&self) -> u16;
+}
+
+impl TextInput for AgentChat {
+    fn buf(&self) -> &str {
+        &self.input
+    }
+    fn buf_mut(&mut self) -> &mut String {
+        &mut self.input
+    }
+    fn cursor(&self) -> usize {
+        self.input_cursor
+    }
+    fn set_cursor(&mut self, c: usize) {
+        self.input_cursor = c;
+    }
+    fn scroll(&self) -> u16 {
+        self.input_scroll
+    }
+    fn set_scroll(&mut self, s: u16) {
+        self.input_scroll = s;
+    }
+    fn wrap_width_cached(&self) -> u16 {
+        self.input_wrap_width
+    }
+    fn visible_rows_cached(&self) -> u16 {
+        self.input_visible_rows
+    }
+}
+
+impl TextInput for ChannelState {
+    fn buf(&self) -> &str {
+        &self.input
+    }
+    fn buf_mut(&mut self) -> &mut String {
+        &mut self.input
+    }
+    fn cursor(&self) -> usize {
+        self.input_cursor
+    }
+    fn set_cursor(&mut self, c: usize) {
+        self.input_cursor = c;
+    }
+    fn scroll(&self) -> u16 {
+        self.input_scroll
+    }
+    fn set_scroll(&mut self, s: u16) {
+        self.input_scroll = s;
+    }
+    fn wrap_width_cached(&self) -> u16 {
+        self.input_wrap_width
+    }
+    fn visible_rows_cached(&self) -> u16 {
+        self.input_visible_rows
+    }
+}
+
+/// Wrap the input buffer and return one `(start, end)` byte span per
+/// visual row. Accepts any [`TextInput`] so the renderer can use it
+/// without caring whether it's an agent chat or a channel compose
+/// buffer.
+pub(crate) fn input_visual_rows(input: &dyn TextInput, width: u16) -> Vec<(usize, usize)> {
+    wrap_rows(input.buf(), width)
+}
+
+/// Byte offset at the start of the caret's current visual row plus
+/// the caret's column (in chars) within that row. Mirrors
+/// [`AgentChat::input_cursor_visual`] but works on any [`TextInput`].
+pub(crate) fn input_cursor_visual(
+    input: &dyn TextInput,
+    width: u16,
+) -> (usize, usize, usize) {
+    let rows = wrap_rows(input.buf(), width);
+    if rows.is_empty() {
+        return (0, 0, 0);
+    }
+    let cursor = input.cursor().min(input.buf().len());
+    let mut row_idx = 0;
+    for (i, &(start, end)) in rows.iter().enumerate() {
+        if cursor >= start && cursor <= end {
+            row_idx = i;
+            if cursor == end && i + 1 < rows.len() && rows[i + 1].0 == end {
+                row_idx = i + 1;
+            }
+            break;
+        }
+        if i == rows.len() - 1 {
+            row_idx = i;
+        }
+    }
+    let (row_start, _) = rows[row_idx];
+    let col = input.buf()[row_start..cursor].chars().count();
+    (row_idx, row_start, col)
+}
+
 /// Effective wrap width to use in key-handling. Falls back to a sane
 /// default when the input hasn't been rendered yet (e.g. during tests).
-fn effective_input_wrap_width(chat: &AgentChat) -> u16 {
-    if chat.input_wrap_width > 0 {
-        chat.input_wrap_width
+fn effective_input_wrap_width(input: &dyn TextInput) -> u16 {
+    if input.wrap_width_cached() > 0 {
+        input.wrap_width_cached()
     } else {
         u16::MAX
     }
 }
 
-/// Visible input rows. Mirrors `input_wrap_width`: if unset, fall back
-/// to the 5-row cap we plan to grow to so scroll math works in tests.
-fn effective_input_visible_rows(chat: &AgentChat) -> u16 {
-    if chat.input_visible_rows > 0 {
-        chat.input_visible_rows
+/// Visible input rows. Mirrors [`effective_input_wrap_width`]: if
+/// unset, fall back to the 5-row cap so scroll math works in tests.
+fn effective_input_visible_rows(input: &dyn TextInput) -> u16 {
+    if input.visible_rows_cached() > 0 {
+        input.visible_rows_cached()
     } else {
         5
     }
 }
 
-/// Minimal input editing for a channel's compose buffer. Channels
-/// don't yet support the full wrap-aware navigation agent chats have
-/// (up/down through visual rows, home/end on a wrapped row); this
-/// first pass just handles insert, backspace, char-level L/R, and
-/// clear. The channel input box is one line at a time in the TUI —
-/// users can still type newlines via Shift+Enter, they just don't
-/// get wrap-aware line navigation.
-fn channel_input_insert(ch_state: &mut ChannelState, ch: char) {
-    let idx = ch_state.input_cursor.min(ch_state.input.len());
-    ch_state.input.insert(idx, ch);
-    ch_state.input_cursor = idx + ch.len_utf8();
+fn input_insert(input: &mut dyn TextInput, ch: char) {
+    let idx = input.cursor().min(input.buf().len());
+    input.buf_mut().insert(idx, ch);
+    input.set_cursor(idx + ch.len_utf8());
+    clamp_input_scroll(input);
 }
 
-fn channel_input_backspace(ch_state: &mut ChannelState) {
-    if ch_state.input_cursor == 0 {
+fn input_backspace(input: &mut dyn TextInput) {
+    let cursor = input.cursor();
+    if cursor == 0 {
         return;
     }
-    let mut prev = ch_state.input_cursor - 1;
-    while prev > 0 && !ch_state.input.is_char_boundary(prev) {
+    let mut prev = cursor - 1;
+    while prev > 0 && !input.buf().is_char_boundary(prev) {
         prev -= 1;
     }
-    ch_state.input.replace_range(prev..ch_state.input_cursor, "");
-    ch_state.input_cursor = prev;
+    input.buf_mut().replace_range(prev..cursor, "");
+    input.set_cursor(prev);
+    clamp_input_scroll(input);
 }
 
-fn channel_input_cursor_left(ch_state: &mut ChannelState) {
-    if ch_state.input_cursor == 0 {
-        return;
-    }
-    let mut prev = ch_state.input_cursor - 1;
-    while prev > 0 && !ch_state.input.is_char_boundary(prev) {
-        prev -= 1;
-    }
-    ch_state.input_cursor = prev;
-}
-
-fn channel_input_cursor_right(ch_state: &mut ChannelState) {
-    if ch_state.input_cursor >= ch_state.input.len() {
-        return;
-    }
-    let mut next = ch_state.input_cursor + 1;
-    while next < ch_state.input.len() && !ch_state.input.is_char_boundary(next) {
-        next += 1;
-    }
-    ch_state.input_cursor = next;
-}
-
-fn channel_reset_input(ch_state: &mut ChannelState) {
-    ch_state.input.clear();
-    ch_state.input_cursor = 0;
-    ch_state.input_scroll = 0;
-}
-
-fn input_insert(chat: &mut AgentChat, ch: char) {
-    let idx = chat.input_cursor.min(chat.input.len());
-    chat.input.insert(idx, ch);
-    chat.input_cursor = idx + ch.len_utf8();
-    clamp_input_scroll(chat);
-}
-
-fn input_backspace(chat: &mut AgentChat) {
-    if chat.input_cursor == 0 {
-        return;
-    }
-    let mut prev = chat.input_cursor - 1;
-    while prev > 0 && !chat.input.is_char_boundary(prev) {
-        prev -= 1;
-    }
-    chat.input.replace_range(prev..chat.input_cursor, "");
-    chat.input_cursor = prev;
-    clamp_input_scroll(chat);
-}
-
-fn input_move_char(chat: &mut AgentChat, delta: i32) {
+fn input_move_char(input: &mut dyn TextInput, delta: i32) {
+    let cursor = input.cursor();
     if delta < 0 {
-        if chat.input_cursor == 0 {
+        if cursor == 0 {
             return;
         }
-        let mut prev = chat.input_cursor - 1;
-        while prev > 0 && !chat.input.is_char_boundary(prev) {
+        let mut prev = cursor - 1;
+        while prev > 0 && !input.buf().is_char_boundary(prev) {
             prev -= 1;
         }
-        chat.input_cursor = prev;
+        input.set_cursor(prev);
     } else if delta > 0 {
-        if chat.input_cursor >= chat.input.len() {
+        let len = input.buf().len();
+        if cursor >= len {
             return;
         }
-        let mut next = chat.input_cursor + 1;
-        while next < chat.input.len() && !chat.input.is_char_boundary(next) {
+        let mut next = cursor + 1;
+        while next < len && !input.buf().is_char_boundary(next) {
             next += 1;
         }
-        chat.input_cursor = next;
+        input.set_cursor(next);
     }
-    clamp_input_scroll(chat);
+    clamp_input_scroll(input);
 }
 
-fn input_move_line(chat: &mut AgentChat, delta: i32) {
-    let width = effective_input_wrap_width(chat);
-    let rows = chat.input_visual_rows(width);
-    let (row_idx, _row_start, col) = chat.input_cursor_visual(width);
+fn input_move_line(input: &mut dyn TextInput, delta: i32) {
+    let width = effective_input_wrap_width(input);
+    let rows = wrap_rows(input.buf(), width);
+    let (row_idx, _row_start, col) = input_cursor_visual(input, width);
     let target_row = (row_idx as i32 + delta).clamp(0, rows.len() as i32 - 1) as usize;
     if target_row == row_idx {
         return;
     }
     let (t_start, t_end) = rows[target_row];
-    chat.input_cursor = advance_chars(&chat.input, t_start, col, t_end);
-    clamp_input_scroll(chat);
+    let new_cursor = advance_chars(input.buf(), t_start, col, t_end);
+    input.set_cursor(new_cursor);
+    clamp_input_scroll(input);
 }
 
-fn input_move_to_row_start(chat: &mut AgentChat) {
-    let width = effective_input_wrap_width(chat);
-    let (_row_idx, row_start, _col) = chat.input_cursor_visual(width);
-    chat.input_cursor = row_start;
-    clamp_input_scroll(chat);
+fn input_move_to_row_start(input: &mut dyn TextInput) {
+    let width = effective_input_wrap_width(input);
+    let (_row_idx, row_start, _col) = input_cursor_visual(input, width);
+    input.set_cursor(row_start);
+    clamp_input_scroll(input);
 }
 
-fn input_move_to_row_end(chat: &mut AgentChat) {
-    let width = effective_input_wrap_width(chat);
-    let rows = chat.input_visual_rows(width);
-    let (row_idx, _row_start, _col) = chat.input_cursor_visual(width);
+fn input_move_to_row_end(input: &mut dyn TextInput) {
+    let width = effective_input_wrap_width(input);
+    let rows = wrap_rows(input.buf(), width);
+    let (row_idx, _row_start, _col) = input_cursor_visual(input, width);
     if let Some(&(_, end)) = rows.get(row_idx) {
-        chat.input_cursor = end;
+        input.set_cursor(end);
     }
-    clamp_input_scroll(chat);
+    clamp_input_scroll(input);
 }
 
-/// Keep `input_scroll` such that the cursor's visual row is visible.
-fn clamp_input_scroll(chat: &mut AgentChat) {
-    let width = effective_input_wrap_width(chat);
-    let visible = effective_input_visible_rows(chat).max(1);
-    let rows = chat.input_visual_rows(width);
+/// Keep `scroll` such that the cursor's visual row is visible.
+fn clamp_input_scroll(input: &mut dyn TextInput) {
+    let width = effective_input_wrap_width(input);
+    let visible = effective_input_visible_rows(input).max(1);
+    let rows = wrap_rows(input.buf(), width);
     let total = rows.len() as u16;
-    let (row_idx, _, _) = chat.input_cursor_visual(width);
+    let (row_idx, _, _) = input_cursor_visual(input, width);
     let row_idx = row_idx as u16;
-    if row_idx < chat.input_scroll {
-        chat.input_scroll = row_idx;
-    } else if row_idx >= chat.input_scroll + visible {
-        chat.input_scroll = row_idx + 1 - visible;
+    let mut scroll = input.scroll();
+    if row_idx < scroll {
+        scroll = row_idx;
+    } else if row_idx >= scroll + visible {
+        scroll = row_idx + 1 - visible;
     }
     let max_scroll = total.saturating_sub(visible);
-    if chat.input_scroll > max_scroll {
-        chat.input_scroll = max_scroll;
+    if scroll > max_scroll {
+        scroll = max_scroll;
     }
+    input.set_scroll(scroll);
 }
 
 pub struct App {
@@ -6239,16 +6304,16 @@ impl App {
         }
     }
 
-    /// Simplified channel-input key handler. No Alt+block selection,
-    /// no wrap-aware up/down — channel composing is a single-line
-    /// feel for v1. Shift+Enter still inserts a literal newline, so
-    /// users who need a multi-line post aren't blocked.
+    /// Channel-input key handler. Mirrors `handle_key_chat` for the
+    /// per-channel compose buffer: wrap-aware up/down, row-start/end,
+    /// Shift+Enter newline. No Alt+block selection since channel
+    /// transcripts don't have collapsible blocks yet.
     fn handle_key_channel_chat(&mut self, idx: usize, code: KeyCode, mods: KeyModifiers) {
         let is_newline = (matches!(code, KeyCode::Enter) && mods.contains(KeyModifiers::SHIFT))
             || (matches!(code, KeyCode::Char('j')) && mods.contains(KeyModifiers::CONTROL));
         if is_newline {
             if let Some(ch) = self.channels.get_mut(idx) {
-                channel_input_insert(ch, '\n');
+                input_insert(ch, '\n');
             }
             return;
         }
@@ -6257,22 +6322,42 @@ impl App {
             KeyCode::Enter => self.submit_channel_input(idx),
             KeyCode::Backspace => {
                 if let Some(ch) = self.channels.get_mut(idx) {
-                    channel_input_backspace(ch);
+                    input_backspace(ch);
                 }
             }
             KeyCode::Left => {
                 if let Some(ch) = self.channels.get_mut(idx) {
-                    channel_input_cursor_left(ch);
+                    input_move_char(ch, -1);
                 }
             }
             KeyCode::Right => {
                 if let Some(ch) = self.channels.get_mut(idx) {
-                    channel_input_cursor_right(ch);
+                    input_move_char(ch, 1);
+                }
+            }
+            KeyCode::Up => {
+                if let Some(ch) = self.channels.get_mut(idx) {
+                    input_move_line(ch, -1);
+                }
+            }
+            KeyCode::Down => {
+                if let Some(ch) = self.channels.get_mut(idx) {
+                    input_move_line(ch, 1);
+                }
+            }
+            KeyCode::Home => {
+                if let Some(ch) = self.channels.get_mut(idx) {
+                    input_move_to_row_start(ch);
+                }
+            }
+            KeyCode::End => {
+                if let Some(ch) = self.channels.get_mut(idx) {
+                    input_move_to_row_end(ch);
                 }
             }
             KeyCode::Char(c) => {
                 if let Some(ch) = self.channels.get_mut(idx) {
-                    channel_input_insert(ch, c);
+                    input_insert(ch, c);
                 }
             }
             _ => {}
@@ -6291,7 +6376,9 @@ impl App {
                 return;
             }
             let content = trimmed.to_string();
-            channel_reset_input(ch);
+            ch.input.clear();
+            ch.input_cursor = 0;
+            ch.input_scroll = 0;
             content
         };
         self.handle_local_channel_input(idx, content);
