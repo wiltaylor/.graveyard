@@ -10,6 +10,7 @@ use ratatui::Frame;
 
 use super::app::{format_task_detail, ActiveView, AgentStatus, App, Focus, VIEW_ENTRIES};
 use super::blocks::{block_fingerprint, AnchorScratch, ChatButton, ScrollAnchor};
+use super::cores_view::{agents_using_core, format_usage_cell, is_team_default, CoreRow};
 use super::memory_view::{
     BankFocus, LinkPickerFocus, LinksOverlay, MemoryStage, NoteDetail, NoteField, NoteForm,
 };
@@ -64,6 +65,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         }
         ActiveView::Tasks => 3,
         ActiveView::Memory => 3,
+        ActiveView::Cores => 3,
         ActiveView::WorkflowForm { .. } | ActiveView::WorkflowInstance { .. } => 3,
     };
 
@@ -146,6 +148,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ActiveView::Tasks => render_tasks_screen(f, main_area, app),
         ActiveView::Channel(idx) => render_channel_chat(f, main_area, app, idx),
         ActiveView::Memory => render_memory_screen(f, main_area, app),
+        ActiveView::Cores => render_cores_screen(f, main_area, app),
         ActiveView::WorkflowForm { workflow_idx } => {
             render_workflow_form(f, main_area, app, workflow_idx)
         }
@@ -1035,6 +1038,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             ActiveView::WorkflowForm { .. } => "workflow form",
             _ => "workflow",
         },
+        Focus::Cores => "cores",
     };
     let mut hint_spans: Vec<Span> = match app.focus {
         Focus::Agents => vec![
@@ -1185,6 +1189,22 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("esc", Style::default().fg(Color::Cyan)),
             Span::raw(" back"),
         ],
+        Focus::Cores => vec![
+            Span::styled(" focus: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                focus_label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("j/k", Style::default().fg(Color::Cyan)),
+            Span::raw(" nav  "),
+            Span::styled("r", Style::default().fg(Color::Cyan)),
+            Span::raw(" refresh  "),
+            Span::styled("esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" back"),
+        ],
     };
 
     if app.copied_recently() {
@@ -1217,7 +1237,9 @@ fn render_views_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
         .map(|(i, name)| {
             let active = matches!(
                 (*name, app.active_view),
-                ("Tasks", ActiveView::Tasks) | ("Memory", ActiveView::Memory),
+                ("Tasks", ActiveView::Tasks)
+                    | ("Memory", ActiveView::Memory)
+                    | ("Cores", ActiveView::Cores),
             );
             // Persistent highlight on the currently-displayed view so
             // clicking it gives visible feedback even once focus
@@ -1406,6 +1428,210 @@ fn render_tasks_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     f.render_stateful_widget(list, inner, &mut state);
 
     inner
+}
+
+fn render_cores_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
+    let focused = app.focus == Focus::Cores;
+
+    // Empty-config short-circuit: single block, no detail panel.
+    if app.cores_screen.rows.is_empty() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" cores ")
+            .border_style(focus_border_style(focused));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let p = Paragraph::new("No ai_core blocks configured.")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(p, inner);
+        app.layout.cores_list_inner = Some(inner);
+        return inner;
+    }
+
+    app.cores_screen.reclamp();
+
+    // Split main area: list on top, detail panel on bottom. Detail
+    // panel height scales with number of agents shown (capped).
+    let selected_row = app.cores_screen.rows.get(app.cores_screen.cursor);
+    let agents = selected_row
+        .map(|row| agents_using_core(&app.config, &row.id))
+        .unwrap_or_default();
+    let agent_rows = agents.len().min(6) as u16;
+    // borders (2) + "Used by:" header (1) + rows (0..=6)
+    let detail_height = (3 + agent_rows.max(1)).clamp(5, 10);
+
+    let split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(5), Constraint::Length(detail_height)])
+        .split(area);
+    let list_area = split[0];
+    let detail_area = split[1];
+
+    let list_inner = render_cores_list(f, list_area, app, focused);
+    render_cores_detail(f, detail_area, app, selected_row, &agents);
+
+    app.layout.cores_list_inner = Some(list_inner);
+    list_inner
+}
+
+fn render_cores_list(f: &mut Frame, area: Rect, app: &App, focused: bool) -> Rect {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" cores ")
+        .border_style(focus_border_style(focused));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let pending = app.cores_screen.pending > 0;
+
+    let header = Line::from(vec![
+        Span::styled(
+            format!("{:<18}", "ID"),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{:<14}", "TYPE"),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{:<22}", "CREDENTIAL"),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{:<12}", "PROVIDER"),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "USAGE",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    let mut items: Vec<ListItem> = Vec::with_capacity(app.cores_screen.rows.len() + 1);
+    items.push(ListItem::new(header));
+
+    for (i, row) in app.cores_screen.rows.iter().enumerate() {
+        let selected = i == app.cores_screen.cursor;
+        items.push(render_core_row(
+            row,
+            app.cores_screen.usage.get(&row.id),
+            pending,
+            selected,
+        ));
+    }
+
+    let list = List::new(items);
+    let mut state = ListState::default();
+    // Cursor maps to header (0) + one line per row.
+    let cursor_line = 1 + app.cores_screen.cursor;
+    state.select(Some(cursor_line));
+    f.render_stateful_widget(list, inner, &mut state);
+
+    inner
+}
+
+fn render_cores_detail(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    selected: Option<&CoreRow>,
+    agents: &[&str],
+) {
+    let title = match selected {
+        Some(row) if is_team_default(&app.config, &row.id) => {
+            format!(" {} (team default) ", row.id)
+        }
+        Some(row) => format!(" {} ", row.id),
+        None => " core ".to_string(),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    if agents.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No agents use this core.",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Used by:",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )));
+        let visible_rows = (inner.height.saturating_sub(1)) as usize;
+        let shown = agents.len().min(visible_rows);
+        for agent in &agents[..shown] {
+            lines.push(Line::from(Span::raw(format!("  • {}", agent))));
+        }
+        if shown < agents.len() {
+            lines.push(Line::from(Span::styled(
+                format!("  … {} more", agents.len() - shown),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+
+    let paragraph = Paragraph::new(lines);
+    f.render_widget(paragraph, inner);
+}
+
+fn render_core_row(
+    row: &CoreRow,
+    snapshot: Option<&crate::usage::UsageSnapshot>,
+    pending: bool,
+    selected: bool,
+) -> ListItem<'static> {
+    let provider_label = match row.usage_provider {
+        Some(crate::config::UsageProvider::AnthropicOauth) => "anthropic",
+        Some(crate::config::UsageProvider::Zai) => "zai",
+        Some(crate::config::UsageProvider::ChatgptOauth) => "chatgpt",
+        None => "—",
+    };
+    let usage_cell = format_usage_cell(row.usage_provider, snapshot, pending);
+    let style = if selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let credential_cell = row.credential.as_deref().unwrap_or("—");
+    let line = format!(
+        "{:<18}{:<14}{:<22}{:<12}{}",
+        truncate(&row.id, 17),
+        row.kind_label,
+        truncate(credential_cell, 21),
+        provider_label,
+        usage_cell,
+    );
+    ListItem::new(Line::from(Span::styled(line, style)))
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
 }
 
 fn render_task_row(app: &App, id: uuid::Uuid, selected: bool) -> ListItem<'static> {

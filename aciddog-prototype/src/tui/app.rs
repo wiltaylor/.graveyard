@@ -30,7 +30,9 @@ use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::{AciddogConfig, AiCore, AiCoreKind};
 use crate::memory::MemoryRegistry;
 use crate::tasks::{Task, TaskFilter, TaskPatch, TaskStatus, TaskStore, TodoStatus};
+use crate::usage;
 
+use super::cores_view::{CoresScreen, UsageEvent};
 use super::tasks_view::{
     ChildOverlay, ChildPromptKind, FormField, TaskForm, TasksPrompt, TasksScreen, OPERATOR,
 };
@@ -929,6 +931,9 @@ pub enum Focus {
     /// (`WorkflowForm` or `WorkflowInstance`). Keyboard input is
     /// routed to the workflow-view handler.
     Workflow,
+    /// The main area while `active_view == Cores` — keyboard input
+    /// goes to the cores-view handler.
+    Cores,
 }
 
 /// Which scrollable zone inside the Memory view the wheel cursor is
@@ -952,6 +957,9 @@ pub enum ActiveView {
     Chat,
     Tasks,
     Memory,
+    /// Read-only listing of configured `ai_core` blocks with per-core
+    /// usage percentages where a `UsageProvider` is resolved.
+    Cores,
     Channel(usize),
     /// Property-entry form for the workflow at
     /// `config.workflows[workflow_idx]`.
@@ -969,7 +977,7 @@ pub enum ActiveView {
 /// Entries in the right-column Views list. Extend this array and add
 /// a matching activation arm in `handle_key_views` to wire a new
 /// view up.
-pub const VIEW_ENTRIES: &[&str] = &["Tasks", "Memory"];
+pub const VIEW_ENTRIES: &[&str] = &["Tasks", "Memory", "Cores"];
 
 #[derive(Debug, Default, Clone)]
 pub struct LayoutRects {
@@ -986,6 +994,10 @@ pub struct LayoutRects {
     /// Inner rect of the "workflows" panel on the right column.
     /// `None` if no workflows are declared in the config.
     pub workflows_list_inner: Option<Rect>,
+    /// Inner rect of the Cores view's top (list) panel. Populated each
+    /// frame by `render_cores_screen` so click-to-select maps the
+    /// click row back onto `CoresScreen::cursor`.
+    pub cores_list_inner: Option<Rect>,
     /// Clickable Run/Cancel buttons on the workflow form view. Each
     /// entry is `(which_button, rect)`. Cleared every frame by
     /// `render_workflow_form` and populated when the form is drawn.
@@ -1808,6 +1820,13 @@ pub struct App {
     /// `None` means workflows are disabled for this session (early
     /// bring-up or unit tests).
     pub workflow_engine: Option<crate::workflow::WorkflowEngine>,
+    /// State for the Cores view (right-column "Cores" entry). Rebuilt
+    /// from `config.ai_cores` each time the view is opened.
+    pub cores_screen: CoresScreen,
+    /// Sender for replies from background usage-fetch tasks. Populated
+    /// by `tui::run`; `None` in unit tests that don't open the Cores
+    /// view.
+    pub usage_event_tx: Option<tokio::sync::mpsc::UnboundedSender<UsageEvent>>,
 }
 
 /// Time window for detecting a double-click. Matches the typical
@@ -1898,6 +1917,8 @@ impl App {
             workflow_form: None,
             next_instance_id: 1,
             workflow_engine: None,
+            cores_screen: CoresScreen::default(),
+            usage_event_tx: None,
         }
     }
 
@@ -5504,6 +5525,7 @@ impl App {
                 ActiveView::Chat | ActiveView::Channel(_) => Focus::Chat,
                 ActiveView::Tasks => Focus::Tasks,
                 ActiveView::Memory => Focus::Memory,
+                ActiveView::Cores => Focus::Cores,
                 ActiveView::WorkflowForm { .. } | ActiveView::WorkflowInstance { .. } => {
                     Focus::Workflow
                 }
@@ -5547,6 +5569,7 @@ impl App {
             Focus::Memory => self.handle_key_memory(code, mods),
             Focus::Workflows => self.handle_key_workflows(code, mods),
             Focus::Workflow => self.handle_key_workflow_view(code, mods),
+            Focus::Cores => self.handle_key_cores(code, mods),
         }
     }
 
@@ -5590,6 +5613,9 @@ impl App {
             ActiveView::Memory => {
                 self.active_view = ActiveView::Chat;
                 self.memory_screen.close_overlays();
+            }
+            ActiveView::Cores => {
+                self.active_view = ActiveView::Chat;
             }
             ActiveView::Channel(_) => {
                 self.active_view = ActiveView::Chat;
@@ -5877,9 +5903,81 @@ impl App {
                 Some("Memory") => {
                     self.open_memory_view();
                 }
+                Some("Cores") => {
+                    self.open_cores_view();
+                }
                 _ => {}
             },
             _ => {}
+        }
+    }
+
+    fn open_cores_view(&mut self) {
+        self.active_view = ActiveView::Cores;
+        self.focus = Focus::Cores;
+        self.cores_screen.rebuild(&self.config.ai_cores);
+        self.cores_screen.usage.clear();
+        self.spawn_cores_usage_fetch();
+    }
+
+    fn handle_key_cores(&mut self, code: KeyCode, _mods: KeyModifiers) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.active_view = ActiveView::Chat;
+                self.focus = Focus::Agents;
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.cores_screen.move_cursor(1),
+            KeyCode::Char('k') | KeyCode::Up => self.cores_screen.move_cursor(-1),
+            KeyCode::Char('r') => {
+                self.cores_screen.usage.clear();
+                self.spawn_cores_usage_fetch();
+            }
+            _ => {}
+        }
+    }
+
+    /// Kick off one `tokio::spawn` per core that has a resolved usage
+    /// provider. Each task delivers its `UsageEvent` back through
+    /// `usage_event_tx`; the event loop forwards them to
+    /// `on_usage_event`. Safe to call without a sender — unit tests
+    /// that haven't plumbed one in simply do nothing.
+    fn spawn_cores_usage_fetch(&mut self) {
+        let Some(tx) = self.usage_event_tx.clone() else {
+            return;
+        };
+        self.cores_screen.generation = self.cores_screen.generation.wrapping_add(1);
+        self.cores_screen.pending = 0;
+        let generation = self.cores_screen.generation;
+        let client = reqwest::Client::new();
+        for core in &self.config.ai_cores {
+            if core.effective_usage_provider().is_none() {
+                continue;
+            }
+            let core_id = core.id.clone();
+            let core_snapshot = core.clone();
+            let client = client.clone();
+            let tx = tx.clone();
+            self.cores_screen.pending += 1;
+            tokio::spawn(async move {
+                let snapshot = usage::fetch_usage(&core_snapshot, client)
+                    .await
+                    .unwrap_or_default();
+                let _ = tx.send(UsageEvent {
+                    core_id,
+                    snapshot,
+                    generation,
+                });
+            });
+        }
+    }
+
+    pub(super) fn on_usage_event(&mut self, ev: UsageEvent) {
+        if ev.generation != self.cores_screen.generation {
+            return;
+        }
+        self.cores_screen.usage.insert(ev.core_id, ev.snapshot);
+        if self.cores_screen.pending > 0 {
+            self.cores_screen.pending -= 1;
         }
     }
 
@@ -8120,6 +8218,9 @@ impl App {
                                 "Memory" => {
                                     self.open_memory_view();
                                 }
+                                "Cores" => {
+                                    self.open_cores_view();
+                                }
                                 _ => {
                                     self.focus = Focus::Views;
                                 }
@@ -8217,6 +8318,7 @@ impl App {
                             ActiveView::Chat | ActiveView::Channel(_) => Focus::Chat,
                             ActiveView::Tasks => Focus::Tasks,
                             ActiveView::Memory => Focus::Memory,
+                            ActiveView::Cores => Focus::Cores,
                             ActiveView::WorkflowForm { .. }
                             | ActiveView::WorkflowInstance { .. } => Focus::Workflow,
                         };
@@ -8228,6 +8330,18 @@ impl App {
                         if self.active_view == ActiveView::Memory {
                             if self.handle_mouse_memory_main(pos, ev.column, ev.row) {
                                 return;
+                            }
+                        }
+
+                        // Cores view: clicking a row selects it. Row 0
+                        // is the column header and is non-selectable.
+                        if self.active_view == ActiveView::Cores {
+                            let row_in_list = ev.row.saturating_sub(rect.y) as usize;
+                            if row_in_list >= 1 {
+                                let target = row_in_list - 1;
+                                if target < self.cores_screen.rows.len() {
+                                    self.cores_screen.cursor = target;
+                                }
                             }
                         }
 
@@ -8280,6 +8394,7 @@ impl App {
                             ActiveView::Chat | ActiveView::Channel(_) => Focus::Chat,
                             ActiveView::Tasks => Focus::Tasks,
                             ActiveView::Memory => Focus::Memory,
+                            ActiveView::Cores => Focus::Cores,
                             ActiveView::WorkflowForm { .. }
                             | ActiveView::WorkflowInstance { .. } => Focus::Workflow,
                         };
@@ -9362,6 +9477,12 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         tokio::sync::mpsc::unbounded_channel::<super::memory_view::MemoryEvent>();
     app.memory_event_tx = Some(memory_event_tx);
 
+    // Channel for replies from background usage-fetch tasks (one per
+    // core with a resolved usage provider, kicked off when the Cores
+    // view is opened or refreshed).
+    let (usage_event_tx, mut usage_event_rx) = tokio::sync::mpsc::unbounded_channel::<UsageEvent>();
+    app.usage_event_tx = Some(usage_event_tx);
+
     // Bind the agent IPC socket for this team before spawning cores, so its
     // path can be injected into each claude child's environment.
     let team_id = app.config.team.id.clone();
@@ -9556,6 +9677,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         &mut compaction_rx,
         memory_event_rx,
         &mut wf_event_rx,
+        &mut usage_event_rx,
     )
     .await;
 
@@ -9664,6 +9786,7 @@ async fn event_loop<B: ratatui::backend::Backend>(
     compaction_rx: &mut mpsc::Receiver<super::compaction::CompactionEvent>,
     mut memory_event_rx: tokio::sync::mpsc::UnboundedReceiver<super::memory_view::MemoryEvent>,
     workflow_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::workflow::WorkflowEvent>,
+    usage_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<UsageEvent>,
 ) -> Result<()> {
     let mut events = EventStream::new();
     terminal.draw(|f| ui::render(f, app))?;
@@ -9717,6 +9840,9 @@ async fn event_loop<B: ratatui::backend::Backend>(
             }
             Some(wf_ev) = workflow_event_rx.recv() => {
                 app.on_workflow_event(wf_ev);
+            }
+            Some(usage_ev) = usage_event_rx.recv() => {
+                app.on_usage_event(usage_ev);
             }
             _ = spinner_tick.tick() => {
                 // Workflow sidebar hygiene: drop any successful
@@ -9829,6 +9955,7 @@ mod tests {
                     system_prompt: None,
                     default_tools: None,
                 },
+                usage_provider: None,
             }],
             memory_banks: vec![],
             compactions: vec![],
@@ -11528,6 +11655,7 @@ mod tests {
                     system_prompt: None,
                     default_tools: None,
                 },
+                usage_provider: None,
             }],
             memory_banks: vec![],
             compactions: vec![],

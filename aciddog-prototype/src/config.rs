@@ -140,6 +140,26 @@ pub struct MemoryBank {
     pub embed_model: Option<String>,
 }
 
+/// Where to fetch rate-limit/usage data from for a given core. Kept as
+/// a top-level property on `AiCore` (rather than inside the variant)
+/// because the same variant can target several providers — e.g. an
+/// `anthropicApi` core pointed at `api.anthropic.com` wants the
+/// Anthropic OAuth usage endpoint, while the same variant pointed at
+/// `api.z.ai/api/anthropic` wants the z.ai quota endpoint.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageProvider {
+    /// Anthropic OAuth usage (`/api/oauth/usage`). Reads the Claude Code
+    /// OAuth token from `~/.claude/.credentials.json`.
+    AnthropicOauth,
+    /// z.ai quota endpoint (`/api/monitor/usage/quota/limit`). Uses the
+    /// core's own `api_key_env` as the bearer token.
+    Zai,
+    /// OpenAI ChatGPT subscription usage via the upstream Codex
+    /// `/wham/usage` endpoint on chatgpt.com.
+    ChatgptOauth,
+}
+
 /// Configuration for a named AI runtime. The `kind` field is a
 /// tagged-union discriminator — each variant carries its own settings
 /// that the runtime reads when constructing a core for an agent.
@@ -147,6 +167,10 @@ pub struct MemoryBank {
 pub struct AiCore {
     pub id: String,
     pub kind: AiCoreKind,
+    /// Optional override of where this core's usage/quota data comes
+    /// from. `None` means "infer from `kind`" — `claudeCode` infers
+    /// `AnthropicOauth`, every other variant infers no tracking.
+    pub usage_provider: Option<UsageProvider>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -304,6 +328,20 @@ impl AiCore {
             AiCoreKind::CopilotCli { model, .. } | AiCoreKind::GeminiCli { model, .. } => {
                 model.as_deref()
             }
+        }
+    }
+
+    /// Resolve which `UsageProvider` applies to this core, taking
+    /// inference into account. Explicit `usage_provider` on the config
+    /// always wins; otherwise `claudeCode` falls back to
+    /// `AnthropicOauth` and every other variant returns `None`.
+    pub fn effective_usage_provider(&self) -> Option<UsageProvider> {
+        if let Some(p) = self.usage_provider {
+            return Some(p);
+        }
+        match &self.kind {
+            AiCoreKind::ClaudeCode { .. } => Some(UsageProvider::AnthropicOauth),
+            _ => None,
         }
     }
 }
@@ -645,6 +683,9 @@ pub enum ConfigError {
     #[error("ai_core `{core}` has unknown type `{type_name}`")]
     UnknownAiCoreType { core: String, type_name: String },
 
+    #[error("ai_core `{core}` has unknown usage_provider `{value}` (expected `:anthropic_oauth`, `:zai`, or `:chatgpt_oauth`)")]
+    UnknownUsageProvider { core: String, value: String },
+
     #[error("`{from}` references unknown memory bank `{to}` in `memory_banks`")]
     UnknownMemoryBankRef { from: String, to: String },
 
@@ -921,7 +962,25 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                     })
                 }
             };
-            Ok(AiCore { id, kind })
+            let usage_provider = match optional_symbol(b, "usage_provider")? {
+                None => None,
+                Some(sym) => match sym.as_str() {
+                    "anthropic_oauth" => Some(UsageProvider::AnthropicOauth),
+                    "zai" => Some(UsageProvider::Zai),
+                    "chatgpt_oauth" => Some(UsageProvider::ChatgptOauth),
+                    other => {
+                        return Err(ConfigError::UnknownUsageProvider {
+                            core: id,
+                            value: other.to_string(),
+                        })
+                    }
+                },
+            };
+            Ok(AiCore {
+                id,
+                kind,
+                usage_provider,
+            })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
 
@@ -1877,6 +1936,17 @@ fn require_symbol(block: &wcl_lang::BlockRef, attr: &str) -> Result<String, Conf
     }
 }
 
+fn optional_symbol(block: &wcl_lang::BlockRef, attr: &str) -> Result<Option<String>, ConfigError> {
+    match block.get(attr) {
+        None => Ok(None),
+        Some(Value::Symbol(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(ConfigError::BadAttributeType {
+            kind: block.kind.clone(),
+            attr: attr.to_string(),
+        }),
+    }
+}
+
 fn optional_bool(block: &wcl_lang::BlockRef, attr: &str) -> Result<Option<bool>, ConfigError> {
     match block.get(attr) {
         None => Ok(None),
@@ -2584,6 +2654,97 @@ mod tests {
                 default_tools: None,
             }
         );
+    }
+
+    #[test]
+    fn ai_core_usage_provider_defaults_to_none_on_omission() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core api {
+                type = :anthropicApi
+                apiUrl = "https://api.anthropic.com"
+                apiKeyEnv = "ANTHROPIC_API_KEY"
+                model = "claude-3-5-sonnet"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.ai_cores[0].usage_provider, None);
+        assert_eq!(cfg.ai_cores[0].effective_usage_provider(), None);
+    }
+
+    #[test]
+    fn ai_core_claude_code_infers_anthropic_oauth_usage() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core cc { type = :claudeCode }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.ai_cores[0].usage_provider, None);
+        assert_eq!(
+            cfg.ai_cores[0].effective_usage_provider(),
+            Some(UsageProvider::AnthropicOauth)
+        );
+    }
+
+    #[test]
+    fn ai_core_usage_provider_zai_symbol_is_parsed() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core z_ai {
+                type = :anthropicApi
+                usage_provider = :zai
+                apiUrl = "https://api.z.ai/api/anthropic"
+                apiKeyEnv = "ZAI_API_KEY"
+                model = "glm-5.1"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.ai_cores[0].usage_provider, Some(UsageProvider::Zai));
+    }
+
+    #[test]
+    fn demo_aciddog_wcl_parses_with_usage_provider_annotation() {
+        // Smoke test: the committed demo/aciddog.wcl should round-trip
+        // through the parser, exercising every variant including the
+        // z_ai core's `usage_provider = :zai` annotation.
+        let src = include_str!("../demo/aciddog.wcl");
+        let cfg = parse_config(src, &dummy_path()).expect("demo wcl parses");
+        let z_ai = cfg
+            .ai_cores
+            .iter()
+            .find(|c| c.id == "z_ai")
+            .expect("z_ai core present");
+        assert_eq!(z_ai.usage_provider, Some(UsageProvider::Zai));
+        // ClaudeCode inference should light up on default_core.
+        let default_core = cfg
+            .ai_cores
+            .iter()
+            .find(|c| c.id == "default_core")
+            .expect("default_core present");
+        assert_eq!(
+            default_core.effective_usage_provider(),
+            Some(UsageProvider::AnthropicOauth)
+        );
+    }
+
+    #[test]
+    fn ai_core_usage_provider_unknown_symbol_is_rejected() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core cc {
+                type = :claudeCode
+                usage_provider = :nonsense
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::UnknownUsageProvider { ref value, .. } if value == "nonsense"
+        ));
     }
 
     #[test]

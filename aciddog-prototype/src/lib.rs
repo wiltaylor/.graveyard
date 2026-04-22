@@ -9,4 +9,5 @@ pub mod openai_auth;
 pub mod skills;
 pub mod tasks;
 pub mod tui;
+pub mod usage;
 pub mod workflow;

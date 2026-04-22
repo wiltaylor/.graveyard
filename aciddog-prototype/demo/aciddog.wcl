@@ -125,6 +125,17 @@ schema "compaction" {
 schema "ai_core" {
   id: identifier @inline(0)
   type: symbol
+  // Where to fetch rate-limit / usage data for this core. Accepted
+  // values:
+  //   :anthropic_oauth — reads ~/.claude/.credentials.json and hits
+  //                      api.anthropic.com /api/oauth/usage. Claude
+  //                      Code cores infer this when omitted.
+  //   :zai             — hits api.z.ai /api/monitor/usage/quota/limit
+  //                      using the core's api_key_env as the token.
+  //   :chatgpt_oauth   — OpenAI ChatGPT subscription usage via the
+  //                      upstream Codex /wham/usage endpoint.
+  // Omit the field to disable usage tracking for the core.
+  usage_provider: symbol @optional
 
   variant "claudeCode" {
     // Written to a temporary file and passed to claude via
@@ -276,6 +287,7 @@ ai_core default_core {
 // in `.env` so the key never lands in the committed config.
 ai_core z_ai {
   type = :anthropicApi
+  usage_provider = :zai
   apiUrl = "https://api.z.ai/api/anthropic"
   apiKeyEnv = "ZAI_API_KEY"
   model = "glm-5.1"
@@ -316,6 +328,7 @@ ai_core openrouter {
 // at this same login command.
 ai_core chatgpt_gpt54 {
   type = :openAiChatgpt
+  usage_provider = :chatgpt_oauth
   credential = "personal"
   model = "gpt-5.4"
   reasoningEffort = "medium"

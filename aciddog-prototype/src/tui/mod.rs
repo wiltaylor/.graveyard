@@ -4,6 +4,7 @@ mod channel_log;
 mod clipboard;
 mod commands;
 mod compaction;
+mod cores_view;
 mod diff;
 mod markdown;
 mod memory_view;
