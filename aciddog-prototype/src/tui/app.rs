@@ -3947,9 +3947,15 @@ impl App {
             }
         }
         let payload = format!(
-            "<system-notice>You have been added to channel `{channel_id}`. Use the \
-             `channel send` tool with `id=\"{channel_id}\"` to post. Stay silent \
-             unless you have something substantive to contribute.</system-notice>"
+            "<system-notice>You have been added to channel `{channel_id}`. \
+             Incoming posts to this channel will arrive wrapped as \
+             `<ChannelMessage channel=\"{channel_id}\" from=\"<sender>\">body</ChannelMessage>` \
+             — reply with `aciddog channel send --id {channel_id} --body \"<text>\"` \
+             (NOT `aciddog send --to …`, which would mail a single agent and \
+             skip the rest of the channel). Prefix the body with one or more \
+             `@name` tokens to narrow delivery to specific members; with no \
+             leading `@` the message broadcasts to everyone in the channel. \
+             Stay silent unless you have something substantive to contribute.</system-notice>"
         );
         if let Err(e) = tx.try_send(payload) {
             tracing::warn!(

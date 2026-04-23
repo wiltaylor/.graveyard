@@ -87,6 +87,14 @@ pub fn cli_preamble(
     }
 
     {
+        let send_row = Row {
+            cmd: "channel send",
+            params: "`--id <channel-id>` `--body \"<text>\"`",
+            desc: "Broadcast to every other member of a channel you belong to. \
+                   This is the ONLY way to reply to a `<ChannelMessage>` you \
+                   receive — direct `send --to` puts the text in a single \
+                   agent's mailbox and other channel members never see it.",
+        };
         let management_rows = [
             Row {
                 cmd: "channel create",
@@ -117,15 +125,25 @@ pub fn cli_preamble(
             },
         ];
         if channels.is_empty() {
+            // Include `channel send` here too — another agent can add
+            // you to a channel at runtime, and when that happens the
+            // system-notice tells you you're in the channel but the
+            // preamble is already fixed. Documenting the syntax up
+            // front means the tool is always there when you need it.
+            let rows: Vec<Row> = std::iter::once(send_row.clone())
+                .chain(management_rows.iter().cloned())
+                .collect();
             push_group(
                 &mut out,
                 "Channels",
-                &management_rows,
+                &rows,
                 Some(
-                    "You are not currently in any channel. You can still spin up an \
-                     ephemeral meeting with `channel create`. Runtime membership \
-                     changes (create/join/add/kick/end) do NOT persist — restarting \
-                     aciddog restores the WCL-declared channel state.",
+                    "You are not currently in any channel. You can still spin up \
+                     an ephemeral meeting with `channel create`, or another agent \
+                     may add you to one at runtime — if a `<ChannelMessage …>` \
+                     payload ever arrives, reply with `channel send --id <id> …` \
+                     (NOT `send --to …`). Runtime membership changes \
+                     (create/join/add/kick/end) do NOT persist across restarts.",
                 ),
             );
         } else {
@@ -140,13 +158,9 @@ pub fn cli_preamble(
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            let rows: Vec<Row> = std::iter::once(Row {
-                cmd: "channel send",
-                params: "`--id <channel-id>` `--body \"<text>\"`",
-                desc: "Broadcast to every other member of a channel you belong to.",
-            })
-            .chain(management_rows.iter().cloned())
-            .collect();
+            let rows: Vec<Row> = std::iter::once(send_row.clone())
+                .chain(management_rows.iter().cloned())
+                .collect();
             push_group(
                 &mut out,
                 "Channels",
@@ -453,6 +467,14 @@ pub fn tag_preamble(
     }
 
     {
+        let send_row = Row {
+            cmd: "channel_send",
+            params: "`\"id\":\"<channel-id>\"`, `\"body\":\"<text>\"`",
+            desc: "Broadcast to every other member of a channel you belong to. \
+                   This is the ONLY way to reply to a `<ChannelMessage>` you \
+                   receive — `send_message` puts the text in a single agent's \
+                   mailbox and other channel members never see it.",
+        };
         let management_rows = [
             Row {
                 cmd: "channel_create",
@@ -481,15 +503,20 @@ pub fn tag_preamble(
             },
         ];
         if channels.is_empty() {
+            let rows: Vec<Row> = std::iter::once(send_row.clone())
+                .chain(management_rows.iter().cloned())
+                .collect();
             push_group(
                 &mut out,
                 "Channels",
-                &management_rows,
+                &rows,
                 Some(
-                    "You are not currently in any channel. You can still spin up an \
-                     ephemeral meeting with `channel_create`. Runtime membership \
-                     changes (create/join/add/kick/end) do NOT persist — restarting \
-                     aciddog restores the WCL-declared channel state.",
+                    "You are not currently in any channel. You can still spin up \
+                     an ephemeral meeting with `channel_create`, or another agent \
+                     may add you to one at runtime — if a `<ChannelMessage …>` \
+                     payload ever arrives, reply with `channel_send` (NOT \
+                     `send_message`). Runtime membership changes \
+                     (create/join/add/kick/end) do NOT persist across restarts.",
                 ),
             );
         } else {
@@ -504,13 +531,9 @@ pub fn tag_preamble(
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            let rows: Vec<Row> = std::iter::once(Row {
-                cmd: "channel_send",
-                params: "`\"id\":\"<channel-id>\"`, `\"body\":\"<text>\"`",
-                desc: "Broadcast to every other member of a channel you belong to.",
-            })
-            .chain(management_rows.iter().cloned())
-            .collect();
+            let rows: Vec<Row> = std::iter::once(send_row.clone())
+                .chain(management_rows.iter().cloned())
+                .collect();
             push_group(
                 &mut out,
                 "Channels",
