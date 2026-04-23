@@ -319,6 +319,7 @@ ai_core z_ai {
 // committed config.
 ai_core openrouter {
   type = :openAiApi
+  usage_provider = :openrouter
   apiUrl = "https://openrouter.ai/api/v1"
   apiKeyEnv = "OPENROUTER_API_KEY"
   model = "openai/gpt-5.4"
@@ -358,6 +359,7 @@ ai_core chatgpt_gpt54 {
 // and a GitHub Copilot subscription authenticated via `copilot auth`.
 ai_core copilot_haiku {
   type = :copilotCli
+  usage_provider = :github_copilot
   model = "claude-haiku-4.5"
   default_tools = ["Read"]
 }

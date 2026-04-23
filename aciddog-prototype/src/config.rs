@@ -167,6 +167,15 @@ pub enum UsageProvider {
     /// OpenAI ChatGPT subscription usage via the upstream Codex
     /// `/wham/usage` endpoint on chatgpt.com.
     ChatgptOauth,
+    /// OpenRouter credits endpoint (`/api/v1/credits`). Uses the
+    /// `openAiApi` core's own `api_key_env` as the bearer token and
+    /// renders remaining dollar balance.
+    Openrouter,
+    /// GitHub Copilot premium-request usage. Sources a GitHub OAuth
+    /// token by shelling out to `gh auth token` and queries the REST
+    /// billing endpoint for the authenticated user. Applies only to
+    /// `copilotCli` cores.
+    GithubCopilot,
 }
 
 /// Configuration for a named AI runtime. The `kind` field is a
@@ -696,7 +705,7 @@ pub enum ConfigError {
     #[error("ai_core `{core}` has unknown type `{type_name}`")]
     UnknownAiCoreType { core: String, type_name: String },
 
-    #[error("ai_core `{core}` has unknown usage_provider `{value}` (expected `:anthropic_oauth`, `:zai`, or `:chatgpt_oauth`)")]
+    #[error("ai_core `{core}` has unknown usage_provider `{value}` (expected `:anthropic_oauth`, `:zai`, `:chatgpt_oauth`, `:openrouter`, or `:github_copilot`)")]
     UnknownUsageProvider { core: String, value: String },
 
     #[error("`{from}` references unknown memory bank `{to}` in `memory_banks`")]
@@ -982,6 +991,8 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                     "anthropic_oauth" => Some(UsageProvider::AnthropicOauth),
                     "zai" => Some(UsageProvider::Zai),
                     "chatgpt_oauth" => Some(UsageProvider::ChatgptOauth),
+                    "openrouter" => Some(UsageProvider::Openrouter),
+                    "github_copilot" => Some(UsageProvider::GithubCopilot),
                     other => {
                         return Err(ConfigError::UnknownUsageProvider {
                             core: id,
@@ -2733,6 +2744,43 @@ mod tests {
         "#;
         let cfg = parse_config(src, &dummy_path()).unwrap();
         assert_eq!(cfg.ai_cores[0].usage_provider, Some(UsageProvider::Zai));
+    }
+
+    #[test]
+    fn ai_core_usage_provider_openrouter_symbol_is_parsed() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core openrouter {
+                type = :openAiApi
+                usage_provider = :openrouter
+                apiUrl = "https://openrouter.ai/api/v1"
+                apiKeyEnv = "OPENROUTER_API_KEY"
+                model = "openai/gpt-5.4-mini"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].usage_provider,
+            Some(UsageProvider::Openrouter)
+        );
+    }
+
+    #[test]
+    fn ai_core_usage_provider_github_copilot_symbol_is_parsed() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core copilot {
+                type = :copilotCli
+                usage_provider = :github_copilot
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].usage_provider,
+            Some(UsageProvider::GithubCopilot)
+        );
     }
 
     #[test]

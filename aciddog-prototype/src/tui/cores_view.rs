@@ -151,6 +151,11 @@ pub fn format_usage_cell(
         None if pending => "…".to_string(),
         None => "(idle)".to_string(),
         Some(s) if s.error.is_some() => format!("err: {}", s.error.as_deref().unwrap_or("?")),
+        Some(s) if s.display_override.is_some() => s
+            .display_override
+            .as_deref()
+            .unwrap_or("—")
+            .to_string(),
         Some(s) => {
             let mut parts: Vec<String> = Vec::new();
             if let Some(p) = s.five_hour_pct {

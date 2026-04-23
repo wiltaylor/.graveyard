@@ -13,7 +13,7 @@
 //! TUI's Cores view.
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 
 use crate::config::{AiCore, AiCoreKind, UsageProvider};
@@ -32,6 +32,12 @@ pub struct UsageSnapshot {
     /// Pre-formatted "Xh Ym" reset countdown, when known.
     pub reset_display: Option<String>,
     pub error: Option<String>,
+    /// Free-form line to render in place of the percentage cell — used
+    /// by providers whose natural unit isn't a percentage (OpenRouter
+    /// returns a dollar balance; GitHub Copilot returns a premium-request
+    /// count). When `Some`, the Cores view renders this verbatim instead
+    /// of constructing "5h:X% · wk:Y%".
+    pub display_override: Option<String>,
 }
 
 impl UsageSnapshot {
@@ -49,10 +55,17 @@ impl UsageSnapshot {
 /// rather than an `Err`, so rendering is uniform.
 pub async fn fetch_usage(core: &AiCore, http: reqwest::Client) -> Option<UsageSnapshot> {
     let provider = core.effective_usage_provider()?;
+    // Gemini CLI: deliberately no provider. The public Gemini API has no
+    // per-user quota endpoint; the only surface that reports remaining
+    // quota is `cloudcode-pa.googleapis.com/v1internal`, which is
+    // undocumented and changes without notice. Revisit if/when Google
+    // ships a stable endpoint.
     let snap = match provider {
         UsageProvider::AnthropicOauth => fetch_anthropic_oauth(http).await,
         UsageProvider::Zai => fetch_zai(core, http).await,
         UsageProvider::ChatgptOauth => fetch_chatgpt_oauth(core, http).await,
+        UsageProvider::Openrouter => fetch_openrouter(core, http).await,
+        UsageProvider::GithubCopilot => fetch_github_copilot(core, http).await,
     };
     Some(snap)
 }
@@ -132,6 +145,7 @@ async fn fetch_anthropic_oauth(http: reqwest::Client) -> UsageSnapshot {
             .as_deref()
             .and_then(format_reset_in),
         error: None,
+        display_override: None,
     }
 }
 
@@ -325,6 +339,264 @@ async fn fetch_wham_usage(
             .and_then(|w| w.reset_at)
             .and_then(format_reset_in_unix),
         error: None,
+        display_override: None,
+    }
+}
+
+// ── OpenRouter credits ─────────────────────────────────────────────
+
+/// Base URL for the OpenRouter v1 API. Factored out so tests can point
+/// `fetch_openrouter_at` at a wiremock host.
+pub(crate) const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+
+#[derive(Deserialize)]
+struct OpenrouterResponse {
+    data: OpenrouterCredits,
+}
+
+#[derive(Deserialize)]
+struct OpenrouterCredits {
+    total_credits: f64,
+    total_usage: f64,
+}
+
+async fn fetch_openrouter(core: &AiCore, http: reqwest::Client) -> UsageSnapshot {
+    fetch_openrouter_at(core, http, OPENROUTER_BASE_URL).await
+}
+
+pub(crate) async fn fetch_openrouter_at(
+    core: &AiCore,
+    http: reqwest::Client,
+    base_url: &str,
+) -> UsageSnapshot {
+    let env_var = match &core.kind {
+        AiCoreKind::OpenAiApi { api_key_env, .. } => api_key_env.as_str(),
+        _ => {
+            return UsageSnapshot::error(
+                "usage_provider :openrouter requires an openAiApi core",
+            );
+        }
+    };
+    let key = match std::env::var(env_var) {
+        Ok(k) if !k.is_empty() => k,
+        _ => return UsageSnapshot::error(format!("${} unset", env_var)),
+    };
+
+    let url = format!("{}/credits", base_url);
+    let resp = http
+        .get(&url)
+        .bearer_auth(&key)
+        .header("User-Agent", "aciddog")
+        .header("Accept", "application/json")
+        .timeout(HTTP_TIMEOUT)
+        .send()
+        .await;
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) => return UsageSnapshot::error(format!("http: {}", e)),
+    };
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        if status == 401 {
+            return UsageSnapshot::error(format!("api key rejected — check ${}", env_var));
+        }
+        return UsageSnapshot::error(format!("http {}", status));
+    }
+    let payload: OpenrouterResponse = match resp.json().await {
+        Ok(p) => p,
+        Err(e) => return UsageSnapshot::error(format!("decode: {}", e)),
+    };
+    let remaining = payload.data.total_credits - payload.data.total_usage;
+    UsageSnapshot {
+        display_override: Some(format!("${:.2} left", remaining)),
+        ..UsageSnapshot::default()
+    }
+}
+
+// ── GitHub Copilot premium requests ────────────────────────────────
+
+/// Base URL for the GitHub REST API. Factored out for test injection.
+pub(crate) const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+
+#[derive(Deserialize)]
+struct GithubUserLogin {
+    login: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GithubPremiumUsage {
+    #[serde(default)]
+    usage_items: Vec<GithubUsageItem>,
+    /// Billing cycle the `usageItems` apply to. Shape: `{"year": 2026,
+    /// "month": 4}`. Used to format a "resets in Nd" countdown —
+    /// GitHub cycles reset on the 1st of the following month, UTC.
+    #[serde(default)]
+    time_period: Option<GithubTimePeriod>,
+}
+
+#[derive(Deserialize, Default)]
+struct GithubTimePeriod {
+    #[serde(default)]
+    year: i32,
+    #[serde(default)]
+    month: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GithubUsageItem {
+    #[serde(default)]
+    sku: String,
+    /// Percentage of the monthly premium-request allowance consumed
+    /// by this line item. The response emits one item per model; the
+    /// fetcher sums them. Matches what the Copilot billing dashboard
+    /// displays.
+    #[serde(default)]
+    gross_quantity: f64,
+    /// Dollar cost of requests beyond plan allowance. Non-zero only
+    /// when the user has exceeded the included premium-request pool.
+    #[serde(default)]
+    net_amount: f64,
+}
+
+async fn fetch_github_copilot(core: &AiCore, http: reqwest::Client) -> UsageSnapshot {
+    let token = match gh_auth_token().await {
+        Ok(t) => t,
+        Err(e) => return UsageSnapshot::error(e),
+    };
+    fetch_github_copilot_at(core, http, GITHUB_API_BASE_URL, &token).await
+}
+
+/// Acquire a GitHub OAuth token by invoking `gh auth token`. Kept as a
+/// separate async function so the fetch path is testable without a
+/// subprocess: tests call `fetch_github_copilot_at` directly with a
+/// canned token.
+async fn gh_auth_token() -> Result<String, String> {
+    let output = tokio::process::Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .await
+        .map_err(|e| format!("gh not found ({}) — install github cli and `gh auth login`", e))?;
+    if !output.status.success() {
+        return Err("gh auth token failed — run `gh auth login`".to_string());
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() {
+        return Err("gh auth token returned empty — run `gh auth login`".to_string());
+    }
+    Ok(token)
+}
+
+pub(crate) async fn fetch_github_copilot_at(
+    core: &AiCore,
+    http: reqwest::Client,
+    base_url: &str,
+    token: &str,
+) -> UsageSnapshot {
+    if !matches!(core.kind, AiCoreKind::CopilotCli { .. }) {
+        return UsageSnapshot::error(
+            "usage_provider :github_copilot requires a copilotCli core",
+        );
+    }
+
+    // Step 1: resolve the authenticated user's login. Avoids guessing
+    // and also confirms the token is reachable before we hit the more
+    // restrictive billing endpoint.
+    let user_url = format!("{}/user", base_url);
+    let user_resp = http
+        .get(&user_url)
+        .bearer_auth(token)
+        .header("User-Agent", "aciddog")
+        .header("Accept", "application/vnd.github+json")
+        .timeout(HTTP_TIMEOUT)
+        .send()
+        .await;
+    let user_resp = match user_resp {
+        Ok(r) => r,
+        Err(e) => return UsageSnapshot::error(format!("http: {}", e)),
+    };
+    if !user_resp.status().is_success() {
+        let status = user_resp.status().as_u16();
+        if status == 401 {
+            return UsageSnapshot::error(
+                "gh token rejected — run `gh auth refresh`",
+            );
+        }
+        return UsageSnapshot::error(format!("http {} from /user", status));
+    }
+    let login = match user_resp.json::<GithubUserLogin>().await {
+        Ok(u) => u.login,
+        Err(e) => return UsageSnapshot::error(format!("decode /user: {}", e)),
+    };
+
+    // Step 2: fetch premium-request usage for that user.
+    let usage_url = format!(
+        "{}/users/{}/settings/billing/premium_request/usage",
+        base_url, login
+    );
+    let resp = http
+        .get(&usage_url)
+        .bearer_auth(token)
+        .header("User-Agent", "aciddog")
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2026-03-10")
+        .timeout(HTTP_TIMEOUT)
+        .send()
+        .await;
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) => return UsageSnapshot::error(format!("http: {}", e)),
+    };
+    let status = resp.status();
+    if !status.is_success() {
+        let code = status.as_u16();
+        // gh tokens without the `user` scope get a 404 on this
+        // endpoint. GitHub returns the same 404 for genuinely missing
+        // users, but the authenticated-user lookup above already
+        // succeeded, so the cause is almost always scope.
+        if code == 404 || code == 403 {
+            return UsageSnapshot::error(
+                "gh token missing user scope — run `gh auth refresh -h github.com -s user`",
+            );
+        }
+        return UsageSnapshot::error(format!("http {}", code));
+    }
+    let payload: GithubPremiumUsage = match resp.json().await {
+        Ok(p) => p,
+        Err(e) => return UsageSnapshot::error(format!("decode: {}", e)),
+    };
+
+    // Enterprise-managed seats return an empty list — surface that
+    // distinctly rather than showing "0 premium used".
+    if payload.usage_items.is_empty() {
+        return UsageSnapshot {
+            display_override: Some("managed by org".into()),
+            ..UsageSnapshot::default()
+        };
+    }
+
+    let premium_items = payload
+        .usage_items
+        .iter()
+        .filter(|i| i.sku == "Copilot Premium Request");
+    let gross_pct: f64 = premium_items.clone().map(|i| i.gross_quantity).sum();
+    let overage_dollars: f64 = premium_items.map(|i| i.net_amount).sum();
+    let reset = payload
+        .time_period
+        .as_ref()
+        .and_then(|tp| format_billing_cycle_reset(tp.year, tp.month));
+
+    let mut line = match reset {
+        Some(r) => format!("mo:{}% ({})", clamp_pct(gross_pct), r),
+        None => format!("mo:{}%", clamp_pct(gross_pct)),
+    };
+    if overage_dollars > 0.0 {
+        line.push_str(&format!(" · ${:.2} over", overage_dollars));
+    }
+    UsageSnapshot {
+        display_override: Some(line),
+        ..UsageSnapshot::default()
     }
 }
 
@@ -350,6 +622,22 @@ fn format_reset_in(s: &str) -> Option<String> {
 /// (the ChatGPT usage endpoint returns `resetsAt` as an int64).
 fn format_reset_in_unix(secs: i64) -> Option<String> {
     let when = DateTime::<Utc>::from_timestamp(secs, 0)?;
+    format_duration_until(when)
+}
+
+/// GitHub billing cycles close on the 1st of the following calendar
+/// month, UTC. Given the current cycle's `(year, month)`, format the
+/// remaining time until rollover. Returns `None` for malformed input
+/// or a cycle that has already ended.
+fn format_billing_cycle_reset(year: i32, month: u32) -> Option<String> {
+    let (next_year, next_month) = if month >= 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    let when = NaiveDate::from_ymd_opt(next_year, next_month, 1)?
+        .and_hms_opt(0, 0, 0)?
+        .and_utc();
     format_duration_until(when)
 }
 
@@ -485,5 +773,220 @@ mod tests {
         assert!(snap.error.is_none(), "unexpected error: {:?}", snap.error);
         assert_eq!(snap.five_hour_pct, None);
         assert_eq!(snap.week_pct, None);
+    }
+
+    fn openrouter_core(api_key_env: &str) -> AiCore {
+        AiCore {
+            id: "openrouter".into(),
+            kind: AiCoreKind::OpenAiApi {
+                api_url: "https://openrouter.ai/api/v1".into(),
+                api_key_env: api_key_env.into(),
+                model: "openai/gpt-5.4-mini".into(),
+                system_prompt: None,
+                default_tools: None,
+            },
+            usage_provider: Some(UsageProvider::Openrouter),
+        }
+    }
+
+    fn copilot_core() -> AiCore {
+        AiCore {
+            id: "copilot".into(),
+            kind: AiCoreKind::CopilotCli {
+                model: None,
+                default_tools: None,
+            },
+            usage_provider: Some(UsageProvider::GithubCopilot),
+        }
+    }
+
+    #[tokio::test]
+    async fn openrouter_round_trip_populates_display_override() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/credits"))
+            .and(header("Authorization", "Bearer test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "total_credits": 100.0, "total_usage": 42.5 }
+            })))
+            .mount(&server)
+            .await;
+
+        // Unique env var name so parallel tests don't contend.
+        let env_var = "ACIDDOG_TEST_OPENROUTER_KEY_OK";
+        std::env::set_var(env_var, "test-key");
+        let core = openrouter_core(env_var);
+        let snap = fetch_openrouter_at(&core, reqwest::Client::new(), &server.uri()).await;
+        std::env::remove_var(env_var);
+
+        assert!(snap.error.is_none(), "unexpected error: {:?}", snap.error);
+        assert_eq!(snap.display_override.as_deref(), Some("$57.50 left"));
+        assert_eq!(snap.five_hour_pct, None);
+        assert_eq!(snap.week_pct, None);
+    }
+
+    #[tokio::test]
+    async fn openrouter_401_surfaces_api_key_hint() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/credits"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let env_var = "ACIDDOG_TEST_OPENROUTER_KEY_401";
+        std::env::set_var(env_var, "bad-key");
+        let core = openrouter_core(env_var);
+        let snap = fetch_openrouter_at(&core, reqwest::Client::new(), &server.uri()).await;
+        std::env::remove_var(env_var);
+
+        let err = snap.error.expect("should be an error");
+        assert!(
+            err.contains("api key rejected") && err.contains(env_var),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn github_copilot_round_trip_renders_monthly_percentage() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "login": "wiltaylor"
+            })))
+            .mount(&server)
+            .await;
+        // Shape mirrors the real response. grossQuantity is the
+        // percent-of-monthly-allowance consumed by each model; the
+        // fetcher sums across models and excludes non-Copilot SKUs.
+        // A far-future timePeriod keeps `format_billing_cycle_reset`
+        // deterministic for the substring assertion below.
+        Mock::given(method("GET"))
+            .and(path(
+                "/users/wiltaylor/settings/billing/premium_request/usage",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "timePeriod": { "year": 2999, "month": 4 },
+                "usageItems": [
+                    { "sku": "Copilot Premium Request", "grossQuantity": 15.51, "netAmount": 0.0 },
+                    { "sku": "Copilot Premium Request", "grossQuantity": 11.0,  "netAmount": 0.0 },
+                    { "sku": "Storage",                 "grossQuantity": 99.0,  "netAmount": 99.0 }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let core = copilot_core();
+        let snap =
+            fetch_github_copilot_at(&core, reqwest::Client::new(), &server.uri(), "test-token")
+                .await;
+
+        assert!(snap.error.is_none(), "unexpected error: {:?}", snap.error);
+        let line = snap.display_override.expect("display present");
+        // 15.51 + 11.0 = 26.51 → clamp_pct rounds to 27.
+        assert!(
+            line.starts_with("mo:27% ("),
+            "unexpected display line: {line}"
+        );
+        assert!(!line.contains("over"), "unexpected overage: {line}");
+    }
+
+    #[tokio::test]
+    async fn github_copilot_surfaces_overage_charge_when_net_amount_nonzero() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "login": "wiltaylor"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/users/wiltaylor/settings/billing/premium_request/usage",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "timePeriod": { "year": 2999, "month": 4 },
+                "usageItems": [
+                    { "sku": "Copilot Premium Request", "grossQuantity": 110.0, "netAmount": 4.40 }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let core = copilot_core();
+        let snap =
+            fetch_github_copilot_at(&core, reqwest::Client::new(), &server.uri(), "test-token")
+                .await;
+
+        let line = snap.display_override.expect("display present");
+        assert!(line.starts_with("mo:100% ("), "unexpected line: {line}");
+        assert!(
+            line.ends_with("· $4.40 over"),
+            "missing overage charge: {line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn github_copilot_empty_items_shows_managed_by_org() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "login": "wiltaylor"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/users/wiltaylor/settings/billing/premium_request/usage",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "usageItems": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let core = copilot_core();
+        let snap =
+            fetch_github_copilot_at(&core, reqwest::Client::new(), &server.uri(), "test-token")
+                .await;
+
+        assert!(snap.error.is_none(), "unexpected error: {:?}", snap.error);
+        assert_eq!(snap.display_override.as_deref(), Some("managed by org"));
+    }
+
+    #[tokio::test]
+    async fn github_copilot_scope_hint_on_404() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "login": "wiltaylor"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/users/wiltaylor/settings/billing/premium_request/usage",
+            ))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "message": "Not Found"
+            })))
+            .mount(&server)
+            .await;
+
+        let core = copilot_core();
+        let snap =
+            fetch_github_copilot_at(&core, reqwest::Client::new(), &server.uri(), "test-token")
+                .await;
+
+        let err = snap.error.expect("should be an error");
+        assert!(
+            err.contains("missing user scope") && err.contains("gh auth refresh"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -1597,6 +1597,8 @@ fn render_core_row(
         Some(crate::config::UsageProvider::AnthropicOauth) => "anthropic",
         Some(crate::config::UsageProvider::Zai) => "zai",
         Some(crate::config::UsageProvider::ChatgptOauth) => "chatgpt",
+        Some(crate::config::UsageProvider::Openrouter) => "openrouter",
+        Some(crate::config::UsageProvider::GithubCopilot) => "copilot",
         None => "—",
     };
     let usage_cell = format_usage_cell(row.usage_provider, snapshot, pending);
