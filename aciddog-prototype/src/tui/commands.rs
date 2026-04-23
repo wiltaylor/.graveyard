@@ -4,6 +4,11 @@ pub enum CommandOutcome {
     Message(String),
     /// Terminate the TUI.
     Quit,
+    /// Begin a graceful shutdown: sleep all idle agents, let busy
+    /// agents finish their current turn (then sleep them), stop the
+    /// cron scheduler, and refuse further agent-originated mailbox /
+    /// channel sends. When the last agent is asleep the TUI exits.
+    Shutdown,
     /// Run the target agent's configured compaction strategy (falling
     /// back to `drop` when unconfigured).
     Compact,
@@ -67,6 +72,7 @@ pub fn dispatch(input: &str) -> Option<CommandOutcome> {
     let outcome = match name {
         "version" => CommandOutcome::Message(format!("aciddog v{}", env!("CARGO_PKG_VERSION"))),
         "exit" | "quit" => CommandOutcome::Quit,
+        "shutdown" => CommandOutcome::Shutdown,
         "compact" => CommandOutcome::Compact,
         "reset" => CommandOutcome::Reset,
         "stop" => CommandOutcome::Stop,
@@ -121,7 +127,8 @@ pub fn dispatch(input: &str) -> Option<CommandOutcome> {
         other => CommandOutcome::Unknown {
             name: other.to_string(),
             hint: "try /version, /compact, /reset, /stop, /sleep, /awake, /run <wf>, \
-                   /meeting <id>, /add <agent>, /kick <agent>, /leave, /auth, or /exit"
+                   /meeting <id>, /add <agent>, /kick <agent>, /leave, /auth, \
+                   /shutdown, or /exit"
                 .to_string(),
         },
     };
@@ -197,6 +204,11 @@ mod tests {
     fn exit_and_quit_both_quit() {
         assert_eq!(dispatch("/exit"), Some(CommandOutcome::Quit));
         assert_eq!(dispatch("/quit"), Some(CommandOutcome::Quit));
+    }
+
+    #[test]
+    fn shutdown_returns_shutdown_outcome() {
+        assert_eq!(dispatch("/shutdown"), Some(CommandOutcome::Shutdown));
     }
 
     #[test]

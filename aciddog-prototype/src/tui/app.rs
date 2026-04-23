@@ -1744,6 +1744,13 @@ pub struct App {
     pub config: AciddogConfig,
     pub selected: usize,
     pub should_quit: bool,
+    /// Graceful-shutdown latch. Set by `/shutdown`; once true the app
+    /// sleeps idle agents immediately, lets busy agents finish their
+    /// current turn (then sleeps them too), rejects new agent-originated
+    /// mailbox / channel sends with "aciddog is shutting down", and
+    /// stops firing cron triggers. The event loop sets `should_quit`
+    /// as soon as every agent is non-Working.
+    pub shutting_down: bool,
     pub focus: Focus,
     pub chats: Vec<AgentChat>,
     pub layout: LayoutRects,
@@ -1910,6 +1917,7 @@ impl App {
             config,
             selected: 0,
             should_quit: false,
+            shutting_down: false,
             focus: Focus::Chat,
             chats,
             layout: LayoutRects::default(),
@@ -3282,6 +3290,10 @@ impl App {
         body: String,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
+        if self.shutting_down && matches!(sender, ChannelSender::Agent(_)) {
+            let _ = reply.send(Response::err("aciddog is shutting down"));
+            return;
+        }
         // Resolve channel + validate sender.
         let Some(channel) = self.config.channel(&channel_id).cloned() else {
             let _ = reply.send(Response::err(format!("unknown channel `{channel_id}`")));
@@ -3674,6 +3686,10 @@ impl App {
         body: String,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
+        if self.shutting_down {
+            let _ = reply.send(Response::err("aciddog is shutting down"));
+            return;
+        }
         // Resolve sender identity + ACL context from the origin.
         let (sender_id, from_label, is_cron, sender_parent_idx) = match &origin {
             MessageOrigin::Agent { sender_idx } => {
@@ -4463,6 +4479,12 @@ impl App {
     /// - `mark_fired` advances recurring `next_run` (or removes a
     ///   one-off).
     pub fn tick_cron(&mut self, now: chrono::DateTime<chrono::Utc>) {
+        // Freeze cron as soon as shutdown begins. Any tick firing
+        // mid-drain would spawn new message/slash work, which
+        // defeats the point of waiting for agents to go idle.
+        if self.shutting_down {
+            return;
+        }
         let due_ids = self.cron.due_at(now);
         for id in due_ids {
             let job = match self.cron.get(id) {
@@ -5160,6 +5182,74 @@ impl App {
         }
     }
 
+    /// Flip the `shutting_down` latch, sleep every currently-idle
+    /// agent, and surface a status line in the announcing chat.
+    /// In-flight (`Working`) agents are left alone — they'll be slept
+    /// by `check_shutdown_progress` as their turns complete.
+    /// `announce_idx` is the chat that should show the "shutdown
+    /// initiated" system line; `None` suppresses the message (used by
+    /// channel-context dispatch where there's no obvious chat to
+    /// annotate). Calling this while already shutting down is a
+    /// no-op beyond an "already shutting down" note.
+    fn begin_shutdown(&mut self, announce_idx: Option<usize>) {
+        if self.shutting_down {
+            if let Some(idx) = announce_idx {
+                if let Some(chat) = self.chats.get_mut(idx) {
+                    chat.push_block(ChatBlock::system_info("aciddog is already shutting down"));
+                }
+            }
+            return;
+        }
+        info!("shutdown requested via /shutdown");
+        self.shutting_down = true;
+        for chat in self.chats.iter_mut() {
+            if !chat.asleep && chat.status != AgentStatus::Working {
+                chat.asleep = true;
+                if chat.status != AgentStatus::Hibernated {
+                    chat.status = AgentStatus::Asleep;
+                }
+            }
+        }
+        let busy = self
+            .chats
+            .iter()
+            .filter(|c| c.status == AgentStatus::Working)
+            .count();
+        let msg = if busy == 0 {
+            "shutting down…".to_string()
+        } else {
+            format!("shutting down — waiting for {busy} agent(s) to finish their turn")
+        };
+        if let Some(idx) = announce_idx {
+            if let Some(chat) = self.chats.get_mut(idx) {
+                chat.push_block(ChatBlock::system_info(msg));
+            }
+        }
+    }
+
+    /// Drive the graceful-shutdown state machine forward. Called once
+    /// per `event_loop` iteration. For every agent that is no longer
+    /// `Working` but not yet marked asleep, flip it to `Asleep`.
+    /// Once no agent is `Working`, raise `should_quit` so the loop
+    /// breaks on the next check.
+    pub(crate) fn check_shutdown_progress(&mut self) {
+        if !self.shutting_down {
+            return;
+        }
+        for chat in self.chats.iter_mut() {
+            if !chat.asleep && chat.status != AgentStatus::Working {
+                chat.asleep = true;
+                if chat.status != AgentStatus::Hibernated {
+                    chat.status = AgentStatus::Asleep;
+                }
+            }
+        }
+        let any_working = self.chats.iter().any(|c| c.status == AgentStatus::Working);
+        if !any_working {
+            self.should_quit = true;
+        }
+    }
+
     /// Signal the target agent's `run_core` to abort the in-flight
     /// turn (if any). The cancel channel has capacity 1, so a stale
     /// signal queued before the next turn starts is consumed as a
@@ -5198,6 +5288,9 @@ impl App {
             CommandOutcome::Quit => {
                 info!("quit requested via /exit");
                 self.should_quit = true;
+            }
+            CommandOutcome::Shutdown => {
+                self.begin_shutdown(Some(idx));
             }
             CommandOutcome::Compact => {
                 self.begin_compaction(idx, false);
@@ -7984,11 +8077,21 @@ impl App {
     /// same hint string as the agent path.
     fn apply_channel_command_for(&mut self, idx: usize, outcome: super::commands::CommandOutcome) {
         use super::commands::CommandOutcome;
+        // Handle the cases that need `&mut self` (not just a single
+        // channel) before taking the per-channel borrow.
+        if matches!(outcome, CommandOutcome::Shutdown) {
+            // A channel pane has no owning chat to annotate, so skip
+            // the inline "shutting down" note; the user sees the app
+            // exit instead.
+            self.begin_shutdown(None);
+            return;
+        }
         let Some(ch) = self.channels.get_mut(idx) else {
             return;
         };
         match outcome {
             CommandOutcome::Quit => self.should_quit = true,
+            CommandOutcome::Shutdown => unreachable!("handled above"),
             CommandOutcome::Message(text) => {
                 ch.blocks.push(ChatBlock::system_info(text));
             }
@@ -9886,6 +9989,11 @@ async fn event_loop<B: ratatui::backend::Backend>(
             }
         }
 
+        // Progress the graceful-shutdown state machine after every
+        // event: sleep any agent that just returned to idle, and
+        // raise `should_quit` when none are Working.
+        app.check_shutdown_progress();
+
         if app.should_quit {
             break;
         }
@@ -10029,7 +10137,7 @@ mod tests {
     }
 
     #[test]
-    fn q_quits_when_agents_focused_but_types_when_chat_focused() {
+    fn q_types_in_chat_and_is_ignored_in_agents_and_views() {
         let mut app = App::new(sample_config());
         app.focus = Focus::Chat;
         app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE);
@@ -10038,7 +10146,24 @@ mod tests {
 
         app.focus = Focus::Agents;
         app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE);
-        assert!(app.should_quit);
+        assert!(!app.should_quit);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.should_quit);
+
+        app.focus = Focus::Views;
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_c_no_longer_quits() {
+        let mut app = App::new(sample_config());
+        app.focus = Focus::Chat;
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(!app.should_quit);
+        app.focus = Focus::Agents;
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(!app.should_quit);
     }
 
     #[test]
@@ -15272,6 +15397,111 @@ mod tests {
         assert!(!app.chats[0].asleep);
         // One info block appended; status untouched.
         assert_eq!(app.chats[0].blocks.len(), blocks_before + 1);
+    }
+
+    #[test]
+    fn shutdown_with_all_idle_sleeps_all_and_triggers_quit() {
+        use super::super::commands::CommandOutcome;
+        let mut app = fresh_app();
+        for c in &app.chats {
+            assert_ne!(c.status, AgentStatus::Working);
+        }
+        app.apply_command_for(0, CommandOutcome::Shutdown);
+        assert!(app.shutting_down, "shutdown latch should be set");
+        for (i, c) in app.chats.iter().enumerate() {
+            assert!(c.asleep, "chat {i} should be asleep");
+            assert_eq!(c.status, AgentStatus::Asleep, "chat {i} status");
+        }
+        // Event loop runs this once per iteration — first tick with
+        // no busy agents must raise should_quit.
+        app.check_shutdown_progress();
+        assert!(app.should_quit, "should_quit after all agents idle");
+    }
+
+    #[test]
+    fn shutdown_waits_for_busy_agent_then_sleeps_and_quits() {
+        use super::super::commands::CommandOutcome;
+        let mut app = fresh_app();
+        // Pretend chat 1 is mid-turn.
+        app.chats[1].status = AgentStatus::Working;
+        app.apply_command_for(0, CommandOutcome::Shutdown);
+        assert!(app.shutting_down);
+        // Idle peers are already asleep; the busy one isn't.
+        assert!(app.chats[0].asleep);
+        assert!(!app.chats[1].asleep);
+        assert_eq!(app.chats[1].status, AgentStatus::Working);
+        // Progress tick while the turn is still running: no quit yet.
+        app.check_shutdown_progress();
+        assert!(!app.should_quit);
+        // Turn completes — run_core's TurnResult path transitions
+        // Working -> Ready before the next event-loop iteration.
+        app.chats[1].status = AgentStatus::Ready;
+        app.check_shutdown_progress();
+        assert!(app.chats[1].asleep);
+        assert_eq!(app.chats[1].status, AgentStatus::Asleep);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn shutdown_called_twice_is_a_noop_on_second_call() {
+        use super::super::commands::CommandOutcome;
+        let mut app = fresh_app();
+        app.apply_command_for(0, CommandOutcome::Shutdown);
+        assert!(app.shutting_down);
+        let blocks_after_first = app.chats[0].blocks.len();
+        app.apply_command_for(0, CommandOutcome::Shutdown);
+        // Second call only appends the "already shutting down" note.
+        assert_eq!(app.chats[0].blocks.len(), blocks_after_first + 1);
+    }
+
+    #[tokio::test]
+    async fn send_message_during_shutdown_returns_shutting_down_error() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        app.shutting_down = true;
+        let sender = app.chats[0].session_id.unwrap();
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::SendMessage {
+                    to: "b".into(),
+                    body: "hi".into(),
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(!resp.ok);
+        assert_eq!(resp.error.as_deref(), Some("aciddog is shutting down"));
+    }
+
+    #[test]
+    fn tick_cron_is_noop_while_shutting_down() {
+        let mut app = fresh_app();
+        // Install a due one-off so tick_cron would otherwise fire and
+        // remove it. Scheduled 1s in the past so it's due right now.
+        let target = app.chats[0].display_name.clone();
+        let past = chrono::Utc::now() - chrono::Duration::seconds(1);
+        app.cron
+            .add(
+                target,
+                crate::cron::CronPayload::Message { body: "hi".into() },
+                crate::cron::CronSchedule::OneOff {
+                    run_at_local: past.naive_utc(),
+                },
+                crate::cron::CronTz::Utc,
+                false,
+                true,
+                "tester".into(),
+            )
+            .expect("cron add");
+        let len_before = app.cron.len();
+        app.shutting_down = true;
+        app.tick_cron(chrono::Utc::now());
+        // One-offs fire-and-remove on tick; the early return leaves
+        // the job untouched.
+        assert_eq!(app.cron.len(), len_before);
     }
 
     #[tokio::test]

@@ -112,7 +112,7 @@ pub enum CronError {
     #[error("slash commands must start with `/`")]
     InvalidSlashCommand,
 
-    #[error("`/exit` and `/quit` are blocked as cron payloads")]
+    #[error("`/exit`, `/quit`, and `/shutdown` are blocked as cron payloads")]
     BlockedSlashCommand,
 
     #[error("target agent must not be empty")]
@@ -534,7 +534,7 @@ pub fn validate_payload(p: &CronPayload) -> Result<(), CronError> {
                 .next()
                 .unwrap_or("")
                 .to_ascii_lowercase();
-            if name == "exit" || name == "quit" {
+            if name == "exit" || name == "quit" || name == "shutdown" {
                 return Err(CronError::BlockedSlashCommand);
             }
         }
@@ -692,7 +692,16 @@ mod tests {
 
     #[test]
     fn validate_payload_blocks_exit_and_quit() {
-        for s in ["/exit", "/EXIT", "/quit", "/Quit", "/exit now"] {
+        for s in [
+            "/exit",
+            "/EXIT",
+            "/quit",
+            "/Quit",
+            "/exit now",
+            "/shutdown",
+            "/SHUTDOWN",
+            "/shutdown now",
+        ] {
             assert!(
                 matches!(
                     validate_payload(&cmd(s)),
