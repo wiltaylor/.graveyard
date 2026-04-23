@@ -420,6 +420,16 @@ pub(super) fn build_core_with_extras(
                     .to_string()
             })?;
             let props = JulesProperties::parse(properties_value, default_branch.as_deref())?;
+            // `properties.autoCreatePr` (if provided) wins over the
+            // core-level `automationMode`; otherwise fall through to
+            // the configured default. Lets a caller force PR
+            // auto-creation on a per-spawn basis without changing the
+            // core config.
+            let effective_automation_mode = match props.auto_create_pr {
+                Some(true) => Some("AUTO_CREATE_PR".to_string()),
+                Some(false) => Some("AUTOMATION_MODE_UNSPECIFIED".to_string()),
+                None => automation_mode.clone(),
+            };
             // `extra_tools` and `env` do not apply to Jules — it runs
             // remotely and has no local tool registry / shell env.
             let _ = extra_tools;
@@ -430,7 +440,7 @@ pub(super) fn build_core_with_extras(
                 props,
                 *poll_interval_seconds,
                 *require_plan_approval,
-                automation_mode.clone(),
+                effective_automation_mode,
                 parent_id,
                 &task,
             );
@@ -668,6 +678,12 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         RequestCmd::WorkerComplete { body } => ChatBlock::worker_complete(body),
         RequestCmd::WorkerArchive { worker } => {
             ChatBlock::from_tool_use(&format!("aciddog worker archive --id {worker}"), input)
+        }
+        RequestCmd::RemoteSessionBound { name } => {
+            // Internal registration — shouldn't surface on any pane,
+            // but if it does leak into a tag transcript, render it as
+            // a generic tool call so nothing panics.
+            ChatBlock::from_tool_use(&format!("remote_session_bound {name}"), input)
         }
         RequestCmd::WorkflowRun {
             workflow,
@@ -1266,12 +1282,24 @@ pub struct AgentChat {
     /// `App::resurrect_worker`.
     pub hibernated: bool,
     /// Set on remote-worker chats when the upstream session has
-    /// reached a terminal state (`COMPLETED`, `FAILED`, or was
-    /// archived via `worker archive`). Unlike local hibernated
-    /// workers, these cannot be resumed — the backend session is
-    /// gone — so `handle_send_message` skips auto-resurrection and
-    /// returns a clear error instead of rebuilding a useless core.
+    /// reached a terminal state (`FAILED`, or was archived via
+    /// `worker archive`). Unlike local hibernated workers, these
+    /// cannot be resumed — the backend session is gone — so
+    /// `handle_send_message` skips auto-resurrection and returns a
+    /// clear error instead of rebuilding a useless core.
+    ///
+    /// `COMPLETED` does NOT flip this: Jules treats completion as
+    /// "idle, awaiting further input" — the parent can keep sending
+    /// messages to request more changes, and only an explicit
+    /// `worker archive` tears the remote session down.
     pub remote_terminal: bool,
+    /// For remote-worker chats: the backend's own session identifier
+    /// (e.g. `sessions/abc123` for Jules). Populated by the core via
+    /// `RequestCmd::RemoteSessionBound` once the remote session is
+    /// live, so `handle_worker_archive` can issue a real DELETE
+    /// against the backend instead of relying on its inactivity TTL.
+    /// `None` until that first registration arrives.
+    pub remote_session_name: Option<String>,
     /// True between `/sleep` and `/awake`. While set, `handle_send_message`
     /// returns an "agent is asleep" error to the sender, channel
     /// broadcasts skip the agent, hibernated workers are NOT auto-
@@ -2397,6 +2425,12 @@ impl App {
             RequestCmd::WorkerArchive { worker } => {
                 self.handle_worker_archive(idx, worker, reply);
             }
+            RequestCmd::RemoteSessionBound { name } => {
+                if let Some(chat) = self.chats.get_mut(idx) {
+                    chat.remote_session_name = Some(name);
+                }
+                let _ = reply.send(Response::ok("bound"));
+            }
             RequestCmd::WorkflowRun {
                 workflow,
                 properties,
@@ -3126,10 +3160,15 @@ impl App {
         }
 
         // Snapshot Jules-specific info we need for the remote DELETE
-        // before we flip state or hand over the chat.
-        let jules_info: Option<(String, String)> = {
+        // before we flip state or hand over the chat. We need both
+        // the api-key env var name (to resolve the key fresh — agents
+        // may rotate it while aciddog is running) and the backend
+        // session identifier the core registered via
+        // `RemoteSessionBound` once Jules accepted its create call.
+        let jules_delete: Option<(String, String)> = {
             let chat = self.chats.get(target_idx);
             let core_id = chat.and_then(|c| c.ai_core_id.clone());
+            let session_name = chat.and_then(|c| c.remote_session_name.clone());
             let kind = core_id.as_ref().and_then(|id| {
                 self.config
                     .ai_cores
@@ -3137,17 +3176,14 @@ impl App {
                     .find(|c| &c.id == id)
                     .map(|c| c.kind.clone())
             });
-            match kind {
-                Some(AiCoreKind::Jules { api_key_env, .. }) => {
-                    // We don't persist the Jules session name
-                    // anywhere the orchestrator can see, so v1 just
-                    // tears down the local pane — the backend
-                    // session will be garbage-collected by Jules
-                    // after inactivity. If this turns out to be
-                    // expensive in practice we can thread the
-                    // session name out through `socket_tx` on create.
-                    Some((api_key_env, String::new()))
+            match (kind, session_name) {
+                (Some(AiCoreKind::Jules { api_key_env, .. }), Some(name)) => {
+                    Some((api_key_env, name))
                 }
+                // A Jules chat whose session never got registered
+                // (create failed, or archive arrived before the
+                // create response) has nothing to delete — skip the
+                // remote call. Non-Jules cores also skip.
                 _ => None,
             }
         };
@@ -3175,12 +3211,31 @@ impl App {
 
         // Best-effort DELETE on the remote side. Spawn so the reply
         // returns quickly — parent shouldn't be blocked on network
-        // teardown.
-        if jules_info.is_some() {
-            // Note: v1 relies on Jules' own session TTL for cleanup.
-            // Explicit DELETE needs the session name which isn't
-            // observable from outside the core — tracked as a v2
-            // follow-up.
+        // teardown, and a failure here can't un-archive the local
+        // pane anyway.
+        if let Some((api_key_env, session_name)) = jules_delete {
+            tokio::spawn(async move {
+                let Ok(api_key) = std::env::var(&api_key_env) else {
+                    tracing::warn!(
+                        "worker_archive: {api_key_env} not set; skipping remote DELETE for {session_name}"
+                    );
+                    return;
+                };
+                if api_key.is_empty() {
+                    return;
+                }
+                let http = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(15))
+                    .build()
+                    .unwrap_or_else(|_| reqwest::Client::new());
+                if let Err(e) = crate::ai::jules::delete_session(&http, &api_key, &session_name).await {
+                    tracing::warn!(
+                        session = %session_name,
+                        error = %e,
+                        "worker_archive: remote Jules DELETE failed; session will time out via TTL"
+                    );
+                }
+            });
         }
 
         let _ = reply.send(Response::ok("archived"));

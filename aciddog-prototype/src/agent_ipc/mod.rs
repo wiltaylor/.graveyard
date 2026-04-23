@@ -98,6 +98,15 @@ pub enum RequestCmd {
     WorkerArchive {
         worker: String,
     },
+    /// Internal: remote-worker cores use this to register their
+    /// backend session identifier with the orchestrator once the
+    /// remote session has been successfully created. Stored on the
+    /// worker's `AgentChat` so `worker archive` can issue an explicit
+    /// remote DELETE at teardown time. Not part of the documented
+    /// agent CLI — callers never emit this.
+    RemoteSessionBound {
+        name: String,
+    },
     /// Start a new instance of a declared workflow. Enforces the
     /// caller's `can_run_workflows` allowlist. `properties` is a map
     /// of property-id → JSON value; each is coerced against the

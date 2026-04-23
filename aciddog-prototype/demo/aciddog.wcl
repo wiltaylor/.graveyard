@@ -420,7 +420,15 @@ ai_core jules_remote {
   defaultBranch = "main"
   pollIntervalSeconds = 10
   requirePlanApproval = true
-  automationMode = "AUTOMATION_MODE_UNSPECIFIED"
+  // AUTO_CREATE_PR opens the pull request automatically when Jules'
+  // changes are ready — without this, Jules pauses in
+  // AWAITING_USER_FEEDBACK mid-task to ask "should I open the PR?",
+  // and there's no `:createPullRequest` API endpoint so you have to
+  // reply through `:sendMessage`. The parent can override per spawn
+  // with `properties.autoCreatePr: false` if manual PR gating is
+  // needed. Set to AUTOMATION_MODE_UNSPECIFIED to require explicit
+  // approval every time.
+  automationMode = "AUTO_CREATE_PR"
 }
 
 team default {
@@ -649,10 +657,17 @@ worker jokester {
 //      a mail asking them to reply `approve` (→ :approvePlan) or
 //      send feedback (→ :sendMessage with the feedback body).
 //   3. Same pattern for AWAITING_USER_FEEDBACK.
-//   4. On COMPLETED/FAILED, Jules' final message + any PR url lands
-//      on the parent as a WorkerComplete mail and the worker hibernates.
-//   5. Parent can explicitly close out with
-//      `aciddog worker archive --id <worker>`.
+//   4. When Jules finishes its current work (COMPLETED, including
+//      after opening a PR), the parent gets a mail — but the worker
+//      stays alive. Jules' COMPLETED is "idle, awaiting further
+//      input", so the parent can send another message to request
+//      more changes and Jules will plan + execute again on the same
+//      session. FAILED is similarly recoverable via a follow-up
+//      message.
+//   5. The parent MUST explicitly call
+//      `aciddog worker archive --id <worker>` when they're done.
+//      That hibernates the local pane and issues a remote DELETE so
+//      Jules actually tears the session down.
 worker jules_refactor {
   role = "remote implementer"
   role_description = <<EOT

@@ -195,9 +195,20 @@ pub fn cli_preamble(
             ],
             Some(&format!(
                 "You may spawn: {}. Remote-worker templates (those backed by \
-                 the `jules` core) also need a reply to messages from the \
-                 worker — body exactly `approve` accepts a pending plan; any \
-                 other body is forwarded as feedback.",
+                 the `jules` core) behave differently from local workers: \
+                 they stay alive after each `COMPLETED`/`FAILED` mail so you \
+                 can send follow-up messages to request more changes on the \
+                 same session (even after a PR is opened). Reply to worker \
+                 mail with body exactly `approve` to accept a pending plan; \
+                 any other body is forwarded as feedback or the next task. \
+                 Call `worker archive --id <worker>` when you're finished \
+                 with the remote work — that closes the remote session. \
+                 Remote-worker `properties` may include `\"autoCreatePr\": \
+                 true` (Jules auto-opens the PR when changes are ready, no \
+                 mid-task confirmation) or `\"autoCreatePr\": false` (Jules \
+                 pauses and asks before opening each PR — you must answer \
+                 via `send` because there is no dedicated \"create PR\" \
+                 API). Default comes from the core config.",
                 creatable.join(", ")
             )),
         );
@@ -546,10 +557,20 @@ pub fn tag_preamble(
             ],
             Some(&format!(
                 "You may spawn: {}. Remote workers (those backed by the \
-                 `jules` core) surface plan-approval and feedback prompts as \
-                 mail; reply via `send_message` — body exactly `approve` \
-                 accepts a pending plan, any other body is forwarded as \
-                 feedback.",
+                 `jules` core) behave differently from local workers: they \
+                 stay alive after each `COMPLETED`/`FAILED` mail so you can \
+                 send follow-up messages to request more changes on the \
+                 same session (even after a PR is opened). Reply via \
+                 `send_message` — body exactly `approve` accepts a pending \
+                 plan, any other body is forwarded as feedback or the next \
+                 task. Call `worker_archive` when you're finished — that \
+                 closes the remote session. Remote-worker `properties` may \
+                 include `\"autoCreatePr\": true` (Jules auto-opens the PR \
+                 when changes are ready, no mid-task confirmation) or \
+                 `\"autoCreatePr\": false` (Jules pauses and asks before \
+                 opening each PR — you must answer via `send_message` \
+                 because there is no dedicated \"create PR\" API). Default \
+                 comes from the core config.",
                 creatable.join(", ")
             )),
         );

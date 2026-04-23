@@ -110,6 +110,12 @@ impl JulesState {
 pub struct JulesProperties {
     pub repo: String,
     pub branch: Option<String>,
+    /// Per-spawn override for `automationMode`. `Some(true)` forces
+    /// `AUTO_CREATE_PR` (Jules auto-opens the PR when changes are
+    /// ready, no "should I open the PR?" round-trip); `Some(false)`
+    /// forces `AUTOMATION_MODE_UNSPECIFIED`; `None` falls back to the
+    /// `ai_core` block's `automationMode`.
+    pub auto_create_pr: Option<bool>,
 }
 
 impl JulesProperties {
@@ -133,7 +139,12 @@ impl JulesProperties {
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| default_branch.map(str::to_string));
-        Ok(Self { repo, branch })
+        let auto_create_pr = obj.get("autoCreatePr").and_then(Value::as_bool);
+        Ok(Self {
+            repo,
+            branch,
+            auto_create_pr,
+        })
     }
 
     fn source_name(&self) -> String {
@@ -185,6 +196,20 @@ pub struct JulesCore {
     /// by the activity id (stable across polls) so each activity is
     /// emitted exactly once regardless of where pagination lands.
     seen_activity_ids: Arc<Mutex<HashSet<String>>>,
+    /// Most recent plan text rendered from a `planGenerated` activity.
+    /// Stashed so the mail we send to the parent on
+    /// `AWAITING_PLAN_APPROVAL` can include the plan inline — otherwise
+    /// the parent would have to switch to the worker's pane to read it
+    /// before deciding whether to approve.
+    latest_plan: Arc<Mutex<Option<String>>>,
+    /// Most recent `agentMessaged` body. When Jules transitions to
+    /// `AWAITING_USER_FEEDBACK` / `COMPLETED` / `FAILED` / `PAUSED`
+    /// the last thing Jules said is almost always the question or
+    /// summary the parent needs to act on (e.g. "should I open a
+    /// PR?"). Without including it in the mail the parent LLM only
+    /// sees the generic state transition and often guesses wrong —
+    /// in practice, it archives when it should have answered.
+    latest_agent_message: Arc<Mutex<Option<String>>>,
     /// `false` until the first turn has been dispatched (either at
     /// spawn or after resurrection). Matches `mark_started` semantics
     /// from AnthropicApiCore.
@@ -231,6 +256,8 @@ impl JulesCore {
             jules_session_name: Arc::new(Mutex::new(None)),
             last_state: Arc::new(Mutex::new(JulesState::Unspecified)),
             seen_activity_ids: Arc::new(Mutex::new(HashSet::new())),
+            latest_plan: Arc::new(Mutex::new(None)),
+            latest_agent_message: Arc::new(Mutex::new(None)),
             started: false,
             first_turn_prompt_cache: preamble,
         }
@@ -273,6 +300,8 @@ impl AICore for JulesCore {
         let session_name_cell = self.jules_session_name.clone();
         let last_state_cell = self.last_state.clone();
         let seen_ids_cell = self.seen_activity_ids.clone();
+        let latest_plan_cell = self.latest_plan.clone();
+        let latest_msg_cell = self.latest_agent_message.clone();
 
         // Decide create-vs-continue up front (not under await in the
         // mutex — lock for as little as possible).
@@ -290,15 +319,21 @@ impl AICore for JulesCore {
 
         tokio::spawn(async move {
             let Some(api_key) = api_key else {
+                let msg = format!("jules: env var `{api_key_env}` is not set or empty");
                 let _ = tx
                     .send(AIEvent::Error {
-                        message: format!(
-                            "jules: env var `{api_key_env}` is not set or empty"
-                        ),
+                        message: msg.clone(),
                         raw: None,
                     })
                     .await;
-                end_turn(&tx, "env_missing").await;
+                report_setup_failure(
+                    &tx,
+                    socket_tx.as_ref(),
+                    session_uuid,
+                    &format!("Jules worker failed to start: {msg}"),
+                    "env_missing",
+                )
+                .await;
                 return;
             };
 
@@ -335,16 +370,39 @@ impl AICore for JulesCore {
                     {
                         Ok(n) => {
                             *session_name_cell.lock().expect("poisoned") = Some(n.clone());
+                            // Register the backend session id with
+                            // the orchestrator so `worker archive`
+                            // can DELETE the real remote session at
+                            // teardown rather than waiting on Jules'
+                            // own idle TTL.
+                            if let Some(socket) = socket_tx.as_ref() {
+                                let _ = send_ipc(
+                                    socket,
+                                    session_uuid,
+                                    RequestCmd::RemoteSessionBound {
+                                        name: n.clone(),
+                                    },
+                                )
+                                .await;
+                            }
                             n
                         }
                         Err(e) => {
+                            let msg = format!("jules: session create failed: {e}");
                             let _ = tx
                                 .send(AIEvent::Error {
-                                    message: format!("jules: session create failed: {e}"),
+                                    message: msg.clone(),
                                     raw: None,
                                 })
                                 .await;
-                            end_turn(&tx, "create_failed").await;
+                            report_setup_failure(
+                                &tx,
+                                socket_tx.as_ref(),
+                                session_uuid,
+                                &format!("Jules worker failed to start: {msg}"),
+                                "create_failed",
+                            )
+                            .await;
                             return;
                         }
                     }
@@ -361,12 +419,35 @@ impl AICore for JulesCore {
                         send_message(&http, &api_key, &n, &prompt_full).await
                     };
                     if let Err(e) = result {
+                        let msg = format!("jules: turn dispatch failed: {e}");
                         let _ = tx
                             .send(AIEvent::Error {
-                                message: format!("jules: turn dispatch failed: {e}"),
+                                message: msg.clone(),
                                 raw: None,
                             })
                             .await;
+                        // Dispatch failures on an already-running
+                        // session don't terminate the remote session,
+                        // but the parent still needs to know the
+                        // approve/reply they asked for didn't go
+                        // through. A simple mail (not WorkerComplete)
+                        // keeps the worker alive so retry is possible.
+                        if let (Some(socket), Some(parent)) =
+                            (socket_tx.as_ref(), parent_id.as_deref())
+                        {
+                            let _ = send_ipc(
+                                socket,
+                                session_uuid,
+                                RequestCmd::SendMessage {
+                                    to: parent.to_string(),
+                                    body: format!(
+                                        "Remote worker couldn't forward your reply: {msg}. \
+                                         Send the reply again to retry."
+                                    ),
+                                },
+                            )
+                            .await;
+                        }
                         end_turn(&tx, "dispatch_failed").await;
                         return;
                     }
@@ -426,7 +507,13 @@ impl AICore for JulesCore {
                                         continue;
                                     }
                                 }
-                                emit_activity(&tx, &a).await;
+                                emit_activity(
+                                    &tx,
+                                    &a,
+                                    &latest_plan_cell,
+                                    &latest_msg_cell,
+                                )
+                                .await;
                                 emitted_this_poll += 1;
                             }
                             match next_page_token {
@@ -480,8 +567,18 @@ impl AICore for JulesCore {
                 *last_state_cell.lock().expect("poisoned") = state;
 
                 if state.is_terminal_for_turn() {
-                    finish_turn(&tx, socket_tx.as_ref(), session_uuid, parent_id.as_deref(), state)
-                        .await;
+                    let plan_snapshot = latest_plan_cell.lock().expect("poisoned").clone();
+                    let msg_snapshot = latest_msg_cell.lock().expect("poisoned").clone();
+                    finish_turn(
+                        &tx,
+                        socket_tx.as_ref(),
+                        session_uuid,
+                        parent_id.as_deref(),
+                        state,
+                        plan_snapshot.as_deref(),
+                        msg_snapshot.as_deref(),
+                    )
+                    .await;
                     return;
                 }
             }
@@ -862,7 +959,12 @@ fn urlencoding_encode(s: &str) -> String {
 
 // ── Activity → AIEvent translation ─────────────────────────────────
 
-async fn emit_activity(tx: &mpsc::Sender<AIEvent>, a: &Value) {
+async fn emit_activity(
+    tx: &mpsc::Sender<AIEvent>,
+    a: &Value,
+    latest_plan: &Arc<Mutex<Option<String>>>,
+    latest_agent_message: &Arc<Mutex<Option<String>>>,
+) {
     let originator = a.get("originator").and_then(Value::as_str).unwrap_or("");
 
     // `userMessaged` activities come from us — skip to avoid
@@ -878,7 +980,13 @@ async fn emit_activity(tx: &mpsc::Sender<AIEvent>, a: &Value) {
         .and_then(|v| v.get("agentMessage"))
         .and_then(Value::as_str)
     {
-        if !msg.trim().is_empty() {
+        let trimmed = msg.trim();
+        if !trimmed.is_empty() {
+            // Cache so finish_turn can quote this back to the parent
+            // alongside the state-transition mail — otherwise the
+            // parent sees "awaits user feedback" with no idea what
+            // Jules was actually asking.
+            *latest_agent_message.lock().expect("poisoned") = Some(trimmed.to_string());
             let _ = tx
                 .send(AIEvent::AssistantText {
                     text: msg.to_string(),
@@ -918,6 +1026,10 @@ async fn emit_activity(tx: &mpsc::Sender<AIEvent>, a: &Value) {
                 }
             }
         }
+        // Cache so finish_turn's AWAITING_PLAN_APPROVAL mail can
+        // include the plan inline — the parent shouldn't have to
+        // switch panes to read it before deciding.
+        *latest_plan.lock().expect("poisoned") = Some(text.clone());
         let _ = tx
             .send(AIEvent::AssistantText {
                 text,
@@ -1061,6 +1173,8 @@ async fn finish_turn(
     agent_id: Uuid,
     parent_id: Option<&str>,
     state: JulesState,
+    latest_plan: Option<&str>,
+    latest_agent_message: Option<&str>,
 ) {
     let stop_reason = state.stop_reason();
 
@@ -1068,12 +1182,32 @@ async fn finish_turn(
     // orchestrator. If we have no parent id (shouldn't happen for
     // workers), just end the stream.
     if let (Some(socket), Some(parent)) = (socket_tx, parent_id) {
+        // Quote the most recent thing Jules said as a block every
+        // state mail can embed — transitions like
+        // AWAITING_USER_FEEDBACK / COMPLETED are only actionable for
+        // the parent if the parent can see what Jules actually
+        // wrote.
+        let last_from_jules = match latest_agent_message {
+            Some(m) if !m.is_empty() => format!(
+                "\n\n--- Last message from the remote worker ---\n{m}\n--- end ---"
+            ),
+            _ => String::new(),
+        };
         match state {
             JulesState::AwaitingPlanApproval => {
-                let body = "Remote worker needs plan approval. \
-                    Reply with `send` body `approve` to accept the plan as-is, \
-                    or `send` a body with feedback to revise it."
-                    .to_string();
+                let plan_block = latest_plan
+                    .map(|p| format!("\n\n{p}"))
+                    .unwrap_or_else(|| {
+                        " (see the worker's pane for details)".to_string()
+                    });
+                let body = format!(
+                    "Remote worker has produced a plan and is awaiting your \
+                     approval.{plan_block}{last_from_jules}\n\n\
+                     Reply with `send` body exactly `approve` to accept the \
+                     plan as-is and execute it, or `send` a body with \
+                     feedback to revise it. DO NOT archive — the session \
+                     is still live and needs your decision."
+                );
                 let _ = send_ipc(
                     socket,
                     agent_id,
@@ -1085,9 +1219,19 @@ async fn finish_turn(
                 .await;
             }
             JulesState::AwaitingUserFeedback => {
-                let body = "Remote worker awaits user feedback. \
-                    Reply via `send` with instructions to continue."
-                    .to_string();
+                // This state almost always means Jules asked a
+                // specific question (often "should I open a PR?"
+                // mid-task). The parent MUST answer it rather than
+                // archive — the session is not done.
+                let body = format!(
+                    "Remote worker is asking you a question and won't \
+                     proceed until you answer.{last_from_jules}\n\n\
+                     Reply via `send` with the answer to the remote \
+                     worker's question. DO NOT archive — the session is \
+                     paused mid-task and will lose in-progress work if \
+                     you tear it down now. Archive only after the task \
+                     is fully finished (PR landed / changes accepted)."
+                );
                 let _ = send_ipc(
                     socket,
                     agent_id,
@@ -1099,8 +1243,11 @@ async fn finish_turn(
                 .await;
             }
             JulesState::Paused => {
-                let body =
-                    "Remote worker is PAUSED. Send another message to resume.".to_string();
+                let body = format!(
+                    "Remote worker is PAUSED.{last_from_jules}\n\n\
+                     Send another message to resume, or `worker archive` \
+                     if the task is abandoned."
+                );
                 let _ = send_ipc(
                     socket,
                     agent_id,
@@ -1112,24 +1259,54 @@ async fn finish_turn(
                 .await;
             }
             JulesState::Completed => {
-                // The final agent message has already been surfaced
-                // through the activity stream. WorkerComplete drives
-                // hibernation via the existing handler.
+                // Jules' `COMPLETED` is "idle, awaiting further
+                // input" — the session is still live and accepts
+                // follow-up `:sendMessage` calls to request changes
+                // (e.g. after a PR is opened). Mail the parent so
+                // they know the current work wrapped, but leave the
+                // worker un-hibernated so `send` keeps routing to
+                // this chat. Only `worker archive` actually closes
+                // the remote session.
+                let body = format!(
+                    "Remote worker reports its current attempt is COMPLETE. \
+                     Read the last message below carefully — if it \
+                     contains a question (e.g. \"should I open a PR?\"), \
+                     the task is NOT actually done; reply to answer. Only \
+                     `worker archive` when the PR has landed (or the \
+                     work is truly abandoned).{last_from_jules}\n\n\
+                     Next step: reply via `send` (to request more changes \
+                     or answer a pending question) OR `worker archive \
+                     --id <worker>` (to close the remote session)."
+                );
                 let _ = send_ipc(
                     socket,
                     agent_id,
-                    RequestCmd::WorkerComplete {
-                        body: "Jules session completed.".to_string(),
+                    RequestCmd::SendMessage {
+                        to: parent.to_string(),
+                        body,
                     },
                 )
                 .await;
             }
             JulesState::Failed => {
+                // Jules' `FAILED` is recoverable in the same way —
+                // the session remains addressable, and sending a
+                // follow-up message often lets the user correct
+                // course. Mail + leave alive; parent can retry or
+                // archive.
+                let body = format!(
+                    "Remote worker reports the current attempt FAILED.\
+                     {last_from_jules}\n\n\
+                     Send another message with corrective instructions \
+                     to retry, or `worker archive --id <worker>` to close \
+                     the remote session if recovery isn't possible."
+                );
                 let _ = send_ipc(
                     socket,
                     agent_id,
-                    RequestCmd::WorkerComplete {
-                        body: "Jules session failed.".to_string(),
+                    RequestCmd::SendMessage {
+                        to: parent.to_string(),
+                        body,
                     },
                 )
                 .await;
@@ -1148,6 +1325,34 @@ async fn finish_turn(
             raw: Value::Null,
         })
         .await;
+}
+
+/// Route a setup-time failure (missing API key, session-create 404,
+/// etc.) back to the parent so the caller agent actually learns the
+/// spawn didn't succeed. Emits `WorkerComplete` via `socket_tx` — the
+/// orchestrator's `handle_worker_complete` then delivers the body as
+/// mail to the parent, hibernates this worker, and (because the core
+/// is Jules) flags `remote_terminal = true` so no one tries to
+/// resurrect a non-existent remote session. Falls back to just the
+/// TurnResult when the worker has no `socket_tx` or `parent_id`.
+async fn report_setup_failure(
+    tx: &mpsc::Sender<AIEvent>,
+    socket_tx: Option<&mpsc::Sender<AgentSocketEvent>>,
+    agent_id: Uuid,
+    body: &str,
+    stop_reason: &str,
+) {
+    if let Some(socket) = socket_tx {
+        let _ = send_ipc(
+            socket,
+            agent_id,
+            RequestCmd::WorkerComplete {
+                body: body.to_string(),
+            },
+        )
+        .await;
+    }
+    end_turn(tx, stop_reason).await;
 }
 
 async fn end_turn(tx: &mpsc::Sender<AIEvent>, stop_reason: &str) {
@@ -1249,6 +1454,21 @@ mod tests {
         let v = serde_json::json!({"repo": "acme/foo"});
         let p = JulesProperties::parse(&v, Some("develop")).unwrap();
         assert_eq!(p.branch.as_deref(), Some("develop"));
+    }
+
+    #[test]
+    fn jules_properties_parses_auto_create_pr_override() {
+        let v = serde_json::json!({"repo": "acme/foo", "autoCreatePr": true});
+        let p = JulesProperties::parse(&v, None).unwrap();
+        assert_eq!(p.auto_create_pr, Some(true));
+
+        let v = serde_json::json!({"repo": "acme/foo", "autoCreatePr": false});
+        let p = JulesProperties::parse(&v, None).unwrap();
+        assert_eq!(p.auto_create_pr, Some(false));
+
+        let v = serde_json::json!({"repo": "acme/foo"});
+        let p = JulesProperties::parse(&v, None).unwrap();
+        assert_eq!(p.auto_create_pr, None);
     }
 
     #[test]
