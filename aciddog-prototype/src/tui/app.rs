@@ -1110,6 +1110,20 @@ pub struct LayoutRects {
     /// entry is `(which_button, rect)`. Cleared every frame by
     /// `render_workflow_form` and populated when the form is drawn.
     pub workflow_form_buttons: Vec<(super::workflow_view::FormButton, Rect)>,
+    /// Per-field hit-rects on the workflow form. Entry `(field_idx, rect)`.
+    /// Cleared + repopulated each frame by `render_workflow_form`.
+    pub workflow_form_fields: Vec<(usize, Rect)>,
+    /// Per-checkbox hit-rects for MultiSelect fields on the workflow
+    /// form. Entry `((field_idx, option_idx), rect)` — one rect per
+    /// option row so clicks map to exactly one checkbox.
+    pub workflow_form_multi_rects: Vec<((usize, usize), Rect)>,
+    /// When the workflow Select picker is open, each visible option
+    /// row gets a clickable rect here.
+    pub workflow_form_picker_rows: Vec<Rect>,
+    /// Outer rect of the open workflow Select picker. `Some` only while
+    /// the picker is open. Clicks inside but not on a row are swallowed;
+    /// clicks outside close the picker without committing.
+    pub workflow_form_picker_outer: Option<Rect>,
     pub chat_buttons: Vec<ChatButton>,
     /// When a task form is open, every labelled field and button is
     /// given a clickable rect keyed by `FormField`. Populated each
@@ -6116,8 +6130,14 @@ impl App {
 
     fn handle_key_workflow_form(&mut self, workflow_idx: usize, code: KeyCode, mods: KeyModifiers) {
         use super::workflow_view::{FieldEditor, FormButton, FormFocus};
-        // Esc always closes the form without starting an instance.
+        // Esc: close the picker if open, otherwise close the form.
         if matches!(code, KeyCode::Esc) {
+            if let Some(form) = self.workflow_form.as_mut() {
+                if form.picker.is_some() {
+                    form.close_picker();
+                    return;
+                }
+            }
             self.active_view = ActiveView::Chat;
             self.focus = Focus::Chat;
             self.workflow_form = None;
@@ -6129,6 +6149,17 @@ impl App {
         };
         // Any keypress clears a lingering validation error.
         form.error = None;
+        // Picker open: navigation + commit route through the picker so
+        // arrow keys don't drift form focus.
+        if form.picker.is_some() {
+            match code {
+                KeyCode::Up => form.picker_move(-1),
+                KeyCode::Down => form.picker_move(1),
+                KeyCode::Enter => form.commit_picker(),
+                _ => {}
+            }
+            return;
+        }
         match code {
             KeyCode::Tab => {
                 if mods.contains(KeyModifiers::SHIFT) {
@@ -6139,9 +6170,16 @@ impl App {
             }
             KeyCode::BackTab => form.focus_prev(),
             KeyCode::Enter => {
-                // Enter from a field advances focus when there are
-                // more fields; otherwise (last field or the Run
-                // button) it submits.
+                // On a focused Select, Enter opens the picker so the
+                // keyboard has parity with mouse click. Otherwise,
+                // Enter advances focus (or submits on the last
+                // field / Run button).
+                if let FormFocus::Field(i) = form.focus {
+                    if let Some(FieldEditor::Select { .. }) = form.fields.get(i) {
+                        form.open_picker(i);
+                        return;
+                    }
+                }
                 match form.focus {
                     FormFocus::Field(i) if i + 1 < form.fields.len() => form.focus_next(),
                     FormFocus::Field(_) | FormFocus::Button(FormButton::Run) => {
@@ -8623,22 +8661,17 @@ impl App {
                     return;
                 }
 
-                // 1b. Workflow form Run button. Checked before every
-                //     sidebar hit-test so a click on the button wins
-                //     over any overlapping region.
-                if matches!(self.active_view, ActiveView::WorkflowForm { .. }) {
-                    let hit = self
-                        .layout
-                        .workflow_form_buttons
-                        .iter()
-                        .find(|(_, r)| rect_contains(*r, pos))
-                        .map(|(b, _)| *b);
-                    if let Some(super::workflow_view::FormButton::Run) = hit {
-                        if let ActiveView::WorkflowForm { workflow_idx } = self.active_view {
-                            self.submit_workflow_form(workflow_idx);
-                        }
-                        return;
-                    }
+                // 1b. Workflow form: Run button, picker, MultiSelect
+                //     checkbox, or whole-field click. Checked before
+                //     sidebar hit-tests so form clicks win over any
+                //     overlapping region. Clicks outside the form's
+                //     rects fall through so the user can click the
+                //     sidebar to switch views/workflows without having
+                //     to Esc first — the form is not modal.
+                if matches!(self.active_view, ActiveView::WorkflowForm { .. })
+                    && self.handle_mouse_workflow_form(pos)
+                {
+                    return;
                 }
 
                 // 2. Views list: clicking any entry both focuses
@@ -9266,6 +9299,109 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Handle a left click while the workflow property form is
+    /// active. Returns `true` when the click landed on an interactive
+    /// region (button, field, checkbox, picker) so the outer handler
+    /// can short-circuit. Clicks outside any of these regions return
+    /// `false` so the caller falls through to sidebar hit-tests.
+    fn handle_mouse_workflow_form(&mut self, pos: (u16, u16)) -> bool {
+        use super::workflow_view::{FieldEditor, FormButton, FormFocus};
+
+        // 0. Picker open? Click a row → commit; click inside the
+        //    picker frame but not on a row → swallow; click outside
+        //    the outer rect → close without committing.
+        if self
+            .workflow_form
+            .as_ref()
+            .and_then(|f| f.picker.as_ref())
+            .is_some()
+        {
+            if let Some(idx) = self
+                .layout
+                .workflow_form_picker_rows
+                .iter()
+                .position(|r| rect_contains(*r, pos))
+            {
+                if let Some(form) = self.workflow_form.as_mut() {
+                    if let Some(p) = form.picker.as_mut() {
+                        p.selected = idx;
+                    }
+                    form.commit_picker();
+                }
+                return true;
+            }
+            if let Some(outer) = self.layout.workflow_form_picker_outer {
+                if rect_contains(outer, pos) {
+                    return true;
+                }
+            }
+            if let Some(form) = self.workflow_form.as_mut() {
+                form.close_picker();
+            }
+            return true;
+        }
+
+        // 1. Run button wins over any overlapping field rect.
+        if self
+            .layout
+            .workflow_form_buttons
+            .iter()
+            .any(|(b, r)| *b == FormButton::Run && rect_contains(*r, pos))
+        {
+            if let ActiveView::WorkflowForm { workflow_idx } = self.active_view {
+                self.submit_workflow_form(workflow_idx);
+            }
+            return true;
+        }
+
+        // 2. MultiSelect checkbox rects win over whole-field rects
+        //    because they're physically inside them. Toggle the
+        //    checkbox, focus the field, and move the MultiSelect
+        //    cursor so subsequent Space still targets the clicked row.
+        if let Some(((field_idx, opt_idx), _)) = self
+            .layout
+            .workflow_form_multi_rects
+            .iter()
+            .find(|(_, r)| rect_contains(*r, pos))
+            .copied()
+        {
+            let Some(form) = self.workflow_form.as_mut() else {
+                return true;
+            };
+            form.error = None;
+            form.focus = FormFocus::Field(field_idx);
+            form.set_multi_cursor(field_idx, opt_idx);
+            if let Some(FieldEditor::MultiSelect { chosen, .. }) = form.fields.get_mut(field_idx) {
+                if let Some(b) = chosen.get_mut(opt_idx) {
+                    *b = !*b;
+                }
+            }
+            return true;
+        }
+
+        // 3. Whole-field rect: focus the field, and open the picker
+        //    if the clicked field is a Select.
+        if let Some((field_idx, _)) = self
+            .layout
+            .workflow_form_fields
+            .iter()
+            .find(|(_, r)| rect_contains(*r, pos))
+            .copied()
+        {
+            let Some(form) = self.workflow_form.as_mut() else {
+                return true;
+            };
+            form.error = None;
+            form.focus = FormFocus::Field(field_idx);
+            if let Some(FieldEditor::Select { .. }) = form.fields.get(field_idx) {
+                form.open_picker(field_idx);
+            }
+            return true;
+        }
+
+        false
     }
 
     /// Handle a left click while the TODOs / Comments overlay is

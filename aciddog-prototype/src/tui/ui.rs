@@ -3545,9 +3545,13 @@ fn render_workflows_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
 fn render_workflow_form(f: &mut Frame, area: Rect, app: &mut App, workflow_idx: usize) -> Rect {
     use super::workflow_view::{FieldEditor, FormButton, FormFocus};
 
-    // Clear previous frame's button rects so we only ever hit-test
+    // Clear previous frame's hit-test rects so we only ever hit-test
     // against geometry from the current draw.
     app.layout.workflow_form_buttons.clear();
+    app.layout.workflow_form_fields.clear();
+    app.layout.workflow_form_multi_rects.clear();
+    app.layout.workflow_form_picker_rows.clear();
+    app.layout.workflow_form_picker_outer = None;
 
     let focused = app.focus == Focus::Workflow;
     let Some(wf) = app.config.workflows.get(workflow_idx).cloned() else {
@@ -3608,6 +3612,7 @@ fn render_workflow_form(f: &mut Frame, area: Rect, app: &mut App, workflow_idx: 
         lines.push(Line::from(Span::raw("")));
     }
 
+    let content_bottom = inner.y + content_height;
     for (i, field) in form.fields.iter().enumerate() {
         let is_focused = matches!(form.focus, FormFocus::Field(fi) if fi == i);
         let label_style = if is_focused {
@@ -3618,6 +3623,10 @@ fn render_workflow_form(f: &mut Frame, area: Rect, app: &mut App, workflow_idx: 
             Style::default().fg(Color::White)
         };
         let name = field.name();
+        // Record the y at which this field's label lands so the mouse
+        // handler can hit-test it. Checkboxes get their own rects
+        // captured alongside each option row below.
+        let field_start_y = inner.y + lines.len() as u16;
         lines.push(Line::from(vec![Span::styled(
             format!("{} {name}:", if is_focused { "▶" } else { " " }),
             label_style,
@@ -3633,10 +3642,17 @@ fn render_workflow_form(f: &mut Frame, area: Rect, app: &mut App, workflow_idx: 
                 selected, options, ..
             } => {
                 let picked = options.get(*selected).cloned().unwrap_or_default();
-                let hint = if is_focused { " (←/→ cycle)" } else { "" };
+                let hint = if is_focused {
+                    " (click / ⏎ to pick · ←/→ cycle)"
+                } else {
+                    ""
+                };
                 lines.push(Line::from(vec![
                     Span::raw("    "),
-                    Span::styled(format!("◉ {picked}"), Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        format!("◉ {picked} ▾"),
+                        Style::default().fg(Color::Yellow),
+                    ),
                     Span::styled(hint, Style::default().fg(Color::DarkGray)),
                 ]));
             }
@@ -3645,6 +3661,7 @@ fn render_workflow_form(f: &mut Frame, area: Rect, app: &mut App, workflow_idx: 
             } => {
                 let cursor_idx = form.multi_cursor(i).min(options.len().saturating_sub(1));
                 for (oi, opt) in options.iter().enumerate() {
+                    let row_y = inner.y + lines.len() as u16;
                     let mark = if chosen.get(oi).copied().unwrap_or(false) {
                         "☑"
                     } else {
@@ -3662,14 +3679,41 @@ fn render_workflow_form(f: &mut Frame, area: Rect, app: &mut App, workflow_idx: 
                         Span::raw("    "),
                         Span::styled(format!("{mark} {opt}"), style),
                     ]));
+                    if row_y < content_bottom {
+                        app.layout.workflow_form_multi_rects.push((
+                            (i, oi),
+                            Rect {
+                                x: inner.x,
+                                y: row_y,
+                                width: inner.width,
+                                height: 1,
+                            },
+                        ));
+                    }
                 }
                 if is_focused {
                     lines.push(Line::from(Span::styled(
-                        "    (↑/↓ move, space to toggle)",
+                        "    (↑/↓ move · space or click to toggle)",
                         Style::default().fg(Color::DarkGray),
                     )));
                 }
             }
+        }
+        // Record the whole-field rect (label + value/checkbox rows,
+        // excluding the trailing blank separator) clamped to the
+        // visible content area.
+        let field_end_y = inner.y + lines.len() as u16;
+        if field_start_y < content_bottom {
+            let clipped_end = field_end_y.min(content_bottom);
+            app.layout.workflow_form_fields.push((
+                i,
+                Rect {
+                    x: inner.x,
+                    y: field_start_y,
+                    width: inner.width,
+                    height: clipped_end.saturating_sub(field_start_y),
+                },
+            ));
         }
         lines.push(Line::from(Span::raw("")));
     }
@@ -3777,14 +3821,121 @@ fn render_workflow_form(f: &mut Frame, area: Rect, app: &mut App, workflow_idx: 
         };
         f.render_widget(
             Paragraph::new(Span::styled(
-                " tab next · shift-tab prev · ⏎ run · click Run · esc cancel ",
+                " tab next · ⏎ run · click field / checkbox / select · esc cancel ",
                 Style::default().fg(Color::DarkGray),
             )),
             hint_rect,
         );
     }
 
+    // Picker overlay, drawn last so it sits on top of the form.
+    if app
+        .workflow_form
+        .as_ref()
+        .and_then(|s| s.picker.as_ref())
+        .is_some()
+    {
+        render_workflow_picker(f, inner, app);
+    }
+
     inner
+}
+
+/// Single-choice picker overlay for a workflow Select field. Anchors
+/// the picker directly below the focused Select row (flipping above if
+/// it would overflow the form), so the user's eye doesn't have to jump
+/// to the middle of the screen to find it. Records per-row hit-rects
+/// and the outer rect so the mouse handler can commit / swallow / close.
+fn render_workflow_picker(f: &mut Frame, area: Rect, app: &mut App) {
+    use super::workflow_view::FieldEditor;
+
+    let Some(form) = app.workflow_form.as_ref() else {
+        return;
+    };
+    let Some(picker) = form.picker.as_ref() else {
+        return;
+    };
+    let (options, name) = match form.fields.get(picker.field_idx) {
+        Some(FieldEditor::Select { options, name, .. }) => (options.clone(), name.clone()),
+        _ => return,
+    };
+    let picker_selected = picker.selected;
+
+    // Anchor rect: the Select field's label+value rows captured this
+    // frame. Fall back to centring if we somehow don't have one (e.g.
+    // the field scrolled out of view).
+    let anchor = app
+        .layout
+        .workflow_form_fields
+        .iter()
+        .find(|(idx, _)| *idx == picker.field_idx)
+        .map(|(_, r)| *r);
+
+    // Picker size: wide enough for the longest option + title/padding;
+    // tall enough for every option plus the two border rows.
+    let longest = options.iter().map(|s| s.len()).max().unwrap_or(0);
+    let title_width = (name.len() as u16).saturating_add(8);
+    let w = ((longest as u16 + 6).max(title_width)).clamp(16, area.width);
+    let h = (options.len() as u16 + 2).clamp(4, area.height);
+
+    // Position. Prefer directly under the field's value row, indented
+    // to line up with the `◉ value ▾` span. If that would push the
+    // picker past the bottom of the form, flip above the field.
+    let rect = match anchor {
+        Some(a) => {
+            let value_indent: u16 = 4; // matches the render_workflow_form indent
+            let desired_x = a.x.saturating_add(value_indent);
+            let max_x = area.x + area.width.saturating_sub(w);
+            let x = desired_x.min(max_x).max(area.x);
+
+            let below_y = a.y.saturating_add(a.height);
+            let area_bottom = area.y + area.height;
+            let y = if below_y + h <= area_bottom {
+                below_y
+            } else if a.y >= area.y + h {
+                a.y - h
+            } else {
+                // No room either way — clamp to the top so at least the
+                // first options are visible.
+                area.y
+            };
+            Rect { x, y, width: w, height: h }
+        }
+        None => centered_rect(area, w, h),
+    };
+    f.render_widget(Clear, rect);
+
+    let title = format!(" pick {name} ");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .map(|o| ListItem::new(Line::from(Span::raw(o.clone()))))
+        .collect();
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .bg(Color::Cyan)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+    );
+    let mut state = ListState::default();
+    state.select(Some(picker_selected));
+    f.render_stateful_widget(list, inner, &mut state);
+
+    let mut rows: Vec<Rect> = Vec::with_capacity(options.len());
+    for i in 0..options.len() as u16 {
+        if i >= inner.height {
+            break;
+        }
+        rows.push(Rect::new(inner.x, inner.y + i, inner.width, 1));
+    }
+    app.layout.workflow_form_picker_rows = rows;
+    app.layout.workflow_form_picker_outer = Some(rect);
 }
 
 /// One-line summary for a `StepKind`, used by the form's preview.

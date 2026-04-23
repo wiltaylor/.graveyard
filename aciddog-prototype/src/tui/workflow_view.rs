@@ -155,6 +155,15 @@ pub enum FormFocus {
     Button(FormButton),
 }
 
+/// Open single-choice picker overlay for a `Select` field. `field_idx`
+/// identifies which field this picker belongs to; `selected` is the
+/// provisional choice (committed on Enter / click).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectPicker {
+    pub field_idx: usize,
+    pub selected: usize,
+}
+
 /// Form-entry state for the workflow at `workflow_idx`. Constructed by
 /// opening a workflow header in the sidebar; cleared when the instance
 /// starts or the user presses Esc.
@@ -170,6 +179,9 @@ pub struct WorkflowFormState {
     /// Per-MultiSelect cursor position (which option the arrow keys
     /// will toggle on Space). Keyed by the field index.
     pub multi_cursors: HashMap<usize, usize>,
+    /// Open dropdown picker for a `Select` field, or `None` when no
+    /// picker is active.
+    pub picker: Option<SelectPicker>,
 }
 
 impl FieldEditor {
@@ -329,6 +341,7 @@ impl WorkflowFormState {
             focus,
             error: None,
             multi_cursors: HashMap::new(),
+            picker: None,
         }
     }
 
@@ -386,6 +399,56 @@ impl WorkflowFormState {
 
     pub fn set_multi_cursor(&mut self, field_idx: usize, cursor: usize) {
         self.multi_cursors.insert(field_idx, cursor);
+    }
+
+    /// Open the Select dropdown picker for `field_idx`. No-op if the
+    /// field is not a `Select`. Seeds `selected` from the field's
+    /// current choice so the picker opens on the existing value.
+    pub fn open_picker(&mut self, field_idx: usize) {
+        if let Some(FieldEditor::Select { selected, .. }) = self.fields.get(field_idx) {
+            self.picker = Some(SelectPicker {
+                field_idx,
+                selected: *selected,
+            });
+        }
+    }
+
+    /// Close the picker without writing back the provisional choice.
+    pub fn close_picker(&mut self) {
+        self.picker = None;
+    }
+
+    /// Commit the picker's provisional choice back into the field's
+    /// `selected` index and close the picker.
+    pub fn commit_picker(&mut self) {
+        let Some(p) = self.picker.take() else {
+            return;
+        };
+        if let Some(FieldEditor::Select {
+            selected, options, ..
+        }) = self.fields.get_mut(p.field_idx)
+        {
+            if p.selected < options.len() {
+                *selected = p.selected;
+            }
+        }
+    }
+
+    /// Move the picker cursor by `delta`, clamped to the option range.
+    /// No wrap — matches the tasks dropdown behaviour.
+    pub fn picker_move(&mut self, delta: i32) {
+        let Some(p) = self.picker.as_mut() else {
+            return;
+        };
+        let Some(FieldEditor::Select { options, .. }) = self.fields.get(p.field_idx) else {
+            return;
+        };
+        if options.is_empty() {
+            return;
+        }
+        let last = options.len() - 1;
+        let next = (p.selected as i32 + delta).clamp(0, last as i32) as usize;
+        p.selected = next;
     }
 
     /// Validate + gather user inputs into a PropertyValue map suitable
@@ -532,6 +595,86 @@ mod tests {
         let form = WorkflowFormState::new(0, &wf);
         assert!(form.fields.is_empty());
         assert_eq!(form.focus, FormFocus::Button(FormButton::Run));
+    }
+
+    #[test]
+    fn open_picker_only_on_select() {
+        let wf = wf_with_props(vec![
+            WorkflowProperty {
+                id: "branch".into(),
+                label: None,
+                required: false,
+                kind: PropertyKind::Text {
+                    default: Some("main".into()),
+                },
+            },
+            WorkflowProperty {
+                id: "env".into(),
+                label: None,
+                required: false,
+                kind: PropertyKind::Select {
+                    options: vec!["dev".into(), "staging".into(), "prod".into()],
+                    default: Some("staging".into()),
+                },
+            },
+        ]);
+        let mut form = WorkflowFormState::new(0, &wf);
+        // Text field — picker stays closed.
+        form.open_picker(0);
+        assert!(form.picker.is_none());
+        // Select field — picker opens, seeded from current selection.
+        form.open_picker(1);
+        let picker = form.picker.as_ref().expect("picker should be open");
+        assert_eq!(picker.field_idx, 1);
+        assert_eq!(picker.selected, 1);
+    }
+
+    #[test]
+    fn picker_move_stays_in_bounds() {
+        let wf = wf_with_props(vec![WorkflowProperty {
+            id: "env".into(),
+            label: None,
+            required: false,
+            kind: PropertyKind::Select {
+                options: vec!["dev".into(), "staging".into(), "prod".into()],
+                default: None,
+            },
+        }]);
+        let mut form = WorkflowFormState::new(0, &wf);
+        form.open_picker(0);
+        // At 0: move(-1) stays at 0.
+        form.picker_move(-1);
+        assert_eq!(form.picker.as_ref().unwrap().selected, 0);
+        // Walk to last.
+        form.picker_move(1);
+        form.picker_move(1);
+        assert_eq!(form.picker.as_ref().unwrap().selected, 2);
+        // At last: move(+1) stays at last.
+        form.picker_move(1);
+        assert_eq!(form.picker.as_ref().unwrap().selected, 2);
+    }
+
+    #[test]
+    fn commit_picker_writes_selection_and_closes() {
+        let wf = wf_with_props(vec![WorkflowProperty {
+            id: "env".into(),
+            label: None,
+            required: false,
+            kind: PropertyKind::Select {
+                options: vec!["dev".into(), "staging".into(), "prod".into()],
+                default: Some("dev".into()),
+            },
+        }]);
+        let mut form = WorkflowFormState::new(0, &wf);
+        form.open_picker(0);
+        form.picker_move(1);
+        form.picker_move(1);
+        form.commit_picker();
+        assert!(form.picker.is_none());
+        match &form.fields[0] {
+            FieldEditor::Select { selected, .. } => assert_eq!(*selected, 2),
+            other => panic!("expected Select, got {other:?}"),
+        }
     }
 
     #[test]

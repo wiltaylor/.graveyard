@@ -714,6 +714,14 @@ workflow smoke {
   property branch { kind = :text default = "main" }
   property suites { kind = :multiSelect options = ["unit","integ"] default = ["unit"] }
 
+  // Single-choice Select: click the row to open a dropdown picker, or
+  // use ←/→ to cycle and Enter to open.
+  property environment {
+    kind    = :select
+    options = ["dev","staging","prod"]
+    default = "dev"
+  }
+
   // Hidden variables are never shown in the form. They're seeded from
   // `default` at instance start and mutated at runtime by workers via
   // `workflow_set` (tool wiring ships in a later task).
@@ -721,7 +729,7 @@ workflow smoke {
 
   // $$VAR$$ substitution fires at step start with a live snapshot of
   // the variable map.
-  step echo  { kind = :command command = "echo ran on $$branch$$ suites=$$suites$$" }
+  step echo  { kind = :command command = "echo ran on $$branch$$ env=$$environment$$ suites=$$suites$$" }
 
   // 30-second sleep so the instance is visible in the sidebar long
   // enough to observe progress (echo + check + echo would otherwise
