@@ -19,7 +19,12 @@ use aciddog::config::{load_config, AciddogConfig};
 use uuid::Uuid;
 
 fn demo_config() -> AciddogConfig {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("demo/aciddog.wcl");
+    // CARGO_MANIFEST_DIR is crates/aciddog/; the demo/ dir lives at the repo root.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crate manifest dir has at least two ancestors")
+        .join("demo/aciddog.wcl");
     load_config(&path).expect("demo config parses")
 }
 

@@ -4254,7 +4254,7 @@ mod tests {
         // Smoke test: the committed demo/aciddog.wcl should round-trip
         // through the parser, exercising every variant including the
         // z_ai core's `usage_provider = :zai` annotation.
-        let src = include_str!("../demo/aciddog.wcl");
+        let src = include_str!("../../../demo/aciddog.wcl");
         let cfg = parse_config(src, &dummy_path()).expect("demo wcl parses");
         let z_ai = cfg
             .ai_cores

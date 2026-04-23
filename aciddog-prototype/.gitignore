@@ -7,3 +7,10 @@
 /demo/.aciddog/chat/
 /demo-remote-*/.aciddog/
 Cargo.lock
+
+# aciddog-manager
+/crates/aciddog-manager/target/
+/crates/aciddog-manager/web/node_modules/
+/crates/aciddog-manager/web/dist/
+/aciddog-manager.db
+/aciddog-manager.db-journal

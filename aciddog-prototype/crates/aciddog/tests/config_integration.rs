@@ -5,7 +5,12 @@ use aciddog::config::{
 };
 
 fn repo_root() -> PathBuf {
+    // CARGO_MANIFEST_DIR is crates/aciddog/; the repo root is two levels up.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate manifest dir has at least two ancestors")
+        .to_path_buf()
 }
 
 #[test]
