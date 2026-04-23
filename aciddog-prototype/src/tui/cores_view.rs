@@ -9,8 +9,9 @@
 
 use std::collections::HashMap;
 
+use crate::ai::event::RateLimitKind;
 use crate::config::{AciddogConfig, AiCore, AiCoreKind, UsageProvider};
-use crate::usage::UsageSnapshot;
+use crate::usage::{merge_rate_limit_into, UsageSnapshot};
 
 /// Return the ids of agents that resolve to `core_id`, either by
 /// declaring it explicitly via their `ai_core` attribute or by
@@ -102,6 +103,21 @@ impl CoresScreen {
         let next = (self.cursor as isize + delta).clamp(0, len - 1);
         self.cursor = next as usize;
     }
+
+    /// Fold a `rate_limit_event` into the usage entry for `core_id`.
+    /// Each kind writes only its own window slot, so the two events
+    /// (five-hour, weekly) that arrive on different turns don't clobber
+    /// each other.
+    pub fn merge_rate_limit(
+        &mut self,
+        core_id: &str,
+        kind: RateLimitKind,
+        resets_at_unix: Option<i64>,
+    ) {
+        let prev = self.usage.remove(core_id);
+        let merged = merge_rate_limit_into(prev, kind, resets_at_unix);
+        self.usage.insert(core_id.to_string(), merged);
+    }
 }
 
 impl CoreRow {
@@ -138,24 +154,28 @@ fn credential_label(kind: &AiCoreKind) -> Option<String> {
 }
 
 /// Render a `UsageSnapshot` (or its absence) into a one-line cell for
-/// the table.
+/// the table. A populated snapshot (error or display_override) wins
+/// over an absent provider, so `claudeCode` rows — which have no
+/// HTTP provider — still render their stream-derived reset info.
 pub fn format_usage_cell(
     provider: Option<UsageProvider>,
     snapshot: Option<&UsageSnapshot>,
     pending: bool,
 ) -> String {
-    let Some(_) = provider else {
+    if let Some(s) = snapshot {
+        if let Some(err) = s.error.as_deref() {
+            return format!("err: {err}");
+        }
+        if let Some(ov) = s.display_override.as_deref() {
+            return ov.to_string();
+        }
+    }
+    if provider.is_none() {
         return "—".to_string();
-    };
+    }
     match snapshot {
         None if pending => "…".to_string(),
         None => "(idle)".to_string(),
-        Some(s) if s.error.is_some() => format!("err: {}", s.error.as_deref().unwrap_or("?")),
-        Some(s) if s.display_override.is_some() => s
-            .display_override
-            .as_deref()
-            .unwrap_or("—")
-            .to_string(),
         Some(s) => {
             let mut parts: Vec<String> = Vec::new();
             if let Some(p) = s.five_hour_pct {
@@ -174,5 +194,56 @@ pub fn format_usage_cell(
                 parts.join(" · ")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_rate_limit_populates_five_hour_slot() {
+        let mut screen = CoresScreen::default();
+        screen.merge_rate_limit("cc", RateLimitKind::FiveHour, Some(i64::MAX));
+        let snap = screen.usage.get("cc").expect("entry");
+        assert_eq!(snap.claude_five_hour_resets_at, Some(i64::MAX));
+        assert!(snap.claude_weekly_resets_at.is_none());
+        assert!(snap.display_override.is_some());
+    }
+
+    #[test]
+    fn merge_rate_limit_weekly_does_not_clobber_five_hour() {
+        let mut screen = CoresScreen::default();
+        screen.merge_rate_limit("cc", RateLimitKind::FiveHour, Some(10));
+        screen.merge_rate_limit("cc", RateLimitKind::Weekly, Some(20));
+        let snap = screen.usage.get("cc").expect("entry");
+        assert_eq!(snap.claude_five_hour_resets_at, Some(10));
+        assert_eq!(snap.claude_weekly_resets_at, Some(20));
+    }
+
+    #[test]
+    fn format_usage_cell_renders_stream_snapshot_with_no_provider() {
+        let snap = UsageSnapshot {
+            display_override: Some("5h in 2h 14m".to_string()),
+            ..UsageSnapshot::default()
+        };
+        let cell = format_usage_cell(None, Some(&snap), false);
+        assert_eq!(cell, "5h in 2h 14m");
+    }
+
+    #[test]
+    fn format_usage_cell_still_dashes_for_no_provider_no_snapshot() {
+        assert_eq!(format_usage_cell(None, None, false), "—");
+    }
+
+    #[test]
+    fn format_usage_cell_shows_error_over_provider_percentages() {
+        let snap = UsageSnapshot {
+            error: Some("http 500".to_string()),
+            five_hour_pct: Some(42),
+            ..UsageSnapshot::default()
+        };
+        let cell = format_usage_cell(Some(UsageProvider::Zai), Some(&snap), false);
+        assert_eq!(cell, "err: http 500");
     }
 }

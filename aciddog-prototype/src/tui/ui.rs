@@ -1594,11 +1594,14 @@ fn render_core_row(
     selected: bool,
 ) -> ListItem<'static> {
     let provider_label = match row.usage_provider {
-        Some(crate::config::UsageProvider::AnthropicOauth) => "anthropic",
         Some(crate::config::UsageProvider::Zai) => "zai",
         Some(crate::config::UsageProvider::ChatgptOauth) => "chatgpt",
         Some(crate::config::UsageProvider::Openrouter) => "openrouter",
         Some(crate::config::UsageProvider::GithubCopilot) => "copilot",
+        // claudeCode cores feed their reset data from `rate_limit_event`
+        // stream lines rather than an HTTP fetcher, so they have no
+        // provider but are still annotated distinctly.
+        None if row.kind_label == "claudeCode" => "stream",
         None => "—",
     };
     let usage_cell = format_usage_cell(row.usage_provider, snapshot, pending);

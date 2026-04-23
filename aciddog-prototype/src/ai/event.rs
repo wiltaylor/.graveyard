@@ -32,6 +32,15 @@ impl TurnUsage {
     }
 }
 
+/// Which reset window a [`AIEvent::RateLimit`] refers to. The Claude CLI
+/// currently emits `five_hour` and `weekly`; any other string is treated
+/// as unknown and the event falls back to [`AIEvent::Other`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateLimitKind {
+    FiveHour,
+    Weekly,
+}
+
 #[derive(Debug, Clone)]
 pub enum AIEvent {
     SystemInit {
@@ -73,6 +82,16 @@ pub enum AIEvent {
     /// in-flight turn is cancelled via `/stop` or `/sleep`. Lets the
     /// TUI render a `[stopped]` marker and reset agent status to Ready.
     Stopped,
+    /// Window reset announcement emitted by the `claude` CLI on every
+    /// turn (stream-json mode). The Cores view uses these to display a
+    /// reset countdown without ever touching the user's OAuth token.
+    RateLimit {
+        kind: RateLimitKind,
+        resets_at_unix: Option<i64>,
+        status: String,
+        is_using_overage: bool,
+        raw: Value,
+    },
     Other(Value),
 }
 
@@ -103,8 +122,41 @@ pub fn parse_line(line: &str) -> Vec<AIEvent> {
         "assistant" => parse_assistant(value),
         "user" => parse_user(value),
         "result" => parse_result(value),
+        "rate_limit_event" => parse_rate_limit(value),
         _ => vec![AIEvent::Other(value)],
     }
+}
+
+/// Parse a `rate_limit_event` line from the claude CLI stream. Permissive:
+/// an unrecognised `rateLimitType` or missing `rate_limit_info` object
+/// falls back to [`AIEvent::Other`] so forward-compat windows don't
+/// produce spurious `Error` events in the TUI.
+fn parse_rate_limit(raw: Value) -> Vec<AIEvent> {
+    let Some(info) = raw.get("rate_limit_info").and_then(Value::as_object) else {
+        return vec![AIEvent::Other(raw)];
+    };
+    let kind = match info.get("rateLimitType").and_then(Value::as_str) {
+        Some("five_hour") => RateLimitKind::FiveHour,
+        Some("weekly") => RateLimitKind::Weekly,
+        _ => return vec![AIEvent::Other(raw)],
+    };
+    let resets_at_unix = info.get("resetsAt").and_then(Value::as_i64);
+    let status = info
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let is_using_overage = info
+        .get("isUsingOverage")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    vec![AIEvent::RateLimit {
+        kind,
+        resets_at_unix,
+        status,
+        is_using_overage,
+        raw,
+    }]
 }
 
 fn parse_system(raw: Value) -> Vec<AIEvent> {
@@ -438,6 +490,62 @@ mod tests {
             }
             other => panic!("expected TurnResult, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_rate_limit_event_five_hour() {
+        let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1776924000,"rateLimitType":"five_hour","isUsingOverage":false}}"#;
+        let evs = parse_line(line);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            AIEvent::RateLimit {
+                kind,
+                resets_at_unix,
+                status,
+                is_using_overage,
+                ..
+            } => {
+                assert_eq!(*kind, RateLimitKind::FiveHour);
+                assert_eq!(*resets_at_unix, Some(1776924000));
+                assert_eq!(status, "allowed");
+                assert!(!is_using_overage);
+            }
+            other => panic!("expected RateLimit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_rate_limit_event_weekly() {
+        let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1777500000,"rateLimitType":"weekly","isUsingOverage":true}}"#;
+        let evs = parse_line(line);
+        assert_eq!(evs.len(), 1);
+        match &evs[0] {
+            AIEvent::RateLimit {
+                kind,
+                is_using_overage,
+                ..
+            } => {
+                assert_eq!(*kind, RateLimitKind::Weekly);
+                assert!(*is_using_overage);
+            }
+            other => panic!("expected RateLimit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rate_limit_event_with_unknown_type_is_other() {
+        let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1,"rateLimitType":"monthly"}}"#;
+        let evs = parse_line(line);
+        assert_eq!(evs.len(), 1);
+        assert!(matches!(evs[0], AIEvent::Other(_)));
+    }
+
+    #[test]
+    fn rate_limit_event_missing_info_is_other() {
+        let line = r#"{"type":"rate_limit_event"}"#;
+        let evs = parse_line(line);
+        assert_eq!(evs.len(), 1);
+        assert!(matches!(evs[0], AIEvent::Other(_)));
     }
 
     #[test]

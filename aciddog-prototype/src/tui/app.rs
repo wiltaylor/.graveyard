@@ -1184,6 +1184,12 @@ pub struct AgentChat {
     /// statically declared agents and `<template>#<uuid-prefix>` for
     /// worker instances. Also used as the `send --to` target.
     pub display_name: String,
+    /// Id of the `ai_core` backing this chat (post-resolution of any
+    /// agent/worker override). `None` until the agent is wired up; set
+    /// once at spawn and preserved across worker hibernation/resurrection.
+    /// Used to route `AIEvent::RateLimit` lines from the stream into
+    /// the Cores view's usage map.
+    pub ai_core_id: Option<String>,
     /// True after `worker complete`. Channels are dropped; the pane
     /// stays visible. Next inbound message triggers resurrection via
     /// `App::resurrect_worker`.
@@ -2255,6 +2261,20 @@ impl App {
                     chat.end_working();
                 }
             }
+            AIEvent::RateLimit {
+                kind,
+                resets_at_unix,
+                ..
+            } => {
+                // The claude CLI emits `rate_limit_event` on every turn;
+                // route the window-reset info to the Cores view keyed by
+                // the core id we stashed at spawn. Clone the id so the
+                // `chat` borrow drops before we touch `self.cores_screen`.
+                let core_id = chat.ai_core_id.clone();
+                if let Some(id) = core_id {
+                    self.cores_screen.merge_rate_limit(&id, kind, resets_at_unix);
+                }
+            }
             AIEvent::Other(v) => {
                 debug!(event = ?v, agent_idx = idx, "unhandled ai event");
             }
@@ -2838,6 +2858,7 @@ impl App {
             parent_idx: Some(sender_idx),
             worker_template: Some(template.clone()),
             display_name: display_name.clone(),
+            ai_core_id: Some(core.id.clone()),
             hibernated: false,
             context_window,
             context_usage_mode,
@@ -6019,7 +6040,11 @@ impl App {
         self.active_view = ActiveView::Cores;
         self.focus = Focus::Cores;
         self.cores_screen.rebuild(&self.config.ai_cores);
-        self.cores_screen.usage.clear();
+        // Keep stream-derived reset info across open; it can't be
+        // re-fetched on demand the way HTTP-backed entries can.
+        self.cores_screen.usage.retain(|_, s| {
+            s.claude_five_hour_resets_at.is_some() || s.claude_weekly_resets_at.is_some()
+        });
         self.spawn_cores_usage_fetch();
     }
 
@@ -6032,7 +6057,12 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => self.cores_screen.move_cursor(1),
             KeyCode::Char('k') | KeyCode::Up => self.cores_screen.move_cursor(-1),
             KeyCode::Char('r') => {
-                self.cores_screen.usage.clear();
+                // Preserve stream-derived entries across refresh —
+                // only the HTTP providers can actually re-fetch.
+                self.cores_screen.usage.retain(|_, s| {
+                    s.claude_five_hour_resets_at.is_some()
+                        || s.claude_weekly_resets_at.is_some()
+                });
                 self.spawn_cores_usage_fetch();
             }
             _ => {}
@@ -6078,7 +6108,20 @@ impl App {
         if ev.generation != self.cores_screen.generation {
             return;
         }
-        self.cores_screen.usage.insert(ev.core_id, ev.snapshot);
+        // Defensive merge: an HTTP reply shouldn't wipe any
+        // stream-derived reset fields on the same entry. In practice
+        // the keys don't overlap (claudeCode has no HTTP path), but
+        // encoding the invariant keeps future mixed providers safe.
+        let existing = self.cores_screen.usage.remove(&ev.core_id);
+        let merged = match existing {
+            Some(prev) => crate::usage::UsageSnapshot {
+                claude_five_hour_resets_at: prev.claude_five_hour_resets_at,
+                claude_weekly_resets_at: prev.claude_weekly_resets_at,
+                ..ev.snapshot
+            },
+            None => ev.snapshot,
+        };
+        self.cores_screen.usage.insert(ev.core_id, merged);
         if self.cores_screen.pending > 0 {
             self.cores_screen.pending -= 1;
         }
@@ -9667,6 +9710,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
 
         let session_id = Uuid::new_v4();
         app.chats[idx].session_id = Some(session_id);
+        app.chats[idx].ai_core_id = Some(ai_core.id.clone());
         app.agent_ids.insert(session_id, agent.id.clone());
 
         // Compute the list of other agents this one is allowed to message.

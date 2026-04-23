@@ -2,19 +2,23 @@
 //!
 //! Each supported [`UsageProvider`] knows where to fetch a utilization
 //! percentage for the core it is attached to:
-//!   * Anthropic OAuth cores piggy-back on the Claude Code credentials
-//!     at `~/.claude/.credentials.json`.
 //!   * z.ai cores use the core's own `api_key_env`.
 //!   * ChatGPT OAuth cores use our own stored OAuth credential (see
 //!     `crate::openai_auth`) and hit the same `/wham/usage` endpoint
 //!     the upstream Codex CLI uses for its `/status` command.
+//!   * OpenRouter and GitHub Copilot have their own endpoints.
 //!
-//! This module is intentionally HTTP-only; the rendering lives in the
-//! TUI's Cores view.
+//! `claudeCode` cores have no HTTP fetcher here — their reset-window
+//! data is populated straight from `rate_limit_event` lines in the
+//! claude CLI's stream-json output (see `crate::ai::event::RateLimitKind`
+//! and `CoresScreen::merge_rate_limit`). This keeps us from touching
+//! the user's Claude OAuth token at `~/.claude/.credentials.json`.
 use std::time::Duration;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
+
+use crate::ai::event::RateLimitKind;
 
 use crate::config::{AiCore, AiCoreKind, UsageProvider};
 use crate::openai_auth;
@@ -38,6 +42,13 @@ pub struct UsageSnapshot {
     /// count). When `Some`, the Cores view renders this verbatim instead
     /// of constructing "5h:X% · wk:Y%".
     pub display_override: Option<String>,
+    /// claudeCode-only: unix-second timestamp when the five-hour window
+    /// rolls over. Populated from `rate_limit_event` stream lines, not
+    /// HTTP. `None` for every other provider.
+    pub claude_five_hour_resets_at: Option<i64>,
+    /// claudeCode-only: unix-second timestamp when the weekly window
+    /// rolls over. Populated from `rate_limit_event` stream lines.
+    pub claude_weekly_resets_at: Option<i64>,
 }
 
 impl UsageSnapshot {
@@ -61,7 +72,6 @@ pub async fn fetch_usage(core: &AiCore, http: reqwest::Client) -> Option<UsageSn
     // undocumented and changes without notice. Revisit if/when Google
     // ships a stable endpoint.
     let snap = match provider {
-        UsageProvider::AnthropicOauth => fetch_anthropic_oauth(http).await,
         UsageProvider::Zai => fetch_zai(core, http).await,
         UsageProvider::ChatgptOauth => fetch_chatgpt_oauth(core, http).await,
         UsageProvider::Openrouter => fetch_openrouter(core, http).await,
@@ -74,79 +84,44 @@ pub async fn fetch_usage(core: &AiCore, http: reqwest::Client) -> Option<UsageSn
 /// the user opens it and we would rather show "timeout" than hang.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
-// ── Anthropic OAuth ────────────────────────────────────────────────
+// ── claudeCode stream-derived reset info ───────────────────────────
 
-#[derive(Deserialize)]
-struct AnthropicCreds {
-    #[serde(rename = "claudeAiOauth")]
-    oauth: AnthropicOauth,
-}
-
-#[derive(Deserialize)]
-struct AnthropicOauth {
-    #[serde(rename = "accessToken")]
-    access_token: String,
-}
-
-#[derive(Deserialize)]
-struct AnthropicUsage {
-    five_hour: AnthropicWindow,
-    seven_day: AnthropicWindow,
-}
-
-#[derive(Deserialize)]
-struct AnthropicWindow {
-    utilization: f64,
-    #[serde(default)]
-    resets_at: Option<String>,
-}
-
-async fn fetch_anthropic_oauth(http: reqwest::Client) -> UsageSnapshot {
-    let home = match dirs::home_dir() {
-        Some(p) => p,
-        None => return UsageSnapshot::error("no home dir"),
-    };
-    let path = home.join(".claude").join(".credentials.json");
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) => return UsageSnapshot::error(format!("read creds: {}", e)),
-    };
-    let creds: AnthropicCreds = match serde_json::from_str(&raw) {
-        Ok(c) => c,
-        Err(e) => return UsageSnapshot::error(format!("parse creds: {}", e)),
-    };
-
-    let resp = http
-        .get("https://api.anthropic.com/api/oauth/usage")
-        .bearer_auth(&creds.oauth.access_token)
-        .header("anthropic-beta", "oauth-2025-04-20")
-        .header("User-Agent", "aciddog")
-        .timeout(HTTP_TIMEOUT)
-        .send()
-        .await;
-    let resp = match resp {
-        Ok(r) => r,
-        Err(e) => return UsageSnapshot::error(format!("http: {}", e)),
-    };
-    if !resp.status().is_success() {
-        return UsageSnapshot::error(format!("http {}", resp.status().as_u16()));
+/// Render the Cores-view cell for a `claudeCode` core from the two
+/// unix-second reset timestamps harvested from `rate_limit_event`
+/// stream lines. Missing windows are skipped; with nothing known at
+/// all we surface an "awaiting stream" placeholder so the row doesn't
+/// look broken.
+pub fn format_claude_stream_cell(five_hour: Option<i64>, weekly: Option<i64>) -> String {
+    let fh = five_hour.and_then(format_reset_in_unix);
+    let wk = weekly.and_then(format_reset_in_unix);
+    match (fh, wk) {
+        (Some(a), Some(b)) => format!("5h in {} · wk in {}", a, b),
+        (Some(a), None) => format!("5h in {}", a),
+        (None, Some(b)) => format!("wk in {}", b),
+        (None, None) => "(awaiting stream)".to_string(),
     }
-    let usage: AnthropicUsage = match resp.json().await {
-        Ok(u) => u,
-        Err(e) => return UsageSnapshot::error(format!("decode: {}", e)),
-    };
+}
 
-    UsageSnapshot {
-        five_hour_pct: Some(clamp_pct(usage.five_hour.utilization)),
-        week_pct: Some(clamp_pct(usage.seven_day.utilization)),
-        reset_display: usage
-            .five_hour
-            .resets_at
-            .as_deref()
-            .and_then(format_reset_in),
-        error: None,
-        display_override: None,
+/// Fold a `rate_limit_event` into an existing snapshot, returning the
+/// merged value. The two windows arrive in separate events (different
+/// turns), so each only overwrites its own slot — merging ensures the
+/// later event doesn't wipe the earlier one.
+pub fn merge_rate_limit_into(
+    prev: Option<UsageSnapshot>,
+    kind: RateLimitKind,
+    resets_at_unix: Option<i64>,
+) -> UsageSnapshot {
+    let mut snap = prev.unwrap_or_default();
+    match kind {
+        RateLimitKind::FiveHour => snap.claude_five_hour_resets_at = resets_at_unix,
+        RateLimitKind::Weekly => snap.claude_weekly_resets_at = resets_at_unix,
     }
+    snap.display_override = Some(format_claude_stream_cell(
+        snap.claude_five_hour_resets_at,
+        snap.claude_weekly_resets_at,
+    ));
+    snap.error = None;
+    snap
 }
 
 // ── z.ai quota ─────────────────────────────────────────────────────
@@ -340,6 +315,8 @@ async fn fetch_wham_usage(
             .and_then(format_reset_in_unix),
         error: None,
         display_override: None,
+        claude_five_hour_resets_at: None,
+        claude_weekly_resets_at: None,
     }
 }
 
@@ -610,16 +587,9 @@ fn clamp_pct_i32(v: i32) -> u8 {
     v.clamp(0, 100) as u8
 }
 
-/// Given an RFC3339 instant in the future, format the remaining
-/// duration as "Xh Ym" (dropping empty leading hours). Returns `None`
-/// when the input is malformed or already in the past.
-fn format_reset_in(s: &str) -> Option<String> {
-    let when: DateTime<Utc> = s.parse().ok()?;
-    format_duration_until(when)
-}
-
-/// Same as [`format_reset_in`] but takes a Unix timestamp in seconds
-/// (the ChatGPT usage endpoint returns `resetsAt` as an int64).
+/// Format a remaining duration as "Xh Ym" (or "Nd Xh" when >1 day)
+/// given a Unix timestamp in seconds. Returns `None` for malformed
+/// input or a moment already in the past.
 fn format_reset_in_unix(secs: i64) -> Option<String> {
     let when = DateTime::<Utc>::from_timestamp(secs, 0)?;
     format_duration_until(when)

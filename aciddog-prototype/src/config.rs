@@ -158,9 +158,6 @@ pub struct MemoryBank {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageProvider {
-    /// Anthropic OAuth usage (`/api/oauth/usage`). Reads the Claude Code
-    /// OAuth token from `~/.claude/.credentials.json`.
-    AnthropicOauth,
     /// z.ai quota endpoint (`/api/monitor/usage/quota/limit`). Uses the
     /// core's own `api_key_env` as the bearer token.
     Zai,
@@ -185,9 +182,9 @@ pub enum UsageProvider {
 pub struct AiCore {
     pub id: String,
     pub kind: AiCoreKind,
-    /// Optional override of where this core's usage/quota data comes
-    /// from. `None` means "infer from `kind`" — `claudeCode` infers
-    /// `AnthropicOauth`, every other variant infers no tracking.
+    /// Explicit usage/quota data source for this core. `None` means no
+    /// HTTP tracking; `claudeCode` cores populate their reset info
+    /// from `rate_limit_event` stream lines instead of a provider here.
     pub usage_provider: Option<UsageProvider>,
 }
 
@@ -353,18 +350,14 @@ impl AiCore {
         }
     }
 
-    /// Resolve which `UsageProvider` applies to this core, taking
-    /// inference into account. Explicit `usage_provider` on the config
-    /// always wins; otherwise `claudeCode` falls back to
-    /// `AnthropicOauth` and every other variant returns `None`.
+    /// Resolve which `UsageProvider` applies to this core. Explicit
+    /// `usage_provider` on the config always wins; no variant infers
+    /// one by default. `claudeCode` deliberately returns `None` here —
+    /// its reset data is populated from `rate_limit_event` stream
+    /// lines, not from an HTTP fetch, so there is no provider to
+    /// dispatch on.
     pub fn effective_usage_provider(&self) -> Option<UsageProvider> {
-        if let Some(p) = self.usage_provider {
-            return Some(p);
-        }
-        match &self.kind {
-            AiCoreKind::ClaudeCode { .. } => Some(UsageProvider::AnthropicOauth),
-            _ => None,
-        }
+        self.usage_provider
     }
 }
 
@@ -705,7 +698,7 @@ pub enum ConfigError {
     #[error("ai_core `{core}` has unknown type `{type_name}`")]
     UnknownAiCoreType { core: String, type_name: String },
 
-    #[error("ai_core `{core}` has unknown usage_provider `{value}` (expected `:anthropic_oauth`, `:zai`, `:chatgpt_oauth`, `:openrouter`, or `:github_copilot`)")]
+    #[error("ai_core `{core}` has unknown usage_provider `{value}` (expected `:zai`, `:chatgpt_oauth`, `:openrouter`, or `:github_copilot`)")]
     UnknownUsageProvider { core: String, value: String },
 
     #[error("`{from}` references unknown memory bank `{to}` in `memory_banks`")]
@@ -988,7 +981,6 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
             let usage_provider = match optional_symbol(b, "usage_provider")? {
                 None => None,
                 Some(sym) => match sym.as_str() {
-                    "anthropic_oauth" => Some(UsageProvider::AnthropicOauth),
                     "zai" => Some(UsageProvider::Zai),
                     "chatgpt_oauth" => Some(UsageProvider::ChatgptOauth),
                     "openrouter" => Some(UsageProvider::Openrouter),
@@ -2715,7 +2707,10 @@ mod tests {
     }
 
     #[test]
-    fn ai_core_claude_code_infers_anthropic_oauth_usage() {
+    fn ai_core_claude_code_has_no_usage_provider() {
+        // claudeCode cores deliberately report no UsageProvider —
+        // their reset data is populated from `rate_limit_event`
+        // stream lines, not via an HTTP fetch.
         let src = r#"
             team default { description = "t" }
             agent a { role = "r" instructions = "i" }
@@ -2723,10 +2718,7 @@ mod tests {
         "#;
         let cfg = parse_config(src, &dummy_path()).unwrap();
         assert_eq!(cfg.ai_cores[0].usage_provider, None);
-        assert_eq!(
-            cfg.ai_cores[0].effective_usage_provider(),
-            Some(UsageProvider::AnthropicOauth)
-        );
+        assert_eq!(cfg.ai_cores[0].effective_usage_provider(), None);
     }
 
     #[test]
@@ -2796,16 +2788,14 @@ mod tests {
             .find(|c| c.id == "z_ai")
             .expect("z_ai core present");
         assert_eq!(z_ai.usage_provider, Some(UsageProvider::Zai));
-        // ClaudeCode inference should light up on default_core.
+        // claudeCode cores no longer infer an HTTP usage provider —
+        // their reset data is stream-derived.
         let default_core = cfg
             .ai_cores
             .iter()
             .find(|c| c.id == "default_core")
             .expect("default_core present");
-        assert_eq!(
-            default_core.effective_usage_provider(),
-            Some(UsageProvider::AnthropicOauth)
-        );
+        assert!(default_core.effective_usage_provider().is_none());
     }
 
     #[test]
