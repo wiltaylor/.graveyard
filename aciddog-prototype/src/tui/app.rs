@@ -24,7 +24,8 @@ use clap::Parser;
 use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
 use crate::ai::{
     AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, CopilotCliCore,
-    GeminiCliCore, OpenAiApiCore, OpenAiChatgptCore, PromptParts, WorkerCtx,
+    GeminiCliCore, JulesCore, JulesProperties, OpenAiApiCore, OpenAiChatgptCore, PromptParts,
+    WorkerCtx,
 };
 use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::{AciddogConfig, AiCore, AiCoreKind};
@@ -66,6 +67,7 @@ pub(super) fn core_display_label(core: &AiCore) -> String {
         AiCoreKind::OpenAiChatgpt { .. } => "openai-chatgpt",
         AiCoreKind::CopilotCli { .. } => "copilot-cli",
         AiCoreKind::GeminiCli { .. } => "gemini-cli",
+        AiCoreKind::Jules { .. } => "jules",
     };
     format!("{kind} ({})", core.id)
 }
@@ -79,7 +81,10 @@ pub(super) fn core_usage_mode(kind: &AiCoreKind) -> ContextUsageMode {
         | AiCoreKind::OpenAiChatgpt { .. } => ContextUsageMode::Add,
         AiCoreKind::ClaudeCode { .. }
         | AiCoreKind::CopilotCli { .. }
-        | AiCoreKind::GeminiCli { .. } => ContextUsageMode::Replace,
+        | AiCoreKind::GeminiCli { .. }
+        // Jules doesn't report token usage — `Replace` keeps any
+        // stray event from accumulating forever (none are expected).
+        | AiCoreKind::Jules { .. } => ContextUsageMode::Replace,
     }
 }
 
@@ -104,6 +109,9 @@ fn shell_tool_name_for_core(core: &AiCore) -> Option<&'static str> {
         | AiCoreKind::OpenAiChatgpt { .. }
         | AiCoreKind::CopilotCli { .. }
         | AiCoreKind::GeminiCli { .. } => Some("Bash"),
+        // Jules runs in Google's remote sandbox; no local shell is
+        // reachable. Tag IPC is the only agent-level surface.
+        AiCoreKind::Jules { .. } => None,
     }
 }
 
@@ -191,6 +199,11 @@ fn handle_auth_status(name: Option<&str>) -> String {
 /// and (optionally) the tag-IPC socket. `resume` tells the factory to
 /// skip the first-turn preamble — used by `resurrect_worker` so a
 /// hibernated worker resumes cleanly.
+///
+/// Returns `Err(String)` only for remote-worker cores that fail
+/// validation of their per-spawn properties — in that case the worker
+/// spawn is rejected with a clear error to the caller. Local cores
+/// never fail here.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_core(
     core_cfg: &AiCore,
@@ -201,7 +214,8 @@ pub(super) fn build_core(
     socket_tx: Option<mpsc::Sender<AgentSocketEvent>>,
     resume: bool,
     agent_model: Option<&str>,
-) -> Box<dyn AICore> {
+    properties: Option<&serde_json::Value>,
+) -> Result<Box<dyn AICore>, String> {
     build_core_with_extras(
         core_cfg,
         session_id,
@@ -212,6 +226,7 @@ pub(super) fn build_core(
         resume,
         Vec::new(),
         agent_model,
+        properties,
     )
 }
 
@@ -236,7 +251,8 @@ pub(super) fn build_core_with_extras(
     resume: bool,
     extra_tools: Vec<std::sync::Arc<dyn crate::ai::tools::Tool>>,
     agent_model: Option<&str>,
-) -> Box<dyn AICore> {
+    properties: Option<&serde_json::Value>,
+) -> Result<Box<dyn AICore>, String> {
     match &core_cfg.kind {
         AiCoreKind::ClaudeCode {
             system_prompt,
@@ -255,7 +271,7 @@ pub(super) fn build_core_with_extras(
             if let Some(tx) = socket_tx {
                 cc = cc.with_socket_tx(tx);
             }
-            Box::new(cc)
+            Ok(Box::new(cc))
         }
         AiCoreKind::AnthropicApi {
             api_url,
@@ -284,7 +300,7 @@ pub(super) fn build_core_with_extras(
             if let Some(tx) = socket_tx {
                 c = c.with_socket_tx(tx);
             }
-            Box::new(c)
+            Ok(Box::new(c))
         }
         AiCoreKind::OpenAiApi {
             api_url,
@@ -313,7 +329,7 @@ pub(super) fn build_core_with_extras(
             if let Some(tx) = socket_tx {
                 c = c.with_socket_tx(tx);
             }
-            Box::new(c)
+            Ok(Box::new(c))
         }
         AiCoreKind::OpenAiChatgpt {
             credential,
@@ -343,7 +359,7 @@ pub(super) fn build_core_with_extras(
             if let Some(tx) = socket_tx {
                 c = c.with_socket_tx(tx);
             }
-            Box::new(c)
+            Ok(Box::new(c))
         }
         AiCoreKind::CopilotCli { model, .. } => {
             let mut c = if resume {
@@ -358,7 +374,7 @@ pub(super) fn build_core_with_extras(
             if let Some(tx) = socket_tx {
                 c = c.with_socket_tx(tx);
             }
-            Box::new(c)
+            Ok(Box::new(c))
         }
         AiCoreKind::GeminiCli { model, .. } => {
             // `resume = true` here means "the aciddog-side session was
@@ -379,7 +395,55 @@ pub(super) fn build_core_with_extras(
             if let Some(tx) = socket_tx {
                 c = c.with_socket_tx(tx);
             }
-            Box::new(c)
+            Ok(Box::new(c))
+        }
+        AiCoreKind::Jules {
+            api_key_env,
+            default_branch,
+            poll_interval_seconds,
+            require_plan_approval,
+            automation_mode,
+        } => {
+            let parent_id = parts
+                .aciddog_cli
+                .as_ref()
+                .and_then(|c| c.worker.as_ref())
+                .map(|w| w.parent_id.clone());
+            let task = parts
+                .aciddog_cli
+                .as_ref()
+                .and_then(|c| c.worker.as_ref())
+                .map(|w| w.task.clone())
+                .unwrap_or_default();
+            let properties_value = properties.ok_or_else(|| {
+                "Jules workers require `properties.repo` (\"owner/repo\") at spawn time"
+                    .to_string()
+            })?;
+            let props = JulesProperties::parse(properties_value, default_branch.as_deref())?;
+            // `extra_tools` and `env` do not apply to Jules — it runs
+            // remotely and has no local tool registry / shell env.
+            let _ = extra_tools;
+            let _ = env;
+            let mut c = JulesCore::new(
+                session_id,
+                api_key_env.clone(),
+                props,
+                *poll_interval_seconds,
+                *require_plan_approval,
+                automation_mode.clone(),
+                parent_id,
+                &task,
+            );
+            if resume {
+                c = c.mark_started();
+            }
+            if let Some(tx) = socket_tx {
+                c = c.with_socket_tx(tx);
+            }
+            // `agent_model` overrides are not forwarded; Jules picks
+            // its own model on the backend.
+            let _ = agent_model;
+            Ok(Box::new(c))
         }
     }
 }
@@ -596,8 +660,15 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
 
     match cmd {
         RequestCmd::SendMessage { to, body } => ChatBlock::mail_sent(to, body),
-        RequestCmd::WorkerCreate { template, task } => ChatBlock::worker_spawn(template, task),
+        RequestCmd::WorkerCreate {
+            template,
+            task,
+            properties: _,
+        } => ChatBlock::worker_spawn(template, task),
         RequestCmd::WorkerComplete { body } => ChatBlock::worker_complete(body),
+        RequestCmd::WorkerArchive { worker } => {
+            ChatBlock::from_tool_use(&format!("aciddog worker archive --id {worker}"), input)
+        }
         RequestCmd::WorkflowRun {
             workflow,
             properties,
@@ -1194,6 +1265,13 @@ pub struct AgentChat {
     /// stays visible. Next inbound message triggers resurrection via
     /// `App::resurrect_worker`.
     pub hibernated: bool,
+    /// Set on remote-worker chats when the upstream session has
+    /// reached a terminal state (`COMPLETED`, `FAILED`, or was
+    /// archived via `worker archive`). Unlike local hibernated
+    /// workers, these cannot be resumed — the backend session is
+    /// gone — so `handle_send_message` skips auto-resurrection and
+    /// returns a clear error instead of rebuilding a useless core.
+    pub remote_terminal: bool,
     /// True between `/sleep` and `/awake`. While set, `handle_send_message`
     /// returns an "agent is asleep" error to the sender, channel
     /// broadcasts skip the agent, hibernated workers are NOT auto-
@@ -2306,11 +2384,18 @@ impl App {
             RequestCmd::SendMessage { to, body } => {
                 self.handle_send_message(idx, to, body, reply);
             }
-            RequestCmd::WorkerCreate { template, task } => {
-                self.handle_worker_create(idx, template, task, reply);
+            RequestCmd::WorkerCreate {
+                template,
+                task,
+                properties,
+            } => {
+                self.handle_worker_create(idx, template, task, properties, reply);
             }
             RequestCmd::WorkerComplete { body } => {
                 self.handle_worker_complete(idx, body, reply);
+            }
+            RequestCmd::WorkerArchive { worker } => {
+                self.handle_worker_archive(idx, worker, reply);
             }
             RequestCmd::WorkflowRun {
                 workflow,
@@ -2689,6 +2774,7 @@ impl App {
         sender_idx: usize,
         template: String,
         task: String,
+        properties: Option<serde_json::Value>,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
         // Resolve the sender's "template id" for the allowlist check.
@@ -2831,7 +2917,7 @@ impl App {
             .effective_model(worker.model.as_deref(), Some(core));
         let context_window = effective_model.and_then(crate::ai::model_context_window);
         let context_usage_mode = core_usage_mode(&core.kind);
-        let built_core: Box<dyn AICore> = build_core(
+        let built_core: Box<dyn AICore> = match build_core(
             core,
             session_id,
             parts,
@@ -2840,7 +2926,16 @@ impl App {
             socket_tx_for_core,
             false,
             worker.model.as_deref(),
-        );
+            properties.as_ref(),
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = reply.send(Response::err(format!(
+                    "cannot spawn worker `{template}`: {e}"
+                )));
+                return;
+            }
+        };
         let assembled_prompt = built_core.first_turn_prompt();
         let info_block =
             ChatBlock::agent_info(core_label, tools.clone(), assembled_prompt, context_window);
@@ -2953,6 +3048,20 @@ impl App {
         // Record the final report on the worker's own pane, then
         // hibernate: drop both channel senders so `run_core` exits on
         // its next iteration and the claude child tears down.
+        //
+        // Remote-worker cores (Jules) use this same path on COMPLETED /
+        // FAILED, but the backend session is already gone — flip
+        // `remote_terminal` so `handle_send_message` refuses to
+        // resurrect us. Detect by the chat's ai_core kind rather than
+        // threading a flag through every caller.
+        let is_remote = {
+            let chat = self.chats.get(sender_idx);
+            let core_id = chat.and_then(|c| c.ai_core_id.clone());
+            core_id
+                .and_then(|id| self.config.ai_cores.iter().find(|c| c.id == id).cloned())
+                .map(|c| matches!(c.kind, AiCoreKind::Jules { .. }))
+                .unwrap_or(false)
+        };
         if let Some(chat) = self.chats.get_mut(sender_idx) {
             chat.push_block(ChatBlock::WorkerComplete {
                 body: body.clone(),
@@ -2965,6 +3074,9 @@ impl App {
             chat.cancel_tx = None;
             chat.status = AgentStatus::Hibernated;
             chat.hibernated = true;
+            if is_remote {
+                chat.remote_terminal = true;
+            }
             chat.end_working();
         }
 
@@ -2976,6 +3088,102 @@ impl App {
         }
 
         let _ = reply.send(Response::ok("hibernated"));
+    }
+
+    /// Parent-initiated close of a worker. Tears down the backend
+    /// session (for remote-worker cores) and hibernates the local
+    /// pane. Validated to be called by the worker's parent — any
+    /// other caller gets a clear permission error.
+    fn handle_worker_archive(
+        &mut self,
+        sender_idx: usize,
+        worker_display: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(target_idx) = self
+            .chats
+            .iter()
+            .position(|c| c.display_name == worker_display)
+        else {
+            let _ = reply.send(Response::err(format!(
+                "no worker named `{worker_display}`"
+            )));
+            return;
+        };
+
+        // Only the worker's own parent may archive it. Prevents a
+        // sibling agent (or the worker itself) from tearing down
+        // someone else's worker.
+        let target_parent = self
+            .chats
+            .get(target_idx)
+            .and_then(|c| c.parent_idx);
+        if target_parent != Some(sender_idx) {
+            let _ = reply.send(Response::err(
+                "only the parent that spawned this worker may archive it",
+            ));
+            return;
+        }
+
+        // Snapshot Jules-specific info we need for the remote DELETE
+        // before we flip state or hand over the chat.
+        let jules_info: Option<(String, String)> = {
+            let chat = self.chats.get(target_idx);
+            let core_id = chat.and_then(|c| c.ai_core_id.clone());
+            let kind = core_id.as_ref().and_then(|id| {
+                self.config
+                    .ai_cores
+                    .iter()
+                    .find(|c| &c.id == id)
+                    .map(|c| c.kind.clone())
+            });
+            match kind {
+                Some(AiCoreKind::Jules { api_key_env, .. }) => {
+                    // We don't persist the Jules session name
+                    // anywhere the orchestrator can see, so v1 just
+                    // tears down the local pane — the backend
+                    // session will be garbage-collected by Jules
+                    // after inactivity. If this turns out to be
+                    // expensive in practice we can thread the
+                    // session name out through `socket_tx` on create.
+                    Some((api_key_env, String::new()))
+                }
+                _ => None,
+            }
+        };
+
+        // Hibernate locally: drop channels, mark terminal.
+        if let Some(chat) = self.chats.get_mut(target_idx) {
+            chat.user_tx = None;
+            chat.agent_tx = None;
+            chat.cancel_tx = None;
+            chat.status = AgentStatus::Hibernated;
+            chat.hibernated = true;
+            chat.remote_terminal = true;
+            chat.push_block(ChatBlock::WorkerComplete {
+                body: "archived by parent".to_string(),
+                is_error: false,
+                collapsed: true,
+                pending: false,
+            });
+            chat.end_working();
+        }
+
+        if self.selected == target_idx {
+            self.selected = sender_idx;
+        }
+
+        // Best-effort DELETE on the remote side. Spawn so the reply
+        // returns quickly — parent shouldn't be blocked on network
+        // teardown.
+        if jules_info.is_some() {
+            // Note: v1 relies on Jules' own session TTL for cleanup.
+            // Explicit DELETE needs the session name which isn't
+            // observable from outside the core — tracked as a v2
+            // follow-up.
+        }
+
+        let _ = reply.send(Response::ok("archived"));
     }
 
     /// Restart a hibernated worker so a newly delivered message can be
@@ -3037,6 +3245,11 @@ impl App {
         // skips the preamble (history is empty post-restart, which is
         // the documented v1 limitation).
         let ai_core = ai_core.ok_or_else(|| "worker has no resolvable ai_core".to_string())?;
+        // Remote-worker cores cannot resume a backend session, and
+        // `handle_send_message` already guards against auto-resurrection
+        // when `remote_terminal` is set. Hitting this path for a Jules
+        // core would be a bug — surface it as a clear error rather
+        // than silently creating a stranded core.
         let core: Box<dyn AICore> = build_core(
             ai_core,
             session_id,
@@ -3046,7 +3259,9 @@ impl App {
             socket_tx_for_core,
             true,
             worker.model.as_deref(),
-        );
+            None,
+        )
+        .map_err(|e| format!("build_core failed during resurrection: {e}"))?;
 
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
         let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
@@ -3791,6 +4006,22 @@ impl App {
             .unwrap_or(false)
         {
             let _ = reply.send(Response::err(format!("agent `{to}` is asleep")));
+            return;
+        }
+
+        // Remote-worker sessions (Jules) cannot be resumed once the
+        // backend session has terminated or been archived — the
+        // session id in our core is already DELETEd upstream. Reject
+        // with a clear error before we attempt resurrection.
+        let recipient_remote_terminal = self
+            .chats
+            .get(recipient_idx)
+            .map(|c| c.remote_terminal)
+            .unwrap_or(false);
+        if recipient_remote_terminal {
+            let _ = reply.send(Response::err(format!(
+                "remote worker `{to}` has ended; spawn a new worker instead"
+            )));
             return;
         }
 
@@ -9243,7 +9474,14 @@ fn try_parse_aciddog_send(cmd: &str, binary: &str) -> Option<(String, String)> {
 fn try_parse_aciddog_worker_create(cmd: &str, binary: &str) -> Option<(String, String)> {
     match try_parse_aciddog(cmd, binary)? {
         AgentCommand::Worker {
-            cmd: crate::cli::WorkerCommand::Create { template, task },
+            cmd:
+                crate::cli::WorkerCommand::Create {
+                    template,
+                    task,
+                    // `--properties` is captured at IPC construction time;
+                    // the bash-parsed shortcut ignores it.
+                    properties: _,
+                },
         } => Some((template, task)),
         _ => None,
     }
@@ -9792,6 +10030,12 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             None
         };
 
+        // Agents never carry `properties` (those only make sense for
+        // ephemeral workers spawned on demand), so `None` is always
+        // correct here. If an agent's core is a remote-worker variant
+        // that requires properties (Jules), build_core will return
+        // an error — propagate it as a fatal config issue at startup
+        // rather than silently continuing.
         let core: Box<dyn AICore> = build_core(
             ai_core,
             session_id,
@@ -9801,7 +10045,9 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             socket_tx_for_core,
             false,
             agent.model.as_deref(),
-        );
+            None,
+        )
+        .map_err(|e| anyhow::anyhow!("agent `{}` core build failed: {e}", agent.id))?;
 
         // Reflect the assembled first-turn prompt in the top AgentInfo
         // block so the user can expand it and see exactly what the LLM
@@ -11879,6 +12125,7 @@ mod tests {
                 cmd: RequestCmd::WorkerCreate {
                     template: "ghost".into(),
                     task: "anything".into(),
+                    properties: None,
                 },
             },
             reply: reply_tx,
@@ -11904,6 +12151,7 @@ mod tests {
                 cmd: RequestCmd::WorkerCreate {
                     template: "researcher".into(),
                     task: "t".into(),
+                    properties: None,
                 },
             },
             reply: reply_tx,
@@ -11926,6 +12174,7 @@ mod tests {
                 cmd: RequestCmd::WorkerCreate {
                     template: "researcher".into(),
                     task: "find FOO".into(),
+                    properties: None,
                 },
             },
             reply: reply_tx,

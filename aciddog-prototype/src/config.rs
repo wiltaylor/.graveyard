@@ -317,6 +317,33 @@ pub enum AiCoreKind {
         /// at config parse time (see `validate_ai_core_tools`).
         default_tools: Option<Vec<String>>,
     },
+    /// Google Jules remote-worker core. Creates a session on jules.google
+    /// via the Jules API, polls the session's activity stream, and
+    /// translates Jules state transitions into aciddog IPC (mail to the
+    /// parent when plan approval / user feedback is awaited; worker
+    /// complete on terminal states). Only valid for worker templates —
+    /// requires `properties.repo` ("owner/repo") at spawn time.
+    Jules {
+        /// Environment variable holding the Jules API key (created at
+        /// jules.google.com/settings). Resolved at turn time.
+        api_key_env: String,
+        /// Fallback `sourceContext.githubRepoContext.startingBranch`
+        /// when the spawn-time properties don't pass `branch`. `None`
+        /// lets Jules default to the repo's default branch.
+        default_branch: Option<String>,
+        /// How often to poll `/activities` and `/sessions/{id}` while a
+        /// turn is in flight. Clamped 3..=120 seconds at build time.
+        /// Defaults to 10s.
+        poll_interval_seconds: Option<u64>,
+        /// Whether to pass `requirePlanApproval = true` when creating
+        /// the session. Defaults to true so plans are gated on the
+        /// parent's approval (via the magic `"approve"` reply).
+        require_plan_approval: Option<bool>,
+        /// `AUTOMATION_MODE_UNSPECIFIED` (default) or `AUTO_CREATE_PR`.
+        /// Forwarded verbatim as the `automationMode` field on session
+        /// creation.
+        automation_mode: Option<String>,
+    },
 }
 
 impl AiCore {
@@ -331,6 +358,12 @@ impl AiCore {
             | AiCoreKind::OpenAiChatgpt { default_tools, .. }
             | AiCoreKind::CopilotCli { default_tools, .. }
             | AiCoreKind::GeminiCli { default_tools, .. } => default_tools.as_deref(),
+            // Jules runs on Google's remote sandbox — it doesn't use
+            // aciddog's built-in tools. Tools are only relevant for the
+            // tag-IPC preamble Jules sees on its first prompt, and we
+            // intentionally keep that minimal (no Bash; tag protocol
+            // always applies).
+            AiCoreKind::Jules { .. } => None,
         }
     }
 
@@ -347,6 +380,9 @@ impl AiCore {
             AiCoreKind::CopilotCli { model, .. } | AiCoreKind::GeminiCli { model, .. } => {
                 model.as_deref()
             }
+            // Jules chooses its own model on the backend; we never
+            // pass a `--model` equivalent.
+            AiCoreKind::Jules { .. } => None,
         }
     }
 
@@ -971,6 +1007,14 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                     model: optional_string(b, "model"),
                     default_tools: optional_string_list(b, "default_tools")?,
                 },
+                "jules" => AiCoreKind::Jules {
+                    api_key_env: require_string(b, "apiKeyEnv")?,
+                    default_branch: optional_string(b, "defaultBranch"),
+                    poll_interval_seconds: optional_u32(b, "pollIntervalSeconds")?
+                        .map(|v| v as u64),
+                    require_plan_approval: optional_bool(b, "requirePlanApproval")?,
+                    automation_mode: optional_string(b, "automationMode"),
+                },
                 other => {
                     return Err(ConfigError::UnknownAiCoreType {
                         core: id,
@@ -1328,7 +1372,7 @@ fn validate_ai_core_tools(cores: &[AiCore]) -> Result<(), ConfigError> {
             AiCoreKind::GeminiCli { default_tools, .. } => {
                 ("geminiCli", default_tools.as_deref(), &gemini_known)
             }
-            AiCoreKind::ClaudeCode { .. } => continue,
+            AiCoreKind::ClaudeCode { .. } | AiCoreKind::Jules { .. } => continue,
         };
         let Some(list) = defaults else { continue };
         for name in list {
@@ -1447,6 +1491,7 @@ fn validate_compaction_refs(
                 Some(AiCoreKind::AnthropicApi { .. }) => "anthropicApi",
                 Some(AiCoreKind::OpenAiApi { .. }) => "openAiApi",
                 Some(AiCoreKind::OpenAiChatgpt { .. }) => "openAiChatgpt",
+                Some(AiCoreKind::Jules { .. }) => "jules",
                 // No core resolvable — treat as "unknown", let the
                 // core-ref validator surface a better error. Compaction
                 // validation stays conservative here.
@@ -3402,6 +3447,67 @@ mod tests {
         "#;
         let cfg = parse_config(src, &dummy_path()).unwrap();
         assert_eq!(cfg.ai_cores[0].runtime_model(), Some("auto-gemini-3"));
+    }
+
+    #[test]
+    fn parses_ai_core_block_with_jules_variant() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core jules_remote {
+                type = :jules
+                apiKeyEnv = "JULES_API_KEY"
+                defaultBranch = "main"
+                pollIntervalSeconds = 15
+                requirePlanApproval = true
+                automationMode = "AUTO_CREATE_PR"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].kind,
+            AiCoreKind::Jules {
+                api_key_env: "JULES_API_KEY".into(),
+                default_branch: Some("main".into()),
+                poll_interval_seconds: Some(15),
+                require_plan_approval: Some(true),
+                automation_mode: Some("AUTO_CREATE_PR".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn jules_variant_optional_fields_default_to_none() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core jr {
+                type = :jules
+                apiKeyEnv = "JULES_API_KEY"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].kind,
+            AiCoreKind::Jules {
+                api_key_env: "JULES_API_KEY".into(),
+                default_branch: None,
+                poll_interval_seconds: None,
+                require_plan_approval: None,
+                automation_mode: None,
+            }
+        );
+    }
+
+    #[test]
+    fn jules_variant_requires_api_key_env() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core jr { type = :jules }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(err, ConfigError::MissingAttribute { .. }));
     }
 
     #[test]

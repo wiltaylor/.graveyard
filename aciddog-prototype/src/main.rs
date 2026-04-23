@@ -205,11 +205,32 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
         AgentCommand::Test => RequestCmd::Test,
         AgentCommand::Send { to, body } => RequestCmd::SendMessage { to, body },
         AgentCommand::Worker {
-            cmd: WorkerCommand::Create { template, task },
-        } => RequestCmd::WorkerCreate { template, task },
+            cmd:
+                WorkerCommand::Create {
+                    template,
+                    task,
+                    properties,
+                },
+        } => {
+            let parsed = match properties {
+                None => None,
+                Some(s) => Some(
+                    serde_json::from_str::<serde_json::Value>(&s)
+                        .map_err(|e| anyhow!("invalid --properties JSON: {e}"))?,
+                ),
+            };
+            RequestCmd::WorkerCreate {
+                template,
+                task,
+                properties: parsed,
+            }
+        }
         AgentCommand::Worker {
             cmd: WorkerCommand::Complete { body },
         } => RequestCmd::WorkerComplete { body },
+        AgentCommand::Worker {
+            cmd: WorkerCommand::Archive { id },
+        } => RequestCmd::WorkerArchive { worker: id },
         AgentCommand::Task {
             cmd:
                 TaskCommand::Add {

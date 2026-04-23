@@ -139,13 +139,15 @@ fn kind_label(kind: &AiCoreKind) -> &'static str {
         AiCoreKind::OpenAiChatgpt { .. } => "openAiChatgpt",
         AiCoreKind::CopilotCli { .. } => "copilotCli",
         AiCoreKind::GeminiCli { .. } => "geminiCli",
+        AiCoreKind::Jules { .. } => "jules",
     }
 }
 
 fn credential_label(kind: &AiCoreKind) -> Option<String> {
     match kind {
         AiCoreKind::AnthropicApi { api_key_env, .. }
-        | AiCoreKind::OpenAiApi { api_key_env, .. } => Some(format!("${}", api_key_env)),
+        | AiCoreKind::OpenAiApi { api_key_env, .. }
+        | AiCoreKind::Jules { api_key_env, .. } => Some(format!("${}", api_key_env)),
         AiCoreKind::OpenAiChatgpt { credential, .. } => Some(credential.clone()),
         AiCoreKind::ClaudeCode { .. }
         | AiCoreKind::CopilotCli { .. }

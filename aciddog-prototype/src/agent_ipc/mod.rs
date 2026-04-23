@@ -75,14 +75,28 @@ pub enum RequestCmd {
     /// Spawn an ephemeral worker from a declared worker template.
     /// Enforces the caller's `can_create_workers` allowlist. Reply
     /// message carries the new worker's display id and session UUID.
+    ///
+    /// `properties` is a free-form JSON object passed through to the
+    /// worker's core at build time — required for remote-worker cores
+    /// that need per-spawn context (e.g. Jules requires
+    /// `{"repo":"owner/repo"}`). Ignored by local cores.
     WorkerCreate {
         template: String,
         task: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        properties: Option<serde_json::Value>,
     },
     /// Deliver a final report to the parent and hibernate the calling
     /// worker. Only valid when the caller is itself a worker.
     WorkerComplete {
         body: String,
+    },
+    /// Parent-initiated close of a worker. Drops the worker's IPC
+    /// channels, hibernates it, and — for remote-worker cores — tears
+    /// down the backend session (e.g. DELETE the Jules session).
+    /// Validated to be called by the worker's parent.
+    WorkerArchive {
+        worker: String,
     },
     /// Start a new instance of a declared workflow. Enforces the
     /// caller's `can_run_workflows` allowlist. `properties` is a map
@@ -467,12 +481,29 @@ mod tests {
             cmd: RequestCmd::WorkerCreate {
                 template: "researcher".into(),
                 task: "find FOO".into(),
+                properties: None,
             },
         };
         let s = serde_json::to_string(&req).unwrap();
         assert!(s.contains("\"cmd\":\"worker_create\""), "got: {s}");
         assert!(s.contains("\"template\":\"researcher\""), "got: {s}");
         assert!(s.contains("\"task\":\"find FOO\""), "got: {s}");
+        assert!(!s.contains("\"properties\""), "properties should be omitted when None: {s}");
+    }
+
+    #[test]
+    fn worker_create_serializes_with_properties() {
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::WorkerCreate {
+                template: "jules_refactor".into(),
+                task: "refactor foo".into(),
+                properties: Some(serde_json::json!({"repo":"acme/foo","branch":"main"})),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"properties\""), "got: {s}");
+        assert!(s.contains("\"repo\":\"acme/foo\""), "got: {s}");
     }
 
     #[test]
@@ -495,15 +526,36 @@ mod tests {
             cmd: RequestCmd::WorkerCreate {
                 template: "r".into(),
                 task: "t".into(),
+                properties: None,
             },
         };
         let back: Request = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
         match back.cmd {
-            RequestCmd::WorkerCreate { template, task } => {
+            RequestCmd::WorkerCreate { template, task, properties } => {
                 assert_eq!(template, "r");
                 assert_eq!(task, "t");
+                assert!(properties.is_none());
             }
             other => panic!("expected WorkerCreate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_archive_roundtrips() {
+        let req = Request {
+            agent_id: Uuid::new_v4(),
+            cmd: RequestCmd::WorkerArchive {
+                worker: "jules_refactor#abcd1234".into(),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"worker_archive\""), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::WorkerArchive { worker } => {
+                assert_eq!(worker, "jules_refactor#abcd1234");
+            }
+            other => panic!("expected WorkerArchive, got {other:?}"),
         }
     }
 

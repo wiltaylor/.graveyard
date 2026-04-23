@@ -173,14 +173,33 @@ pub fn cli_preamble(
         push_group(
             &mut out,
             "Workers",
-            &[Row {
-                cmd: "worker create",
-                params: "`--template <id>` `--task \"<initial task>\"`",
-                desc: "Spawn an ephemeral worker. Response carries the new \
-                       worker's display id (use with `send --to`) and session \
-                       UUID (retain to resume if it hibernates).",
-            }],
-            Some(&format!("You may spawn: {}.", creatable.join(", "))),
+            &[
+                Row {
+                    cmd: "worker create",
+                    params: "`--template <id>` `--task \"<initial task>\"` [`--properties '<json>'`]",
+                    desc: "Spawn an ephemeral worker. Response carries the new \
+                           worker's display id (use with `send --to`) and session \
+                           UUID (retain to resume if it hibernates). \
+                           `--properties` is a JSON object required by \
+                           remote-worker templates (e.g. Jules needs \
+                           `{\"repo\":\"owner/repo\",\"branch\":\"main\"}`); \
+                           ignored by local templates.",
+                },
+                Row {
+                    cmd: "worker archive",
+                    params: "`--id <worker-display-id>`",
+                    desc: "Close out a worker you spawned. Hibernates it \
+                           locally and tears down any remote backend session \
+                           (Jules). Only the parent can archive.",
+                },
+            ],
+            Some(&format!(
+                "You may spawn: {}. Remote-worker templates (those backed by \
+                 the `jules` core) also need a reply to messages from the \
+                 worker — body exactly `approve` accepts a pending plan; any \
+                 other body is forwarded as feedback.",
+                creatable.join(", ")
+            )),
         );
     }
 
@@ -507,12 +526,32 @@ pub fn tag_preamble(
         push_group(
             &mut out,
             "Workers",
-            &[Row {
-                cmd: "worker_create",
-                params: "`\"template\":\"<id>\"`, `\"task\":\"<initial task>\"`",
-                desc: "Spawn an ephemeral worker. Response carries display id (use in `send_message.to`) and session UUID.",
-            }],
-            Some(&format!("You may spawn: {}.", creatable.join(", "))),
+            &[
+                Row {
+                    cmd: "worker_create",
+                    params: "`\"template\":\"<id>\"`, `\"task\":\"<initial task>\"`, [`\"properties\":{…}`]",
+                    desc: "Spawn an ephemeral worker. Response carries display id \
+                           (use in `send_message.to`) and session UUID. \
+                           `properties` is required for remote-worker templates \
+                           (e.g. Jules needs `{\"repo\":\"owner/repo\",\"branch\":\"main\"}`); \
+                           ignored by local templates.",
+                },
+                Row {
+                    cmd: "worker_archive",
+                    params: "`\"worker\":\"<worker-display-id>\"`",
+                    desc: "Close out a worker you spawned. Hibernates it locally \
+                           and tears down any remote backend session (Jules). \
+                           Only the parent can archive.",
+                },
+            ],
+            Some(&format!(
+                "You may spawn: {}. Remote workers (those backed by the \
+                 `jules` core) surface plan-approval and feedback prompts as \
+                 mail; reply via `send_message` — body exactly `approve` \
+                 accepts a pending plan, any other body is forwarded as \
+                 feedback.",
+                creatable.join(", ")
+            )),
         );
     }
 

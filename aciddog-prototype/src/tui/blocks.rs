@@ -219,6 +219,19 @@ pub fn block_fingerprint(b: &ChatBlock) -> u64 {
             collapsed.hash(&mut h);
             pending.hash(&mut h);
         }
+        ChatBlock::RemotePatch {
+            summary,
+            diff,
+            is_error,
+            collapsed,
+            pending,
+        } => {
+            summary.hash(&mut h);
+            diff.hash(&mut h);
+            is_error.hash(&mut h);
+            collapsed.hash(&mut h);
+            pending.hash(&mut h);
+        }
         ChatBlock::ChannelMessage {
             sender,
             body,
@@ -434,6 +447,17 @@ pub enum ChatBlock {
         body: String,
         is_welcome: bool,
     },
+    /// A patch (changeSet / gitPatch) produced by a remote worker
+    /// (Jules). `summary` is a one-line header describing the commit
+    /// (message + file count); `diff` is the unified patch body.
+    /// Rendered like EditTool but with a commit-style summary.
+    RemotePatch {
+        summary: String,
+        diff: String,
+        is_error: bool,
+        collapsed: bool,
+        pending: bool,
+    },
     /// Replaces the raw Bash block for any `aciddog task …` call.
     /// `subject` is the pre-formatted one-line header; `body` is
     /// the payload the agent sent (if any); `reply` is populated on
@@ -464,6 +488,7 @@ impl ChatBlock {
                 | Self::WorkerSpawn { .. }
                 | Self::WorkerComplete { .. }
                 | Self::TaskOp { .. }
+                | Self::RemotePatch { .. }
         )
     }
 
@@ -479,7 +504,8 @@ impl ChatBlock {
             | Self::Mail { collapsed, .. }
             | Self::WorkerSpawn { collapsed, .. }
             | Self::WorkerComplete { collapsed, .. }
-            | Self::TaskOp { collapsed, .. } => *collapsed = !*collapsed,
+            | Self::TaskOp { collapsed, .. }
+            | Self::RemotePatch { collapsed, .. } => *collapsed = !*collapsed,
             _ => {}
         }
     }
@@ -502,6 +528,7 @@ impl ChatBlock {
             Self::ChannelMessage { body, .. } => Some(body.clone()),
             Self::WorkerSpawn { task, .. } => Some(task.clone()),
             Self::WorkerComplete { body, .. } => Some(body.clone()),
+            Self::RemotePatch { diff, .. } => Some(diff.clone()),
             Self::TaskOp {
                 body,
                 reply,
@@ -623,6 +650,12 @@ impl ChatBlock {
             Self::WorkerComplete {
                 body, collapsed, ..
             } => tool_body_height("Final report", body, *collapsed, w),
+            Self::RemotePatch {
+                summary,
+                diff,
+                collapsed,
+                ..
+            } => tool_body_height(summary, diff, *collapsed, w),
             Self::TaskOp {
                 subject,
                 body,
@@ -1018,6 +1051,30 @@ impl ChatBlock {
                     Some(body.clone()),
                     None,
                     Some(("copy".into(), body.clone())),
+                );
+            }
+            Self::RemotePatch {
+                summary,
+                diff,
+                is_error,
+                collapsed,
+                pending,
+            } => {
+                render_tool_block(
+                    buf,
+                    body_rect,
+                    buttons,
+                    block_idx,
+                    "📦",
+                    summary,
+                    "diff",
+                    diff,
+                    *collapsed,
+                    *is_error,
+                    *pending,
+                    Some(diff.clone()),
+                    None,
+                    Some(("copy diff".into(), diff.clone())),
                 );
             }
             Self::TaskOp {
@@ -1974,6 +2031,23 @@ impl ChatBlock {
                 is_error: false,
                 collapsed: true,
                 pending: true,
+            },
+            // Remote-worker pseudo-tools — Jules emits these from its
+            // activity stream to render native-feeling blocks on the
+            // worker's chat pane.
+            "jules_bash" => ChatBlock::BashTool {
+                command: get_str("command"),
+                stdout: String::new(),
+                is_error: false,
+                collapsed: true,
+                pending: true,
+            },
+            "jules_change_set" => ChatBlock::RemotePatch {
+                summary: get_str("summary"),
+                diff: get_str("diff"),
+                is_error: false,
+                collapsed: true,
+                pending: false,
             },
             other => ChatBlock::GenericTool {
                 name: other.to_string(),

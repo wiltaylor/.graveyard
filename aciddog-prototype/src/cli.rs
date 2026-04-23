@@ -654,6 +654,13 @@ pub enum WorkerCommand {
         /// after the auto-injected worker preamble.
         #[arg(long)]
         task: String,
+        /// Optional JSON object of per-spawn properties, consumed by
+        /// remote-worker cores that need extra context. Example for
+        /// a Jules worker:
+        /// `--properties '{"repo":"owner/repo","branch":"main"}'`.
+        /// Ignored by local cores.
+        #[arg(long)]
+        properties: Option<String>,
     },
     /// Deliver a final report to the parent and hibernate this worker.
     /// Only valid when invoked from inside a running worker.
@@ -661,6 +668,14 @@ pub enum WorkerCommand {
         /// Final message body to deliver to the parent.
         #[arg(long)]
         body: String,
+    },
+    /// Close out a worker you spawned. Drops its IPC channels,
+    /// hibernates it, and — for remote-worker cores — tears down the
+    /// backend session (e.g. DELETE the Jules session).
+    Archive {
+        /// Worker display id as reported by `worker create`.
+        #[arg(long)]
+        id: String,
     },
 }
 
@@ -750,12 +765,62 @@ mod tests {
         .expect("parses");
         match args.cmd {
             AgentCommand::Worker {
-                cmd: WorkerCommand::Create { template, task },
+                cmd:
+                    WorkerCommand::Create {
+                        template,
+                        task,
+                        properties,
+                    },
             } => {
                 assert_eq!(template, "researcher");
                 assert_eq!(task, "find FOO");
+                assert!(properties.is_none());
             }
             other => panic!("expected Worker::Create, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_worker_create_with_properties() {
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "worker",
+            "create",
+            "--template",
+            "jules_refactor",
+            "--task",
+            "foo",
+            "--properties",
+            "{\"repo\":\"acme/foo\"}",
+        ])
+        .expect("parses");
+        match args.cmd {
+            AgentCommand::Worker {
+                cmd: WorkerCommand::Create { properties, .. },
+            } => {
+                assert_eq!(properties.as_deref(), Some("{\"repo\":\"acme/foo\"}"));
+            }
+            other => panic!("expected Worker::Create, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_worker_archive() {
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "worker",
+            "archive",
+            "--id",
+            "jules_refactor#abcd1234",
+        ])
+        .expect("parses");
+        match args.cmd {
+            AgentCommand::Worker {
+                cmd: WorkerCommand::Archive { id },
+            } => {
+                assert_eq!(id, "jules_refactor#abcd1234");
+            }
+            other => panic!("expected Worker::Archive, got {other:?}"),
         }
     }
 

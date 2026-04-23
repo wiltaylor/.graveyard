@@ -236,6 +236,35 @@ schema "ai_core" {
     default_tools: list(string) @optional
   }
 
+  // Google Jules remote-worker core. Unlike the other cores which
+  // run (or harness) the model on this machine, `jules` hands a task
+  // off to jules.google.com, which runs it against a GitHub repo
+  // inside its own sandbox. Aciddog polls the Jules activity stream
+  // to keep the worker's chat pane in sync and sends mail to the
+  // parent when Jules needs plan approval or user feedback. Only
+  // valid for `worker` templates — requires `properties.repo`
+  // ("owner/repo") at spawn time (optionally `properties.branch`).
+  variant "jules" {
+    // Name of the environment variable that holds the Jules API key
+    // (create one at jules.google.com/settings). Loaded from `.env`
+    // at startup; never commit keys to the config.
+    apiKeyEnv: string
+    // Fallback `startingBranch` when the parent doesn't pass
+    // `branch` in `properties`. Omit to let Jules default to the
+    // repo's configured default branch.
+    defaultBranch: string @optional
+    // Seconds between `/activities` + `/sessions/{id}` polls while
+    // Jules is working on a task. Clamped to 3..=120. Defaults to 10.
+    pollIntervalSeconds: number @optional
+    // When true (default), sessions are created with
+    // `requirePlanApproval = true` so Jules pauses for the parent to
+    // reply `approve` (or send feedback) before executing the plan.
+    requirePlanApproval: boolean @optional
+    // `AUTOMATION_MODE_UNSPECIFIED` (default) or `AUTO_CREATE_PR`.
+    // Forwarded verbatim to Jules on session creation.
+    automationMode: string @optional
+  }
+
   // OpenAI ChatGPT-subscription core. Targets the Codex `/responses`
   // surface on `chatgpt.com/backend-api/codex`, gated by the user's
   // ChatGPT Plus/Pro/Team entitlement rather than per-token billing.
@@ -377,6 +406,23 @@ ai_core gemini_flash {
   default_tools = ["Read"]
 }
 
+// Google Jules remote-worker core. Jules runs the task on its own
+// infrastructure against a GitHub repo rather than on this machine.
+// Before first use:
+//   1. Create an API key at jules.google.com/settings and add
+//      `JULES_API_KEY=...` to `.env`.
+//   2. Connect the target GitHub repo to Jules at jules.google.
+// Spawn with `worker create --template jules_refactor --task "..."
+// --properties '{"repo":"owner/repo","branch":"main"}'`.
+ai_core jules_remote {
+  type = :jules
+  apiKeyEnv = "JULES_API_KEY"
+  defaultBranch = "main"
+  pollIntervalSeconds = 10
+  requirePlanApproval = true
+  automationMode = "AUTOMATION_MODE_UNSPECIFIED"
+}
+
 team default {
   description = "Default aciddog team"
   // Fleet-wide default core — agents and workers inherit this unless
@@ -437,7 +483,7 @@ agent planner {
   instructions = "Break the user request into steps and delegate work to other agents. If the team needs a morale boost, either `send` a topic to the `jokemaster` agent (OpenRouter-backed one-liner) or spawn a `jokester` worker (ephemeral joke + cleanup). If the user wants corporate-speak buzzword bingo, `send` a topic to `humblemoonbeam` (Gemini-backed bs talker). All three return their punchline and stop."
   // Omit `can_message` to allow messaging every other agent.
   // Example: restrict to a subset with `can_message = ["coder"]`.
-  can_create_workers = ["jokester"]
+  can_create_workers = ["jokester", "jules_refactor"]
   // Permit the planner to trigger the `smoke` workflow via
   // `aciddog workflow run --id smoke`. Omitted on every other agent,
   // so they can't start workflows themselves.
@@ -588,6 +634,32 @@ worker jokester {
     You write jokes. One short, clean joke about the topic your parent gave you. Two or three lines maximum. No setup outside the joke itself, no apologies, no preamble — the joke is the entire deliverable.
   EOT
   instructions = "Write one short, clean joke about the topic your parent gave you. Keep it to two or three lines at most. Deliver the finished joke as your completion report — no progress updates, no preamble, just the punchline."
+}
+
+// Remote Jules worker template. Hands off implementation tasks to
+// jules.google against a GitHub repo. When a parent spawns this, it
+// MUST pass `properties = {"repo":"owner/repo","branch":"main"}` so
+// Jules knows which repo to operate on — branch is optional and
+// falls back to `ai_core jules_remote.defaultBranch`.
+//
+// Lifecycle:
+//   1. Parent calls worker create → aciddog POSTs /sessions on
+//      jules.google and polls /activities every pollIntervalSeconds.
+//   2. Jules may pause for plan approval — aciddog sends the parent
+//      a mail asking them to reply `approve` (→ :approvePlan) or
+//      send feedback (→ :sendMessage with the feedback body).
+//   3. Same pattern for AWAITING_USER_FEEDBACK.
+//   4. On COMPLETED/FAILED, Jules' final message + any PR url lands
+//      on the parent as a WorkerComplete mail and the worker hibernates.
+//   5. Parent can explicitly close out with
+//      `aciddog worker archive --id <worker>`.
+worker jules_refactor {
+  role = "remote implementer"
+  role_description = <<EOT
+    You are a Jules-backed remote worker. Your parent hands you a single implementation task on a specific GitHub repo; Jules executes it on its own infrastructure. Report progress via your chat pane; your parent will reply `approve` when your plan looks good or send feedback to revise it.
+  EOT
+  instructions = "Complete the task your parent gave you. Plan first, wait for approval, then execute the plan and report back with the final outcome (including any PR URL)."
+  ai_core = "jules_remote"
 }
 
 // Custom thinking-indicator messages. A random line from the pool is

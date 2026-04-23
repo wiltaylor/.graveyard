@@ -344,7 +344,7 @@ impl App {
         let tx = compaction_tx;
         tokio::spawn(async move {
             let summary_session = Uuid::new_v4();
-            let mut core = build_core(
+            let mut core = match build_core(
                 &summary_core,
                 summary_session,
                 summariser_prompt_parts(),
@@ -353,7 +353,20 @@ impl App {
                 None,
                 false,
                 None,
-            );
+                None,
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx
+                        .send(CompactionEvent::SummaryFailed {
+                            idx,
+                            session_id,
+                            error: format!("summariser core build failed: {e}"),
+                        })
+                        .await;
+                    return;
+                }
+            };
             let text_result = run_one_shot_turn(&mut *core, &full_prompt).await;
             let ev = match text_result {
                 Ok(summary) if !summary.trim().is_empty() => CompactionEvent::SummaryReady {
@@ -552,7 +565,11 @@ impl App {
             socket_tx,
             false,
             agent.model.as_deref(),
-        );
+            // Compaction only runs on configured agents, never on
+            // workers — so per-spawn properties are never applicable.
+            None,
+        )
+        .map_err(|e| format!("build_core failed during compaction rebuild: {e}"))?;
         let assembled_prompt = core.first_turn_prompt();
 
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
