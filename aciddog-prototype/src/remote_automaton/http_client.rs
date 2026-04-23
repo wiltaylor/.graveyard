@@ -65,12 +65,10 @@ impl Client {
                 }
                 let mut builder = reqwest::Client::builder();
                 if let Some(ca_path) = tls_ca {
-                    let pem = std::fs::read(ca_path).with_context(|| {
-                        format!("reading tls_ca file {}", ca_path.display())
-                    })?;
-                    let cert = reqwest::Certificate::from_pem(&pem).with_context(|| {
-                        format!("parsing tls_ca PEM at {}", ca_path.display())
-                    })?;
+                    let pem = std::fs::read(ca_path)
+                        .with_context(|| format!("reading tls_ca file {}", ca_path.display()))?;
+                    let cert = reqwest::Certificate::from_pem(&pem)
+                        .with_context(|| format!("parsing tls_ca PEM at {}", ca_path.display()))?;
                     builder = builder.add_root_certificate(cert);
                 }
                 let client = builder
@@ -113,7 +111,10 @@ impl Client {
                     .await
                     .with_context(|| format!("POST {url}"))?;
                 let status = resp.status();
-                let bytes = resp.bytes().await.context("reading /v1/rpc response body")?;
+                let bytes = resp
+                    .bytes()
+                    .await
+                    .context("reading /v1/rpc response body")?;
                 parse_rpc_response(status.as_u16(), &bytes)
             }
             Inner::Unix { path } => {

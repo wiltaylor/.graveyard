@@ -207,9 +207,7 @@ fn unknown_memory_bank_ref_errors() {
 
 #[test]
 fn loads_remote_demo_server_config() {
-    let path = repo_root()
-        .join("demo-remote-server")
-        .join("aciddog.wcl");
+    let path = repo_root().join("demo-remote-server").join("aciddog.wcl");
     let cfg = load_config(&path).expect("demo-remote-server/aciddog.wcl should parse");
     assert_eq!(cfg.team.id, "server");
     assert!(
@@ -236,9 +234,7 @@ fn loads_remote_demo_server_config() {
 
 #[test]
 fn loads_remote_demo_client_config() {
-    let path = repo_root()
-        .join("demo-remote-client")
-        .join("aciddog.wcl");
+    let path = repo_root().join("demo-remote-client").join("aciddog.wcl");
     let cfg = load_config(&path).expect("demo-remote-client/aciddog.wcl should parse");
     assert_eq!(cfg.team.id, "client");
     assert!(

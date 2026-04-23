@@ -191,6 +191,8 @@ mod tests {
                 memory_banks: None,
                 skills: None,
                 compaction: None,
+                supervisor: false,
+                sysadmin: false,
             }],
             workers: vec![],
             automatons: vec![],

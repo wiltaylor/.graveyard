@@ -6,10 +6,11 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
-use aciddog::agent_ipc::{self, Request, RequestCmd};
+use aciddog::agent_ipc::{self, HistorySelector, Request, RequestCmd};
 use aciddog::cli::{
-    self, AgentArgs, AgentCommand, Args, AuthCommand, AuthProvider, ChannelCommand, CommentCommand,
-    CronCommand, MemoryCommand, RootCommand, SkillCommand, TaskCommand, TodoCommand, WorkerCommand,
+    self, AgentAdminCommand, AgentArgs, AgentCommand, Args, AuthCommand, AuthProvider,
+    ChannelCommand, CommentCommand, CronCommand, MemoryCommand, RootCommand, ServerCommand,
+    SkillCommand, TaskCommand, TodoCommand, WorkerCommand,
 };
 use aciddog::config::load_config;
 use aciddog::openai_auth;
@@ -546,6 +547,62 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
                 properties: props,
             }
         }
+        AgentCommand::Agent {
+            cmd: AgentAdminCommand::List,
+        } => RequestCmd::AgentList,
+        AgentCommand::Agent {
+            cmd: AgentAdminCommand::Status { id },
+        } => RequestCmd::AgentStatus { agent: id },
+        AgentCommand::Agent {
+            cmd:
+                AgentAdminCommand::History {
+                    id,
+                    all,
+                    last,
+                    last_message,
+                    kind,
+                },
+        } => {
+            let selector = match (all, last, last_message, kind) {
+                (true, None, false, None) => HistorySelector::All,
+                (false, Some(n), false, None) => HistorySelector::Last { n },
+                (false, None, true, None) => HistorySelector::LastMessage,
+                (false, None, false, Some(k)) => HistorySelector::Kind { kind: k },
+                _ => {
+                    return Err(anyhow!(
+                        "agent history: supply exactly one of --all / --last / --last-message / --kind"
+                    ));
+                }
+            };
+            RequestCmd::AgentHistory {
+                agent: id,
+                selector,
+            }
+        }
+        AgentCommand::Agent {
+            cmd: AgentAdminCommand::Stop { id, reason },
+        } => RequestCmd::AgentStop { agent: id, reason },
+        AgentCommand::Agent {
+            cmd: AgentAdminCommand::Sleep { id },
+        } => RequestCmd::AgentSleep { agent: id },
+        AgentCommand::Agent {
+            cmd: AgentAdminCommand::Wake { id },
+        } => RequestCmd::AgentWake { agent: id },
+        AgentCommand::Agent {
+            cmd: AgentAdminCommand::SendAsUser { to, body },
+        } => RequestCmd::AgentSendAsUser { to, body },
+        AgentCommand::Worker {
+            cmd: WorkerCommand::List { parent },
+        } => RequestCmd::WorkerList { parent },
+        AgentCommand::Worker {
+            cmd: WorkerCommand::ForceArchive { id },
+        } => RequestCmd::WorkerForceArchive { worker: id },
+        AgentCommand::Server {
+            cmd: ServerCommand::Shutdown,
+        } => RequestCmd::ServerShutdown,
+        AgentCommand::Server {
+            cmd: ServerCommand::Exit,
+        } => RequestCmd::ServerExit,
     };
 
     let response = agent_ipc::client::send(&socket_path, &Request { agent_id, cmd })

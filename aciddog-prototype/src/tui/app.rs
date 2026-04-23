@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use clap::Parser;
 
-use crate::agent_ipc::{self, AgentSocketEvent, RequestCmd, Response};
+use crate::agent_ipc::{self, AgentSocketEvent, HistorySelector, RequestCmd, Response};
 use crate::ai::{
     AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, CopilotCliCore,
     GeminiCliCore, JulesCore, JulesProperties, OpenAiApiCore, OpenAiChatgptCore, PromptParts,
@@ -883,7 +883,107 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         RequestCmd::ChannelAdd { .. } => ChatBlock::from_tool_use("aciddog channel add", input),
         RequestCmd::ChannelKick { .. } => ChatBlock::from_tool_use("aciddog channel kick", input),
         RequestCmd::ChannelEnd { .. } => ChatBlock::from_tool_use("aciddog channel end", input),
+        RequestCmd::AgentList => ChatBlock::from_tool_use("aciddog agent list", input),
+        RequestCmd::AgentStatus { agent } => {
+            ChatBlock::from_tool_use(&format!("aciddog agent status --id {agent}"), input)
+        }
+        RequestCmd::AgentHistory { agent, .. } => {
+            ChatBlock::from_tool_use(&format!("aciddog agent history --id {agent}"), input)
+        }
+        RequestCmd::AgentStop { agent, .. } => {
+            ChatBlock::from_tool_use(&format!("aciddog agent stop --id {agent}"), input)
+        }
+        RequestCmd::AgentSleep { agent } => {
+            ChatBlock::from_tool_use(&format!("aciddog agent sleep --id {agent}"), input)
+        }
+        RequestCmd::AgentWake { agent } => {
+            ChatBlock::from_tool_use(&format!("aciddog agent wake --id {agent}"), input)
+        }
+        RequestCmd::AgentSendAsUser { to, body } => {
+            ChatBlock::mail_sent(format!("{to} (as user)"), body)
+        }
+        RequestCmd::WorkerList { .. } => ChatBlock::from_tool_use("aciddog worker list", input),
+        RequestCmd::WorkerForceArchive { worker } => ChatBlock::from_tool_use(
+            &format!("aciddog worker force-archive --id {worker}"),
+            input,
+        ),
+        RequestCmd::ServerShutdown => ChatBlock::from_tool_use("aciddog server shutdown", input),
+        RequestCmd::ServerExit => ChatBlock::from_tool_use("aciddog server exit", input),
     }
+}
+
+/// Stable tag for a `ChatBlock` variant, used by the supervisor
+/// `AgentHistory { select: kind }` selector. Values match the labels
+/// the tag-IPC preamble documents for the `kind` filter.
+fn history_block_kind(b: &ChatBlock) -> &'static str {
+    match b {
+        ChatBlock::AgentInfo { .. } => "agent_info",
+        ChatBlock::UserText { .. } => "user",
+        ChatBlock::AiMarkdown { .. } => "ai",
+        ChatBlock::Mail {
+            direction: super::blocks::MailDirection::Sent,
+            ..
+        } => "mail_sent",
+        ChatBlock::Mail {
+            direction: super::blocks::MailDirection::Received,
+            ..
+        } => "mail_received",
+        ChatBlock::ChannelMessage { .. } => "channel",
+        ChatBlock::WorkerSpawn { .. } => "worker_spawn",
+        ChatBlock::WorkerComplete { .. } => "worker_complete",
+        ChatBlock::System { kind, .. } => match kind {
+            super::blocks::SystemKind::Info => "system_info",
+            super::blocks::SystemKind::Warn => "system_warn",
+            super::blocks::SystemKind::Error => "system_error",
+        },
+        ChatBlock::BashTool { .. }
+        | ChatBlock::EditTool { .. }
+        | ChatBlock::WriteTool { .. }
+        | ChatBlock::ReadTool { .. }
+        | ChatBlock::GrepTool { .. }
+        | ChatBlock::GlobTool { .. }
+        | ChatBlock::GenericTool { .. }
+        | ChatBlock::TaskOp { .. }
+        | ChatBlock::RemotePatch { .. }
+        | ChatBlock::AutomatonStdout { .. }
+        | ChatBlock::AutomatonStderr { .. } => "tool_use",
+    }
+}
+
+/// One-line rendering of a chat block for the `AgentHistory` reply.
+/// Uses `<kind>: <text>` so each selector result is scannable.
+fn history_block_line(b: &ChatBlock) -> String {
+    let kind = history_block_kind(b);
+    let text = match b {
+        ChatBlock::UserText { text } => text.clone(),
+        ChatBlock::AiMarkdown { raw, .. } => raw.clone(),
+        ChatBlock::Mail {
+            counterpart, body, ..
+        } => format!("{counterpart}: {body}"),
+        ChatBlock::ChannelMessage { sender, body, .. } => format!("{sender}: {body}"),
+        ChatBlock::WorkerSpawn { template, task, .. } => format!("{template}: {task}"),
+        ChatBlock::WorkerComplete { body, .. } => body.clone(),
+        ChatBlock::System { text, .. } => text.clone(),
+        ChatBlock::TaskOp { subject, .. } => subject.clone(),
+        ChatBlock::AutomatonStdout { line } | ChatBlock::AutomatonStderr { line } => line.clone(),
+        ChatBlock::BashTool { command, .. } => command.clone(),
+        ChatBlock::EditTool { file_path, .. }
+        | ChatBlock::WriteTool { file_path, .. }
+        | ChatBlock::ReadTool { file_path, .. } => file_path.clone(),
+        ChatBlock::GrepTool { pattern, .. } | ChatBlock::GlobTool { pattern, .. } => {
+            pattern.clone()
+        }
+        ChatBlock::GenericTool { name, .. } => name.clone(),
+        ChatBlock::RemotePatch { summary, .. } => summary.clone(),
+        ChatBlock::AgentInfo { core, .. } => format!("core={core}"),
+    };
+    let text_clean: String = text
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{kind}: {text_clean}")
 }
 
 /// Parse a `--kind` flag value into a [`crate::cron::CronPayload`].
@@ -1125,7 +1225,9 @@ pub enum ActiveView {
 
 /// Entries in the right-column Views list. Extend this array and add
 /// a matching activation arm in `handle_key_views` to wire a new
-/// view up.
+/// view up. Runtime filtering (e.g. hiding `Memory` when no banks are
+/// declared) happens in [`App::view_entries`]; prefer that helper over
+/// this const at every call site that has an `App` in scope.
 pub const VIEW_ENTRIES: &[&str] = &["Inbox", "Tasks", "Memory", "Cores"];
 
 #[derive(Debug, Default, Clone)]
@@ -2877,6 +2979,39 @@ impl App {
             RequestCmd::ChannelEnd { id } => {
                 self.handle_channel_end_from_agent(idx, id, reply);
             }
+            RequestCmd::AgentList => {
+                self.handle_admin_agent_list(idx, reply);
+            }
+            RequestCmd::AgentStatus { agent } => {
+                self.handle_admin_agent_status(idx, agent, reply);
+            }
+            RequestCmd::AgentHistory { agent, selector } => {
+                self.handle_admin_agent_history(idx, agent, selector, reply);
+            }
+            RequestCmd::AgentStop { agent, reason } => {
+                self.handle_admin_agent_stop(idx, agent, reason, reply);
+            }
+            RequestCmd::AgentSleep { agent } => {
+                self.handle_admin_agent_sleep(idx, agent, reply);
+            }
+            RequestCmd::AgentWake { agent } => {
+                self.handle_admin_agent_wake(idx, agent, reply);
+            }
+            RequestCmd::AgentSendAsUser { to, body } => {
+                self.handle_admin_agent_send_as_user(idx, to, body, reply);
+            }
+            RequestCmd::WorkerList { parent } => {
+                self.handle_admin_worker_list(idx, parent, reply);
+            }
+            RequestCmd::WorkerForceArchive { worker } => {
+                self.handle_admin_worker_force_archive(idx, worker, reply);
+            }
+            RequestCmd::ServerShutdown => {
+                self.handle_admin_server_shutdown(idx, reply);
+            }
+            RequestCmd::ServerExit => {
+                self.handle_admin_server_exit(idx, reply);
+            }
         }
     }
 
@@ -3110,6 +3245,9 @@ impl App {
                     parent_id: sender_display.clone(),
                     task: task.clone(),
                 }),
+                // Workers never supervise, even if their parent does.
+                supervisor: false,
+                sysadmin: false,
             }),
         };
 
@@ -3333,6 +3471,20 @@ impl App {
         worker_display: String,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
+        self.archive_worker(sender_idx, worker_display, false, reply);
+    }
+
+    /// Shared archive body used by both `handle_worker_archive`
+    /// (parent-gated) and the supervisor-only `WorkerForceArchive`.
+    /// `bypass_parent_check` skips the "only the parent may archive"
+    /// rule; everything else is identical.
+    fn archive_worker(
+        &mut self,
+        sender_idx: usize,
+        worker_display: String,
+        bypass_parent_check: bool,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
         let Some(target_idx) = self
             .chats
             .iter()
@@ -3342,11 +3494,15 @@ impl App {
             return;
         };
 
-        // Only the worker's own parent may archive it. Prevents a
-        // sibling agent (or the worker itself) from tearing down
-        // someone else's worker.
         let target_parent = self.chats.get(target_idx).and_then(|c| c.parent_idx);
-        if target_parent != Some(sender_idx) {
+        if target_parent.is_none() {
+            let _ = reply.send(Response::err(format!("`{worker_display}` is not a worker")));
+            return;
+        }
+        // Only the worker's own parent may archive it (bypassed for
+        // supervisor force-archive). Prevents a sibling agent (or the
+        // worker itself) from tearing down someone else's worker.
+        if !bypass_parent_check && target_parent != Some(sender_idx) {
             let _ = reply.send(Response::err(
                 "only the parent that spawned this worker may archive it",
             ));
@@ -3399,8 +3555,11 @@ impl App {
             chat.end_working();
         }
 
+        // Snap selection off the now-hibernated worker. Prefer the
+        // target's parent; fall back to the caller's pane when
+        // force-archiving an orphaned worker.
         if self.selected == target_idx {
-            self.selected = sender_idx;
+            self.selected = target_parent.unwrap_or(sender_idx);
         }
 
         // Best-effort DELETE on the remote side. Spawn so the reply
@@ -4245,7 +4404,7 @@ impl App {
         };
 
         match &origin {
-            MessageOrigin::Agent { .. } => {
+            MessageOrigin::Agent { sender_idx } => {
                 // Worker routing rule: a worker may only message its parent.
                 if let Some(parent_idx) = sender_parent_idx {
                     if recipient_idx != parent_idx {
@@ -4256,13 +4415,18 @@ impl App {
                     }
                 } else {
                     // Configured agent: apply `can_message` unless the
-                    // recipient is a worker this agent spawned.
+                    // recipient is a worker this agent spawned, or the
+                    // sender is a supervisor (admin ACL bypass).
                     let recipient_is_worker = self
                         .chats
                         .get(recipient_idx)
                         .map(|c| c.parent_idx.is_some())
                         .unwrap_or(false);
-                    if !recipient_is_worker && !self.config.can_send(&sender_id, &to) {
+                    let sender_is_supervisor = self.is_supervisor(*sender_idx);
+                    if !recipient_is_worker
+                        && !sender_is_supervisor
+                        && !self.config.can_send(&sender_id, &to)
+                    {
                         let _ = reply.send(Response::err(format!(
                             "agent `{sender_id}` is not permitted to message `{to}`"
                         )));
@@ -4274,8 +4438,15 @@ impl App {
                 // Cron jobs are always delivered agent→agent (worker
                 // targets are rejected at create time). Re-check the
                 // creator's `can_message` allowlist at fire time so
-                // config changes take effect.
-                if !self.config.can_send(&sender_id, &to) {
+                // config changes take effect. Supervisors bypass.
+                let creator_is_supervisor = self
+                    .config
+                    .agents
+                    .iter()
+                    .find(|a| a.id == sender_id)
+                    .map(|a| a.supervisor)
+                    .unwrap_or(false);
+                if !creator_is_supervisor && !self.config.can_send(&sender_id, &to) {
                     let _ = reply.send(Response::err(format!(
                         "cron creator `{sender_id}` is not permitted to message `{to}`"
                     )));
@@ -4795,7 +4966,10 @@ impl App {
             return;
         }
 
-        if !self.config.can_send(&sender_id, &target) {
+        // Supervisors bypass their own can_message ACL at cron-create
+        // time, matching the bypass on direct `send`.
+        let sender_is_supervisor = self.is_supervisor(sender_idx);
+        if !sender_is_supervisor && !self.config.can_send(&sender_id, &target) {
             let _ = reply.send(Response::err(format!(
                 "agent `{sender_id}` is not permitted to message `{target}`"
             )));
@@ -4923,7 +5097,8 @@ impl App {
                 )));
                 return;
             }
-            if !self.config.can_send(&sender_id, t) {
+            let sender_is_supervisor = self.is_supervisor(sender_idx);
+            if !sender_is_supervisor && !self.config.can_send(&sender_id, t) {
                 let _ = reply.send(Response::err(format!(
                     "agent `{sender_id}` is not permitted to message `{t}`"
                 )));
@@ -5810,6 +5985,386 @@ impl App {
         }
     }
 
+    // ── supervisor / sysadmin admin surface ─────────────────────────
+
+    /// Is the caller at `idx` an agent flagged `supervisor = true`?
+    /// Workers, automatons, and plain agents return false.
+    pub(crate) fn is_supervisor(&self, idx: usize) -> bool {
+        let Some(chat) = self.chats.get(idx) else {
+            return false;
+        };
+        if chat.parent_idx.is_some() || chat.kind != ChatKind::Agent {
+            return false;
+        }
+        self.config
+            .agents
+            .iter()
+            .find(|a| a.id == chat.display_name)
+            .map(|a| a.supervisor)
+            .unwrap_or(false)
+    }
+
+    /// Is the caller at `idx` an agent flagged `sysadmin = true`?
+    pub(crate) fn is_sysadmin(&self, idx: usize) -> bool {
+        let Some(chat) = self.chats.get(idx) else {
+            return false;
+        };
+        if chat.parent_idx.is_some() || chat.kind != ChatKind::Agent {
+            return false;
+        }
+        self.config
+            .agents
+            .iter()
+            .find(|a| a.id == chat.display_name)
+            .map(|a| a.sysadmin)
+            .unwrap_or(false)
+    }
+
+    fn status_label(chat: &AgentChat) -> &'static str {
+        if chat.asleep {
+            return "asleep";
+        }
+        match chat.status {
+            AgentStatus::Ready => "ready",
+            AgentStatus::Working => "working",
+            AgentStatus::Error => "error",
+            AgentStatus::Hibernated => "hibernated",
+            AgentStatus::Asleep => "asleep",
+        }
+    }
+
+    fn kind_label(chat: &AgentChat) -> &'static str {
+        match chat.kind {
+            ChatKind::Agent => "agent",
+            ChatKind::Worker => "worker",
+            ChatKind::Automaton => "automaton",
+        }
+    }
+
+    fn handle_admin_agent_list(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let mut out = String::new();
+        out.push_str("id\tkind\tstatus\tparent\tai_core\n");
+        for chat in &self.chats {
+            let parent = chat
+                .parent_idx
+                .and_then(|p| self.chats.get(p))
+                .map(|c| c.display_name.as_str())
+                .unwrap_or("-");
+            let core = chat.ai_core_id.as_deref().unwrap_or("-");
+            out.push_str(&format!(
+                "{}\t{}\t{}\t{}\t{}\n",
+                chat.display_name,
+                Self::kind_label(chat),
+                Self::status_label(chat),
+                parent,
+                core,
+            ));
+        }
+        let _ = reply.send(Response::ok(out.trim_end().to_string()));
+    }
+
+    fn handle_admin_agent_status(
+        &mut self,
+        sender_idx: usize,
+        agent: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let Some(chat) = self.chats.iter().find(|c| c.display_name == agent) else {
+            let _ = reply.send(Response::err(format!("no agent named `{agent}`")));
+            return;
+        };
+        let parent = chat
+            .parent_idx
+            .and_then(|p| self.chats.get(p))
+            .map(|c| c.display_name.as_str())
+            .unwrap_or("-");
+        let core = chat.ai_core_id.as_deref().unwrap_or("-");
+        let msg = format!(
+            "id={}\nkind={}\nstatus={}\nhibernated={}\nasleep={}\nparent={}\nai_core={}\nblocks={}",
+            chat.display_name,
+            Self::kind_label(chat),
+            Self::status_label(chat),
+            chat.hibernated,
+            chat.asleep,
+            parent,
+            core,
+            chat.blocks.len(),
+        );
+        let _ = reply.send(Response::ok(msg));
+    }
+
+    fn handle_admin_agent_history(
+        &mut self,
+        sender_idx: usize,
+        agent: String,
+        selector: HistorySelector,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let Some(chat) = self.chats.iter().find(|c| c.display_name == agent) else {
+            let _ = reply.send(Response::err(format!("no agent named `{agent}`")));
+            return;
+        };
+        let lines: Vec<String> = chat.blocks.iter().map(history_block_line).collect();
+        let slice: Vec<&str> = match selector {
+            HistorySelector::All => lines.iter().map(String::as_str).collect(),
+            HistorySelector::Last { n } => {
+                let start = lines.len().saturating_sub(n);
+                lines[start..].iter().map(String::as_str).collect()
+            }
+            HistorySelector::LastMessage => chat
+                .blocks
+                .iter()
+                .zip(lines.iter())
+                .rev()
+                .find(|(b, _)| matches!(b, ChatBlock::AiMarkdown { .. }))
+                .map(|(_, l)| vec![l.as_str()])
+                .unwrap_or_default(),
+            HistorySelector::Kind { kind } => {
+                let want = kind.to_ascii_lowercase();
+                let keep: Vec<_> = chat
+                    .blocks
+                    .iter()
+                    .zip(lines.iter())
+                    .filter(|(b, _)| history_block_kind(b) == want)
+                    .map(|(_, l)| l.as_str())
+                    .collect();
+                if keep.is_empty()
+                    && !matches!(
+                        want.as_str(),
+                        "user"
+                            | "ai"
+                            | "mail_sent"
+                            | "mail_received"
+                            | "channel"
+                            | "tool_use"
+                            | "system_info"
+                            | "system_warn"
+                            | "system_error"
+                            | "worker_spawn"
+                            | "worker_complete"
+                            | "agent_info"
+                    )
+                {
+                    let _ = reply.send(Response::err(format!("unknown history kind `{kind}`")));
+                    return;
+                }
+                keep
+            }
+        };
+        let msg = if slice.is_empty() {
+            "(no matching blocks)".to_string()
+        } else {
+            slice.join("\n")
+        };
+        let _ = reply.send(Response::ok(msg));
+    }
+
+    fn handle_admin_agent_stop(
+        &mut self,
+        sender_idx: usize,
+        agent: String,
+        reason: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let Some(target_idx) = self.chats.iter().position(|c| c.display_name == agent) else {
+            let _ = reply.send(Response::err(format!("no agent named `{agent}`")));
+            return;
+        };
+        let reason_line = match reason {
+            Some(r) if !r.trim().is_empty() => format!("[stopped by supervisor: {}]", r.trim()),
+            _ => "[stopped by supervisor]".to_string(),
+        };
+        self.stop_turn(target_idx, &reason_line);
+        let _ = reply.send(Response::ok("stopped"));
+    }
+
+    fn handle_admin_agent_sleep(
+        &mut self,
+        sender_idx: usize,
+        agent: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let Some(target_idx) = self.chats.iter().position(|c| c.display_name == agent) else {
+            let _ = reply.send(Response::err(format!("no agent named `{agent}`")));
+            return;
+        };
+        self.stop_turn(target_idx, "[slept by supervisor]");
+        if let Some(chat) = self.chats.get_mut(target_idx) {
+            if !chat.asleep {
+                chat.asleep = true;
+                if chat.status != AgentStatus::Hibernated {
+                    chat.status = AgentStatus::Asleep;
+                }
+            }
+        }
+        let _ = reply.send(Response::ok("asleep"));
+    }
+
+    fn handle_admin_agent_wake(
+        &mut self,
+        sender_idx: usize,
+        agent: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let Some(target_idx) = self.chats.iter().position(|c| c.display_name == agent) else {
+            let _ = reply.send(Response::err(format!("no agent named `{agent}`")));
+            return;
+        };
+        if let Some(chat) = self.chats.get_mut(target_idx) {
+            if chat.asleep {
+                chat.asleep = false;
+                if chat.status == AgentStatus::Asleep {
+                    chat.status = AgentStatus::Ready;
+                }
+                chat.push_block(ChatBlock::system_info("woken by supervisor"));
+            }
+        }
+        let _ = reply.send(Response::ok("awake"));
+    }
+
+    fn handle_admin_agent_send_as_user(
+        &mut self,
+        sender_idx: usize,
+        to: String,
+        body: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let body = body.trim().to_string();
+        if body.is_empty() {
+            let _ = reply.send(Response::err("body is empty"));
+            return;
+        }
+        let Some(target_idx) = self.chats.iter().position(|c| c.display_name == to) else {
+            let _ = reply.send(Response::err(format!("no agent named `{to}`")));
+            return;
+        };
+        let Some(tx) = self.chats[target_idx].user_tx.clone() else {
+            let _ = reply.send(Response::err(format!("agent `{to}` is not online")));
+            return;
+        };
+        if tx.send(body).is_err() {
+            let _ = reply.send(Response::err(format!("agent `{to}` is not receiving")));
+            return;
+        }
+        let _ = reply.send(Response::ok("sent"));
+    }
+
+    fn handle_admin_worker_list(
+        &mut self,
+        sender_idx: usize,
+        parent_filter: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let mut out = String::new();
+        out.push_str("id\tparent\ttemplate\tstatus\n");
+        let mut count = 0usize;
+        for chat in &self.chats {
+            let Some(parent_idx) = chat.parent_idx else {
+                continue;
+            };
+            let parent_name = self
+                .chats
+                .get(parent_idx)
+                .map(|c| c.display_name.as_str())
+                .unwrap_or("-");
+            if let Some(want) = &parent_filter {
+                if parent_name != want {
+                    continue;
+                }
+            }
+            let template = chat.worker_template.as_deref().unwrap_or("-");
+            out.push_str(&format!(
+                "{}\t{}\t{}\t{}\n",
+                chat.display_name,
+                parent_name,
+                template,
+                Self::status_label(chat),
+            ));
+            count += 1;
+        }
+        if count == 0 {
+            let _ = reply.send(Response::ok("(no workers)".to_string()));
+            return;
+        }
+        let _ = reply.send(Response::ok(out.trim_end().to_string()));
+    }
+
+    fn handle_admin_worker_force_archive(
+        &mut self,
+        sender_idx: usize,
+        worker: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        self.archive_worker(sender_idx, worker, true, reply);
+    }
+
+    fn handle_admin_server_shutdown(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_sysadmin(sender_idx) {
+            let _ = reply.send(Response::err("not a sysadmin"));
+            return;
+        }
+        self.begin_shutdown(None);
+        let _ = reply.send(Response::ok("shutting down"));
+    }
+
+    fn handle_admin_server_exit(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_sysadmin(sender_idx) {
+            let _ = reply.send(Response::err("not a sysadmin"));
+            return;
+        }
+        info!("server exit requested by supervisor");
+        self.should_quit = true;
+        let _ = reply.send(Response::ok("exiting"));
+    }
+
     /// Apply a parsed slash-command outcome against a specific chat
     /// `idx`. The keystroke path (`submit_input` → `handle_local_input`)
     /// passes `self.selected`; cron passes the target job's `idx`
@@ -6555,10 +7110,26 @@ impl App {
         }
     }
 
+    /// Views-list entries for this fleet. Filters out items whose
+    /// backing surface is empty — e.g. `Memory` is hidden when no
+    /// memory banks are declared, so server/client demo configs
+    /// (which have no banks) don't offer a dead click target.
+    pub fn view_entries(&self) -> Vec<&'static str> {
+        VIEW_ENTRIES
+            .iter()
+            .copied()
+            .filter(|name| match *name {
+                "Memory" => !self.config.memory_banks.is_empty(),
+                _ => true,
+            })
+            .collect()
+    }
+
     fn handle_key_views(&mut self, code: KeyCode, _mods: KeyModifiers) {
+        let entries = self.view_entries();
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.selected_view + 1 < VIEW_ENTRIES.len() {
+                if self.selected_view + 1 < entries.len() {
                     self.selected_view += 1;
                 }
             }
@@ -6567,7 +7138,7 @@ impl App {
                     self.selected_view -= 1;
                 }
             }
-            KeyCode::Enter => match VIEW_ENTRIES.get(self.selected_view).copied() {
+            KeyCode::Enter => match entries.get(self.selected_view).copied() {
                 Some("Tasks") => {
                     self.active_view = ActiveView::Tasks;
                     self.focus = Focus::Tasks;
@@ -6639,9 +7210,7 @@ impl App {
                         self.inbox_screen.mode = InboxMode::List;
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
-                        if !fwd.candidates.is_empty()
-                            && fwd.selected + 1 < fwd.candidates.len()
-                        {
+                        if !fwd.candidates.is_empty() && fwd.selected + 1 < fwd.candidates.len() {
                             fwd.selected += 1;
                         }
                     }
@@ -6660,10 +7229,7 @@ impl App {
                         // stable while the user composes their note.
                         let original = self.inbox.get(self.inbox_screen.cursor);
                         if let Some(msg) = original {
-                            fwd.quoted = format!(
-                                "Forwarded from {}:\n\n{}",
-                                msg.from, msg.body
-                            );
+                            fwd.quoted = format!("Forwarded from {}:\n\n{}", msg.from, msg.body);
                         }
                         fwd.stage = ForwardStage::EditBody;
                     }
@@ -6715,9 +7281,7 @@ impl App {
                 self.focus = Focus::Agents;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if !self.inbox.is_empty()
-                    && self.inbox_screen.cursor + 1 < self.inbox.len()
-                {
+                if !self.inbox.is_empty() && self.inbox_screen.cursor + 1 < self.inbox.len() {
                     self.inbox_screen.cursor += 1;
                 }
             }
@@ -6741,18 +7305,16 @@ impl App {
                 }
                 let candidates = super::inbox_view::forward_candidates(&self.config);
                 if candidates.is_empty() {
-                    self.inbox_screen.status_msg =
-                        Some("no agents to forward to".to_string());
+                    self.inbox_screen.status_msg = Some("no agents to forward to".to_string());
                     return;
                 }
-                self.inbox_screen.mode =
-                    InboxMode::Forward(super::inbox_view::ForwardState {
-                        candidates,
-                        selected: 0,
-                        stage: ForwardStage::PickRecipient,
-                        note: String::new(),
-                        quoted: String::new(),
-                    });
+                self.inbox_screen.mode = InboxMode::Forward(super::inbox_view::ForwardState {
+                    candidates,
+                    selected: 0,
+                    stage: ForwardStage::PickRecipient,
+                    note: String::new(),
+                    quoted: String::new(),
+                });
             }
             KeyCode::Char('d') => {
                 if self.inbox_screen.cursor < self.inbox.len() {
@@ -6781,18 +7343,15 @@ impl App {
             .iter()
             .position(|c| c.display_name == to && c.parent_idx.is_none())
         else {
-            self.inbox_screen.status_msg =
-                Some(format!("no agent named `{to}`"));
+            self.inbox_screen.status_msg = Some(format!("no agent named `{to}`"));
             return false;
         };
         let Some(tx) = self.chats[idx].user_tx.clone() else {
-            self.inbox_screen.status_msg =
-                Some(format!("agent `{to}` is not online"));
+            self.inbox_screen.status_msg = Some(format!("agent `{to}` is not online"));
             return false;
         };
         if tx.send(body).is_err() {
-            self.inbox_screen.status_msg =
-                Some(format!("agent `{to}` is not receiving"));
+            self.inbox_screen.status_msg = Some(format!("agent `{to}` is not receiving"));
             return false;
         }
         self.inbox_screen.status_msg = Some(format!("sent to {to}"));
@@ -6809,8 +7368,7 @@ impl App {
             InboxMode::Reply { to, body } => (to.clone(), std::mem::take(body)),
             InboxMode::Forward(fwd) if matches!(fwd.stage, ForwardStage::EditBody) => {
                 let Some(to) = fwd.candidates.get(fwd.selected).cloned() else {
-                    self.inbox_screen.status_msg =
-                        Some("no recipient selected".to_string());
+                    self.inbox_screen.status_msg = Some("no recipient selected".to_string());
                     return;
                 };
                 (to, fwd.compose_body())
@@ -9089,9 +9647,7 @@ impl App {
                 //     tests so clicks on our own buttons win. When the
                 //     click lands inside the inbox view but not on a
                 //     hotspot it falls through to focus-grab below.
-                if self.active_view == ActiveView::Inbox
-                    && self.handle_mouse_inbox(pos)
-                {
+                if self.active_view == ActiveView::Inbox && self.handle_mouse_inbox(pos) {
                     return;
                 }
 
@@ -9126,10 +9682,11 @@ impl App {
                 if let Some(rect) = self.layout.views_list_inner {
                     if rect_contains(rect, pos) {
                         let row_in_list = ev.row.saturating_sub(rect.y) as usize;
-                        if row_in_list < VIEW_ENTRIES.len() {
+                        let entries = self.view_entries();
+                        if row_in_list < entries.len() {
                             self.selected_view = row_in_list;
                             // Dispatch the selected view.
-                            match VIEW_ENTRIES[row_in_list] {
+                            match entries[row_in_list] {
                                 "Tasks" => {
                                     self.active_view = ActiveView::Tasks;
                                     self.focus = Focus::Tasks;
@@ -9476,18 +10033,16 @@ impl App {
                 }
                 let candidates = super::inbox_view::forward_candidates(&self.config);
                 if candidates.is_empty() {
-                    self.inbox_screen.status_msg =
-                        Some("no agents to forward to".to_string());
+                    self.inbox_screen.status_msg = Some("no agents to forward to".to_string());
                     return true;
                 }
-                self.inbox_screen.mode =
-                    InboxMode::Forward(super::inbox_view::ForwardState {
-                        candidates,
-                        selected: 0,
-                        stage: ForwardStage::PickRecipient,
-                        note: String::new(),
-                        quoted: String::new(),
-                    });
+                self.inbox_screen.mode = InboxMode::Forward(super::inbox_view::ForwardState {
+                    candidates,
+                    selected: 0,
+                    stage: ForwardStage::PickRecipient,
+                    note: String::new(),
+                    quoted: String::new(),
+                });
             }
             InboxHotspot::DeleteButton => {
                 if self.inbox_screen.cursor < self.inbox.len() {
@@ -9508,10 +10063,7 @@ impl App {
                         // the note editor with the quoted original
                         // shown read-only below.
                         if let Some(msg) = self.inbox.get(self.inbox_screen.cursor) {
-                            fwd.quoted = format!(
-                                "Forwarded from {}:\n\n{}",
-                                msg.from, msg.body
-                            );
+                            fwd.quoted = format!("Forwarded from {}:\n\n{}", msg.from, msg.body);
                         }
                         fwd.stage = ForwardStage::EditBody;
                     }
@@ -10738,6 +11290,8 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
                 skills: skills_for_agent,
                 channels: channels_for_agent,
                 worker: None,
+                supervisor: agent.supervisor,
+                sysadmin: agent.sysadmin,
             }),
         };
 
@@ -11431,6 +11985,8 @@ mod tests {
                 memory_banks: None,
                 skills: None,
                 compaction: None,
+                supervisor: false,
+                sysadmin: false,
             }],
             workers: vec![],
             automatons: vec![Automaton {
@@ -11503,6 +12059,8 @@ mod tests {
                 memory_banks: None,
                 skills: None,
                 compaction: None,
+                supervisor: false,
+                sysadmin: false,
             }],
             workers: vec![],
             automatons: vec![],
@@ -11572,6 +12130,8 @@ mod tests {
                 memory_banks: None,
                 skills: None,
                 compaction: None,
+                supervisor: false,
+                sysadmin: false,
             }],
             workers: vec![],
             automatons: vec![],
@@ -11617,6 +12177,8 @@ mod tests {
                     memory_banks: None,
                     skills: None,
                     compaction: None,
+                    supervisor: false,
+                    sysadmin: false,
                 },
                 Agent {
                     id: "b".into(),
@@ -11632,6 +12194,8 @@ mod tests {
                     memory_banks: None,
                     skills: None,
                     compaction: None,
+                    supervisor: false,
+                    sysadmin: false,
                 },
                 Agent {
                     id: "c".into(),
@@ -11647,6 +12211,8 @@ mod tests {
                     memory_banks: None,
                     skills: None,
                     compaction: None,
+                    supervisor: false,
+                    sysadmin: false,
                 },
             ],
             workers: vec![],
@@ -13376,10 +13942,9 @@ mod tests {
         app.inbox.push(InboxMessage::new("a", "second"));
         app.open_inbox_view();
         // Simulate the row hotspots the renderer would publish.
-        app.layout.inbox_hotspots.push((
-            Rect::new(0, 10, 80, 1),
-            InboxHotspot::SelectRow(1),
-        ));
+        app.layout
+            .inbox_hotspots
+            .push((Rect::new(0, 10, 80, 1), InboxHotspot::SelectRow(1)));
         assert!(app.handle_mouse_inbox((5, 10)));
         assert_eq!(app.inbox_screen.cursor, 1);
     }
@@ -13448,10 +14013,9 @@ mod tests {
             note: String::new(),
             quoted: String::new(),
         });
-        app.layout.inbox_hotspots.push((
-            Rect::new(0, 5, 20, 1),
-            InboxHotspot::ForwardRecipient(1),
-        ));
+        app.layout
+            .inbox_hotspots
+            .push((Rect::new(0, 5, 20, 1), InboxHotspot::ForwardRecipient(1)));
         assert!(app.handle_mouse_inbox((1, 5)));
         match &app.inbox_screen.mode {
             InboxMode::Forward(fwd) => {
@@ -13597,6 +14161,8 @@ mod tests {
                     memory_banks: None,
                     skills: None,
                     compaction: None,
+                    supervisor: false,
+                    sysadmin: false,
                 },
                 Agent {
                     id: "planner".into(),
@@ -13612,6 +14178,8 @@ mod tests {
                     memory_banks: None,
                     skills: None,
                     compaction: None,
+                    supervisor: false,
+                    sysadmin: false,
                 },
             ],
             workers: vec![
@@ -17485,5 +18053,267 @@ mod tests {
         });
         assert!(rx.await.unwrap().ok);
         assert!(notified.await.unwrap(), "cron_invalidate did not fire");
+    }
+
+    // ── supervisor / sysadmin admin surface ─────────────────────────
+
+    fn admin_send(app: &mut App, sender_uuid: Uuid, cmd: RequestCmd) -> Response {
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd,
+            },
+            reply: tx,
+        });
+        futures::executor::block_on(rx).expect("reply dropped")
+    }
+
+    #[tokio::test]
+    async fn agent_list_rejects_non_supervisor() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+        let resp = admin_send(&mut app, sender, RequestCmd::AgentList);
+        assert!(!resp.ok);
+        assert_eq!(resp.error.unwrap(), "not a supervisor");
+    }
+
+    #[tokio::test]
+    async fn agent_list_returns_table_for_supervisor() {
+        let mut cfg = sample_config();
+        cfg.agents[0].supervisor = true;
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+        let resp = admin_send(&mut app, sender, RequestCmd::AgentList);
+        assert!(resp.ok, "err={:?}", resp.error);
+        let msg = resp.message.unwrap();
+        assert!(msg.contains("id\tkind\tstatus"), "header missing: {msg}");
+        assert!(msg.contains("\na\t"), "agent a row missing: {msg}");
+        assert!(msg.contains("\nb\t"), "agent b row missing: {msg}");
+        assert!(msg.contains("\nc\t"), "agent c row missing: {msg}");
+    }
+
+    #[tokio::test]
+    async fn agent_stop_aborts_target_turn() {
+        let mut cfg = sample_config();
+        cfg.agents[0].supervisor = true;
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        // Wire a cancel_tx on the target so stop_turn has something
+        // to fire.
+        let (cancel_tx, mut cancel_rx) = mpsc::channel::<()>(1);
+        app.chats[1].cancel_tx = Some(cancel_tx);
+        let sender = app.chats[0].session_id.unwrap();
+        let resp = admin_send(
+            &mut app,
+            sender,
+            RequestCmd::AgentStop {
+                agent: "b".into(),
+                reason: Some("boom".into()),
+            },
+        );
+        assert!(resp.ok, "err={:?}", resp.error);
+        assert!(cancel_rx.try_recv().is_ok(), "cancel signal not sent");
+        let saw_reason = app.chats[1].blocks.iter().any(|b| match b {
+            ChatBlock::System { text, .. } => text.contains("boom"),
+            _ => false,
+        });
+        assert!(saw_reason, "reason block missing from target pane");
+    }
+
+    #[tokio::test]
+    async fn agent_send_as_user_delivers_unwrapped_to_user_tx() {
+        let mut cfg = sample_config();
+        cfg.agents[0].supervisor = true;
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        // Replace target's user_tx with one the test can observe.
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        app.chats[1].user_tx = Some(tx);
+        let sender = app.chats[0].session_id.unwrap();
+        let resp = admin_send(
+            &mut app,
+            sender,
+            RequestCmd::AgentSendAsUser {
+                to: "b".into(),
+                body: "hello from human".into(),
+            },
+        );
+        assert!(resp.ok, "err={:?}", resp.error);
+        let delivered = rx.try_recv().expect("body delivered");
+        assert_eq!(delivered, "hello from human");
+        assert!(!delivered.contains("<Message"), "body must not be wrapped");
+    }
+
+    #[tokio::test]
+    async fn agent_history_selectors_return_expected_subsets() {
+        let mut cfg = sample_config();
+        cfg.agents[0].supervisor = true;
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        // Seed target pane with a mix of blocks.
+        app.chats[1].blocks.clear();
+        app.chats[1].blocks.push(ChatBlock::user("first prompt"));
+        app.chats[1]
+            .blocks
+            .push(ChatBlock::ai_markdown("first reply"));
+        app.chats[1].blocks.push(ChatBlock::user("second prompt"));
+        app.chats[1]
+            .blocks
+            .push(ChatBlock::ai_markdown("second reply"));
+
+        let sender = app.chats[0].session_id.unwrap();
+
+        let all = admin_send(
+            &mut app,
+            sender,
+            RequestCmd::AgentHistory {
+                agent: "b".into(),
+                selector: HistorySelector::All,
+            },
+        );
+        let all_msg = all.message.unwrap();
+        assert_eq!(all_msg.lines().count(), 4, "{all_msg}");
+
+        let last = admin_send(
+            &mut app,
+            sender,
+            RequestCmd::AgentHistory {
+                agent: "b".into(),
+                selector: HistorySelector::Last { n: 2 },
+            },
+        );
+        let last_msg = last.message.unwrap();
+        assert_eq!(last_msg.lines().count(), 2);
+        assert!(last_msg.contains("second reply"), "{last_msg}");
+
+        let last_msg_only = admin_send(
+            &mut app,
+            sender,
+            RequestCmd::AgentHistory {
+                agent: "b".into(),
+                selector: HistorySelector::LastMessage,
+            },
+        );
+        let lm = last_msg_only.message.unwrap();
+        assert_eq!(lm.lines().count(), 1);
+        assert!(lm.starts_with("ai:"), "{lm}");
+        assert!(lm.contains("second reply"), "{lm}");
+
+        let user_kind = admin_send(
+            &mut app,
+            sender,
+            RequestCmd::AgentHistory {
+                agent: "b".into(),
+                selector: HistorySelector::Kind {
+                    kind: "user".into(),
+                },
+            },
+        );
+        let uk = user_kind.message.unwrap();
+        assert_eq!(uk.lines().count(), 2);
+        assert!(uk.contains("first prompt"), "{uk}");
+        assert!(uk.contains("second prompt"), "{uk}");
+
+        let bogus = admin_send(
+            &mut app,
+            sender,
+            RequestCmd::AgentHistory {
+                agent: "b".into(),
+                selector: HistorySelector::Kind {
+                    kind: "nonsense".into(),
+                },
+            },
+        );
+        assert!(!bogus.ok);
+    }
+
+    #[tokio::test]
+    async fn supervisor_bypasses_can_message_allowlist() {
+        let mut cfg = sample_config();
+        cfg.agents[0].supervisor = true;
+        // Empty allowlist would normally block all outbound sends.
+        cfg.agents[0].can_message = Some(vec![]);
+        let mut app = App::new(cfg);
+        let rxs = wire_up_agent_ids_and_channels(&mut app);
+        drop(rxs);
+        let mut new_rxs = Vec::new();
+        // Rewire b's agent_tx so we can observe delivery.
+        let (tx, rx) = mpsc::channel::<String>(16);
+        app.chats[1].agent_tx = Some(tx);
+        new_rxs.push(rx);
+
+        let sender = app.chats[0].session_id.unwrap();
+        let resp = admin_send(
+            &mut app,
+            sender,
+            RequestCmd::SendMessage {
+                to: "b".into(),
+                body: "hey".into(),
+            },
+        );
+        assert!(resp.ok, "err={:?}", resp.error);
+        let delivered = new_rxs[0].recv().await.expect("delivered");
+        assert_eq!(delivered, r#"<Message from="a">hey</Message>"#);
+    }
+
+    #[tokio::test]
+    async fn non_supervisor_still_honours_can_message_allowlist() {
+        let mut cfg = sample_config();
+        cfg.agents[0].can_message = Some(vec![]);
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+        let resp = admin_send(
+            &mut app,
+            sender,
+            RequestCmd::SendMessage {
+                to: "b".into(),
+                body: "hey".into(),
+            },
+        );
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("not permitted"));
+    }
+
+    #[tokio::test]
+    async fn server_shutdown_requires_sysadmin() {
+        let mut cfg = sample_config();
+        cfg.agents[0].supervisor = true; // supervisor only, not sysadmin
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+        let resp = admin_send(&mut app, sender, RequestCmd::ServerShutdown);
+        assert!(!resp.ok);
+        assert_eq!(resp.error.unwrap(), "not a sysadmin");
+        assert!(!app.shutting_down);
+    }
+
+    #[tokio::test]
+    async fn sysadmin_shutdown_begins_graceful_shutdown() {
+        let mut cfg = sample_config();
+        cfg.agents[0].sysadmin = true;
+        cfg.agents[0].supervisor = true; // sysadmin implies supervisor
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+        let resp = admin_send(&mut app, sender, RequestCmd::ServerShutdown);
+        assert!(resp.ok, "err={:?}", resp.error);
+        assert!(app.shutting_down);
+    }
+
+    #[tokio::test]
+    async fn sysadmin_exit_sets_should_quit() {
+        let mut cfg = sample_config();
+        cfg.agents[0].sysadmin = true;
+        cfg.agents[0].supervisor = true;
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+        let resp = admin_send(&mut app, sender, RequestCmd::ServerExit);
+        assert!(resp.ok, "err={:?}", resp.error);
+        assert!(app.should_quit);
     }
 }

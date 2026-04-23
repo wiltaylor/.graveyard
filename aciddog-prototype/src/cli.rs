@@ -162,6 +162,19 @@ pub enum AgentCommand {
         #[command(subcommand)]
         cmd: WorkflowCommand,
     },
+    /// Supervisor-only: observe and manage other agents. Requires
+    /// `supervisor = true` on the calling agent's config; rejected
+    /// with a permission error otherwise.
+    Agent {
+        #[command(subcommand)]
+        cmd: AgentAdminCommand,
+    },
+    /// Sysadmin-only: orchestrator lifecycle (shutdown, exit).
+    /// Requires `sysadmin = true` on the calling agent's config.
+    Server {
+        #[command(subcommand)]
+        cmd: ServerCommand,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -677,6 +690,100 @@ pub enum WorkerCommand {
         #[arg(long)]
         id: String,
     },
+    /// Supervisor-only: list every running worker, optionally scoped
+    /// to a single parent agent.
+    List {
+        /// Filter to workers spawned by this parent agent.
+        #[arg(long)]
+        parent: Option<String>,
+    },
+    /// Supervisor-only: archive any worker by display id, bypassing
+    /// the usual parent-ownership check.
+    ForceArchive {
+        /// Worker display id.
+        #[arg(long)]
+        id: String,
+    },
+}
+
+/// Supervisor-only observability + management of other agents.
+#[derive(Debug, Clone, Subcommand)]
+pub enum AgentAdminCommand {
+    /// List every agent, worker, and automaton with status, kind, and
+    /// ai_core. Tab-separated for easy parsing.
+    List,
+    /// Status snapshot for one agent.
+    Status {
+        /// Agent display id.
+        #[arg(long)]
+        id: String,
+    },
+    /// Return a slice of a target agent's chat history. Exactly one
+    /// selector flag must be supplied.
+    History {
+        /// Agent display id.
+        #[arg(long)]
+        id: String,
+        /// Return the whole transcript.
+        #[arg(long, group = "history_selector")]
+        all: bool,
+        /// Return the last N blocks.
+        #[arg(long, group = "history_selector")]
+        last: Option<usize>,
+        /// Return only the most recent AI reply.
+        #[arg(long = "last-message", group = "history_selector")]
+        last_message: bool,
+        /// Return only blocks of the given kind (user, ai,
+        /// mail_sent, mail_received, channel, tool_use, system_info,
+        /// system_warn, system_error, worker_spawn, worker_complete,
+        /// agent_info).
+        #[arg(long, group = "history_selector")]
+        kind: Option<String>,
+    },
+    /// Abort the target's in-flight turn.
+    Stop {
+        /// Agent display id.
+        #[arg(long)]
+        id: String,
+        /// Reason recorded in the target's transcript.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Put the target to sleep. Mailbox/channel traffic is refused
+    /// until `agent wake`.
+    Sleep {
+        /// Agent display id.
+        #[arg(long)]
+        id: String,
+    },
+    /// Wake a slept agent.
+    Wake {
+        /// Agent display id.
+        #[arg(long)]
+        id: String,
+    },
+    /// Deliver a message to the target's user-priority queue
+    /// unwrapped. The target sees it as if the human operator typed
+    /// it into the TUI pane.
+    SendAsUser {
+        /// Target agent id.
+        #[arg(long)]
+        to: String,
+        /// Message body.
+        #[arg(long)]
+        body: String,
+    },
+}
+
+/// Sysadmin-only: orchestrator lifecycle.
+#[derive(Debug, Clone, Subcommand)]
+pub enum ServerCommand {
+    /// Begin graceful shutdown. Idle agents are slept; working
+    /// agents finish their current turn before the process exits.
+    Shutdown,
+    /// Exit immediately without waiting for in-flight turns. Data
+    /// loss is possible — prefer `server shutdown`.
+    Exit,
 }
 
 #[derive(Debug, Clone, Subcommand)]

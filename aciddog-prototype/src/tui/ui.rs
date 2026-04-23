@@ -8,7 +8,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use super::app::{format_task_detail, ActiveView, AgentStatus, App, ChatKind, Focus, VIEW_ENTRIES};
+use super::app::{format_task_detail, ActiveView, AgentStatus, App, ChatKind, Focus};
 use super::blocks::{block_fingerprint, AnchorScratch, ChatButton, ScrollAnchor};
 use super::cores_view::{agents_using_core, format_usage_cell, is_team_default, CoreRow};
 use super::memory_view::{
@@ -100,7 +100,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // Agents takes whatever's left. When a channel / workflow is
     // selected its members (or instances) nest beneath its row, so the
     // panel can grow dynamically.
-    let views_height = (VIEW_ENTRIES.len() as u16).saturating_add(2).max(3);
+    let views_height = (app.view_entries().len() as u16).saturating_add(2).max(3);
     let channels_rows_len = channel_rows(app).len() as u16;
     let channels_height = if !app.channels.is_empty() {
         channels_rows_len.saturating_add(2).max(3)
@@ -247,11 +247,11 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
             let c = &app.chats[i];
             // Automatons share the agent list but live in a distinct
             // square-family icon set so the kind is always visible —
-            // not just when they're idle. Hibernated / Asleep don't
-            // apply to automatons (no AI state to park), so they
-            // silently fall back to the square `Ready` glyph on the
-            // off-chance a future path ever routes those states here.
+            // not just when they're idle. Hibernation doesn't apply
+            // (no AI state to park); Asleep does, since a supervisor
+            // can put any fleet member to sleep.
             let dot = match (c.kind, c.status) {
+                (ChatKind::Automaton, AgentStatus::Asleep) => "🟦",
                 (ChatKind::Automaton, AgentStatus::Working) => "🟨",
                 (ChatKind::Automaton, AgentStatus::Error) => "🟥",
                 (ChatKind::Automaton, _) => "🟩",
@@ -345,10 +345,7 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
                                     format!("remote {url} → {remote_target}")
                                 }
                                 crate::config::RemoteTransport::UnixSocket { path } => {
-                                    format!(
-                                        "remote unix:{} → {remote_target}",
-                                        path.display()
-                                    )
+                                    format!("remote unix:{} → {remote_target}", path.display())
                                 }
                             },
                         };
@@ -1307,7 +1304,8 @@ fn render_views_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
         .title(" views ")
         .border_style(focus_border_style(focused));
     let inner = block.inner(area);
-    let items: Vec<ListItem> = VIEW_ENTRIES
+    let entries = app.view_entries();
+    let items: Vec<ListItem> = entries
         .iter()
         .enumerate()
         .map(|(i, name)| {
@@ -1692,9 +1690,11 @@ fn render_inbox_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
             .border_style(focus_border_style(focused));
         let inner = block.inner(area);
         f.render_widget(block, area);
-        let p = Paragraph::new("Inbox is empty. Agents can reach you by addressing messages to `user`.")
-            .style(Style::default().fg(Color::DarkGray))
-            .wrap(Wrap { trim: true });
+        let p = Paragraph::new(
+            "Inbox is empty. Agents can reach you by addressing messages to `user`.",
+        )
+        .style(Style::default().fg(Color::DarkGray))
+        .wrap(Wrap { trim: true });
         f.render_widget(p, inner);
         return inner;
     }
@@ -1785,10 +1785,7 @@ fn render_inbox_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
                 lines.push(Line::from(vec![
                     Span::styled("From: ", Style::default().fg(Color::DarkGray)),
                     Span::raw(msg.from.clone()),
-                    Span::styled(
-                        format!("   ({age})"),
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    Span::styled(format!("   ({age})"), Style::default().fg(Color::DarkGray)),
                 ]));
                 lines.push(Line::from(""));
                 for body_line in msg.body.lines() {
@@ -1826,12 +1823,13 @@ fn render_inbox_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
         }
         InboxMode::Forward(fwd) => {
             let title = match fwd.stage {
-                ForwardStage::PickRecipient => {
-                    " forward → pick recipient ".to_string()
-                }
+                ForwardStage::PickRecipient => " forward → pick recipient ".to_string(),
                 ForwardStage::EditBody => format!(
                     " forward → {} ",
-                    fwd.candidates.get(fwd.selected).cloned().unwrap_or_default()
+                    fwd.candidates
+                        .get(fwd.selected)
+                        .cloned()
+                        .unwrap_or_default()
                 ),
             };
             let block = Block::default()
@@ -2054,29 +2052,36 @@ fn render_inbox_modal_buttons(f: &mut Frame, area: Rect, app: &mut App) {
         .add_modifier(Modifier::BOLD);
 
     let mut x = area.x;
-    let mut place = |label: &str, style: Style, hotspot: InboxHotspot, app: &mut App, x: &mut u16| {
-        let width = label.chars().count() as u16;
-        if *x + width > area.x + area.width {
-            return;
-        }
-        let rect = Rect {
-            x: *x,
-            y: area.y,
-            width,
-            height: 1,
+    let mut place =
+        |label: &str, style: Style, hotspot: InboxHotspot, app: &mut App, x: &mut u16| {
+            let width = label.chars().count() as u16;
+            if *x + width > area.x + area.width {
+                return;
+            }
+            let rect = Rect {
+                x: *x,
+                y: area.y,
+                width,
+                height: 1,
+            };
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(label.to_string(), style))),
+                rect,
+            );
+            app.layout.inbox_hotspots.push((rect, hotspot));
+            *x += width + 1;
         };
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(label.to_string(), style))),
-            rect,
-        );
-        app.layout.inbox_hotspots.push((rect, hotspot));
-        *x += width + 1;
-    };
 
     if show_send {
         place(" send ", primary, InboxHotspot::SendButton, app, &mut x);
     }
-    place(" cancel ", secondary, InboxHotspot::CancelButton, app, &mut x);
+    place(
+        " cancel ",
+        secondary,
+        InboxHotspot::CancelButton,
+        app,
+        &mut x,
+    );
 }
 
 fn render_core_row(

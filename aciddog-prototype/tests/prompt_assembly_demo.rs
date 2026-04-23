@@ -85,6 +85,8 @@ fn planner_prompt_has_role_team_tag_tools_and_instructions() {
             memory_banks: vec![],
             skills: vec![],
             channels: vec![],
+            supervisor: false,
+            sysadmin: false,
             worker: None,
         }),
     };
@@ -167,6 +169,8 @@ fn coder_prompt_uses_cli_preamble_inside_tools() {
             memory_banks: vec![],
             skills: vec![],
             channels: vec![],
+            supervisor: false,
+            sysadmin: false,
             worker: None,
         }),
     };
@@ -235,6 +239,8 @@ fn planner_prompt_includes_memory_block_and_cli_docs_for_allowed_banks() {
             memory_banks: bank_ids.clone(),
             skills: vec![],
             channels: vec![],
+            supervisor: false,
+            sysadmin: false,
             worker: None,
         }),
     };

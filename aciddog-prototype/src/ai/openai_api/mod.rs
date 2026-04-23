@@ -848,8 +848,10 @@ fn build_tools_section(parts: &PromptParts, allowed_tools: &[String]) -> String 
             .collect();
 
         // Workers may only message their parent — `user` is not
-        // a valid recipient for them.
+        // a valid recipient for them. Workers also never supervise.
         let include_user_recipient = cli.worker.is_none();
+        let supervisor = cli.worker.is_none() && cli.supervisor;
+        let sysadmin = cli.worker.is_none() && cli.sysadmin;
         body.push('\n');
         if has_bash {
             if let Some(w) = &cli.worker {
@@ -863,6 +865,8 @@ fn build_tools_section(parts: &PromptParts, allowed_tools: &[String]) -> String 
                 &skills,
                 &channel_infos,
                 include_user_recipient,
+                supervisor,
+                sysadmin,
             ));
         } else {
             if let Some(w) = &cli.worker {
@@ -875,6 +879,8 @@ fn build_tools_section(parts: &PromptParts, allowed_tools: &[String]) -> String 
                 &skills,
                 &channel_infos,
                 include_user_recipient,
+                supervisor,
+                sysadmin,
             ));
         }
     }

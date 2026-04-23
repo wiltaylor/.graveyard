@@ -349,9 +349,7 @@ pub(crate) async fn fetch_openrouter_at(
     let env_var = match &core.kind {
         AiCoreKind::OpenAiApi { api_key_env, .. } => api_key_env.as_str(),
         _ => {
-            return UsageSnapshot::error(
-                "usage_provider :openrouter requires an openAiApi core",
-            );
+            return UsageSnapshot::error("usage_provider :openrouter requires an openAiApi core");
         }
     };
     let key = match std::env::var(env_var) {
@@ -454,7 +452,12 @@ async fn gh_auth_token() -> Result<String, String> {
         .args(["auth", "token"])
         .output()
         .await
-        .map_err(|e| format!("gh not found ({}) — install github cli and `gh auth login`", e))?;
+        .map_err(|e| {
+            format!(
+                "gh not found ({}) — install github cli and `gh auth login`",
+                e
+            )
+        })?;
     if !output.status.success() {
         return Err("gh auth token failed — run `gh auth login`".to_string());
     }
@@ -472,9 +475,7 @@ pub(crate) async fn fetch_github_copilot_at(
     token: &str,
 ) -> UsageSnapshot {
     if !matches!(core.kind, AiCoreKind::CopilotCli { .. }) {
-        return UsageSnapshot::error(
-            "usage_provider :github_copilot requires a copilotCli core",
-        );
+        return UsageSnapshot::error("usage_provider :github_copilot requires a copilotCli core");
     }
 
     // Step 1: resolve the authenticated user's login. Avoids guessing
@@ -496,9 +497,7 @@ pub(crate) async fn fetch_github_copilot_at(
     if !user_resp.status().is_success() {
         let status = user_resp.status().as_u16();
         if status == 401 {
-            return UsageSnapshot::error(
-                "gh token rejected — run `gh auth refresh`",
-            );
+            return UsageSnapshot::error("gh token rejected — run `gh auth refresh`");
         }
         return UsageSnapshot::error(format!("http {} from /user", status));
     }
@@ -913,9 +912,7 @@ mod tests {
             .and(path(
                 "/users/wiltaylor/settings/billing/premium_request/usage",
             ))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(json!({ "usageItems": [] })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "usageItems": [] })))
             .mount(&server)
             .await;
 

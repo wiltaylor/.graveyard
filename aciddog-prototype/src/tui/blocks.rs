@@ -477,11 +477,15 @@ pub enum ChatBlock {
     /// One line of stdout from an automaton child process. Rendered as
     /// plain monospace text with no markdown parsing so a script that
     /// accidentally prints backticks doesn't upset the layout.
-    AutomatonStdout { line: String },
+    AutomatonStdout {
+        line: String,
+    },
     /// One line of stderr from an automaton child process. Rendered
     /// like `AutomatonStdout` but coloured red so error output stays
     /// visually distinct while interleaved with stdout lines.
-    AutomatonStderr { line: String },
+    AutomatonStderr {
+        line: String,
+    },
 }
 
 impl ChatBlock {
@@ -557,9 +561,7 @@ impl ChatBlock {
                     Some(subject.clone())
                 }
             }
-            Self::AutomatonStdout { line } | Self::AutomatonStderr { line } => {
-                Some(line.clone())
-            }
+            Self::AutomatonStdout { line } | Self::AutomatonStderr { line } => Some(line.clone()),
         }
     }
 
@@ -1142,13 +1144,9 @@ impl ChatBlock {
                 line,
                 Style::default().fg(Color::Gray),
             ),
-            Self::AutomatonStderr { line } => self.render_prefix_text(
-                buf,
-                body_rect,
-                "» ",
-                line,
-                Style::default().fg(Color::Red),
-            ),
+            Self::AutomatonStderr { line } => {
+                self.render_prefix_text(buf, body_rect, "» ", line, Style::default().fg(Color::Red))
+            }
         }
     }
 

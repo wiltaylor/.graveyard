@@ -170,7 +170,17 @@ fn build_first_turn_preamble(parent_id: &str, task: &str) -> String {
     // conversation with just their parent.
     // Remote workers are scoped to their parent — `user` is not a
     // valid recipient.
-    out.push_str(&tag_preamble(&[parent_id], &[], &[], &[], &[], false));
+    // Remote workers never supervise.
+    out.push_str(&tag_preamble(
+        &[parent_id],
+        &[],
+        &[],
+        &[],
+        &[],
+        false,
+        false,
+        false,
+    ));
     out
 }
 
@@ -286,7 +296,9 @@ impl AICore for JulesCore {
     async fn turn(&mut self, prompt: &str) -> Result<BoxStream<'static, AIEvent>, AIError> {
         let (tx, rx) = mpsc::channel::<AIEvent>(64);
 
-        let api_key = std::env::var(&self.api_key_env).ok().filter(|k| !k.is_empty());
+        let api_key = std::env::var(&self.api_key_env)
+            .ok()
+            .filter(|k| !k.is_empty());
 
         // Snapshot everything the polling task needs — the async block
         // owns its state, we stay `&mut self`.
@@ -381,9 +393,7 @@ impl AICore for JulesCore {
                                 let _ = send_ipc(
                                     socket,
                                     session_uuid,
-                                    RequestCmd::RemoteSessionBound {
-                                        name: n.clone(),
-                                    },
+                                    RequestCmd::RemoteSessionBound { name: n.clone() },
                                 )
                                 .await;
                             }
@@ -493,9 +503,7 @@ impl AICore for JulesCore {
                                 let id = a
                                     .get("id")
                                     .and_then(Value::as_str)
-                                    .or_else(|| {
-                                        a.get("name").and_then(Value::as_str)
-                                    })
+                                    .or_else(|| a.get("name").and_then(Value::as_str))
                                     .map(str::to_string);
                                 let Some(id) = id else {
                                     // An activity without an id is
@@ -509,13 +517,7 @@ impl AICore for JulesCore {
                                         continue;
                                     }
                                 }
-                                emit_activity(
-                                    &tx,
-                                    &a,
-                                    &latest_plan_cell,
-                                    &latest_msg_cell,
-                                )
-                                .await;
+                                emit_activity(&tx, &a, &latest_plan_cell, &latest_msg_cell).await;
                                 emitted_this_poll += 1;
                             }
                             match next_page_token {
@@ -808,11 +810,7 @@ async fn send_message(
     Ok(())
 }
 
-async fn approve_plan(
-    http: &reqwest::Client,
-    api_key: &str,
-    name: &str,
-) -> Result<(), String> {
+async fn approve_plan(http: &reqwest::Client, api_key: &str, name: &str) -> Result<(), String> {
     let url = format!("{JULES_BASE_URL}/{name}:approvePlan");
     let resp = http
         .post(&url)
@@ -1000,7 +998,10 @@ async fn emit_activity(
 
     if let Some(progress) = a.get("progressUpdated") {
         let title = progress.get("title").and_then(Value::as_str).unwrap_or("");
-        let desc = progress.get("description").and_then(Value::as_str).unwrap_or("");
+        let desc = progress
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let text = if desc.is_empty() {
             format!("▸ {title}")
         } else {
@@ -1020,7 +1021,10 @@ async fn emit_activity(
             for step in steps {
                 let idx = step.get("index").and_then(Value::as_u64).unwrap_or(0);
                 let title = step.get("title").and_then(Value::as_str).unwrap_or("");
-                let desc = step.get("description").and_then(Value::as_str).unwrap_or("");
+                let desc = step
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
                 if desc.is_empty() {
                     text.push_str(&format!("  {idx}. {title}\n"));
                 } else {
@@ -1190,18 +1194,16 @@ async fn finish_turn(
         // the parent if the parent can see what Jules actually
         // wrote.
         let last_from_jules = match latest_agent_message {
-            Some(m) if !m.is_empty() => format!(
-                "\n\n--- Last message from the remote worker ---\n{m}\n--- end ---"
-            ),
+            Some(m) if !m.is_empty() => {
+                format!("\n\n--- Last message from the remote worker ---\n{m}\n--- end ---")
+            }
             _ => String::new(),
         };
         match state {
             JulesState::AwaitingPlanApproval => {
                 let plan_block = latest_plan
                     .map(|p| format!("\n\n{p}"))
-                    .unwrap_or_else(|| {
-                        " (see the worker's pane for details)".to_string()
-                    });
+                    .unwrap_or_else(|| " (see the worker's pane for details)".to_string());
                 let body = format!(
                     "Remote worker has produced a plan and is awaiting your \
                      approval.{plan_block}{last_from_jules}\n\n\

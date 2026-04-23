@@ -197,15 +197,7 @@ async fn remote_core_forwards_outbound_user_message() {
 
     let session = Uuid::new_v4();
     let handle = tokio::spawn(run_remote_core(
-        0,
-        automaton,
-        session,
-        user_rx,
-        agent_rx,
-        channel_rx,
-        cancel_rx,
-        ai_tx,
-        events_tx,
+        0, automaton, session, user_rx, agent_rx, channel_rx, cancel_rx, ai_tx, events_tx,
     ));
 
     // Wait for the startup stdout line ("remote → …"), which
@@ -275,15 +267,7 @@ async fn proxy_socket_tunnels_request_cmd() {
 
     let session = Uuid::new_v4();
     let handle = tokio::spawn(run_remote_core(
-        0,
-        automaton,
-        session,
-        user_rx,
-        agent_rx,
-        channel_rx,
-        cancel_rx,
-        ai_tx,
-        events_tx,
+        0, automaton, session, user_rx, agent_rx, channel_rx, cancel_rx, ai_tx, events_tx,
     ));
 
     // Wait for the proxy socket to appear.

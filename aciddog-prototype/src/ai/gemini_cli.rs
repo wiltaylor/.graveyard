@@ -322,8 +322,10 @@ impl GeminiCliCore {
                 .collect();
 
             // Workers may only message their parent — `user` is not
-            // a valid recipient for them.
+            // a valid recipient for them. Workers also never supervise.
             let include_user_recipient = cli.worker.is_none();
+            let supervisor = cli.worker.is_none() && cli.supervisor;
+            let sysadmin = cli.worker.is_none() && cli.sysadmin;
             body.push('\n');
             if has_bash {
                 if let Some(w) = &cli.worker {
@@ -337,6 +339,8 @@ impl GeminiCliCore {
                     &skills,
                     &channel_infos,
                     include_user_recipient,
+                    supervisor,
+                    sysadmin,
                 ));
             } else {
                 if let Some(w) = &cli.worker {
@@ -349,6 +353,8 @@ impl GeminiCliCore {
                     &skills,
                     &channel_infos,
                     include_user_recipient,
+                    supervisor,
+                    sysadmin,
                 ));
             }
         }
@@ -1263,6 +1269,8 @@ mod tests {
                 memory_banks: vec![],
                 skills: vec![],
                 channels: vec![],
+                supervisor: false,
+                sysadmin: false,
                 worker: None,
             }),
             ..PromptParts::default()
@@ -1296,6 +1304,8 @@ mod tests {
                 memory_banks: vec![],
                 skills: vec![],
                 channels: vec![],
+                supervisor: false,
+                sysadmin: false,
                 worker: None,
             }),
             ..PromptParts::default()
@@ -1320,6 +1330,8 @@ mod tests {
                 memory_banks: vec![],
                 skills: vec![],
                 channels: vec![],
+                supervisor: false,
+                sysadmin: false,
                 worker: Some(WorkerCtx {
                     parent_id: "coder".into(),
                     task: "find FOO".into(),

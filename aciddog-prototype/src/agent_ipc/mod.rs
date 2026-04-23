@@ -382,6 +382,86 @@ pub enum RequestCmd {
     SkillRun {
         name: String,
     },
+    /// Supervisor: list every agent, worker, and automaton with a
+    /// status summary (kind, status, asleep, hibernated, parent,
+    /// ai_core). Reply is a plaintext table.
+    AgentList,
+    /// Supervisor: status snapshot for a single agent/worker/automaton.
+    AgentStatus {
+        agent: String,
+    },
+    /// Supervisor: selected chat history for an agent/worker/automaton.
+    /// The selector picks a subset of the in-memory `ChatBlock` log
+    /// (user prompts, AI replies, mail, channel, tool-use summaries,
+    /// system notices) — see [`HistorySelector`].
+    AgentHistory {
+        agent: String,
+        #[serde(flatten)]
+        selector: HistorySelector,
+    },
+    /// Supervisor: abort the target agent's in-flight turn (if any).
+    /// Equivalent to the human running `/stop` on the target pane.
+    AgentStop {
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// Supervisor: put the target agent to sleep. Mailbox/channel
+    /// deliveries are refused until the next `AgentWake`.
+    AgentSleep {
+        agent: String,
+    },
+    /// Supervisor: wake a previously-slept agent.
+    AgentWake {
+        agent: String,
+    },
+    /// Supervisor: deliver a message to the target's user-priority
+    /// queue unwrapped. The target sees it indistinguishable from the
+    /// human typing the body into the TUI pane.
+    AgentSendAsUser {
+        to: String,
+        body: String,
+    },
+    /// Supervisor: list every running worker across the fleet,
+    /// optionally filtered to workers spawned by a specific parent.
+    WorkerList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
+    },
+    /// Supervisor: archive any worker by display id, bypassing the
+    /// parent-ownership check that `WorkerArchive` enforces.
+    WorkerForceArchive {
+        worker: String,
+    },
+    /// Sysadmin: begin graceful shutdown of the orchestrator. Idle
+    /// agents are put to sleep; working agents are allowed to finish
+    /// their current turn before the process exits.
+    ServerShutdown,
+    /// Sysadmin: exit immediately. Raises `should_quit` without
+    /// waiting for in-flight turns. Data loss is possible if a
+    /// working agent is mid-response.
+    ServerExit,
+}
+
+/// Which slice of a target agent's chat log to return from
+/// `AgentHistory`. Serialized with an internally-tagged `select`
+/// discriminator so the JSON shape is ergonomic to emit from the tag
+/// IPC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "select", rename_all = "snake_case")]
+pub enum HistorySelector {
+    /// Every block in the transcript.
+    All,
+    /// The most recent `n` blocks (any kind).
+    Last { n: usize },
+    /// Only the most recent AI markdown reply (skips tool-use and
+    /// system blocks). Empty reply if the agent hasn't spoken yet.
+    LastMessage,
+    /// Only blocks of the given kind — one of `user`, `ai`,
+    /// `mail_sent`, `mail_received`, `channel`, `tool_use`,
+    /// `system_info`, `system_warn`, `system_error`, `worker_spawn`,
+    /// `worker_complete`.
+    Kind { kind: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -497,7 +577,10 @@ mod tests {
         assert!(s.contains("\"cmd\":\"worker_create\""), "got: {s}");
         assert!(s.contains("\"template\":\"researcher\""), "got: {s}");
         assert!(s.contains("\"task\":\"find FOO\""), "got: {s}");
-        assert!(!s.contains("\"properties\""), "properties should be omitted when None: {s}");
+        assert!(
+            !s.contains("\"properties\""),
+            "properties should be omitted when None: {s}"
+        );
     }
 
     #[test]
@@ -540,7 +623,11 @@ mod tests {
         };
         let back: Request = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
         match back.cmd {
-            RequestCmd::WorkerCreate { template, task, properties } => {
+            RequestCmd::WorkerCreate {
+                template,
+                task,
+                properties,
+            } => {
                 assert_eq!(template, "r");
                 assert_eq!(task, "t");
                 assert!(properties.is_none());

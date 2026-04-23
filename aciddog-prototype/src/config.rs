@@ -71,6 +71,19 @@ pub struct Agent {
     /// for this agent. `None` ⇒ `/compact` falls back to the built-in
     /// `drop` strategy.
     pub compaction: Option<String>,
+    /// Grants fleet-management capabilities: observe (`agent list`,
+    /// `agent status`, `agent history`, `worker list`), control
+    /// (`agent stop`, `agent sleep`, `agent wake`, `agent send-as-user`,
+    /// `worker force-archive`), and bypasses this agent's own
+    /// `can_message` allowlist when using `send`. Only agents (not
+    /// workers or automatons) may be supervisors.
+    #[serde(default)]
+    pub supervisor: bool,
+    /// Grants server-level controls (`server shutdown`, `server exit`)
+    /// on top of supervisor. Implies `supervisor = true` after the
+    /// config is parsed.
+    #[serde(default)]
+    pub sysadmin: bool,
 }
 
 /// A template for an ephemeral worker. Unlike `Agent`, a `Worker` is not
@@ -1092,7 +1105,9 @@ pub enum ConfigError {
     )]
     RemoteTransportConflict { automaton: String },
 
-    #[error("automaton `{automaton}` has no `url` or `socket_path` set — one is required for `:remote`")]
+    #[error(
+        "automaton `{automaton}` has no `url` or `socket_path` set — one is required for `:remote`"
+    )]
     RemoteMissingTransport { automaton: String },
 
     #[error("automaton `{automaton}` is an HTTPS `:remote` automaton; `api_key_env` is required")]
@@ -1177,7 +1192,9 @@ pub enum ConfigError {
     #[error("webhook `{webhook}` hmac algo `{algo}` is invalid (expected `:sha1` or `:sha256`)")]
     WebhookUnknownHmacAlgo { webhook: String, algo: String },
 
-    #[error("{kind} id `{id}` is reserved (the `user` id is reserved for the human operator's inbox)")]
+    #[error(
+        "{kind} id `{id}` is reserved (the `user` id is reserved for the human operator's inbox)"
+    )]
     ReservedId { kind: String, id: String },
 }
 
@@ -1233,9 +1250,20 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 memory_banks: optional_string_list(b, "memory_banks")?,
                 skills: optional_string_list(b, "skills")?,
                 compaction: optional_string(b, "compaction"),
+                supervisor: optional_bool(b, "supervisor")?.unwrap_or(false),
+                sysadmin: optional_bool(b, "sysadmin")?.unwrap_or(false),
             })
         })
-        .collect::<Result<Vec<_>, ConfigError>>()?;
+        .collect::<Result<Vec<_>, ConfigError>>()?
+        .into_iter()
+        .map(|mut a: Agent| {
+            // sysadmin implies supervisor.
+            if a.sysadmin {
+                a.supervisor = true;
+            }
+            a
+        })
+        .collect::<Vec<_>>();
 
     let workers = doc
         .blocks_of_type_resolved("worker")
@@ -1642,11 +1670,10 @@ fn parse_automaton(b: &wcl_lang::BlockRef) -> Result<Automaton, ConfigError> {
                 }
                 (true, false) => {
                     let url = require_string(b, "url")?;
-                    let api_key_env = api_key_env.ok_or_else(|| {
-                        ConfigError::RemoteMissingApiKeyEnv {
+                    let api_key_env =
+                        api_key_env.ok_or_else(|| ConfigError::RemoteMissingApiKeyEnv {
                             automaton: id.clone(),
-                        }
-                    })?;
+                        })?;
                     RemoteTransport::Https {
                         url,
                         api_key_env,

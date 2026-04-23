@@ -54,7 +54,10 @@ pub async fn run_proxy(
         .send((
             idx,
             AIEvent::AutomatonStdout {
-                line: format!("remote `{automaton_id}` proxy listening on {}", path.display()),
+                line: format!(
+                    "remote `{automaton_id}` proxy listening on {}",
+                    path.display()
+                ),
             },
         ))
         .await;
@@ -158,7 +161,10 @@ async fn handle_connection(stream: UnixStream, client: &Client) -> Result<()> {
     write_response(&mut write_half, &resp).await
 }
 
-async fn write_response(write: &mut tokio::net::unix::OwnedWriteHalf, resp: &IpcResponse) -> Result<()> {
+async fn write_response(
+    write: &mut tokio::net::unix::OwnedWriteHalf,
+    resp: &IpcResponse,
+) -> Result<()> {
     let mut text = serde_json::to_string(resp).context("serializing proxy response")?;
     text.push('\n');
     write.write_all(text.as_bytes()).await?;

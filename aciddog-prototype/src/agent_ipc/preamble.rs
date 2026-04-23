@@ -41,7 +41,10 @@ const USER_RECIPIENT_ID: &str = "user";
 /// CLI-mode preamble: the agent has a shell tool and invokes the
 /// aciddog binary directly. `include_user_recipient` is true for
 /// configured agents/automatons (who may always mail `user`) and
-/// false for workers (scoped to their parent).
+/// false for workers (scoped to their parent). `supervisor` /
+/// `sysadmin` render the admin-surface groups; workers always pass
+/// `false` for both (workers never supervise).
+#[allow(clippy::too_many_arguments)]
 pub fn cli_preamble(
     binary: &str,
     contactable: &[&str],
@@ -50,6 +53,8 @@ pub fn cli_preamble(
     skills: &[&str],
     channels: &[ChannelInfo<'_>],
     include_user_recipient: bool,
+    supervisor: bool,
+    sysadmin: bool,
 ) -> String {
     let mut out = String::new();
     push_line(&mut out, "## aciddog tools");
@@ -212,7 +217,8 @@ pub fn cli_preamble(
             &[
                 Row {
                     cmd: "worker create",
-                    params: "`--template <id>` `--task \"<initial task>\"` [`--properties '<json>'`]",
+                    params:
+                        "`--template <id>` `--task \"<initial task>\"` [`--properties '<json>'`]",
                     desc: "Spawn an ephemeral worker. Response carries the new \
                            worker's display id (use with `send --to`) and session \
                            UUID (retain to resume if it hibernates). \
@@ -422,13 +428,116 @@ pub fn cli_preamble(
         ),
     );
 
+    if supervisor {
+        push_group(
+            &mut out,
+            "Supervision",
+            &[
+                Row {
+                    cmd: "agent list",
+                    params: "—",
+                    desc: "List every agent/worker/automaton with kind, status, \
+                           parent, and ai_core. Tab-separated.",
+                },
+                Row {
+                    cmd: "agent status",
+                    params: "`--id <agent-id>`",
+                    desc: "Status snapshot for one agent.",
+                },
+                Row {
+                    cmd: "agent history",
+                    params: "`--id <agent-id>` (`--all` \\| `--last <n>` \\| `--last-message` \\| `--kind <k>`)",
+                    desc: "Slice a target agent's chat history. `--kind` accepts \
+                           `user`, `ai`, `mail_sent`, `mail_received`, `channel`, \
+                           `tool_use`, `system_info`, `system_warn`, \
+                           `system_error`, `worker_spawn`, `worker_complete`, or \
+                           `agent_info`.",
+                },
+                Row {
+                    cmd: "agent stop",
+                    params: "`--id <agent-id>` [`--reason \"<text>\"`]",
+                    desc: "Abort the target's in-flight turn (if any). Mirrors \
+                           the human `/stop` slash command.",
+                },
+                Row {
+                    cmd: "agent sleep",
+                    params: "`--id <agent-id>`",
+                    desc: "Put the target to sleep. Mailbox/channel traffic \
+                           is refused until `agent wake`.",
+                },
+                Row {
+                    cmd: "agent wake",
+                    params: "`--id <agent-id>`",
+                    desc: "Wake a previously-slept agent.",
+                },
+                Row {
+                    cmd: "agent send-as-user",
+                    params: "`--to <agent-id>` `--body \"<text>\"`",
+                    desc: "Deliver a message on the target's user-priority \
+                           queue unwrapped. The target sees it as if the human \
+                           operator typed it.",
+                },
+                Row {
+                    cmd: "worker list",
+                    params: "[`--parent <agent-id>`]",
+                    desc: "List every running worker, optionally scoped to a \
+                           specific parent agent.",
+                },
+                Row {
+                    cmd: "worker force-archive",
+                    params: "`--id <worker-display-id>`",
+                    desc: "Archive any worker by display id, bypassing the \
+                           usual parent-ownership check.",
+                },
+            ],
+            Some(
+                "You have supervisor privileges: you can observe and manage \
+                 other agents and workers. Your own `can_message` allowlist is \
+                 bypassed when using regular `send` — you may reach any member \
+                 of the fleet. Admin commands are reserved for real problems; \
+                 do not use them casually.",
+            ),
+        );
+    }
+
+    if sysadmin {
+        push_group(
+            &mut out,
+            "Sysadmin",
+            &[
+                Row {
+                    cmd: "server shutdown",
+                    params: "—",
+                    desc: "Begin graceful shutdown. Idle agents are slept; \
+                           working agents finish their current turn before the \
+                           process exits.",
+                },
+                Row {
+                    cmd: "server exit",
+                    params: "—",
+                    desc: "Exit immediately without waiting for in-flight \
+                           turns. Data loss is possible — prefer `server \
+                           shutdown`.",
+                },
+            ],
+            Some(
+                "You have sysadmin privileges. These commands end the \
+                 orchestrator process; only run them when you are certain the \
+                 fleet should stop.",
+            ),
+        );
+    }
+
     out
 }
 
 /// Tag-mode preamble: the agent has no shell tool and emits
 /// `<aciddog-call>` blocks the core intercepts. `include_user_recipient`
 /// is true for configured agents/automatons (who may always message
-/// `user`) and false for workers (scoped to their parent).
+/// `user`) and false for workers (scoped to their parent). `supervisor`
+/// / `sysadmin` render the admin-surface groups; workers always pass
+/// `false` for both.
+#[allow(clippy::too_many_arguments)]
 pub fn tag_preamble(
     contactable: &[&str],
     creatable: &[&str],
@@ -436,6 +545,8 @@ pub fn tag_preamble(
     skills: &[&str],
     channels: &[ChannelInfo<'_>],
     include_user_recipient: bool,
+    supervisor: bool,
+    sysadmin: bool,
 ) -> String {
     let mut out = String::new();
     push_line(&mut out, "## aciddog tools");
@@ -826,6 +937,97 @@ pub fn tag_preamble(
         ),
     );
 
+    if supervisor {
+        push_group(
+            &mut out,
+            "Supervision",
+            &[
+                Row {
+                    cmd: "agent_list",
+                    params: "—",
+                    desc: "List every agent/worker/automaton with kind, status, \
+                           parent, ai_core. Tab-separated.",
+                },
+                Row {
+                    cmd: "agent_status",
+                    params: "`\"agent\":\"<agent-id>\"`",
+                    desc: "Status snapshot for one agent.",
+                },
+                Row {
+                    cmd: "agent_history",
+                    params: "`\"agent\":\"<agent-id>\"`, `\"select\":\"all\\|last\\|last_message\\|kind\"` (+ `\"n\":N` for `last`, `\"kind\":\"<k>\"` for `kind`)",
+                    desc: "Slice a target agent's chat history. `kind` accepts \
+                           `user`, `ai`, `mail_sent`, `mail_received`, \
+                           `channel`, `tool_use`, `system_info`, \
+                           `system_warn`, `system_error`, `worker_spawn`, \
+                           `worker_complete`, or `agent_info`.",
+                },
+                Row {
+                    cmd: "agent_stop",
+                    params: "`\"agent\":\"<agent-id>\"`, [`\"reason\":\"<text>\"`]",
+                    desc: "Abort the target's in-flight turn.",
+                },
+                Row {
+                    cmd: "agent_sleep",
+                    params: "`\"agent\":\"<agent-id>\"`",
+                    desc: "Put the target to sleep (refuses mailbox/channel traffic).",
+                },
+                Row {
+                    cmd: "agent_wake",
+                    params: "`\"agent\":\"<agent-id>\"`",
+                    desc: "Wake a slept agent.",
+                },
+                Row {
+                    cmd: "agent_send_as_user",
+                    params: "`\"to\":\"<agent-id>\"`, `\"body\":\"<text>\"`",
+                    desc: "Deliver to the target's user-priority queue \
+                           unwrapped; indistinguishable from the human operator.",
+                },
+                Row {
+                    cmd: "worker_list",
+                    params: "[`\"parent\":\"<agent-id>\"`]",
+                    desc: "List every running worker, optionally scoped to a parent.",
+                },
+                Row {
+                    cmd: "worker_force_archive",
+                    params: "`\"worker\":\"<worker-display-id>\"`",
+                    desc: "Archive any worker by display id, bypassing the parent-ownership check.",
+                },
+            ],
+            Some(
+                "You have supervisor privileges: you can observe and manage \
+                 other agents and workers. Your own `can_message` allowlist \
+                 is bypassed when using regular `send_message` — you may reach \
+                 any member of the fleet. Admin commands are reserved for \
+                 real problems; do not use them casually.",
+            ),
+        );
+    }
+
+    if sysadmin {
+        push_group(
+            &mut out,
+            "Sysadmin",
+            &[
+                Row {
+                    cmd: "server_shutdown",
+                    params: "—",
+                    desc: "Begin graceful shutdown.",
+                },
+                Row {
+                    cmd: "server_exit",
+                    params: "—",
+                    desc: "Exit immediately without waiting for in-flight turns.",
+                },
+            ],
+            Some(
+                "You have sysadmin privileges. These commands end the \
+                 orchestrator process; only run them when you are certain \
+                 the fleet should stop.",
+            ),
+        );
+    }
+
     out
 }
 
@@ -943,7 +1145,17 @@ mod tests {
 
     #[test]
     fn cli_preamble_has_header_and_binary_path() {
-        let p = cli_preamble("/opt/aciddog/bin/aciddog", &["coder"], &[], &[], &[], &[], true);
+        let p = cli_preamble(
+            "/opt/aciddog/bin/aciddog",
+            &["coder"],
+            &[],
+            &[],
+            &[],
+            &[],
+            true,
+            false,
+            false,
+        );
         assert!(p.starts_with("## aciddog tools"), "header: {p}");
         assert!(
             p.contains("`/opt/aciddog/bin/aciddog`"),
@@ -957,7 +1169,17 @@ mod tests {
 
     #[test]
     fn cli_preamble_preserves_weird_binary_path() {
-        let p = cli_preamble("/tmp/weird path/aciddog", &["coder"], &[], &[], &[], &[], true);
+        let p = cli_preamble(
+            "/tmp/weird path/aciddog",
+            &["coder"],
+            &[],
+            &[],
+            &[],
+            &[],
+            true,
+            false,
+            false,
+        );
         assert!(
             p.contains("/tmp/weird path/aciddog"),
             "binary path verbatim: {p}"
@@ -966,7 +1188,17 @@ mod tests {
 
     #[test]
     fn cli_preamble_lists_send_row_and_contactable_ids() {
-        let p = cli_preamble("/a", &["coder", "reviewer"], &[], &[], &[], &[], true);
+        let p = cli_preamble(
+            "/a",
+            &["coder", "reviewer"],
+            &[],
+            &[],
+            &[],
+            &[],
+            true,
+            false,
+            false,
+        );
         assert!(p.contains("### Messaging"), "messaging group missing: {p}");
         assert!(p.contains("| send |"), "send row missing: {p}");
         assert!(
@@ -985,7 +1217,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_messaging_group_lists_user_even_with_empty_allowlist() {
-        let p = cli_preamble("/a", &[], &[], &[], &[], &[], true);
+        let p = cli_preamble("/a", &[], &[], &[], &[], &[], true, false, false);
         assert!(
             p.contains("### Messaging"),
             "messaging group must always render for configured agents: {p}"
@@ -999,7 +1231,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_omits_messaging_group_for_worker_when_allowlist_empty() {
-        let p = cli_preamble("/a", &[], &[], &[], &[], &[], false);
+        let p = cli_preamble("/a", &[], &[], &[], &[], &[], false, false, false);
         assert!(
             !p.contains("### Messaging"),
             "worker with empty allowlist must not get Messaging group: {p}"
@@ -1009,7 +1241,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_worker_does_not_list_user() {
-        let p = cli_preamble("/a", &["parent"], &[], &[], &[], &[], false);
+        let p = cli_preamble("/a", &["parent"], &[], &[], &[], &[], false, false, false);
         assert!(p.contains("### Messaging"), "{p}");
         assert!(
             !p.contains("You may message: user"),
@@ -1023,7 +1255,17 @@ mod tests {
 
     #[test]
     fn cli_preamble_lists_worker_create_when_creatable() {
-        let p = cli_preamble("/a", &["coder"], &["researcher", "tester"], &[], &[], &[], true);
+        let p = cli_preamble(
+            "/a",
+            &["coder"],
+            &["researcher", "tester"],
+            &[],
+            &[],
+            &[],
+            true,
+            false,
+            false,
+        );
         assert!(p.contains("### Workers"), "workers group missing: {p}");
         assert!(
             p.contains("| worker create |"),
@@ -1037,7 +1279,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_omits_workers_group_when_creatable_empty() {
-        let p = cli_preamble("/a", &["coder"], &[], &[], &[], &[], true);
+        let p = cli_preamble("/a", &["coder"], &[], &[], &[], &[], true, false, false);
         assert!(
             !p.contains("### Workers"),
             "workers group should be omitted: {p}"
@@ -1050,7 +1292,17 @@ mod tests {
 
     #[test]
     fn cli_preamble_never_documents_worker_complete_for_plain_agents() {
-        let p = cli_preamble("/a", &["coder"], &["researcher"], &[], &[], &[], true);
+        let p = cli_preamble(
+            "/a",
+            &["coder"],
+            &["researcher"],
+            &[],
+            &[],
+            &[],
+            true,
+            false,
+            false,
+        );
         assert!(
             !p.contains("worker complete"),
             "plain agents must not see worker complete: {p}"
@@ -1059,7 +1311,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_has_task_board_unconditionally() {
-        let p = cli_preamble("/a", &[], &[], &[], &[], &[], true);
+        let p = cli_preamble("/a", &[], &[], &[], &[], &[], true, false, false);
         assert!(
             p.contains("### Task board"),
             "task board group missing: {p}"
@@ -1074,7 +1326,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_has_info_and_cron_groups_unconditionally() {
-        let p = cli_preamble("/a", &[], &[], &[], &[], &[], true);
+        let p = cli_preamble("/a", &[], &[], &[], &[], &[], true, false, false);
         assert!(p.contains("### Meta"), "meta group missing: {p}");
         assert!(p.contains("| info |"), "info row missing: {p}");
         assert!(p.contains("### Cron"), "cron group missing: {p}");
@@ -1083,7 +1335,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_cron_prose_mentions_tz_blocklist_and_workers() {
-        let p = cli_preamble("/a", &[], &[], &[], &[], &[], true);
+        let p = cli_preamble("/a", &[], &[], &[], &[], &[], true, false, false);
         let lower = p.to_lowercase();
         assert!(
             p.contains("`--tz` defaults to `local`"),
@@ -1105,7 +1357,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_memory_group_omitted_when_banks_empty() {
-        let p = cli_preamble("/a", &["coder"], &[], &[], &[], &[], true);
+        let p = cli_preamble("/a", &["coder"], &[], &[], &[], &[], true, false, false);
         assert!(
             !p.contains("### Memory banks"),
             "memory group should be omitted: {p}"
@@ -1118,7 +1370,17 @@ mod tests {
 
     #[test]
     fn cli_preamble_memory_group_lists_commands_and_banks_when_present() {
-        let p = cli_preamble("/a", &["coder"], &[], &["scratch", "incidents"], &[], &[], true);
+        let p = cli_preamble(
+            "/a",
+            &["coder"],
+            &[],
+            &["scratch", "incidents"],
+            &[],
+            &[],
+            true,
+            false,
+            false,
+        );
         assert!(p.contains("### Memory banks"), "memory group missing: {p}");
         for cmd in [
             "| memory search |",
@@ -1137,7 +1399,7 @@ mod tests {
 
     #[test]
     fn cli_preamble_skills_group_omitted_when_skills_empty() {
-        let p = cli_preamble("/a", &["coder"], &[], &[], &[], &[], true);
+        let p = cli_preamble("/a", &["coder"], &[], &[], &[], &[], true, false, false);
         assert!(
             !p.contains("### Skills"),
             "skills group should be omitted: {p}"
@@ -1166,6 +1428,8 @@ mod tests {
             &["code-review", "research"],
             &[],
             true,
+            false,
+            false,
         );
         assert!(p.contains("### Skills"), "skills group missing: {p}");
         for row in ["| skill list |", "| skill search |", "| skill run |"] {
@@ -1196,6 +1460,8 @@ mod tests {
             &["code-review", "research"],
             &[],
             true,
+            false,
+            false,
         );
         // The list of concrete ids must NOT appear in the prompt; the
         // model is expected to discover them at runtime via
@@ -1233,7 +1499,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_has_header_and_no_shell_tool_framing() {
-        let p = tag_preamble(&["coder"], &[], &[], &[], &[], true);
+        let p = tag_preamble(&["coder"], &[], &[], &[], &[], true, false, false);
         assert!(p.starts_with("## aciddog tools"), "header: {p}");
         assert!(
             !p.contains("shell tool"),
@@ -1245,7 +1511,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_mentions_chain_cap() {
-        let p = tag_preamble(&["coder"], &[], &[], &[], &[], true);
+        let p = tag_preamble(&["coder"], &[], &[], &[], &[], true, false, false);
         assert!(
             p.contains("8 consecutive"),
             "must tell the model about the 8-round cap: {p}"
@@ -1254,7 +1520,16 @@ mod tests {
 
     #[test]
     fn tag_preamble_lists_send_message_row_and_contactable_ids() {
-        let p = tag_preamble(&["coder", "reviewer"], &[], &[], &[], &[], true);
+        let p = tag_preamble(
+            &["coder", "reviewer"],
+            &[],
+            &[],
+            &[],
+            &[],
+            true,
+            false,
+            false,
+        );
         assert!(
             p.contains("| send_message |"),
             "send_message row missing: {p}"
@@ -1267,7 +1542,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_messaging_group_lists_user_even_with_empty_allowlist() {
-        let p = tag_preamble(&[], &[], &[], &[], &[], true);
+        let p = tag_preamble(&[], &[], &[], &[], &[], true, false, false);
         assert!(
             p.contains("### Messaging"),
             "messaging group must always render for configured agents: {p}"
@@ -1284,7 +1559,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_omits_messaging_for_worker_when_allowlist_empty() {
-        let p = tag_preamble(&[], &[], &[], &[], &[], false);
+        let p = tag_preamble(&[], &[], &[], &[], &[], false, false, false);
         assert!(
             !p.contains("### Messaging"),
             "worker with empty allowlist must not get Messaging group: {p}"
@@ -1297,7 +1572,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_worker_does_not_list_user() {
-        let p = tag_preamble(&["parent"], &[], &[], &[], &[], false);
+        let p = tag_preamble(&["parent"], &[], &[], &[], &[], false, false, false);
         assert!(p.contains("### Messaging"), "{p}");
         assert!(
             !p.contains("You may message: user"),
@@ -1311,7 +1586,16 @@ mod tests {
 
     #[test]
     fn tag_preamble_lists_worker_create_when_creatable() {
-        let p = tag_preamble(&["coder"], &["researcher", "tester"], &[], &[], &[], true);
+        let p = tag_preamble(
+            &["coder"],
+            &["researcher", "tester"],
+            &[],
+            &[],
+            &[],
+            true,
+            false,
+            false,
+        );
         assert!(
             p.contains("| worker_create |"),
             "worker_create row missing: {p}"
@@ -1324,7 +1608,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_omits_worker_create_when_empty() {
-        let p = tag_preamble(&["coder"], &[], &[], &[], &[], true);
+        let p = tag_preamble(&["coder"], &[], &[], &[], &[], true, false, false);
         assert!(
             !p.contains("worker_create"),
             "worker_create should be omitted: {p}"
@@ -1333,7 +1617,16 @@ mod tests {
 
     #[test]
     fn tag_preamble_never_mentions_worker_complete_for_plain_agents() {
-        let p = tag_preamble(&["coder"], &["researcher"], &[], &[], &[], true);
+        let p = tag_preamble(
+            &["coder"],
+            &["researcher"],
+            &[],
+            &[],
+            &[],
+            true,
+            false,
+            false,
+        );
         assert!(
             !p.contains("worker_complete"),
             "plain agents must not see worker_complete: {p}"
@@ -1342,14 +1635,14 @@ mod tests {
 
     #[test]
     fn tag_preamble_has_task_board_unconditionally() {
-        let p = tag_preamble(&[], &[], &[], &[], &[], true);
+        let p = tag_preamble(&[], &[], &[], &[], &[], true, false, false);
         assert!(p.contains("| task_add |"), "task_add row missing: {p}");
         assert!(p.contains("| task_take |"), "task_take row missing: {p}");
     }
 
     #[test]
     fn tag_preamble_has_info_and_cron_groups_unconditionally() {
-        let p = tag_preamble(&[], &[], &[], &[], &[], true);
+        let p = tag_preamble(&[], &[], &[], &[], &[], true, false, false);
         assert!(p.contains("| info |"), "info row missing: {p}");
         assert!(p.contains("| cron_add |"), "cron_add row missing: {p}");
         assert!(p.contains("| cron_list |"), "cron_list row missing: {p}");
@@ -1366,7 +1659,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_cron_prose_mentions_tz_and_blocklist() {
-        let p = tag_preamble(&[], &[], &[], &[], &[], true);
+        let p = tag_preamble(&[], &[], &[], &[], &[], true, false, false);
         assert!(
             p.contains("`/exit` and `/quit` are blocked"),
             "slash blocklist note missing: {p}"
@@ -1379,7 +1672,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_memory_group_omitted_when_banks_empty() {
-        let p = tag_preamble(&["coder"], &[], &[], &[], &[], true);
+        let p = tag_preamble(&["coder"], &[], &[], &[], &[], true, false, false);
         assert!(
             !p.contains("memory_search"),
             "memory commands should be omitted: {p}"
@@ -1388,7 +1681,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_memory_group_lists_commands_when_banks_present() {
-        let p = tag_preamble(&["coder"], &[], &["scratch"], &[], &[], true);
+        let p = tag_preamble(&["coder"], &[], &["scratch"], &[], &[], true, false, false);
         for cmd in [
             "| memory_search |",
             "| memory_store |",
@@ -1406,7 +1699,7 @@ mod tests {
 
     #[test]
     fn tag_preamble_skills_group_omitted_when_skills_empty() {
-        let p = tag_preamble(&["coder"], &[], &[], &[], &[], true);
+        let p = tag_preamble(&["coder"], &[], &[], &[], &[], true, false, false);
         assert!(
             !p.contains("### Skills"),
             "skills group should be omitted: {p}"
@@ -1418,7 +1711,16 @@ mod tests {
 
     #[test]
     fn tag_preamble_skills_group_lists_list_search_run_rows_when_present() {
-        let p = tag_preamble(&["coder"], &[], &[], &["code-review", "research"], &[], true);
+        let p = tag_preamble(
+            &["coder"],
+            &[],
+            &[],
+            &["code-review", "research"],
+            &[],
+            true,
+            false,
+            false,
+        );
         assert!(p.contains("### Skills"), "skills group missing: {p}");
         for row in ["| skill_list |", "| skill_search |", "| skill_run |"] {
             assert!(p.contains(row), "missing row {row} in: {p}");
@@ -1440,7 +1742,16 @@ mod tests {
 
     #[test]
     fn tag_preamble_skills_group_does_not_leak_skill_ids_into_prompt() {
-        let p = tag_preamble(&["coder"], &[], &[], &["code-review", "research"], &[], true);
+        let p = tag_preamble(
+            &["coder"],
+            &[],
+            &[],
+            &["code-review", "research"],
+            &[],
+            true,
+            false,
+            false,
+        );
         assert!(!p.contains("code-review"), "skill id leaked: {p}");
         assert!(!p.contains("research"), "skill id leaked: {p}");
     }

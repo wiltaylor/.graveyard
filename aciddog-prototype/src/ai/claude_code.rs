@@ -73,6 +73,12 @@ pub struct AciddogCliCtx {
     /// `Some` for workers — adds the parent + task + `worker complete`
     /// preamble before the general CLI/tag commands.
     pub worker: Option<WorkerCtx>,
+    /// Render the `### Supervision` preamble group with the admin-surface
+    /// commands. Always `false` for workers — workers never supervise.
+    pub supervisor: bool,
+    /// Render the `### Sysadmin` preamble group with `server shutdown` /
+    /// `server exit`. Always `false` for workers.
+    pub sysadmin: bool,
 }
 
 /// One channel row as rendered into the agent's first-turn prompt.
@@ -301,6 +307,10 @@ impl ClaudeCodeCore {
             // a valid recipient for them.
             let include_user_recipient = cli.worker.is_none();
             body.push('\n');
+            // Workers never get supervisor/sysadmin powers even if
+            // their parent does.
+            let supervisor = cli.worker.is_none() && cli.supervisor;
+            let sysadmin = cli.worker.is_none() && cli.sysadmin;
             if has_bash {
                 if let Some(w) = &cli.worker {
                     body.push_str(&worker_preamble(&cli.binary, &w.parent_id, &w.task));
@@ -313,6 +323,8 @@ impl ClaudeCodeCore {
                     &skills,
                     &channel_infos,
                     include_user_recipient,
+                    supervisor,
+                    sysadmin,
                 ));
             } else {
                 if let Some(w) = &cli.worker {
@@ -325,6 +337,8 @@ impl ClaudeCodeCore {
                     &skills,
                     &channel_infos,
                     include_user_recipient,
+                    supervisor,
+                    sysadmin,
                 ));
             }
         }
@@ -840,6 +854,8 @@ mod tests {
                 memory_banks: vec![],
                 skills: vec![],
                 channels: vec![],
+                supervisor: false,
+                sysadmin: false,
                 worker: None,
             }),
             ..PromptParts::default()
@@ -875,6 +891,8 @@ mod tests {
                 memory_banks: vec![],
                 skills: vec![],
                 channels: vec![],
+                supervisor: false,
+                sysadmin: false,
                 worker: None,
             }),
             ..PromptParts::default()
@@ -899,6 +917,8 @@ mod tests {
                 memory_banks: vec![],
                 skills: vec![],
                 channels: vec![],
+                supervisor: false,
+                sysadmin: false,
                 worker: Some(WorkerCtx {
                     parent_id: "coder".into(),
                     task: "find FOO".into(),

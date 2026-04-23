@@ -539,6 +539,8 @@ impl App {
                 skills: skills_for_agent,
                 channels: channels_for_agent,
                 worker: None,
+                supervisor: agent.supervisor,
+                sysadmin: agent.sysadmin,
             }),
         };
 

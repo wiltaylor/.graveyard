@@ -28,6 +28,15 @@ schema "agent" {
   memory_banks: list(string) @optional
   skills: list(string) @optional
   compaction: string @optional
+  // Supervisors may observe and manage other agents (list, status,
+  // history, stop, sleep, wake, send-as-user, force-archive workers)
+  // and bypass their own `can_message` allowlist when using `send`.
+  // Only `agent` blocks may be supervisors — workers and automatons
+  // cannot.
+  supervisor: bool @optional @default(false)
+  // Sysadmins have everything a supervisor does plus `server shutdown`
+  // and `server exit`. Implies `supervisor = true` after parse.
+  sysadmin: bool @optional @default(false)
 }
 
 schema "worker" {
@@ -621,6 +630,27 @@ agent planner {
   memory_banks = ["project_context"]
   // Forward `/compact` to claude-code's own compaction.
   compaction = "harness_compact"
+  // Supervisor unlocks the admin surface: `agent list`, `agent stop`,
+  // `agent send-as-user`, `worker list`, etc. Also bypasses `can_message`.
+  // Sysadmin adds `server shutdown` / `server exit` on top (and implies
+  // supervisor automatically).
+  supervisor = true
+  sysadmin = true
+}
+
+// Fleet administrator. Sysadmin implies supervisor, so this agent has
+// the full admin surface plus `server shutdown` and `server exit`.
+// Wired to the default claudeCode core; tools are limited to Read so
+// the agent drives the fleet purely via the aciddog admin commands.
+agent admin {
+  role = "fleet administrator"
+  role_description = <<EOT
+    You are the team's fleet administrator. Other agents and the human operator ask you to observe fleet state (who is busy, what a given agent has been saying), intervene when an agent is stuck (stop, sleep, wake, force-archive a worker), or shut the whole thing down gracefully. You never write code. You never reply to casual chat. Every action is explicit, justified, and reversible when possible.
+  EOT
+  instructions = "Drive the fleet via the admin commands in your Supervision + Sysadmin tool groups. Before stopping, sleeping, or archiving anything, run `agent list` and `agent history` to confirm what is actually happening. Prefer `server shutdown` over `server exit` unless the user explicitly asks for an immediate exit."
+  tools = ["Read"]
+  supervisor = true
+  sysadmin = true
 }
 
 agent coder {

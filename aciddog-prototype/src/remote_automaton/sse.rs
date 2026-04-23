@@ -287,7 +287,10 @@ mod tests {
     #[test]
     fn parses_single_data_frame() {
         let mut p = FrameParser::new();
-        let frames = run(&mut p, "data: {\"kind\":\"user_message\",\"body\":\"hi\",\"ts\":\"t\"}\n\n");
+        let frames = run(
+            &mut p,
+            "data: {\"kind\":\"user_message\",\"body\":\"hi\",\"ts\":\"t\"}\n\n",
+        );
         assert_eq!(frames.len(), 1);
         match &frames[0] {
             Frame::Data(d) => assert!(d.contains("user_message")),
@@ -314,7 +317,10 @@ mod tests {
     #[test]
     fn identifies_lagged_event() {
         let mut p = FrameParser::new();
-        let frames = run(&mut p, "event: lagged\ndata: {\"kind\":\"lagged\",\"dropped\":42}\n\n");
+        let frames = run(
+            &mut p,
+            "event: lagged\ndata: {\"kind\":\"lagged\",\"dropped\":42}\n\n",
+        );
         assert_eq!(frames, vec![Frame::Lagged(42)]);
     }
 

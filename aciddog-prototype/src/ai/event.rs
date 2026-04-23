@@ -101,10 +101,14 @@ pub enum AIEvent {
     /// Orchestrator-emitted: an automaton child process just printed a
     /// line on stdout. The TUI appends it as a plain-text block to the
     /// automaton's chat pane.
-    AutomatonStdout { line: String },
+    AutomatonStdout {
+        line: String,
+    },
     /// Orchestrator-emitted: an automaton child printed a line on
     /// stderr. Styled distinctly from stdout in the TUI.
-    AutomatonStderr { line: String },
+    AutomatonStderr {
+        line: String,
+    },
     /// Orchestrator-emitted: an automaton child has exited. `code` is
     /// `None` when the child was killed by a signal or by the
     /// `timeout_seconds` watchdog. `duration_ms` is wall-clock time

@@ -244,9 +244,7 @@ async fn forward_outbound(
                     resp.error.unwrap_or_default()
                 )
             };
-            let _ = ai_tx
-                .send((idx, AIEvent::AutomatonStdout { line }))
-                .await;
+            let _ = ai_tx.send((idx, AIEvent::AutomatonStdout { line })).await;
         }
         Err(e) => {
             let _ = ai_tx
@@ -278,9 +276,7 @@ async fn handle_inbound(
     // who it came from.
     let (from_label, body) = match ev {
         InboundEvent::AgentMessage { from, body, .. } => (from, body),
-        InboundEvent::UserMessage { body, .. } => {
-            (format!("{remote_target}:user"), body)
-        }
+        InboundEvent::UserMessage { body, .. } => (format!("{remote_target}:user"), body),
         InboundEvent::ChannelMessage {
             channel,
             from,
@@ -393,7 +389,6 @@ fn summarize_cmd(cmd: &RequestCmd) -> String {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,7 +405,9 @@ mod tests {
 
     #[test]
     fn rpc_escape_parses_valid_json() {
-        let out = parse_rpc_escape("::rpc {\"cmd\":\"test\"}").unwrap().unwrap();
+        let out = parse_rpc_escape("::rpc {\"cmd\":\"test\"}")
+            .unwrap()
+            .unwrap();
         assert!(matches!(out, RequestCmd::Test));
     }
 
@@ -450,4 +447,3 @@ mod tests {
         }
     }
 }
-
