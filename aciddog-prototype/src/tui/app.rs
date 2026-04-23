@@ -416,8 +416,7 @@ pub(super) fn build_core_with_extras(
                 .map(|w| w.task.clone())
                 .unwrap_or_default();
             let properties_value = properties.ok_or_else(|| {
-                "Jules workers require `properties.repo` (\"owner/repo\") at spawn time"
-                    .to_string()
+                "Jules workers require `properties.repo` (\"owner/repo\") at spawn time".to_string()
             })?;
             let props = JulesProperties::parse(properties_value, default_branch.as_deref())?;
             // `properties.autoCreatePr` (if provided) wins over the
@@ -2096,11 +2095,23 @@ impl App {
         // `instructions` slot carries the role description for
         // visibility in the expanded panel.
         for automaton in &config.automatons {
-            let argv = std::iter::once(automaton.command.as_str())
-                .chain(automaton.args.iter().map(String::as_str))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let label = format!("automaton ({argv})");
+            let label = match &automaton.backend {
+                crate::config::AutomatonBackend::Script { command, args, .. } => {
+                    let argv = std::iter::once(command.as_str())
+                        .chain(args.iter().map(String::as_str))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!("automaton ({argv})")
+                }
+                crate::config::AutomatonBackend::Webservice { bind, .. } => match bind {
+                    crate::config::WebserviceBind::Https { address, .. } => {
+                        format!("automaton (webservice https://{address})")
+                    }
+                    crate::config::WebserviceBind::UnixSocket { path } => {
+                        format!("automaton (webservice unix:{})", path.display())
+                    }
+                },
+            };
             let info = ChatBlock::agent_info(
                 label,
                 Vec::new(),
@@ -2472,7 +2483,8 @@ impl App {
                 // `chat` borrow drops before we touch `self.cores_screen`.
                 let core_id = chat.ai_core_id.clone();
                 if let Some(id) = core_id {
-                    self.cores_screen.merge_rate_limit(&id, kind, resets_at_unix);
+                    self.cores_screen
+                        .merge_rate_limit(&id, kind, resets_at_unix);
                 }
             }
             AIEvent::Other(v) => {
@@ -3278,19 +3290,14 @@ impl App {
             .iter()
             .position(|c| c.display_name == worker_display)
         else {
-            let _ = reply.send(Response::err(format!(
-                "no worker named `{worker_display}`"
-            )));
+            let _ = reply.send(Response::err(format!("no worker named `{worker_display}`")));
             return;
         };
 
         // Only the worker's own parent may archive it. Prevents a
         // sibling agent (or the worker itself) from tearing down
         // someone else's worker.
-        let target_parent = self
-            .chats
-            .get(target_idx)
-            .and_then(|c| c.parent_idx);
+        let target_parent = self.chats.get(target_idx).and_then(|c| c.parent_idx);
         if target_parent != Some(sender_idx) {
             let _ = reply.send(Response::err(
                 "only the parent that spawned this worker may archive it",
@@ -3367,7 +3374,9 @@ impl App {
                     .timeout(std::time::Duration::from_secs(15))
                     .build()
                     .unwrap_or_else(|_| reqwest::Client::new());
-                if let Err(e) = crate::ai::jules::delete_session(&http, &api_key, &session_name).await {
+                if let Err(e) =
+                    crate::ai::jules::delete_session(&http, &api_key, &session_name).await
+                {
                     tracing::warn!(
                         session = %session_name,
                         error = %e,
@@ -6527,8 +6536,7 @@ impl App {
                 // Preserve stream-derived entries across refresh —
                 // only the HTTP providers can actually re-fetch.
                 self.cores_screen.usage.retain(|_, s| {
-                    s.claude_five_hour_resets_at.is_some()
-                        || s.claude_weekly_resets_at.is_some()
+                    s.claude_five_hour_resets_at.is_some() || s.claude_weekly_resets_at.is_some()
                 });
                 self.spawn_cores_usage_fetch();
             }
@@ -10403,10 +10411,12 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     }
 
     // Automatons share the agent list but run a lightweight
-    // script-per-event backend. Each occupies its own `AgentChat`
-    // (appended after the agents in `App::new`) and registers its
-    // session id in `app.agent_ids` so the existing IPC / mail / ACL
-    // paths treat it as any other addressable fleet member.
+    // per-backend loop: script-backed ones spawn a subprocess per
+    // event; webservice-backed ones host a long-lived HTTP/Unix
+    // listener. Each occupies its own `AgentChat` (appended after the
+    // agents in `App::new`) and registers its session id in
+    // `app.agent_ids` so the existing IPC / mail / ACL paths treat it
+    // as any other addressable fleet member.
     let automaton_offset = app.config.agents.len();
     for (auto_idx, automaton) in app.config.automatons.iter().enumerate() {
         let idx = automaton_offset + auto_idx;
@@ -10423,17 +10433,43 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         app.chats[idx].session_id = Some(session_id);
         app.agent_ids.insert(session_id, automaton.id.clone());
 
-        tokio::spawn(run_automaton_core(
-            idx,
-            automaton.clone(),
-            session_id,
-            socket_path_str.clone(),
-            user_rx,
-            agent_rx,
-            channel_rx,
-            cancel_rx,
-            ai_tx.clone(),
-        ));
+        match &automaton.backend {
+            crate::config::AutomatonBackend::Script { .. } => {
+                tokio::spawn(run_automaton_core(
+                    idx,
+                    automaton.clone(),
+                    session_id,
+                    socket_path_str.clone(),
+                    user_rx,
+                    agent_rx,
+                    channel_rx,
+                    cancel_rx,
+                    ai_tx.clone(),
+                ));
+            }
+            crate::config::AutomatonBackend::Webservice { .. } => {
+                let webhooks: Vec<crate::config::Webhook> = app
+                    .config
+                    .webhooks
+                    .iter()
+                    .filter(|w| w.mount == automaton.id)
+                    .cloned()
+                    .collect();
+                let events_tx = socket.events_tx();
+                tokio::spawn(crate::webservice::run_webservice_core(
+                    idx,
+                    automaton.clone(),
+                    session_id,
+                    webhooks,
+                    user_rx,
+                    agent_rx,
+                    channel_rx,
+                    cancel_rx,
+                    ai_tx.clone(),
+                    events_tx,
+                ));
+            }
+        }
     }
 
     drop(ai_tx);
@@ -10625,6 +10661,21 @@ pub(super) async fn run_automaton_core(
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+    // Caller is expected to only dispatch Script-backed automatons
+    // here — webservice-backed automatons go to `run_webservice_core`.
+    // Destructure once so the existing body reads like the old struct
+    // shape.
+    let (command, args, cwd, env, timeout_seconds) = match automaton.backend.clone() {
+        crate::config::AutomatonBackend::Script {
+            command,
+            args,
+            cwd,
+            env,
+            timeout_seconds,
+        } => (command, args, cwd, env, timeout_seconds),
+        crate::config::AutomatonBackend::Webservice { .. } => return,
+    };
+
     loop {
         // Priority: user > agent > channel. Cancel sits first so any
         // queued `/stop` between children is drained as a no-op.
@@ -10673,12 +10724,12 @@ pub(super) async fn run_automaton_core(
         }
 
         let start = std::time::Instant::now();
-        let mut cmd = tokio::process::Command::new(&automaton.command);
-        cmd.args(&automaton.args);
-        if let Some(cwd) = automaton.cwd.as_ref() {
+        let mut cmd = tokio::process::Command::new(&command);
+        cmd.args(&args);
+        if let Some(cwd) = cwd.as_ref() {
             cmd.current_dir(cwd);
         }
-        for (k, v) in &automaton.env {
+        for (k, v) in &env {
             cmd.env(k, v);
         }
         cmd.env(agent_ipc::ENV_AGENT_ID, session_id.to_string());
@@ -10768,9 +10819,7 @@ pub(super) async fn run_automaton_core(
             TimedOut,
             Exited(Option<i32>),
         }
-        let timeout_dur = automaton
-            .timeout_seconds
-            .map(|s| Duration::from_secs(s as u64));
+        let timeout_dur = timeout_seconds.map(|s| Duration::from_secs(s as u64));
         let outcome = tokio::select! {
             biased;
             _ = cancel_rx.recv() => Outcome::Cancelled,
@@ -10986,18 +11035,21 @@ mod tests {
                 id: "quokka".into(),
                 role: "echo bot".into(),
                 role_description: None,
-                command: "python3".into(),
-                args: vec![],
-                cwd: None,
-                env: vec![],
-                timeout_seconds: None,
                 can_message: None,
+                backend: crate::config::AutomatonBackend::Script {
+                    command: "python3".into(),
+                    args: vec![],
+                    cwd: None,
+                    env: vec![],
+                    timeout_seconds: None,
+                },
             }],
             ai_cores: vec![],
             memory_banks: vec![],
             compactions: vec![],
             channels: vec![],
             workflows: vec![],
+            webhooks: vec![],
             thinking_messages: vec!["t".into()],
         };
         let block = build_team_block(&cfg, &["planner", "quokka"], &[]);
@@ -11057,6 +11109,7 @@ mod tests {
             compactions: vec![],
             channels: vec![],
             workflows: vec![],
+            webhooks: vec![],
             thinking_messages: vec!["t".into()],
         };
         let block = build_team_block(&cfg, &["a"], &[]);
@@ -11133,6 +11186,7 @@ mod tests {
             compactions: vec![],
             channels: vec![],
             workflows: vec![],
+            webhooks: vec![],
             thinking_messages: vec!["thinking".into()],
         }
     }
@@ -12852,6 +12906,7 @@ mod tests {
             compactions: vec![],
             channels: vec![],
             workflows: vec![],
+            webhooks: vec![],
             thinking_messages: vec!["thinking".into()],
         }
     }

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -112,15 +112,28 @@ pub struct Worker {
 }
 
 /// A script-backed pseudo-agent. Unlike [`Agent`]/[`Worker`], an
-/// automaton has no AI core — each delivered event spawns a child
-/// process with the event written as a single JSON document on stdin;
-/// the process exits when done and its stdout/stderr lines become
-/// blocks in the automaton's chat pane. The child inherits the same
-/// `ACIDDOG_AGENT_ID` + `ACIDDOG_AGENT_SOCKET` env vars that agents
-/// get, so it can call back through the `aciddog` CLI. One child at a
-/// time per automaton: while it's running the status is `Working` and
-/// new messages queue in the usual priority channels (user > agent >
-/// channel).
+/// automaton is a pseudo-agent driven by a per-event backend rather
+/// than by an AI core. Two backends exist:
+///
+/// - [`AutomatonBackend::Script`] — each delivered event spawns a
+///   child process with the event written as a single JSON document
+///   on stdin; the process exits when done and its stdout/stderr
+///   lines become blocks in the automaton's chat pane. The child
+///   inherits the same `ACIDDOG_AGENT_ID` + `ACIDDOG_AGENT_SOCKET`
+///   env vars that agents get, so it can call back through the
+///   `aciddog` CLI. One child at a time per automaton: while it's
+///   running the status is `Working` and new messages queue in the
+///   usual priority channels (user > agent > channel).
+/// - [`AutomatonBackend::Webservice`] — the automaton is backed by a
+///   long-lived HTTP server (HTTPS with an API key, or a Unix socket
+///   whose filesystem permissions are the trust boundary). The
+///   server exposes a `/v1/rpc` endpoint that accepts the same JSON
+///   protocol the internal agent IPC speaks — requests are stamped
+///   with the automaton's session id and flow into the same handler
+///   pipeline. A `/v1/events` SSE stream carries the mail / channel
+///   traffic that a script-backed automaton would see on stdin.
+///   `webhook` blocks mount as additional paths on this same
+///   listener.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Automaton {
     pub id: String,
@@ -128,24 +141,128 @@ pub struct Automaton {
     /// Long-form description of the automaton's purpose. Not sent
     /// anywhere — displayed as pane metadata in the TUI.
     pub role_description: Option<String>,
-    /// Executable to spawn. A bare binary name on PATH or an absolute
-    /// path. Not a shell string — extra argv goes in `args`.
-    pub command: String,
-    /// Extra argv entries appended after `command`. Empty vec ⇒ the
-    /// child is spawned with only `command` as argv[0].
-    pub args: Vec<String>,
-    /// Working directory for the child. `None` inherits the harness
-    /// cwd.
-    pub cwd: Option<String>,
-    /// Extra environment variables passed to the child. Parsed at
-    /// config load time from `KEY=VAL` strings; malformed entries
-    /// (missing `=`) are rejected via [`ConfigError::BadEnvEntry`].
-    pub env: Vec<(String, String)>,
-    /// Kill the child after this many seconds. `None` ⇒ no timeout.
-    pub timeout_seconds: Option<u32>,
     /// Allowlist of agent/automaton ids this automaton may mail via
     /// `aciddog send --to`. Same semantics as [`Agent::can_message`].
     pub can_message: Option<Vec<String>>,
+    /// How inbound events are handled. Driven by the `type` symbol on
+    /// the WCL block (`:script` default, `:webservice` for HTTP).
+    pub backend: AutomatonBackend,
+}
+
+/// The two delivery backends an automaton can use. See [`Automaton`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AutomatonBackend {
+    Script {
+        /// Executable to spawn. A bare binary name on PATH or an
+        /// absolute path. Not a shell string — extra argv goes in
+        /// `args`.
+        command: String,
+        /// Extra argv entries appended after `command`. Empty vec ⇒
+        /// the child is spawned with only `command` as argv[0].
+        args: Vec<String>,
+        /// Working directory for the child. `None` inherits the
+        /// harness cwd.
+        cwd: Option<String>,
+        /// Extra environment variables passed to the child. Parsed
+        /// at config load time from `KEY=VAL` strings; malformed
+        /// entries (missing `=`) are rejected via
+        /// [`ConfigError::BadEnvEntry`].
+        env: Vec<(String, String)>,
+        /// Kill the child after this many seconds. `None` ⇒ no
+        /// timeout.
+        timeout_seconds: Option<u32>,
+    },
+    Webservice {
+        bind: WebserviceBind,
+        /// Env var holding the API-key expected on inbound requests.
+        /// Required when `bind` is [`WebserviceBind::Https`];
+        /// ignored (and rejected at parse time) when `bind` is
+        /// [`WebserviceBind::UnixSocket`].
+        api_key_env: Option<String>,
+    },
+}
+
+/// Transport a webservice-backed automaton listens on.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WebserviceBind {
+    Https {
+        /// `host:port` — parsed by the runtime into a `SocketAddr`.
+        address: String,
+        tls_cert: PathBuf,
+        tls_key: PathBuf,
+    },
+    UnixSocket {
+        path: PathBuf,
+    },
+}
+
+/// A webhook endpoint mounted on a webservice-backed automaton.
+///
+/// Each webhook is a named path on the hosting automaton's HTTP
+/// listener. When a request arrives and passes the declared auth
+/// check, the handler packages the request (method, path, query,
+/// headers, body) into a JSON envelope and delivers it to
+/// `deliver_to` as a message sent from the host automaton's
+/// identity — so the host's `can_message` ACL is what gates which
+/// agents a webhook can reach.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Webhook {
+    pub id: String,
+    /// Id of a declared automaton whose backend is
+    /// [`AutomatonBackend::Webservice`]. Validated at config load.
+    pub mount: String,
+    /// HTTP path the webhook listens on. Must start with `/`.
+    pub path: String,
+    /// Agent or automaton id that receives the delivery.
+    pub deliver_to: String,
+    pub auth: WebhookAuth,
+    /// Reject request bodies larger than this many bytes with 413.
+    /// Default applied by the runtime (~1 MiB).
+    pub max_body_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WebhookAuth {
+    None,
+    /// `Authorization: Bearer <env>` — the value of the env var
+    /// named by `secret_env` must match the token after `Bearer `.
+    Bearer {
+        secret_env: String,
+    },
+    /// Fixed-value header. The value of `header` must equal the
+    /// value of the env var named by `secret_env` (constant-time
+    /// compare).
+    Header {
+        header: String,
+        secret_env: String,
+    },
+    /// Token in a dot-path within the JSON body. The value found at
+    /// `field` (e.g. `data.token`) must equal the value of the env
+    /// var named by `secret_env`.
+    JsonField {
+        field: String,
+        secret_env: String,
+    },
+    /// HMAC signature in a header (e.g. GitHub's
+    /// `X-Hub-Signature-256: sha256=<hex>`). The handler computes
+    /// HMAC(secret_env, raw_body) under `algo` and requires the
+    /// header value (optionally prefixed with `"sha256="` /
+    /// `"sha1="`) to match in constant time.
+    HmacHeader {
+        header: String,
+        secret_env: String,
+        algo: HmacAlgo,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HmacAlgo {
+    Sha1,
+    Sha256,
 }
 
 /// A virtual chat room shared by a named subset of agents plus the
@@ -663,6 +780,10 @@ pub struct AciddogConfig {
     /// Named workflows declared at the fleet level. Agents opt in to
     /// trigger a workflow via their `can_run_workflows` allowlist.
     pub workflows: Vec<Workflow>,
+    /// Inbound HTTP webhook endpoints. Each one mounts on a
+    /// webservice-backed automaton and delivers request payloads to
+    /// a configured agent/automaton as a message.
+    pub webhooks: Vec<Webhook>,
     /// Final pool of messages shown by the thinking indicator while an
     /// agent is `Working`. Already merged with built-ins per
     /// `team.replace_thinking_messages`; guaranteed non-empty.
@@ -898,10 +1019,78 @@ pub enum ConfigError {
     )]
     InvalidReasoningEffort { core: String, value: String },
 
-    #[error(
-        "automaton `{automaton}` env entry `{entry}` is malformed (expected `KEY=VAL`)"
-    )]
+    #[error("automaton `{automaton}` env entry `{entry}` is malformed (expected `KEY=VAL`)")]
     BadEnvEntry { automaton: String, entry: String },
+
+    #[error("automaton `{automaton}` has unknown type `{type_name}` (expected `:script` or `:webservice`)")]
+    UnknownAutomatonType {
+        automaton: String,
+        type_name: String,
+    },
+
+    #[error("automaton `{automaton}` is `:webservice`-backed but sets script field `{field}` (only valid on `:script`-backed automatons)")]
+    WebserviceUnexpectedScriptField { automaton: String, field: String },
+
+    #[error("automaton `{automaton}` is `:script`-backed but sets webservice field `{field}` (set `type = :webservice` or remove the field)")]
+    ScriptUnexpectedWebserviceField { automaton: String, field: String },
+
+    #[error(
+        "automaton `{automaton}` has both `bind` (HTTPS) and `socket_path` (Unix) set — pick one"
+    )]
+    WebserviceBindConflict { automaton: String },
+
+    #[error("automaton `{automaton}` has no `bind` or `socket_path` set — one is required for `:webservice`")]
+    WebserviceMissingBind { automaton: String },
+
+    #[error("automaton `{automaton}` (HTTPS) is missing required `{field}`")]
+    WebserviceMissingHttpsField { automaton: String, field: String },
+
+    #[error("automaton `{automaton}` is a Unix-socket webservice; `api_key_env` is rejected (trust model is filesystem perms)")]
+    WebserviceUnixSocketApiKey { automaton: String },
+
+    #[error("webhook `{webhook}` mounts on unknown automaton `{mount}`")]
+    WebhookUnknownMount { webhook: String, mount: String },
+
+    #[error(
+        "webhook `{webhook}` mounts on `{mount}`, which is not a `:webservice`-backed automaton"
+    )]
+    WebhookMountNotWebservice { webhook: String, mount: String },
+
+    #[error("webhook `{webhook}` delivers to unknown agent/automaton `{target}`")]
+    WebhookUnknownDeliverTarget { webhook: String, target: String },
+
+    #[error("webhook `{webhook}` delivers to `{target}`, which is not in mount automaton `{mount}`'s `can_message` allowlist")]
+    WebhookDeliverNotReachable {
+        webhook: String,
+        target: String,
+        mount: String,
+    },
+
+    #[error("webhook `{webhook}` has duplicate path `{path}` on mount `{mount}`")]
+    WebhookPathConflict {
+        webhook: String,
+        mount: String,
+        path: String,
+    },
+
+    #[error("webhook `{webhook}` path `{path}` collides with a reserved webservice path (`/v1/rpc`, `/v1/events`, `/v1/health`)")]
+    WebhookReservedPath { webhook: String, path: String },
+
+    #[error("webhook `{webhook}` path `{path}` is invalid (must start with `/`)")]
+    WebhookInvalidPath { webhook: String, path: String },
+
+    #[error("webhook `{webhook}` auth `{auth_kind}` is missing required field `{field}`")]
+    WebhookAuthMissingField {
+        webhook: String,
+        auth_kind: String,
+        field: String,
+    },
+
+    #[error("webhook `{webhook}` has unknown auth kind `{auth_kind}` (expected `:none`, `:bearer`, `:header`, `:json_field`, or `:hmac_header`)")]
+    WebhookUnknownAuthKind { webhook: String, auth_kind: String },
+
+    #[error("webhook `{webhook}` hmac algo `{algo}` is invalid (expected `:sha1` or `:sha256`)")]
+    WebhookUnknownHmacAlgo { webhook: String, algo: String },
 }
 
 pub fn load_config(path: &Path) -> Result<AciddogConfig, ConfigError> {
@@ -984,33 +1173,13 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
     let automatons = doc
         .blocks_of_type_resolved("automaton")
         .iter()
-        .map(|b| {
-            let id = require_id(&b.id, &b.kind)?;
-            let env_raw = optional_string_list(b, "env")?.unwrap_or_default();
-            let mut env: Vec<(String, String)> = Vec::with_capacity(env_raw.len());
-            for entry in env_raw {
-                match entry.split_once('=') {
-                    Some((k, v)) if !k.is_empty() => env.push((k.to_string(), v.to_string())),
-                    _ => {
-                        return Err(ConfigError::BadEnvEntry {
-                            automaton: id.clone(),
-                            entry,
-                        })
-                    }
-                }
-            }
-            Ok(Automaton {
-                id,
-                role: require_string(b, "role")?,
-                role_description: optional_string(b, "role_description"),
-                command: require_string(b, "command")?,
-                args: optional_string_list(b, "args")?.unwrap_or_default(),
-                cwd: optional_string(b, "cwd"),
-                env,
-                timeout_seconds: optional_u32(b, "timeout_seconds")?,
-                can_message: optional_string_list(b, "can_message")?,
-            })
-        })
+        .map(parse_automaton)
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+
+    let webhooks = doc
+        .blocks_of_type_resolved("webhook")
+        .iter()
+        .map(parse_webhook)
         .collect::<Result<Vec<_>, ConfigError>>()?;
 
     let memory_banks = doc
@@ -1189,6 +1358,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
     validate_workflow_refs(&workflows, &workers)?;
     validate_workflow_allowlists(&agents, &workers, &workflows)?;
     validate_automaton_refs(&agents, &automatons)?;
+    validate_webhooks(&agents, &automatons, &webhooks)?;
 
     let mut user_messages: Vec<String> = Vec::new();
     for block in doc.blocks_of_type_resolved("thinking_messages").iter() {
@@ -1226,7 +1396,231 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         compactions,
         channels,
         workflows,
+        webhooks,
         thinking_messages,
+    })
+}
+
+fn parse_automaton(b: &wcl_lang::BlockRef) -> Result<Automaton, ConfigError> {
+    let id = require_id(&b.id, &b.kind)?;
+    let role = require_string(b, "role")?;
+    let role_description = optional_string(b, "role_description");
+    let can_message = optional_string_list(b, "can_message")?;
+
+    let type_symbol = optional_symbol(b, "type")?;
+    let backend = match type_symbol.as_deref() {
+        None | Some("script") => {
+            // Webservice fields must not leak into a script backend.
+            for field in ["bind", "socket_path", "tls_cert", "tls_key", "api_key_env"] {
+                if b.attributes.contains_key(field) {
+                    return Err(ConfigError::ScriptUnexpectedWebserviceField {
+                        automaton: id.clone(),
+                        field: field.to_string(),
+                    });
+                }
+            }
+            let env_raw = optional_string_list(b, "env")?.unwrap_or_default();
+            let mut env: Vec<(String, String)> = Vec::with_capacity(env_raw.len());
+            for entry in env_raw {
+                match entry.split_once('=') {
+                    Some((k, v)) if !k.is_empty() => env.push((k.to_string(), v.to_string())),
+                    _ => {
+                        return Err(ConfigError::BadEnvEntry {
+                            automaton: id.clone(),
+                            entry,
+                        })
+                    }
+                }
+            }
+            AutomatonBackend::Script {
+                command: require_string(b, "command")?,
+                args: optional_string_list(b, "args")?.unwrap_or_default(),
+                cwd: optional_string(b, "cwd"),
+                env,
+                timeout_seconds: optional_u32(b, "timeout_seconds")?,
+            }
+        }
+        Some("webservice") => {
+            for field in ["command", "args", "cwd", "env", "timeout_seconds"] {
+                if b.attributes.contains_key(field) {
+                    return Err(ConfigError::WebserviceUnexpectedScriptField {
+                        automaton: id.clone(),
+                        field: field.to_string(),
+                    });
+                }
+            }
+            let has_bind = b.attributes.contains_key("bind");
+            let has_sock = b.attributes.contains_key("socket_path");
+            let api_key_env = optional_string(b, "api_key_env");
+            let bind = match (has_bind, has_sock) {
+                (true, true) => {
+                    return Err(ConfigError::WebserviceBindConflict {
+                        automaton: id.clone(),
+                    })
+                }
+                (false, false) => {
+                    return Err(ConfigError::WebserviceMissingBind {
+                        automaton: id.clone(),
+                    })
+                }
+                (true, false) => {
+                    let address = require_string(b, "bind")?;
+                    let tls_cert = require_string(b, "tls_cert").map_err(|_| {
+                        ConfigError::WebserviceMissingHttpsField {
+                            automaton: id.clone(),
+                            field: "tls_cert".to_string(),
+                        }
+                    })?;
+                    let tls_key = require_string(b, "tls_key").map_err(|_| {
+                        ConfigError::WebserviceMissingHttpsField {
+                            automaton: id.clone(),
+                            field: "tls_key".to_string(),
+                        }
+                    })?;
+                    WebserviceBind::Https {
+                        address,
+                        tls_cert: PathBuf::from(tls_cert),
+                        tls_key: PathBuf::from(tls_key),
+                    }
+                }
+                (false, true) => {
+                    if api_key_env.is_some() {
+                        return Err(ConfigError::WebserviceUnixSocketApiKey {
+                            automaton: id.clone(),
+                        });
+                    }
+                    WebserviceBind::UnixSocket {
+                        path: PathBuf::from(require_string(b, "socket_path")?),
+                    }
+                }
+            };
+            AutomatonBackend::Webservice { bind, api_key_env }
+        }
+        Some(other) => {
+            return Err(ConfigError::UnknownAutomatonType {
+                automaton: id.clone(),
+                type_name: other.to_string(),
+            })
+        }
+    };
+
+    Ok(Automaton {
+        id,
+        role,
+        role_description,
+        can_message,
+        backend,
+    })
+}
+
+fn parse_webhook(b: &wcl_lang::BlockRef) -> Result<Webhook, ConfigError> {
+    let id = require_id(&b.id, &b.kind)?;
+    let mount = require_string(b, "mount")?;
+    let path = require_string(b, "path")?;
+    if !path.starts_with('/') {
+        return Err(ConfigError::WebhookInvalidPath {
+            webhook: id.clone(),
+            path,
+        });
+    }
+    let deliver_to = require_string(b, "deliver_to")?;
+    let max_body_bytes = optional_u32(b, "max_body_bytes")?.map(|n| n as usize);
+
+    let auth = match optional_symbol(b, "auth_kind")?
+        .as_deref()
+        .unwrap_or("none")
+    {
+        "none" => WebhookAuth::None,
+        "bearer" => {
+            let secret_env = require_string(b, "auth_secret_env").map_err(|_| {
+                ConfigError::WebhookAuthMissingField {
+                    webhook: id.clone(),
+                    auth_kind: "bearer".to_string(),
+                    field: "auth_secret_env".to_string(),
+                }
+            })?;
+            WebhookAuth::Bearer { secret_env }
+        }
+        "header" => {
+            let header = require_string(b, "auth_header").map_err(|_| {
+                ConfigError::WebhookAuthMissingField {
+                    webhook: id.clone(),
+                    auth_kind: "header".to_string(),
+                    field: "auth_header".to_string(),
+                }
+            })?;
+            let secret_env = require_string(b, "auth_secret_env").map_err(|_| {
+                ConfigError::WebhookAuthMissingField {
+                    webhook: id.clone(),
+                    auth_kind: "header".to_string(),
+                    field: "auth_secret_env".to_string(),
+                }
+            })?;
+            WebhookAuth::Header { header, secret_env }
+        }
+        "json_field" => {
+            let field = require_string(b, "auth_field").map_err(|_| {
+                ConfigError::WebhookAuthMissingField {
+                    webhook: id.clone(),
+                    auth_kind: "json_field".to_string(),
+                    field: "auth_field".to_string(),
+                }
+            })?;
+            let secret_env = require_string(b, "auth_secret_env").map_err(|_| {
+                ConfigError::WebhookAuthMissingField {
+                    webhook: id.clone(),
+                    auth_kind: "json_field".to_string(),
+                    field: "auth_secret_env".to_string(),
+                }
+            })?;
+            WebhookAuth::JsonField { field, secret_env }
+        }
+        "hmac_header" => {
+            let header = require_string(b, "auth_header").map_err(|_| {
+                ConfigError::WebhookAuthMissingField {
+                    webhook: id.clone(),
+                    auth_kind: "hmac_header".to_string(),
+                    field: "auth_header".to_string(),
+                }
+            })?;
+            let secret_env = require_string(b, "auth_secret_env").map_err(|_| {
+                ConfigError::WebhookAuthMissingField {
+                    webhook: id.clone(),
+                    auth_kind: "hmac_header".to_string(),
+                    field: "auth_secret_env".to_string(),
+                }
+            })?;
+            let algo = match optional_symbol(b, "auth_algo")?.as_deref() {
+                None | Some("sha256") => HmacAlgo::Sha256,
+                Some("sha1") => HmacAlgo::Sha1,
+                Some(other) => {
+                    return Err(ConfigError::WebhookUnknownHmacAlgo {
+                        webhook: id.clone(),
+                        algo: other.to_string(),
+                    })
+                }
+            };
+            WebhookAuth::HmacHeader {
+                header,
+                secret_env,
+                algo,
+            }
+        }
+        other => {
+            return Err(ConfigError::WebhookUnknownAuthKind {
+                webhook: id.clone(),
+                auth_kind: other.to_string(),
+            })
+        }
+    };
+
+    Ok(Webhook {
+        id,
+        mount,
+        path,
+        deliver_to,
+        auth,
+        max_body_bytes,
     })
 }
 
@@ -1373,13 +1767,74 @@ fn validate_agent_refs(agents: &[Agent], automatons: &[Automaton]) -> Result<(),
     Ok(())
 }
 
+/// Reserved HTTP paths the webservice hosts internally. Webhooks
+/// may not collide with these.
+const RESERVED_WEBHOOK_PATHS: &[&str] = &["/v1/rpc", "/v1/events", "/v1/health"];
+
+fn validate_webhooks(
+    agents: &[Agent],
+    automatons: &[Automaton],
+    webhooks: &[Webhook],
+) -> Result<(), ConfigError> {
+    let addressable: std::collections::HashSet<&str> = agents
+        .iter()
+        .map(|a| a.id.as_str())
+        .chain(automatons.iter().map(|a| a.id.as_str()))
+        .collect();
+
+    let mut mount_paths: std::collections::HashMap<&str, std::collections::HashSet<&str>> =
+        std::collections::HashMap::new();
+
+    for w in webhooks {
+        let mount_auto = automatons.iter().find(|a| a.id == w.mount).ok_or_else(|| {
+            ConfigError::WebhookUnknownMount {
+                webhook: w.id.clone(),
+                mount: w.mount.clone(),
+            }
+        })?;
+        if !matches!(mount_auto.backend, AutomatonBackend::Webservice { .. }) {
+            return Err(ConfigError::WebhookMountNotWebservice {
+                webhook: w.id.clone(),
+                mount: w.mount.clone(),
+            });
+        }
+        if !addressable.contains(w.deliver_to.as_str()) {
+            return Err(ConfigError::WebhookUnknownDeliverTarget {
+                webhook: w.id.clone(),
+                target: w.deliver_to.clone(),
+            });
+        }
+        if let Some(list) = &mount_auto.can_message {
+            if !list.iter().any(|id| id == &w.deliver_to) {
+                return Err(ConfigError::WebhookDeliverNotReachable {
+                    webhook: w.id.clone(),
+                    target: w.deliver_to.clone(),
+                    mount: w.mount.clone(),
+                });
+            }
+        }
+        if RESERVED_WEBHOOK_PATHS.contains(&w.path.as_str()) {
+            return Err(ConfigError::WebhookReservedPath {
+                webhook: w.id.clone(),
+                path: w.path.clone(),
+            });
+        }
+        let paths = mount_paths.entry(w.mount.as_str()).or_default();
+        if !paths.insert(w.path.as_str()) {
+            return Err(ConfigError::WebhookPathConflict {
+                webhook: w.id.clone(),
+                mount: w.mount.clone(),
+                path: w.path.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Mirror of [`validate_agent_refs`] for automaton `can_message`
 /// allowlists. An automaton may target either a declared agent or
 /// another declared automaton.
-fn validate_automaton_refs(
-    agents: &[Agent],
-    automatons: &[Automaton],
-) -> Result<(), ConfigError> {
+fn validate_automaton_refs(agents: &[Agent], automatons: &[Automaton]) -> Result<(), ConfigError> {
     let known: std::collections::HashSet<&str> = agents
         .iter()
         .map(|a| a.id.as_str())
@@ -1912,8 +2367,7 @@ impl AciddogConfig {
     /// channel, or added to one at runtime. Worker templates and
     /// ephemeral worker instances deliberately return `false`.
     pub fn is_addressable(&self, id: &str) -> bool {
-        self.agents.iter().any(|a| a.id == id)
-            || self.automatons.iter().any(|a| a.id == id)
+        self.agents.iter().any(|a| a.id == id) || self.automatons.iter().any(|a| a.id == id)
     }
 
     /// Returns true if the actor identified by `actor_template_id` is
@@ -2985,14 +3439,30 @@ mod tests {
         assert_eq!(q.id, "quokka");
         assert_eq!(q.role, "echo bot");
         assert_eq!(q.role_description.as_deref(), Some("demo"));
-        assert_eq!(q.command, "python3");
-        assert_eq!(q.args, vec!["-c".to_string(), "import sys; print('hi')".to_string()]);
-        assert_eq!(q.cwd.as_deref(), Some("/tmp"));
-        assert_eq!(q.env, vec![
-            ("LOG".to_string(), "1".to_string()),
-            ("MODE".to_string(), "safe".to_string()),
-        ]);
-        assert_eq!(q.timeout_seconds, Some(30));
+        let AutomatonBackend::Script {
+            command,
+            args,
+            cwd,
+            env,
+            timeout_seconds,
+        } = &q.backend
+        else {
+            panic!("expected Script backend");
+        };
+        assert_eq!(command, "python3");
+        assert_eq!(
+            args,
+            &vec!["-c".to_string(), "import sys; print('hi')".to_string()]
+        );
+        assert_eq!(cwd.as_deref(), Some("/tmp"));
+        assert_eq!(
+            env,
+            &vec![
+                ("LOG".to_string(), "1".to_string()),
+                ("MODE".to_string(), "safe".to_string()),
+            ]
+        );
+        assert_eq!(timeout_seconds, &Some(30));
         assert_eq!(q.can_message.as_deref(), Some(&["alice".to_string()][..]));
     }
 
@@ -3007,11 +3477,350 @@ mod tests {
         "#;
         let cfg = parse_config(src, &dummy_path()).expect("parse ok");
         let b = &cfg.automatons[0];
-        assert!(b.args.is_empty());
-        assert!(b.cwd.is_none());
-        assert!(b.env.is_empty());
-        assert!(b.timeout_seconds.is_none());
+        let AutomatonBackend::Script {
+            args,
+            cwd,
+            env,
+            timeout_seconds,
+            ..
+        } = &b.backend
+        else {
+            panic!("expected Script backend");
+        };
+        assert!(args.is_empty());
+        assert!(cwd.is_none());
+        assert!(env.is_empty());
+        assert!(timeout_seconds.is_none());
         assert!(b.can_message.is_none());
+    }
+
+    #[test]
+    fn parses_webservice_automaton_with_https_bind() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner { role = "r" instructions = "i" }
+            automaton api_server {
+                type = :webservice
+                role = "HTTPS API"
+                bind = "0.0.0.0:8443"
+                tls_cert = "/etc/certs/aciddog.crt"
+                tls_key = "/etc/certs/aciddog.key"
+                api_key_env = "ACIDDOG_API_KEY"
+                can_message = ["planner"]
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).expect("parse ok");
+        let a = &cfg.automatons[0];
+        let AutomatonBackend::Webservice { bind, api_key_env } = &a.backend else {
+            panic!("expected Webservice backend");
+        };
+        let WebserviceBind::Https {
+            address,
+            tls_cert,
+            tls_key,
+        } = bind
+        else {
+            panic!("expected Https bind");
+        };
+        assert_eq!(address, "0.0.0.0:8443");
+        assert_eq!(tls_cert.to_str(), Some("/etc/certs/aciddog.crt"));
+        assert_eq!(tls_key.to_str(), Some("/etc/certs/aciddog.key"));
+        assert_eq!(api_key_env.as_deref(), Some("ACIDDOG_API_KEY"));
+    }
+
+    #[test]
+    fn parses_webservice_automaton_with_unix_socket() {
+        let src = r#"
+            team default { description = "t" }
+            automaton local_api {
+                type = :webservice
+                role = "local control"
+                socket_path = "/tmp/aciddog.sock"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).expect("parse ok");
+        let a = &cfg.automatons[0];
+        let AutomatonBackend::Webservice { bind, api_key_env } = &a.backend else {
+            panic!("expected Webservice backend");
+        };
+        let WebserviceBind::UnixSocket { path } = bind else {
+            panic!("expected UnixSocket bind");
+        };
+        assert_eq!(path.to_str(), Some("/tmp/aciddog.sock"));
+        assert!(api_key_env.is_none());
+    }
+
+    #[test]
+    fn rejects_command_on_webservice_automaton() {
+        let src = r#"
+            team default { description = "t" }
+            automaton a {
+                type = :webservice
+                role = "x"
+                socket_path = "/tmp/x.sock"
+                command = "python3"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::WebserviceUnexpectedScriptField { field, .. } if field == "command"),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_webservice_fields_on_script_automaton() {
+        let src = r#"
+            team default { description = "t" }
+            automaton a {
+                role = "x"
+                command = "cat"
+                bind = "0.0.0.0:8443"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::ScriptUnexpectedWebserviceField { field, .. } if field == "bind"),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_webservice_with_both_bind_and_socket_path() {
+        let src = r#"
+            team default { description = "t" }
+            automaton a {
+                type = :webservice
+                role = "x"
+                bind = "0.0.0.0:8443"
+                tls_cert = "c"
+                tls_key = "k"
+                api_key_env = "K"
+                socket_path = "/tmp/x.sock"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::WebserviceBindConflict { .. }),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_webservice_without_any_bind() {
+        let src = r#"
+            team default { description = "t" }
+            automaton a {
+                type = :webservice
+                role = "x"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::WebserviceMissingBind { .. }),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_unix_socket_webservice_with_api_key_env() {
+        let src = r#"
+            team default { description = "t" }
+            automaton a {
+                type = :webservice
+                role = "x"
+                socket_path = "/tmp/x.sock"
+                api_key_env = "FOO"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::WebserviceUnixSocketApiKey { .. }),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parses_webhook_bearer_auth() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner { role = "r" instructions = "i" }
+            automaton api_server {
+                type = :webservice
+                role = "HTTPS API"
+                socket_path = "/tmp/x.sock"
+                can_message = ["planner"]
+            }
+            webhook hook_bearer {
+                mount = "api_server"
+                path = "/hooks/x"
+                deliver_to = "planner"
+                auth_kind = :bearer
+                auth_secret_env = "SEC"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).expect("parse ok");
+        assert_eq!(cfg.webhooks.len(), 1);
+        let w = &cfg.webhooks[0];
+        assert_eq!(w.id, "hook_bearer");
+        assert_eq!(w.mount, "api_server");
+        assert_eq!(w.path, "/hooks/x");
+        assert_eq!(w.deliver_to, "planner");
+        assert!(matches!(w.auth, WebhookAuth::Bearer { ref secret_env } if secret_env == "SEC"));
+    }
+
+    #[test]
+    fn parses_webhook_hmac_header_defaults_to_sha256() {
+        let src = r#"
+            team default { description = "t" }
+            agent coder { role = "r" instructions = "i" }
+            automaton api_server {
+                type = :webservice
+                role = "api"
+                socket_path = "/tmp/x.sock"
+                can_message = ["coder"]
+            }
+            webhook gh {
+                mount = "api_server"
+                path = "/hooks/gh"
+                deliver_to = "coder"
+                auth_kind = :hmac_header
+                auth_header = "X-Hub-Signature-256"
+                auth_secret_env = "GHSEC"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).expect("parse ok");
+        let w = &cfg.webhooks[0];
+        assert!(matches!(
+            w.auth,
+            WebhookAuth::HmacHeader {
+                algo: HmacAlgo::Sha256,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_webhook_mount_on_script_automaton() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner { role = "r" instructions = "i" }
+            automaton script_bot {
+                role = "x"
+                command = "cat"
+            }
+            webhook w {
+                mount = "script_bot"
+                path = "/h"
+                deliver_to = "planner"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::WebhookMountNotWebservice { .. }),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_webhook_with_unknown_mount() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner { role = "r" instructions = "i" }
+            webhook w {
+                mount = "nope"
+                path = "/h"
+                deliver_to = "planner"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::WebhookUnknownMount { .. }),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_webhook_deliver_not_reachable_from_mount() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner { role = "r" instructions = "i" }
+            agent coder { role = "r" instructions = "i" }
+            automaton api {
+                type = :webservice
+                role = "x"
+                socket_path = "/tmp/x.sock"
+                can_message = ["planner"]
+            }
+            webhook w {
+                mount = "api"
+                path = "/h"
+                deliver_to = "coder"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::WebhookDeliverNotReachable { .. }),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_webhook_paths_on_same_mount() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner { role = "r" instructions = "i" }
+            automaton api {
+                type = :webservice
+                role = "x"
+                socket_path = "/tmp/x.sock"
+            }
+            webhook a { mount = "api" path = "/h" deliver_to = "planner" }
+            webhook b { mount = "api" path = "/h" deliver_to = "planner" }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::WebhookPathConflict { .. }),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_webhook_path_that_collides_with_reserved() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner { role = "r" instructions = "i" }
+            automaton api {
+                type = :webservice
+                role = "x"
+                socket_path = "/tmp/x.sock"
+            }
+            webhook a { mount = "api" path = "/v1/rpc" deliver_to = "planner" }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::WebhookReservedPath { .. }),
+            "unexpected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_webhook_invalid_path() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner { role = "r" instructions = "i" }
+            automaton api {
+                type = :webservice
+                role = "x"
+                socket_path = "/tmp/x.sock"
+            }
+            webhook a { mount = "api" path = "missing-slash" deliver_to = "planner" }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::WebhookInvalidPath { .. }),
+            "unexpected: {err:?}"
+        );
     }
 
     #[test]
@@ -3096,7 +3905,10 @@ mod tests {
             }
         "#;
         let cfg = parse_config(src, &dummy_path()).expect("automaton can join a channel");
-        assert_eq!(cfg.channels[0].members, vec!["alice".to_string(), "logger".to_string()]);
+        assert_eq!(
+            cfg.channels[0].members,
+            vec!["alice".to_string(), "logger".to_string()]
+        );
     }
 
     #[test]

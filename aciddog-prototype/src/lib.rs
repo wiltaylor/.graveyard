@@ -10,4 +10,5 @@ pub mod skills;
 pub mod tasks;
 pub mod tui;
 pub mod usage;
+pub mod webservice;
 pub mod workflow;

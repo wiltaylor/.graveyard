@@ -316,11 +316,25 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
                     .find(|a| a.id == chat.display_name);
                 match auto {
                     Some(a) => {
-                        let argv = std::iter::once(a.command.as_str())
-                            .chain(a.args.iter().map(String::as_str))
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        format!(" {} · automaton · {} ", a.id, argv)
+                        let desc = match &a.backend {
+                            crate::config::AutomatonBackend::Script { command, args, .. } => {
+                                std::iter::once(command.as_str())
+                                    .chain(args.iter().map(String::as_str))
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            }
+                            crate::config::AutomatonBackend::Webservice { bind, .. } => {
+                                match bind {
+                                    crate::config::WebserviceBind::Https { address, .. } => {
+                                        format!("webservice https://{address}")
+                                    }
+                                    crate::config::WebserviceBind::UnixSocket { path } => {
+                                        format!("webservice unix:{}", path.display())
+                                    }
+                                }
+                            }
+                        };
+                        format!(" {} · automaton · {} ", a.id, desc)
                     }
                     None => format!(" {} · automaton ", chat.display_name),
                 }
@@ -3674,10 +3688,7 @@ fn render_workflow_form(f: &mut Frame, area: Rect, app: &mut App, workflow_idx: 
                 };
                 lines.push(Line::from(vec![
                     Span::raw("    "),
-                    Span::styled(
-                        format!("◉ {picked} ▾"),
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled(format!("◉ {picked} ▾"), Style::default().fg(Color::Yellow)),
                     Span::styled(hint, Style::default().fg(Color::DarkGray)),
                 ]));
             }
@@ -3924,7 +3935,12 @@ fn render_workflow_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 // first options are visible.
                 area.y
             };
-            Rect { x, y, width: w, height: h }
+            Rect {
+                x,
+                y,
+                width: w,
+                height: h,
+            }
         }
         None => centered_rect(area, w, h),
     };

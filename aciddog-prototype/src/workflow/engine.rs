@@ -770,6 +770,7 @@ mod tests {
             compactions: vec![],
             channels: vec![],
             workflows: vec![],
+            webhooks: vec![],
             thinking_messages: vec!["t".into()],
         }
     }

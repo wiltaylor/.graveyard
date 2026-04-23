@@ -59,28 +59,80 @@ schema "worker" {
 // per automaton: while it's alive the status shows `Working` and any
 // incoming messages queue in the usual priority order (user > agent
 // > channel), pulled the moment the current child exits.
+// An automaton has one of two backends selected by `type`. `:script`
+// (the default when omitted) spawns a subprocess per inbound event;
+// `:webservice` hosts a long-lived HTTPS or Unix-socket server that
+// external clients drive over JSON-RPC + SSE.
+@tagged(field = "type")
 schema "automaton" {
   id: identifier @inline(0)
   role: string
   role_description: string @optional
-  // Executable to spawn. Either a bare binary name on PATH (e.g.
-  // `python3`) or an absolute path. Not a shell line — use `args`
-  // for additional argv entries and `env` for environment.
-  command: string
-  // Extra argv entries appended after `command`.
-  args: list(string) @optional
-  // Working directory for the child. Omit to inherit the harness cwd.
-  cwd: string @optional
-  // Extra environment variables passed to the child as `KEY=VAL`
-  // strings. Each entry must contain at least one `=`; everything
-  // after the first `=` is the value.
-  env: list(string) @optional
-  // Kill the child if it runs longer than this many seconds. Omit
-  // for no timeout.
-  timeout_seconds: number @optional
+  type: symbol @optional
   // Allowlist of agent/automaton ids this automaton may target with
   // `aciddog send --to`. `None` ⇒ unrestricted; `Some([])` ⇒ none.
   can_message: list(string) @optional
+
+  variant "script" {
+    // Executable to spawn. Either a bare binary name on PATH (e.g.
+    // `python3`) or an absolute path. Not a shell line — use `args`
+    // for additional argv entries and `env` for environment.
+    command: string
+    // Extra argv entries appended after `command`.
+    args: list(string) @optional
+    // Working directory for the child. Omit to inherit harness cwd.
+    cwd: string @optional
+    // Extra environment variables passed to the child as `KEY=VAL`
+    // strings. Each entry must contain at least one `=`.
+    env: list(string) @optional
+    // Kill the child if it runs longer than this many seconds.
+    timeout_seconds: number @optional
+  }
+
+  variant "webservice" {
+    // HTTPS bind (mutually exclusive with `socket_path`).
+    // `host:port` parsed as a SocketAddr.
+    bind: string @optional
+    // PEM-encoded cert + key files for HTTPS.
+    tls_cert: string @optional
+    tls_key: string @optional
+    // Name of the env var holding the expected API-key. Required for
+    // HTTPS; forbidden for Unix-socket webservices (fs perms are the
+    // trust boundary there).
+    api_key_env: string @optional
+    // Unix-socket path. Mutually exclusive with `bind`.
+    socket_path: string @optional
+  }
+}
+
+// Inbound HTTP webhook mounted on a webservice-backed automaton. When
+// a request arrives and passes the declared auth check, the handler
+// packages (method, path, query, headers, body) into a JSON envelope
+// and delivers it as a `send --to <deliver_to>` message sent from the
+// hosting automaton's identity. The host's `can_message` ACL gates
+// which agents webhooks can reach.
+schema "webhook" {
+  id: identifier @inline(0)
+  // Id of a declared automaton whose `type` is `:webservice`.
+  mount: string
+  // HTTP path (must start with `/`). Must not collide with reserved
+  // endpoints `/v1/rpc`, `/v1/events`, `/v1/health`.
+  path: string
+  // Agent or automaton id that receives the delivery.
+  deliver_to: string
+  // Reject bodies larger than this many bytes with 413. Default 1 MiB.
+  max_body_bytes: number @optional
+  // Auth scheme. One of :none :bearer :header :json_field :hmac_header
+  auth_kind: symbol @optional
+  // For :header / :hmac_header — the header name to inspect.
+  auth_header: string @optional
+  // For :json_field — dot-path into the JSON body (e.g. `data.token`).
+  auth_field: string @optional
+  // Env var holding the expected value. Required for every non-`:none`
+  // variant.
+  auth_secret_env: string @optional
+  // For :hmac_header — `:sha256` (default) or `:sha1`.
+  auth_algo: symbol @optional
 }
 
 // A reusable multi-step procedure declared at the fleet level. Each
@@ -753,6 +805,58 @@ automaton quokka {
   ]
   can_message  = ["planner"]
 }
+
+// Example webservice automaton bound to a Unix socket. External tools
+// drive the fleet via `POST /v1/rpc` (same JSON shape as the internal
+// agent IPC) and subscribe to inbound mail / channel traffic via SSE
+// on `GET /v1/events`. Because this is a Unix socket, the trust
+// boundary is filesystem permissions — no API key required.
+//
+// Uncomment to enable, after creating the parent directory:
+//   mkdir -p /run/aciddog && chmod 700 /run/aciddog
+//
+// automaton local_api {
+//   type         = :webservice
+//   role         = "local control plane"
+//   role_description = "Unix-socket JSON-RPC for scripts and dashboards."
+//   socket_path  = "/run/aciddog/api.sock"
+//   can_message  = ["planner", "coder"]
+// }
+
+// Example HTTPS webservice with an API key. Generate a cert/key
+// (`openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem
+// -days 365 -nodes`), set ACIDDOG_API_KEY in your env, and uncomment:
+//
+// automaton api_server {
+//   type         = :webservice
+//   role         = "remote control plane"
+//   bind         = "0.0.0.0:8443"
+//   tls_cert     = "./demo/tls/cert.pem"
+//   tls_key      = "./demo/tls/key.pem"
+//   api_key_env  = "ACIDDOG_API_KEY"
+//   can_message  = ["planner", "coder"]
+// }
+
+// Example webhook: a GitHub push hook with HMAC-SHA256 signing. Mounts
+// on the `api_server` webservice above; the incoming request envelope
+// is delivered to the `coder` agent as a JSON-wrapped message.
+//
+// webhook github_push {
+//   mount           = "api_server"
+//   path            = "/hooks/github/push"
+//   deliver_to      = "coder"
+//   auth_kind       = :hmac_header
+//   auth_header     = "X-Hub-Signature-256"
+//   auth_secret_env = "GITHUB_WEBHOOK_SECRET"
+// }
+//
+// webhook sentry_alert {
+//   mount           = "api_server"
+//   path            = "/hooks/sentry"
+//   deliver_to      = "planner"
+//   auth_kind       = :bearer
+//   auth_secret_env = "SENTRY_WEBHOOK_TOKEN"
+// }
 
 // A reusable procedure with typed inputs and sequential steps. Trigger
 // it from the TUI's Workflows panel (or via `/run <id>`) and the engine

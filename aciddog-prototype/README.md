@@ -55,6 +55,67 @@ report to the parent and hibernates it. Hibernated workers keep their
 pane and history — sending them another message resumes the session.
 See [`demo/aciddog.wcl`](demo/aciddog.wcl) for a working example.
 
+## Webservice & webhooks
+
+An automaton declared with `type = :webservice` hosts an HTTP server
+(HTTPS with an API key, or a Unix socket) instead of spawning a child
+process per event. External clients can drive the fleet over it, and
+third-party systems can POST webhook payloads that get delivered as
+messages.
+
+```wcl
+automaton api {
+  type         = :webservice
+  role         = "control plane"
+  bind         = "0.0.0.0:8443"
+  tls_cert     = "./demo/tls/cert.pem"
+  tls_key      = "./demo/tls/key.pem"
+  api_key_env  = "ACIDDOG_API_KEY"
+  can_message  = ["planner", "coder"]
+}
+
+webhook github_push {
+  mount           = "api"
+  path            = "/hooks/github/push"
+  deliver_to      = "coder"
+  auth_kind       = :hmac_header
+  auth_header     = "X-Hub-Signature-256"
+  auth_secret_env = "GITHUB_WEBHOOK_SECRET"
+}
+```
+
+Endpoints on every webservice:
+
+- `POST /v1/rpc` — same JSON shape the internal agent IPC accepts
+  (`{"cmd":"send_message","to":"planner","body":"hi"}` etc). Requests
+  are stamped with the automaton's identity and subject to its
+  `can_message` ACL.
+- `GET /v1/events` — Server-Sent Events stream of the mail / channel
+  traffic this automaton receives.
+- `GET /v1/health` — liveness probe.
+- Each configured `webhook` mounts as an additional path.
+
+Smoke test the RPC endpoint:
+
+```sh
+curl -k -H "Authorization: Bearer $ACIDDOG_API_KEY" \
+     https://localhost:8443/v1/rpc \
+     -d '{"cmd":"send_message","to":"planner","body":"hello"}'
+```
+
+Smoke test a GitHub-style webhook locally:
+
+```sh
+BODY='{"ref":"refs/heads/main"}'
+SIG=$(printf '%s' "$BODY" | \
+      openssl dgst -sha256 -hmac "$GITHUB_WEBHOOK_SECRET" -hex | \
+      awk '{print $2}')
+curl -k -H "X-Hub-Signature-256: sha256=$SIG" \
+     -H "Content-Type: application/json" \
+     https://localhost:8443/hooks/github/push \
+     -d "$BODY"
+```
+
 ## Layout
 
 - `src/` — Rust binary + library
