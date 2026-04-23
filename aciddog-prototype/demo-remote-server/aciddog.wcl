@@ -8,23 +8,54 @@
 //
 // The two instances communicate over a Unix socket at
 // `/tmp/aciddog-remote-demo.sock`. The server hosts a `:webservice`
-// automaton (`gateway`) bound to that path; the client hosts a
-// `:remote` automaton (`mothership`) that dials it and proxies the
-// server's user inbox as a local fleet member.
+// automaton (`gateway`) bound to that path plus a Claude Code agent
+// (`harbor`) that receives the forwarded traffic; the client dials
+// the socket with a `:remote` automaton that proxies `harbor` as a
+// local fleet member.
 //
-// Typing in the `gateway` pane on the server broadcasts the message
-// via SSE to the client, which delivers it to the client's user
-// inbox. Typing in the `mothership` pane on the client forwards the
-// message as a `send_message(to=user)` RPC to the server, which lands
-// in the server's user inbox attributed to `gateway`. Both
-// directions end-to-end, no auth (filesystem perms on the UDS are the
-// trust boundary).
+// Message flow:
+//
+//   client user → mothership → send_message(to=harbor) RPC
+//                             → server's `harbor` pane (AI agent replies)
+//   harbor reply → `send --to gateway` → SSE → client's mothership
+//                                            → client's `scout` pane
+//
+// No auth on the socket; filesystem perms are the trust boundary.
 
 schema "team" {
   id: identifier @inline(0)
   description: string
   replace_thinking_messages: bool @optional @default(false)
   default_ai_core: string @optional
+}
+
+schema "agent" {
+  id: identifier @inline(0)
+  role: string
+  role_description: string @optional
+  model: string @optional
+  instructions: string
+  can_message: list(string) @optional
+  can_create_workers: list(string) @optional
+  can_run_workflows: list(string) @optional
+  tools: list(string) @optional
+  ai_core: string @optional
+  memory_banks: list(string) @optional
+  skills: list(string) @optional
+  compaction: string @optional
+}
+
+@tagged(field = "type")
+schema "ai_core" {
+  id: identifier @inline(0)
+  type: symbol
+  usage_provider: symbol @optional
+
+  variant "claudeCode" {
+    systemPrompt: string @optional
+    model: string @optional
+    default_tools: list(string) @optional
+  }
 }
 
 @tagged(field = "type")
@@ -63,13 +94,40 @@ schema "automaton" {
 }
 
 team server {
-  description = "Remote-demo server. Hosts a Unix-socket webservice that the client dials."
+  description    = "Remote-demo server. Unix-socket webservice + local Claude Code agent."
+  default_ai_core = "default_core"
 }
 
+// Default claudeCode core. Requires the `claude` CLI on PATH and a
+// logged-in Anthropic / Claude Code session (`claude login`).
+ai_core default_core {
+  type          = :claudeCode
+  default_tools = ["Bash", "Read", "Edit", "Grep", "Glob"]
+  systemPrompt  = <<EOT
+    You are a chat-style agent running inside a demo aciddog instance. Keep replies short and conversational — a sentence or two is plenty.
+  EOT
+}
+
+// The agent that receives traffic forwarded from the client side.
+// Replies it sends back to `gateway` are broadcast over SSE and land
+// in the client's `scout` pane.
+agent harbor {
+  role             = "server-side demo agent"
+  role_description = <<EOT
+    You are the server-side agent in a two-instance aciddog demo. Messages you receive came from the client instance via the `gateway` bridge. When you reply, `send --to gateway` and the reply will flow back to the client.
+  EOT
+  model        = "claude-haiku-4-5"
+  instructions = "Respond conversationally to whatever the client sends. Send your reply via `aciddog send --to gateway <body>` so it reaches the client."
+  can_message  = ["gateway", "user"]
+}
+
+// Unix-socket webservice. The client dials this path; its RPCs are
+// stamped with `gateway`'s identity before being routed locally, so
+// messages from the client appear as `from: gateway` to `harbor`.
 automaton gateway {
   type             = :webservice
   role             = "bridge to the remote client"
-  role_description = "Unix-socket webservice at /tmp/aciddog-remote-demo.sock. Messages typed into this pane are broadcast to any connected client via SSE. RPCs from the client are stamped with gateway's identity and delivered into this instance's orchestrator."
+  role_description = "Unix-socket webservice at /tmp/aciddog-remote-demo.sock. Client RPCs route as `from: gateway` into the local fleet; any mail gateway itself receives is broadcast over SSE to the client."
   socket_path      = "/tmp/aciddog-remote-demo.sock"
-  can_message      = ["user"]
+  can_message      = ["harbor", "user"]
 }

@@ -212,6 +212,10 @@ fn loads_remote_demo_server_config() {
         .join("aciddog.wcl");
     let cfg = load_config(&path).expect("demo-remote-server/aciddog.wcl should parse");
     assert_eq!(cfg.team.id, "server");
+    assert!(
+        cfg.agents.iter().any(|a| a.id == "harbor"),
+        "harbor agent declared"
+    );
     let gateway = cfg
         .automatons
         .iter()
@@ -221,6 +225,13 @@ fn loads_remote_demo_server_config() {
         AutomatonBackend::Webservice { .. } => {}
         other => panic!("expected webservice backend, got {other:?}"),
     }
+    assert!(
+        gateway
+            .can_message
+            .as_ref()
+            .is_some_and(|v| v.iter().any(|id| id == "harbor")),
+        "gateway.can_message should include harbor so inbound RPCs reach it"
+    );
 }
 
 #[test]
@@ -230,6 +241,10 @@ fn loads_remote_demo_client_config() {
         .join("aciddog.wcl");
     let cfg = load_config(&path).expect("demo-remote-client/aciddog.wcl should parse");
     assert_eq!(cfg.team.id, "client");
+    assert!(
+        cfg.agents.iter().any(|a| a.id == "scout"),
+        "scout agent declared"
+    );
     let mothership = cfg
         .automatons
         .iter()
@@ -242,8 +257,8 @@ fn loads_remote_demo_client_config() {
             transport,
             ..
         } => {
-            assert_eq!(remote_target, "user");
-            assert_eq!(deliver_to, "user");
+            assert_eq!(remote_target, "harbor");
+            assert_eq!(deliver_to, "scout");
             match transport {
                 RemoteTransport::UnixSocket { path } => {
                     assert!(path.to_string_lossy().ends_with("aciddog-remote-demo.sock"));
@@ -253,6 +268,13 @@ fn loads_remote_demo_client_config() {
         }
         other => panic!("expected remote backend, got {other:?}"),
     }
+    assert!(
+        mothership
+            .can_message
+            .as_ref()
+            .is_some_and(|v| v.iter().any(|id| id == "scout")),
+        "mothership.can_message should include scout so inbound SSE deliveries succeed"
+    );
 }
 
 #[test]
