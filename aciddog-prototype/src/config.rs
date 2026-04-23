@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use wcl_lang::{parse, ParseOptions, Value};
 
+/// Reserved recipient id for the human operator's inbox. No configured
+/// agent / automaton / worker / channel / webhook may use this id.
+pub const USER_INBOX_ID: &str = "user";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Team {
     pub id: String,
@@ -1091,6 +1095,9 @@ pub enum ConfigError {
 
     #[error("webhook `{webhook}` hmac algo `{algo}` is invalid (expected `:sha1` or `:sha256`)")]
     WebhookUnknownHmacAlgo { webhook: String, algo: String },
+
+    #[error("{kind} id `{id}` is reserved (the `user` id is reserved for the human operator's inbox)")]
+    ReservedId { kind: String, id: String },
 }
 
 pub fn load_config(path: &Path) -> Result<AciddogConfig, ConfigError> {
@@ -1347,6 +1354,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         .map(parse_workflow)
         .collect::<Result<Vec<_>, ConfigError>>()?;
 
+    validate_reserved_ids(&agents, &automatons, &workers, &channels, &webhooks)?;
     validate_agent_refs(&agents, &automatons)?;
     validate_worker_refs(&agents, &workers)?;
     validate_ai_core_refs(&team, &agents, &workers, &ai_cores)?;
@@ -1741,16 +1749,56 @@ fn parse_step(b: &wcl_lang::BlockRef) -> Result<WorkflowStep, ConfigError> {
     Ok(WorkflowStep { id, kind })
 }
 
+/// Guard against a configured entity colliding with the reserved
+/// `user` id. The user's inbox routes on recipient id `"user"`, so any
+/// agent / automaton / worker / channel / webhook with that id would
+/// shadow it.
+fn validate_reserved_ids(
+    agents: &[Agent],
+    automatons: &[Automaton],
+    workers: &[Worker],
+    channels: &[Channel],
+    webhooks: &[Webhook],
+) -> Result<(), ConfigError> {
+    let check = |kind: &str, id: &str| -> Result<(), ConfigError> {
+        if id == USER_INBOX_ID {
+            Err(ConfigError::ReservedId {
+                kind: kind.to_string(),
+                id: id.to_string(),
+            })
+        } else {
+            Ok(())
+        }
+    };
+    for a in agents {
+        check("agent", &a.id)?;
+    }
+    for a in automatons {
+        check("automaton", &a.id)?;
+    }
+    for w in workers {
+        check("worker", &w.id)?;
+    }
+    for c in channels {
+        check("channel", &c.id)?;
+    }
+    for w in webhooks {
+        check("webhook", &w.id)?;
+    }
+    Ok(())
+}
+
 /// Every id mentioned in a `can_message` list must correspond to a real
 /// agent or automaton declared in the same config; otherwise the
 /// allowlist silently lets nothing through and the typo is hard to
-/// diagnose.
+/// diagnose. The reserved `user` id is always accepted.
 fn validate_agent_refs(agents: &[Agent], automatons: &[Automaton]) -> Result<(), ConfigError> {
-    let known: std::collections::HashSet<&str> = agents
+    let mut known: std::collections::HashSet<&str> = agents
         .iter()
         .map(|a| a.id.as_str())
         .chain(automatons.iter().map(|a| a.id.as_str()))
         .collect();
+    known.insert(USER_INBOX_ID);
     for a in agents {
         if let Some(list) = &a.can_message {
             for id in list {
@@ -1832,14 +1880,15 @@ fn validate_webhooks(
 }
 
 /// Mirror of [`validate_agent_refs`] for automaton `can_message`
-/// allowlists. An automaton may target either a declared agent or
-/// another declared automaton.
+/// allowlists. An automaton may target either a declared agent,
+/// another declared automaton, or the reserved `user` id.
 fn validate_automaton_refs(agents: &[Agent], automatons: &[Automaton]) -> Result<(), ConfigError> {
-    let known: std::collections::HashSet<&str> = agents
+    let mut known: std::collections::HashSet<&str> = agents
         .iter()
         .map(|a| a.id.as_str())
         .chain(automatons.iter().map(|a| a.id.as_str()))
         .collect();
+    known.insert(USER_INBOX_ID);
     for a in automatons {
         if let Some(list) = &a.can_message {
             for id in list {
@@ -2337,6 +2386,15 @@ impl AciddogConfig {
     /// permitted to send a message to `to`. Unknown `from` id → false
     /// (conservative default).
     pub fn can_send(&self, from: &str, to: &str) -> bool {
+        // `user` is the reserved recipient id for the human operator's
+        // inbox. Every agent/automaton can always reach the user,
+        // regardless of `can_message` — the operator is not a
+        // configured teammate and their presence is not gated by
+        // teammate ACLs.
+        if to == USER_INBOX_ID {
+            return self.agents.iter().any(|a| a.id == from)
+                || self.automatons.iter().any(|a| a.id == from);
+        }
         let allowlist = if let Some(a) = self.agents.iter().find(|a| a.id == from) {
             a.can_message.as_ref()
         } else if let Some(a) = self.automatons.iter().find(|a| a.id == from) {
@@ -2840,6 +2898,66 @@ mod tests {
             err,
             ConfigError::BadListElementType { attr, .. } if attr == "can_message"
         ));
+    }
+
+    #[test]
+    fn config_allows_user_in_can_message_list() {
+        // `user` is the reserved operator inbox — always a valid
+        // `can_message` entry, even though it's not a declared agent.
+        let src = r#"
+            team default { description = "t" }
+            agent one { role = "a" instructions = "b" can_message = ["user", "two"] }
+            agent two { role = "c" instructions = "d" }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.agents[0].can_message.as_deref().unwrap(),
+            &["user".to_string(), "two".to_string()]
+        );
+    }
+
+    #[test]
+    fn config_rejects_agent_named_user() {
+        let src = r#"
+            team default { description = "t" }
+            agent user { role = "a" instructions = "b" }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::ReservedId { kind, id } if kind == "agent" && id == "user"),
+            "expected ReservedId for agent `user`, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn can_send_to_user_is_always_true_for_configured_agents() {
+        let cfg = parse_config(
+            r#"
+                team default { description = "t" }
+                agent restricted { role = "a" instructions = "b" can_message = [] }
+                agent unrestricted { role = "c" instructions = "d" }
+            "#,
+            &dummy_path(),
+        )
+        .unwrap();
+        assert!(
+            cfg.can_send("restricted", "user"),
+            "agent with empty can_message should still reach user"
+        );
+        assert!(cfg.can_send("unrestricted", "user"));
+    }
+
+    #[test]
+    fn can_send_to_user_is_false_for_unknown_sender() {
+        let cfg = parse_config(
+            r#"
+                team default { description = "t" }
+                agent one { role = "a" instructions = "b" }
+            "#,
+            &dummy_path(),
+        )
+        .unwrap();
+        assert!(!cfg.can_send("ghost", "user"));
     }
 
     #[test]

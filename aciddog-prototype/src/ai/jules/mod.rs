@@ -168,7 +168,9 @@ fn build_first_turn_preamble(parent_id: &str, task: &str) -> String {
     // No contactable peers, no creatable workers, no memory banks,
     // no skills, no channels — remote workers run a single-shot
     // conversation with just their parent.
-    out.push_str(&tag_preamble(&[parent_id], &[], &[], &[], &[]));
+    // Remote workers are scoped to their parent — `user` is not a
+    // valid recipient.
+    out.push_str(&tag_preamble(&[parent_id], &[], &[], &[], &[], false));
     out
 }
 

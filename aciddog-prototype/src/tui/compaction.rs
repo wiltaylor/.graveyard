@@ -502,7 +502,7 @@ impl App {
             .as_deref()
             .map(|list| list.iter().map(String::as_str).collect())
             .unwrap_or_default();
-        let team_block = build_team_block(&self.config, &contactable, &creatable);
+        let team_block = build_team_block(&self.config, &contactable, &creatable, true);
         let memory_block = build_memory_block(&self.config, &agent.id);
         let memory_banks_for_agent: Vec<String> = agent
             .memory_banks

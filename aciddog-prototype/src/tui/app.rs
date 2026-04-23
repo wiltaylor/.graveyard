@@ -466,6 +466,7 @@ pub(super) fn build_team_block(
     cfg: &AciddogConfig,
     contactable: &[&str],
     creatable: &[&str],
+    include_user: bool,
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!("Team: {}\n", cfg.team.description));
@@ -486,6 +487,17 @@ pub(super) fn build_team_block(
         } else {
             agent_entries.push((id, "agent"));
         }
+    }
+
+    // The reserved `user` recipient is unconditional for configured
+    // agents/automatons: the human operator's inbox is always
+    // reachable. Workers are scoped to their parent only, so they
+    // pass `include_user = false`.
+    if include_user {
+        out.push_str("\nPeople you can message:\n");
+        out.push_str(
+            "- user — the human operator (may take a long time to reply; send and move on)\n",
+        );
     }
 
     if !agent_entries.is_empty() {
@@ -1063,6 +1075,10 @@ pub enum Focus {
     /// The main area while `active_view == Cores` — keyboard input
     /// goes to the cores-view handler.
     Cores,
+    /// The main area while `active_view == Inbox` — keyboard input
+    /// goes to the inbox-view handler (list navigation, reply/forward
+    /// modals, delete).
+    Inbox,
 }
 
 /// Which scrollable zone inside the Memory view the wheel cursor is
@@ -1089,6 +1105,10 @@ pub enum ActiveView {
     /// Read-only listing of configured `ai_core` blocks with per-core
     /// usage percentages where a `UsageProvider` is resolved.
     Cores,
+    /// User's personal inbox — messages sent to the reserved recipient
+    /// id `"user"` land here. Counter rendered next to the entry in
+    /// the Views list.
+    Inbox,
     Channel(usize),
     /// Property-entry form for the workflow at
     /// `config.workflows[workflow_idx]`.
@@ -1106,7 +1126,7 @@ pub enum ActiveView {
 /// Entries in the right-column Views list. Extend this array and add
 /// a matching activation arm in `handle_key_views` to wire a new
 /// view up.
-pub const VIEW_ENTRIES: &[&str] = &["Tasks", "Memory", "Cores"];
+pub const VIEW_ENTRIES: &[&str] = &["Inbox", "Tasks", "Memory", "Cores"];
 
 #[derive(Debug, Default, Clone)]
 pub struct LayoutRects {
@@ -1189,6 +1209,10 @@ pub struct LayoutRects {
     /// links overlay, confirm-delete). Used to distinguish outside-
     /// click (close) from inside-click (swallow).
     pub memory_modal_outer: Option<Rect>,
+    /// Clickable hot-rects drawn by the Inbox view each frame.
+    /// Painted top-to-bottom; the mouse handler picks the first hit
+    /// so overlays stacked above the list take precedence.
+    pub inbox_hotspots: Vec<(Rect, super::inbox_view::InboxHotspot)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -2029,6 +2053,12 @@ pub struct App {
     /// by `tui::run`; `None` in unit tests that don't open the Cores
     /// view.
     pub usage_event_tx: Option<tokio::sync::mpsc::UnboundedSender<UsageEvent>>,
+    /// Messages addressed to the human operator (`to = "user"`). Held
+    /// in memory only — matches the ephemeral agent mailbox model and
+    /// does not persist across restarts.
+    pub inbox: Vec<super::inbox_view::InboxMessage>,
+    /// UI-local state for the Inbox view (cursor, reply/forward forms).
+    pub inbox_screen: super::inbox_view::InboxScreen,
 }
 
 /// Time window for detecting a double-click. Matches the typical
@@ -2164,6 +2194,8 @@ impl App {
             workflow_engine: None,
             cores_screen: CoresScreen::default(),
             usage_event_tx: None,
+            inbox: Vec::new(),
+            inbox_screen: super::inbox_view::InboxScreen::default(),
         }
     }
 
@@ -3035,7 +3067,8 @@ impl App {
         // A worker can only message the actor that spawned it; that
         // single peer becomes its team listing.
         let contactable_for_worker: Vec<&str> = vec![sender_display.as_str()];
-        let team_block = build_team_block(&self.config, &contactable_for_worker, &creatable);
+        // Workers may only message their parent; never the user.
+        let team_block = build_team_block(&self.config, &contactable_for_worker, &creatable, false);
 
         let memory_banks_for_worker: Vec<String> = worker
             .memory_banks
@@ -4168,6 +4201,26 @@ impl App {
 
         if !is_cron && to == sender_id {
             let _ = reply.send(Response::err("cannot send a message to yourself"));
+            return;
+        }
+
+        // Reserved `user` recipient: route to the operator's inbox
+        // instead of resolving a chat. ACLs are short-circuited in
+        // `can_send`, but we still gate by sender identity: workers
+        // may only message their parent, so they can't mail the user.
+        if to == crate::config::USER_INBOX_ID {
+            if sender_parent_idx.is_some() {
+                let _ = reply.send(Response::err(
+                    "worker can only message its parent".to_string(),
+                ));
+                return;
+            }
+            self.inbox.push(super::inbox_view::InboxMessage::new(
+                from_label.clone(),
+                body,
+            ));
+            self.inbox_screen.reclamp(self.inbox.len());
+            let _ = reply.send(Response::ok("queued"));
             return;
         }
 
@@ -6109,6 +6162,7 @@ impl App {
                 ActiveView::Tasks => Focus::Tasks,
                 ActiveView::Memory => Focus::Memory,
                 ActiveView::Cores => Focus::Cores,
+                ActiveView::Inbox => Focus::Inbox,
                 ActiveView::WorkflowForm { .. } | ActiveView::WorkflowInstance { .. } => {
                     Focus::Workflow
                 }
@@ -6153,6 +6207,7 @@ impl App {
             Focus::Workflows => self.handle_key_workflows(code, mods),
             Focus::Workflow => self.handle_key_workflow_view(code, mods),
             Focus::Cores => self.handle_key_cores(code, mods),
+            Focus::Inbox => self.handle_key_inbox(code, mods),
         }
     }
 
@@ -6195,6 +6250,10 @@ impl App {
             }
             ActiveView::Cores => {
                 self.active_view = ActiveView::Chat;
+            }
+            ActiveView::Inbox => {
+                self.active_view = ActiveView::Chat;
+                self.inbox_screen.mode = super::inbox_view::InboxMode::List;
             }
             ActiveView::Channel(_) => {
                 self.active_view = ActiveView::Chat;
@@ -6506,10 +6565,19 @@ impl App {
                 Some("Cores") => {
                     self.open_cores_view();
                 }
+                Some("Inbox") => {
+                    self.open_inbox_view();
+                }
                 _ => {}
             },
             _ => {}
         }
+    }
+
+    pub(super) fn open_inbox_view(&mut self) {
+        self.active_view = ActiveView::Inbox;
+        self.focus = Focus::Inbox;
+        self.inbox_screen.reclamp(self.inbox.len());
     }
 
     fn open_cores_view(&mut self) {
@@ -6541,6 +6609,206 @@ impl App {
                 self.spawn_cores_usage_fetch();
             }
             _ => {}
+        }
+    }
+
+    fn handle_key_inbox(&mut self, code: KeyCode, mods: KeyModifiers) {
+        use super::inbox_view::{ForwardStage, InboxMode};
+        self.inbox_screen.status_msg = None;
+
+        // Forward overlay: two-stage (pick recipient → edit body).
+        if let InboxMode::Forward(fwd) = &mut self.inbox_screen.mode {
+            match fwd.stage {
+                ForwardStage::PickRecipient => match code {
+                    KeyCode::Esc => {
+                        self.inbox_screen.mode = InboxMode::List;
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if !fwd.candidates.is_empty()
+                            && fwd.selected + 1 < fwd.candidates.len()
+                        {
+                            fwd.selected += 1;
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if fwd.selected > 0 {
+                            fwd.selected -= 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if fwd.candidates.is_empty() {
+                            self.inbox_screen.status_msg =
+                                Some("no agents to forward to".to_string());
+                            return;
+                        }
+                        // Snapshot the quoted original now so it stays
+                        // stable while the user composes their note.
+                        let original = self.inbox.get(self.inbox_screen.cursor);
+                        if let Some(msg) = original {
+                            fwd.quoted = format!(
+                                "Forwarded from {}:\n\n{}",
+                                msg.from, msg.body
+                            );
+                        }
+                        fwd.stage = ForwardStage::EditBody;
+                    }
+                    _ => {}
+                },
+                ForwardStage::EditBody => match code {
+                    KeyCode::Esc => {
+                        self.inbox_screen.mode = InboxMode::List;
+                    }
+                    KeyCode::Enter if mods.contains(KeyModifiers::CONTROL) => {
+                        self.submit_inbox_send();
+                    }
+                    // Typing edits the user's note; the quoted original
+                    // below is read-only context.
+                    KeyCode::Char(c) => fwd.note.push(c),
+                    KeyCode::Enter => fwd.note.push('\n'),
+                    KeyCode::Backspace => {
+                        fwd.note.pop();
+                    }
+                    _ => {}
+                },
+            }
+            return;
+        }
+
+        // Reply overlay.
+        if let InboxMode::Reply { body, .. } = &mut self.inbox_screen.mode {
+            match code {
+                KeyCode::Esc => {
+                    self.inbox_screen.mode = InboxMode::List;
+                }
+                KeyCode::Enter if mods.contains(KeyModifiers::CONTROL) => {
+                    self.submit_inbox_send();
+                }
+                KeyCode::Char(c) => body.push(c),
+                KeyCode::Enter => body.push('\n'),
+                KeyCode::Backspace => {
+                    body.pop();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // List mode (default).
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.active_view = ActiveView::Chat;
+                self.focus = Focus::Agents;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !self.inbox.is_empty()
+                    && self.inbox_screen.cursor + 1 < self.inbox.len()
+                {
+                    self.inbox_screen.cursor += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.inbox_screen.cursor > 0 {
+                    self.inbox_screen.cursor -= 1;
+                }
+            }
+            KeyCode::Char('r') => {
+                let Some(msg) = self.inbox.get(self.inbox_screen.cursor) else {
+                    return;
+                };
+                self.inbox_screen.mode = InboxMode::Reply {
+                    to: msg.from.clone(),
+                    body: String::new(),
+                };
+            }
+            KeyCode::Char('f') => {
+                if self.inbox.get(self.inbox_screen.cursor).is_none() {
+                    return;
+                }
+                let candidates = super::inbox_view::forward_candidates(&self.config);
+                if candidates.is_empty() {
+                    self.inbox_screen.status_msg =
+                        Some("no agents to forward to".to_string());
+                    return;
+                }
+                self.inbox_screen.mode =
+                    InboxMode::Forward(super::inbox_view::ForwardState {
+                        candidates,
+                        selected: 0,
+                        stage: ForwardStage::PickRecipient,
+                        note: String::new(),
+                        quoted: String::new(),
+                    });
+            }
+            KeyCode::Char('d') => {
+                if self.inbox_screen.cursor < self.inbox.len() {
+                    self.inbox.remove(self.inbox_screen.cursor);
+                    self.inbox_screen.reclamp(self.inbox.len());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Deliver a user-originated message to a configured agent/automaton.
+    /// Used by the Inbox view's reply/forward actions — the operator
+    /// picks a recipient and the text is pushed into that chat's
+    /// `user_tx` channel, mirroring the path a typed chat-prompt takes.
+    /// Returns `true` when the send succeeded so callers can drop the
+    /// underlying inbox message.
+    fn send_user_message(&mut self, to: String, body: String) -> bool {
+        let body = body.trim().to_string();
+        if body.is_empty() {
+            self.inbox_screen.status_msg = Some("body is empty".to_string());
+            return false;
+        }
+        let Some(idx) = self
+            .chats
+            .iter()
+            .position(|c| c.display_name == to && c.parent_idx.is_none())
+        else {
+            self.inbox_screen.status_msg =
+                Some(format!("no agent named `{to}`"));
+            return false;
+        };
+        let Some(tx) = self.chats[idx].user_tx.clone() else {
+            self.inbox_screen.status_msg =
+                Some(format!("agent `{to}` is not online"));
+            return false;
+        };
+        if tx.send(body).is_err() {
+            self.inbox_screen.status_msg =
+                Some(format!("agent `{to}` is not receiving"));
+            return false;
+        }
+        self.inbox_screen.status_msg = Some(format!("sent to {to}"));
+        true
+    }
+
+    /// Commit the currently-open reply or forward. On success the
+    /// underlying inbox message is removed (the user has handled it)
+    /// and the overlay closes. On failure the overlay stays open so
+    /// the user can fix the problem the status toast reports.
+    fn submit_inbox_send(&mut self) {
+        use super::inbox_view::{ForwardStage, InboxMode};
+        let (to, body) = match &mut self.inbox_screen.mode {
+            InboxMode::Reply { to, body } => (to.clone(), std::mem::take(body)),
+            InboxMode::Forward(fwd) if matches!(fwd.stage, ForwardStage::EditBody) => {
+                let Some(to) = fwd.candidates.get(fwd.selected).cloned() else {
+                    self.inbox_screen.status_msg =
+                        Some("no recipient selected".to_string());
+                    return;
+                };
+                (to, fwd.compose_body())
+            }
+            _ => return,
+        };
+        let sent = self.send_user_message(to, body);
+        if sent {
+            if self.inbox_screen.cursor < self.inbox.len() {
+                self.inbox.remove(self.inbox_screen.cursor);
+                self.inbox_screen.reclamp(self.inbox.len());
+            }
+            self.inbox_screen.mode = InboxMode::List;
         }
     }
 
@@ -8800,6 +9068,18 @@ impl App {
                     return;
                 }
 
+                // 0d. Inbox hotspots (toolbar buttons, row selection,
+                //     reply/forward modal buttons and recipient rows).
+                //     Consulted before the generic sidebar/main hit
+                //     tests so clicks on our own buttons win. When the
+                //     click lands inside the inbox view but not on a
+                //     hotspot it falls through to focus-grab below.
+                if self.active_view == ActiveView::Inbox
+                    && self.handle_mouse_inbox(pos)
+                {
+                    return;
+                }
+
                 // 1. Chat buttons take priority.
                 if let Some(btn) = self
                     .layout
@@ -8846,6 +9126,9 @@ impl App {
                                 }
                                 "Cores" => {
                                     self.open_cores_view();
+                                }
+                                "Inbox" => {
+                                    self.open_inbox_view();
                                 }
                                 _ => {
                                     self.focus = Focus::Views;
@@ -8945,6 +9228,7 @@ impl App {
                             ActiveView::Tasks => Focus::Tasks,
                             ActiveView::Memory => Focus::Memory,
                             ActiveView::Cores => Focus::Cores,
+                            ActiveView::Inbox => Focus::Inbox,
                             ActiveView::WorkflowForm { .. }
                             | ActiveView::WorkflowInstance { .. } => Focus::Workflow,
                         };
@@ -9021,6 +9305,7 @@ impl App {
                             ActiveView::Tasks => Focus::Tasks,
                             ActiveView::Memory => Focus::Memory,
                             ActiveView::Cores => Focus::Cores,
+                            ActiveView::Inbox => Focus::Inbox,
                             ActiveView::WorkflowForm { .. }
                             | ActiveView::WorkflowInstance { .. } => Focus::Workflow,
                         };
@@ -9134,6 +9419,93 @@ impl App {
     /// Main-area mouse handler for the Memory view when no modal is
     /// open. Returns `true` when the click was consumed so the caller
     /// can skip its generic "focus the main area" fallback.
+    /// Resolve a click against the inbox's registered hotspots.
+    /// Returns `true` if the click hit one of our interactive regions
+    /// (so the top-level mouse handler should stop) — otherwise
+    /// returns `false` and the caller falls through to the generic
+    /// focus-grab path.
+    fn handle_mouse_inbox(&mut self, pos: (u16, u16)) -> bool {
+        use super::inbox_view::{ForwardStage, InboxHotspot, InboxMode};
+        let hit = self
+            .layout
+            .inbox_hotspots
+            .iter()
+            .find(|(rect, _)| rect_contains(*rect, pos))
+            .map(|(_, h)| h.clone());
+        let Some(hotspot) = hit else {
+            return false;
+        };
+        // A click anywhere on a hotspot also grabs focus, matching the
+        // behaviour of the keyboard-activated inbox view.
+        self.focus = Focus::Inbox;
+        match hotspot {
+            InboxHotspot::SelectRow(i) => {
+                if i < self.inbox.len() {
+                    self.inbox_screen.cursor = i;
+                }
+                // Drop any lingering status toast so it doesn't
+                // confuse the next interaction.
+                self.inbox_screen.status_msg = None;
+            }
+            InboxHotspot::ReplyButton => {
+                if let Some(msg) = self.inbox.get(self.inbox_screen.cursor) {
+                    self.inbox_screen.mode = InboxMode::Reply {
+                        to: msg.from.clone(),
+                        body: String::new(),
+                    };
+                }
+            }
+            InboxHotspot::ForwardButton => {
+                if self.inbox.get(self.inbox_screen.cursor).is_none() {
+                    return true;
+                }
+                let candidates = super::inbox_view::forward_candidates(&self.config);
+                if candidates.is_empty() {
+                    self.inbox_screen.status_msg =
+                        Some("no agents to forward to".to_string());
+                    return true;
+                }
+                self.inbox_screen.mode =
+                    InboxMode::Forward(super::inbox_view::ForwardState {
+                        candidates,
+                        selected: 0,
+                        stage: ForwardStage::PickRecipient,
+                        note: String::new(),
+                        quoted: String::new(),
+                    });
+            }
+            InboxHotspot::DeleteButton => {
+                if self.inbox_screen.cursor < self.inbox.len() {
+                    self.inbox.remove(self.inbox_screen.cursor);
+                    self.inbox_screen.reclamp(self.inbox.len());
+                }
+            }
+            InboxHotspot::SendButton => self.submit_inbox_send(),
+            InboxHotspot::CancelButton => {
+                self.inbox_screen.mode = InboxMode::List;
+            }
+            InboxHotspot::ForwardRecipient(i) => {
+                if let InboxMode::Forward(fwd) = &mut self.inbox_screen.mode {
+                    if i < fwd.candidates.len() {
+                        fwd.selected = i;
+                        // Advance to EditBody immediately — one click
+                        // picks the target and drops the cursor into
+                        // the note editor with the quoted original
+                        // shown read-only below.
+                        if let Some(msg) = self.inbox.get(self.inbox_screen.cursor) {
+                            fwd.quoted = format!(
+                                "Forwarded from {}:\n\n{}",
+                                msg.from, msg.body
+                            );
+                        }
+                        fwd.stage = ForwardStage::EditBody;
+                    }
+                }
+            }
+        }
+        true
+    }
+
     fn handle_mouse_memory_main(&mut self, pos: (u16, u16), col: u16, row: u16) -> bool {
         // Banks stage: click a bank row → select + open.
         if matches!(
@@ -10313,7 +10685,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             .map(|list| list.iter().map(String::as_str).collect())
             .unwrap_or_default();
 
-        let team_block = build_team_block(&app.config, &contactable, &creatable);
+        let team_block = build_team_block(&app.config, &contactable, &creatable, true);
         let memory_block = build_memory_block(&app.config, &agent.id);
         let memory_banks_for_agent: Vec<String> = agent
             .memory_banks
@@ -11052,7 +11424,7 @@ mod tests {
             webhooks: vec![],
             thinking_messages: vec!["t".into()],
         };
-        let block = build_team_block(&cfg, &["planner", "quokka"], &[]);
+        let block = build_team_block(&cfg, &["planner", "quokka"], &[], true);
 
         assert!(block.contains("Agents you can message:"), "{block}");
         assert!(
@@ -11112,8 +11484,84 @@ mod tests {
             webhooks: vec![],
             thinking_messages: vec!["t".into()],
         };
-        let block = build_team_block(&cfg, &["a"], &[]);
+        let block = build_team_block(&cfg, &["a"], &[], true);
         assert!(!block.contains("Automatons you can message"), "{block}");
+    }
+
+    #[test]
+    fn team_block_lists_user_when_include_user_true() {
+        let cfg = AciddogConfig {
+            team: Team {
+                id: "t".into(),
+                description: "d".into(),
+                replace_thinking_messages: false,
+                default_ai_core: None,
+            },
+            agents: vec![],
+            workers: vec![],
+            automatons: vec![],
+            ai_cores: vec![],
+            memory_banks: vec![],
+            compactions: vec![],
+            channels: vec![],
+            workflows: vec![],
+            webhooks: vec![],
+            thinking_messages: vec!["t".into()],
+        };
+        let block = build_team_block(&cfg, &[], &[], true);
+        assert!(
+            block.contains("People you can message:"),
+            "people heading missing: {block}"
+        );
+        assert!(
+            block.contains("- user — the human operator"),
+            "user entry missing: {block}"
+        );
+    }
+
+    #[test]
+    fn team_block_omits_user_for_workers() {
+        let cfg = AciddogConfig {
+            team: Team {
+                id: "t".into(),
+                description: "d".into(),
+                replace_thinking_messages: false,
+                default_ai_core: None,
+            },
+            agents: vec![Agent {
+                id: "parent".into(),
+                role: "r".into(),
+                role_description: None,
+                model: None,
+                instructions: "i".into(),
+                can_message: None,
+                can_create_workers: None,
+                can_run_workflows: None,
+                tools: None,
+                ai_core: None,
+                memory_banks: None,
+                skills: None,
+                compaction: None,
+            }],
+            workers: vec![],
+            automatons: vec![],
+            ai_cores: vec![],
+            memory_banks: vec![],
+            compactions: vec![],
+            channels: vec![],
+            workflows: vec![],
+            webhooks: vec![],
+            thinking_messages: vec!["t".into()],
+        };
+        let block = build_team_block(&cfg, &["parent"], &[], false);
+        assert!(
+            !block.contains("People you can message:"),
+            "worker team block must not list user: {block}"
+        );
+        assert!(
+            !block.contains("- user —"),
+            "worker team block must not list user: {block}"
+        );
     }
 
     fn sample_config() -> AciddogConfig {
@@ -12770,6 +13218,280 @@ mod tests {
             sender_blocks_before,
             "socket handler must not push extra blocks into sender chat"
         );
+    }
+
+    #[tokio::test]
+    async fn send_message_to_user_pushes_to_inbox() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+        assert!(app.inbox.is_empty());
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SendMessage {
+                    to: "user".into(),
+                    body: "hello operator".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        assert!(reply_rx.await.unwrap().ok);
+
+        assert_eq!(app.inbox.len(), 1);
+        assert_eq!(app.inbox[0].from, "a");
+        assert_eq!(app.inbox[0].body, "hello operator");
+    }
+
+    #[tokio::test]
+    async fn send_message_to_user_does_not_push_mail_into_any_chat() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender_uuid = app.chats[0].session_id.unwrap();
+        let sizes_before: Vec<usize> = app.chats.iter().map(|c| c.blocks.len()).collect();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender_uuid,
+                cmd: RequestCmd::SendMessage {
+                    to: "user".into(),
+                    body: "fyi".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        assert!(reply_rx.await.unwrap().ok);
+
+        let sizes_after: Vec<usize> = app.chats.iter().map(|c| c.blocks.len()).collect();
+        assert_eq!(
+            sizes_before, sizes_after,
+            "user-routed mail must not append to any agent chat"
+        );
+    }
+
+    #[tokio::test]
+    async fn workers_cannot_send_to_user() {
+        // Workers are scoped to their parent; the user inbox is not
+        // a valid target for them. Sender-parent check rejects before
+        // the inbox push.
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        // Turn chat index 1 (agent "b") into a pretend-worker by
+        // pointing its parent_idx at chat 0. In a real run, worker
+        // entries are separate AgentChats but the ACL check only
+        // inspects parent_idx.
+        app.chats[1].parent_idx = Some(0);
+        let worker_uuid = app.chats[1].session_id.unwrap();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: worker_uuid,
+                cmd: RequestCmd::SendMessage {
+                    to: "user".into(),
+                    body: "nope".into(),
+                },
+            },
+            reply: reply_tx,
+        });
+        let resp = reply_rx.await.unwrap();
+        assert!(!resp.ok);
+        assert!(app.inbox.is_empty());
+    }
+
+    #[test]
+    fn inbox_reply_deletes_source_message_on_successful_send() {
+        use super::super::inbox_view::{InboxMessage, InboxMode};
+        let mut app = App::new(sample_config());
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        // Agent "b" is index 1 in sample_config.
+        app.chats[1].user_tx = Some(tx);
+        app.inbox.push(InboxMessage::new("b", "how's it going"));
+        app.open_inbox_view();
+        app.inbox_screen.mode = InboxMode::Reply {
+            to: "b".into(),
+            body: "  all good  ".into(),
+        };
+        app.submit_inbox_send();
+        assert!(app.inbox.is_empty(), "source message should be removed");
+        assert!(matches!(app.inbox_screen.mode, InboxMode::List));
+        assert_eq!(rx.try_recv().unwrap(), "all good");
+    }
+
+    #[test]
+    fn inbox_reply_keeps_source_message_when_send_fails() {
+        use super::super::inbox_view::{InboxMessage, InboxMode};
+        let mut app = App::new(sample_config());
+        // No user_tx wired — send will fail with "not online".
+        app.inbox.push(InboxMessage::new("b", "hi"));
+        app.open_inbox_view();
+        app.inbox_screen.mode = InboxMode::Reply {
+            to: "b".into(),
+            body: "hello".into(),
+        };
+        app.submit_inbox_send();
+        assert_eq!(app.inbox.len(), 1, "failed send must not delete the source");
+        assert!(matches!(app.inbox_screen.mode, InboxMode::Reply { .. }));
+        assert!(app.inbox_screen.status_msg.is_some());
+    }
+
+    #[test]
+    fn inbox_mouse_click_selects_row() {
+        use super::super::inbox_view::{InboxHotspot, InboxMessage};
+        let mut app = App::new(sample_config());
+        app.inbox.push(InboxMessage::new("b", "first"));
+        app.inbox.push(InboxMessage::new("a", "second"));
+        app.open_inbox_view();
+        // Simulate the row hotspots the renderer would publish.
+        app.layout.inbox_hotspots.push((
+            Rect::new(0, 10, 80, 1),
+            InboxHotspot::SelectRow(1),
+        ));
+        assert!(app.handle_mouse_inbox((5, 10)));
+        assert_eq!(app.inbox_screen.cursor, 1);
+    }
+
+    #[test]
+    fn inbox_mouse_click_reply_button_opens_modal() {
+        use super::super::inbox_view::{InboxHotspot, InboxMessage, InboxMode};
+        let mut app = App::new(sample_config());
+        app.inbox.push(InboxMessage::new("b", "hi"));
+        app.open_inbox_view();
+        app.layout
+            .inbox_hotspots
+            .push((Rect::new(0, 0, 10, 1), InboxHotspot::ReplyButton));
+        assert!(app.handle_mouse_inbox((3, 0)));
+        assert!(matches!(
+            app.inbox_screen.mode,
+            InboxMode::Reply { ref to, .. } if to == "b"
+        ));
+    }
+
+    #[test]
+    fn inbox_mouse_click_delete_button_removes_message() {
+        use super::super::inbox_view::{InboxHotspot, InboxMessage};
+        let mut app = App::new(sample_config());
+        app.inbox.push(InboxMessage::new("b", "first"));
+        app.inbox.push(InboxMessage::new("a", "second"));
+        app.open_inbox_view();
+        app.inbox_screen.cursor = 0;
+        app.layout
+            .inbox_hotspots
+            .push((Rect::new(0, 0, 10, 1), InboxHotspot::DeleteButton));
+        assert!(app.handle_mouse_inbox((3, 0)));
+        assert_eq!(app.inbox.len(), 1);
+        assert_eq!(app.inbox[0].from, "a");
+    }
+
+    #[test]
+    fn inbox_mouse_click_cancel_closes_modal() {
+        use super::super::inbox_view::{InboxHotspot, InboxMessage, InboxMode};
+        let mut app = App::new(sample_config());
+        app.inbox.push(InboxMessage::new("b", "hi"));
+        app.open_inbox_view();
+        app.inbox_screen.mode = InboxMode::Reply {
+            to: "b".into(),
+            body: "draft".into(),
+        };
+        app.layout
+            .inbox_hotspots
+            .push((Rect::new(0, 0, 10, 1), InboxHotspot::CancelButton));
+        assert!(app.handle_mouse_inbox((3, 0)));
+        assert!(matches!(app.inbox_screen.mode, InboxMode::List));
+    }
+
+    #[test]
+    fn inbox_mouse_click_forward_recipient_advances_to_edit_body() {
+        use super::super::inbox_view::{
+            ForwardStage, ForwardState, InboxHotspot, InboxMessage, InboxMode,
+        };
+        let mut app = App::new(sample_config());
+        app.inbox.push(InboxMessage::new("b", "original"));
+        app.open_inbox_view();
+        app.inbox_screen.mode = InboxMode::Forward(ForwardState {
+            candidates: vec!["a".into(), "b".into()],
+            selected: 0,
+            stage: ForwardStage::PickRecipient,
+            note: String::new(),
+            quoted: String::new(),
+        });
+        app.layout.inbox_hotspots.push((
+            Rect::new(0, 5, 20, 1),
+            InboxHotspot::ForwardRecipient(1),
+        ));
+        assert!(app.handle_mouse_inbox((1, 5)));
+        match &app.inbox_screen.mode {
+            InboxMode::Forward(fwd) => {
+                assert_eq!(fwd.selected, 1);
+                assert!(matches!(fwd.stage, ForwardStage::EditBody));
+                assert!(
+                    fwd.quoted.starts_with("Forwarded from b:"),
+                    "quoted should be pre-filled with the original: {}",
+                    fwd.quoted
+                );
+                assert!(fwd.note.is_empty(), "note should start blank");
+            }
+            other => panic!("expected Forward mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn forward_compose_body_combines_note_and_quoted() {
+        use super::super::inbox_view::{ForwardStage, ForwardState};
+        let fwd = ForwardState {
+            candidates: vec!["a".into()],
+            selected: 0,
+            stage: ForwardStage::EditBody,
+            note: "FYI — relevant to your investigation\n".into(),
+            quoted: "Forwarded from b:\n\nthe body".into(),
+        };
+        let composed = fwd.compose_body();
+        assert!(composed.starts_with("FYI — relevant to your investigation"));
+        assert!(composed.contains("Forwarded from b:\n\nthe body"));
+        // No triple newline between note and quoted block.
+        assert!(!composed.contains("\n\n\n"));
+    }
+
+    #[test]
+    fn forward_compose_body_emits_only_quoted_when_note_blank() {
+        use super::super::inbox_view::{ForwardStage, ForwardState};
+        let fwd = ForwardState {
+            candidates: vec!["a".into()],
+            selected: 0,
+            stage: ForwardStage::EditBody,
+            note: "   ".into(),
+            quoted: "Forwarded from b:\n\nbody".into(),
+        };
+        assert_eq!(fwd.compose_body(), "Forwarded from b:\n\nbody");
+    }
+
+    #[test]
+    fn forward_keypress_writes_to_note_not_quoted() {
+        use super::super::inbox_view::{ForwardStage, ForwardState, InboxMessage, InboxMode};
+        let mut app = App::new(sample_config());
+        app.inbox.push(InboxMessage::new("b", "original"));
+        app.open_inbox_view();
+        app.inbox_screen.mode = InboxMode::Forward(ForwardState {
+            candidates: vec!["a".into()],
+            selected: 0,
+            stage: ForwardStage::EditBody,
+            note: String::new(),
+            quoted: "Forwarded from b:\n\noriginal".into(),
+        });
+        app.focus = Focus::Inbox;
+        for c in "hi".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        match &app.inbox_screen.mode {
+            InboxMode::Forward(fwd) => {
+                assert_eq!(fwd.note, "hi");
+                assert_eq!(fwd.quoted, "Forwarded from b:\n\noriginal");
+            }
+            other => panic!("expected Forward mode, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -15388,7 +16110,12 @@ mod tests {
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.focus, Focus::Views);
-        // Enter activates the selected view (only "Tasks" today).
+        // Navigate to the Tasks entry (Inbox sits at index 0, Tasks
+        // at index 1 — `selected_view` is 0 at startup).
+        let tasks_idx = VIEW_ENTRIES.iter().position(|n| *n == "Tasks").unwrap();
+        for _ in 0..tasks_idx {
+            app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.active_view, ActiveView::Tasks);
         assert_eq!(app.focus, Focus::Tasks);
@@ -15610,12 +16337,16 @@ mod tests {
     #[test]
     fn clicking_tasks_entry_in_views_activates_the_tasks_view() {
         let mut app = App::new(sample_config());
-        // Pretend the UI drew the views list at (30, 5) 20×3.
-        app.layout.views_list_inner = Some(Rect::new(30, 5, 20, 3));
+        // Pretend the UI drew the views list at (30, 5) 20×VIEW_ENTRIES+2.
+        let h = VIEW_ENTRIES.len() as u16 + 2;
+        app.layout.views_list_inner = Some(Rect::new(30, 5, 20, h));
+        // Click the row for the "Tasks" entry (row_in_list computed
+        // as `ev.row - rect.y`).
+        let tasks_idx = VIEW_ENTRIES.iter().position(|n| *n == "Tasks").unwrap();
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 31,
-            row: 5, // the first entry row
+            row: 5 + tasks_idx as u16,
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.active_view, ActiveView::Tasks);
@@ -15625,12 +16356,15 @@ mod tests {
     #[test]
     fn clicking_outside_views_entries_focuses_views_panel_only() {
         let mut app = App::new(sample_config());
-        app.layout.views_list_inner = Some(Rect::new(30, 5, 20, 5));
-        // Row 8 is inside the panel but beyond the single entry at row 5.
+        // Give the panel room for one more line beyond the entries.
+        let h = VIEW_ENTRIES.len() as u16 + 3;
+        app.layout.views_list_inner = Some(Rect::new(30, 5, 20, h));
+        // Row immediately after the last entry — inside the panel
+        // but not on any view entry row.
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 31,
-            row: 8,
+            row: 5 + VIEW_ENTRIES.len() as u16,
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.active_view, ActiveView::Chat);

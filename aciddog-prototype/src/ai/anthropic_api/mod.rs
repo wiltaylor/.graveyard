@@ -792,6 +792,9 @@ fn build_tools_section(parts: &PromptParts, allowed_tools: &[String]) -> String 
             })
             .collect();
 
+        // Workers may only message their parent — `user` is not
+        // a valid recipient for them.
+        let include_user_recipient = cli.worker.is_none();
         body.push('\n');
         if has_bash {
             if let Some(w) = &cli.worker {
@@ -804,6 +807,7 @@ fn build_tools_section(parts: &PromptParts, allowed_tools: &[String]) -> String 
                 &memory_banks,
                 &skills,
                 &channel_infos,
+                include_user_recipient,
             ));
         } else {
             if let Some(w) = &cli.worker {
@@ -815,6 +819,7 @@ fn build_tools_section(parts: &PromptParts, allowed_tools: &[String]) -> String 
                 &memory_banks,
                 &skills,
                 &channel_infos,
+                include_user_recipient,
             ));
         }
     }

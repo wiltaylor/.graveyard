@@ -34,6 +34,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.layout.memory_form_fields.clear();
     app.layout.memory_link_rows.clear();
     app.layout.memory_modal_outer = None;
+    app.layout.inbox_hotspots.clear();
 
     // Input height: in Chat and Channel views, grow from 3 to 7 rows
     // (1–5 usable + 2 for borders) based on the wrapped line count of
@@ -66,6 +67,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ActiveView::Tasks => 3,
         ActiveView::Memory => 3,
         ActiveView::Cores => 3,
+        ActiveView::Inbox => 3,
         ActiveView::WorkflowForm { .. } | ActiveView::WorkflowInstance { .. } => 3,
     };
 
@@ -149,6 +151,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ActiveView::Channel(idx) => render_channel_chat(f, main_area, app, idx),
         ActiveView::Memory => render_memory_screen(f, main_area, app),
         ActiveView::Cores => render_cores_screen(f, main_area, app),
+        ActiveView::Inbox => render_inbox_screen(f, main_area, app),
         ActiveView::WorkflowForm { workflow_idx } => {
             render_workflow_form(f, main_area, app, workflow_idx)
         }
@@ -1078,6 +1081,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             _ => "workflow",
         },
         Focus::Cores => "cores",
+        Focus::Inbox => "inbox",
     };
     let mut hint_spans: Vec<Span> = match app.focus {
         Focus::Agents => vec![
@@ -1240,6 +1244,28 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("esc", Style::default().fg(Color::Cyan)),
             Span::raw(" back"),
         ],
+        Focus::Inbox => vec![
+            Span::styled(" focus: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                focus_label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("j/k", Style::default().fg(Color::Cyan)),
+            Span::raw(" nav  "),
+            Span::styled("r", Style::default().fg(Color::Cyan)),
+            Span::raw(" reply  "),
+            Span::styled("f", Style::default().fg(Color::Cyan)),
+            Span::raw(" forward  "),
+            Span::styled("d", Style::default().fg(Color::Cyan)),
+            Span::raw(" delete  "),
+            Span::styled("ctrl+⏎", Style::default().fg(Color::Cyan)),
+            Span::raw(" send  "),
+            Span::styled("esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" back"),
+        ],
     };
 
     if app.copied_recently() {
@@ -1274,7 +1300,8 @@ fn render_views_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
                 (*name, app.active_view),
                 ("Tasks", ActiveView::Tasks)
                     | ("Memory", ActiveView::Memory)
-                    | ("Cores", ActiveView::Cores),
+                    | ("Cores", ActiveView::Cores)
+                    | ("Inbox", ActiveView::Inbox),
             );
             // Persistent highlight on the currently-displayed view so
             // clicking it gives visible feedback even once focus
@@ -1289,7 +1316,15 @@ fn render_views_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
             } else {
                 Style::default()
             };
-            ListItem::new(Line::from(Span::styled((*name).to_string(), style)))
+            // Inbox shows the total-message count suffix so the
+            // operator sees there's unread mail without opening
+            // the view. Empty inbox keeps the plain label.
+            let label = if *name == "Inbox" && !app.inbox.is_empty() {
+                format!("Inbox ({})", app.inbox.len())
+            } else {
+                (*name).to_string()
+            };
+            ListItem::new(Line::from(Span::styled(label, style)))
         })
         .collect();
     let list = List::new(items).block(block);
@@ -1624,6 +1659,409 @@ fn render_cores_detail(
 
     let paragraph = Paragraph::new(lines);
     f.render_widget(paragraph, inner);
+}
+
+fn render_inbox_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
+    use super::inbox_view::{ForwardStage, InboxHotspot, InboxMode};
+    let focused = app.focus == Focus::Inbox;
+
+    // Clamp before rendering so a stale cursor from a deletion /
+    // concurrent mutation doesn't hang off the end.
+    app.inbox_screen.reclamp(app.inbox.len());
+
+    // Empty-inbox short-circuit.
+    if app.inbox.is_empty() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" inbox ")
+            .border_style(focus_border_style(focused));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let p = Paragraph::new("Inbox is empty. Agents can reach you by addressing messages to `user`.")
+            .style(Style::default().fg(Color::DarkGray))
+            .wrap(Wrap { trim: true });
+        f.render_widget(p, inner);
+        return inner;
+    }
+
+    // Layout: toolbar (1 row) + list + detail panel (or overlay).
+    let split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(5),
+            Constraint::Length(10),
+        ])
+        .split(area);
+    let toolbar_area = split[0];
+    let list_area = split[1];
+    let detail_area = split[2];
+
+    render_inbox_toolbar(f, toolbar_area, app);
+
+    // List pane
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" inbox ({}) ", app.inbox.len()))
+        .border_style(focus_border_style(focused));
+    let list_inner = list_block.inner(list_area);
+    f.render_widget(list_block, list_area);
+
+    // Render each row manually so we can register one hotspot per row.
+    for (i, msg) in app.inbox.iter().enumerate() {
+        let row_y = list_inner.y + i as u16;
+        if row_y >= list_inner.y + list_inner.height {
+            break;
+        }
+        let row_rect = Rect {
+            x: list_inner.x,
+            y: row_y,
+            width: list_inner.width,
+            height: 1,
+        };
+        let selected = i == app.inbox_screen.cursor;
+        let style = if selected && focused {
+            Style::default()
+                .bg(Color::Cyan)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        } else if selected {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let preview: String = msg
+            .body
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(80)
+            .collect();
+        let line = Line::from(vec![
+            Span::styled(format!("{:<16} ", msg.from), style),
+            Span::styled(preview, style),
+        ]);
+        f.render_widget(Paragraph::new(line).style(style), row_rect);
+        app.layout
+            .inbox_hotspots
+            .push((row_rect, InboxHotspot::SelectRow(i)));
+    }
+
+    // Detail pane / overlay
+    match &app.inbox_screen.mode {
+        InboxMode::List => {
+            let detail_block = Block::default()
+                .borders(Borders::ALL)
+                .title(" detail ")
+                .border_style(Style::default().fg(Color::DarkGray));
+            let inner = detail_block.inner(detail_area);
+            f.render_widget(detail_block, detail_area);
+            if let Some(msg) = app.inbox.get(app.inbox_screen.cursor) {
+                let mut lines: Vec<Line> = Vec::new();
+                let age_secs = msg.received_at.elapsed().as_secs();
+                let age = if age_secs < 60 {
+                    format!("{age_secs}s ago")
+                } else if age_secs < 3600 {
+                    format!("{}m ago", age_secs / 60)
+                } else {
+                    format!("{}h ago", age_secs / 3600)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled("From: ", Style::default().fg(Color::DarkGray)),
+                    Span::raw(msg.from.clone()),
+                    Span::styled(
+                        format!("   ({age})"),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+                lines.push(Line::from(""));
+                for body_line in msg.body.lines() {
+                    lines.push(Line::from(body_line.to_string()));
+                }
+                let p = Paragraph::new(lines).wrap(Wrap { trim: false });
+                f.render_widget(p, inner);
+            }
+        }
+        InboxMode::Reply { to, body } => {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" reply → {to} "))
+                .border_style(Style::default().fg(Color::Yellow));
+            let inner = block.inner(detail_area);
+            f.render_widget(block, detail_area);
+            // Reserve the bottom line of the inner area for the
+            // [ send ] [ cancel ] button row.
+            let body_height = inner.height.saturating_sub(1);
+            let body_area = Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: body_height,
+            };
+            let button_area = Rect {
+                x: inner.x,
+                y: inner.y + body_height,
+                width: inner.width,
+                height: 1,
+            };
+            let p = Paragraph::new(body.clone()).wrap(Wrap { trim: false });
+            f.render_widget(p, body_area);
+            render_inbox_modal_buttons(f, button_area, app);
+        }
+        InboxMode::Forward(fwd) => {
+            let title = match fwd.stage {
+                ForwardStage::PickRecipient => {
+                    " forward → pick recipient ".to_string()
+                }
+                ForwardStage::EditBody => format!(
+                    " forward → {} ",
+                    fwd.candidates.get(fwd.selected).cloned().unwrap_or_default()
+                ),
+            };
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(Color::Yellow));
+            let inner = block.inner(detail_area);
+            f.render_widget(block, detail_area);
+
+            // Always reserve the bottom line for the button row.
+            let body_height = inner.height.saturating_sub(1);
+            let body_area = Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: body_height,
+            };
+            let button_area = Rect {
+                x: inner.x,
+                y: inner.y + body_height,
+                width: inner.width,
+                height: 1,
+            };
+
+            match fwd.stage {
+                ForwardStage::PickRecipient => {
+                    for (i, id) in fwd.candidates.iter().enumerate() {
+                        let row_y = body_area.y + i as u16;
+                        if row_y >= body_area.y + body_area.height {
+                            break;
+                        }
+                        let row_rect = Rect {
+                            x: body_area.x,
+                            y: row_y,
+                            width: body_area.width,
+                            height: 1,
+                        };
+                        let style = if i == fwd.selected {
+                            Style::default()
+                                .bg(Color::Cyan)
+                                .fg(Color::Black)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                        };
+                        f.render_widget(
+                            Paragraph::new(Line::from(Span::styled(id.clone(), style)))
+                                .style(style),
+                            row_rect,
+                        );
+                        app.layout
+                            .inbox_hotspots
+                            .push((row_rect, InboxHotspot::ForwardRecipient(i)));
+                    }
+                }
+                ForwardStage::EditBody => {
+                    // Top half: editable note. Bottom half: read-only
+                    // quoted original, dimmed so it visually reads as
+                    // context the user can't edit. A single-line
+                    // separator labels each pane.
+                    let total = body_area.height;
+                    // Reserve at least 3 rows for the note (label + 2
+                    // text rows) and at least 2 rows for the quoted
+                    // pane (label + 1 text row). On extreme squeezes
+                    // we collapse the quoted pane and keep the note.
+                    let note_rows = total.saturating_sub(4).max(3).min(total);
+                    let quoted_rows = total.saturating_sub(note_rows);
+
+                    let note_label_area = Rect {
+                        x: body_area.x,
+                        y: body_area.y,
+                        width: body_area.width,
+                        height: 1.min(note_rows),
+                    };
+                    let note_text_area = Rect {
+                        x: body_area.x,
+                        y: body_area.y + note_label_area.height,
+                        width: body_area.width,
+                        height: note_rows.saturating_sub(note_label_area.height),
+                    };
+                    f.render_widget(
+                        Paragraph::new(Line::from(Span::styled(
+                            "Note (sent before the forwarded message):",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ))),
+                        note_label_area,
+                    );
+                    let note_display = if fwd.note.is_empty() {
+                        Paragraph::new(Span::styled(
+                            "(type a note, or send blank to forward as-is)",
+                            Style::default().fg(Color::DarkGray),
+                        ))
+                    } else {
+                        Paragraph::new(fwd.note.clone()).wrap(Wrap { trim: false })
+                    };
+                    f.render_widget(note_display, note_text_area);
+
+                    if quoted_rows > 0 {
+                        let quoted_label_area = Rect {
+                            x: body_area.x,
+                            y: body_area.y + note_rows,
+                            width: body_area.width,
+                            height: 1.min(quoted_rows),
+                        };
+                        let quoted_text_area = Rect {
+                            x: body_area.x,
+                            y: body_area.y + note_rows + quoted_label_area.height,
+                            width: body_area.width,
+                            height: quoted_rows.saturating_sub(quoted_label_area.height),
+                        };
+                        f.render_widget(
+                            Paragraph::new(Line::from(Span::styled(
+                                "Forwarded (read-only):",
+                                Style::default()
+                                    .fg(Color::DarkGray)
+                                    .add_modifier(Modifier::BOLD),
+                            ))),
+                            quoted_label_area,
+                        );
+                        let p = Paragraph::new(fwd.quoted.clone())
+                            .style(Style::default().fg(Color::DarkGray))
+                            .wrap(Wrap { trim: false });
+                        f.render_widget(p, quoted_text_area);
+                    }
+                }
+            }
+
+            // Pick-recipient stage has no Send button (use Enter / click a row
+            // to advance), but Cancel is always available.
+            render_inbox_modal_buttons(f, button_area, app);
+        }
+    }
+
+    // Status toast (rendered on the bottom line of the list pane).
+    if let Some(msg) = &app.inbox_screen.status_msg {
+        let area_status = Rect {
+            x: list_inner.x,
+            y: list_inner.y + list_inner.height.saturating_sub(1),
+            width: list_inner.width,
+            height: 1,
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                msg.clone(),
+                Style::default().fg(Color::Yellow),
+            )),
+            area_status,
+        );
+    }
+
+    list_inner
+}
+
+/// Top toolbar above the inbox list: clickable Reply / Forward / Delete
+/// text buttons. Each button registers an `InboxHotspot` so mouse
+/// clicks land on the same action as the keyboard shortcut.
+fn render_inbox_toolbar(f: &mut Frame, area: Rect, app: &mut App) {
+    use super::inbox_view::InboxHotspot;
+    // Gray out buttons that do nothing (e.g. no selection). Keeps the
+    // layout constant so button rects don't shift between frames.
+    let has_selection = !app.inbox.is_empty();
+    let enabled = |on: bool| {
+        if on {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        }
+    };
+
+    let labels: [(&str, InboxHotspot, bool); 3] = [
+        (" reply ", InboxHotspot::ReplyButton, has_selection),
+        (" forward ", InboxHotspot::ForwardButton, has_selection),
+        (" delete ", InboxHotspot::DeleteButton, has_selection),
+    ];
+
+    let mut x = area.x;
+    for (label, hotspot, on) in labels {
+        let width = label.chars().count() as u16;
+        if x + width > area.x + area.width {
+            break;
+        }
+        let rect = Rect {
+            x,
+            y: area.y,
+            width,
+            height: 1,
+        };
+        let span = Span::styled(label.to_string(), enabled(on));
+        f.render_widget(Paragraph::new(Line::from(span)), rect);
+        if on {
+            app.layout.inbox_hotspots.push((rect, hotspot));
+        }
+        x += width + 1; // one space between buttons
+    }
+}
+
+/// Bottom-row [ send ] [ cancel ] button bar for the reply/forward
+/// overlays. `send` is omitted when it would be a no-op (forward
+/// picker stage).
+fn render_inbox_modal_buttons(f: &mut Frame, area: Rect, app: &mut App) {
+    use super::inbox_view::{ForwardStage, InboxHotspot, InboxMode};
+    let show_send = match &app.inbox_screen.mode {
+        InboxMode::Reply { .. } => true,
+        InboxMode::Forward(fwd) => matches!(fwd.stage, ForwardStage::EditBody),
+        InboxMode::List => false,
+    };
+
+    let primary = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Green)
+        .add_modifier(Modifier::BOLD);
+    let secondary = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+
+    let mut x = area.x;
+    let mut place = |label: &str, style: Style, hotspot: InboxHotspot, app: &mut App, x: &mut u16| {
+        let width = label.chars().count() as u16;
+        if *x + width > area.x + area.width {
+            return;
+        }
+        let rect = Rect {
+            x: *x,
+            y: area.y,
+            width,
+            height: 1,
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(label.to_string(), style))),
+            rect,
+        );
+        app.layout.inbox_hotspots.push((rect, hotspot));
+        *x += width + 1;
+    };
+
+    if show_send {
+        place(" send ", primary, InboxHotspot::SendButton, app, &mut x);
+    }
+    place(" cancel ", secondary, InboxHotspot::CancelButton, app, &mut x);
 }
 
 fn render_core_row(
