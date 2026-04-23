@@ -10307,12 +10307,33 @@ async fn event_loop<B: ratatui::backend::Backend>(
                 // Workflow sidebar hygiene: drop any successful
                 // instance whose linger timer has elapsed.
                 let pruned = app.prune_completed_workflows();
-                // Only redraw when something is actually animating.
-                if app.chats.iter().any(|c| c.status == AgentStatus::Working) {
+                // Only redraw when something on-screen is actually
+                // animating this tick. `frame_tick` drives the
+                // thinking-row spinner, which renders *only* for the
+                // selected agent in the Chat view. Any other Working
+                // chat — e.g. a Jules worker polling every 10s while
+                // the user is viewing a different pane or the Cores
+                // view — has nothing animated per-frame, so forcing
+                // a full 10 Hz redraw for it was pure churn. On a
+                // long transcript that churn dominates the UI
+                // budget and makes the whole TUI feel sluggish.
+                let selected_is_working = matches!(app.active_view, ActiveView::Chat)
+                    && app
+                        .chats
+                        .get(app.selected)
+                        .map(|c| c.status == AgentStatus::Working)
+                        .unwrap_or(false);
+                let workflows_animating = app
+                    .workflow_instances
+                    .iter()
+                    .any(|i| i.remove_at.is_some());
+                if selected_is_working {
                     app.frame_tick = app.frame_tick.wrapping_add(1);
-                } else if !pruned && app.workflow_instances.iter().all(|i| i.remove_at.is_none()) {
+                } else if !pruned && !workflows_animating {
                     needs_redraw = false;
                 }
+                // else: a workflow is running out its linger timer —
+                // redraw once per tick so the countdown advances.
             }
             _ = async move {
                 match next_cron_at {
