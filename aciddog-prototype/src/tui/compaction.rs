@@ -488,7 +488,7 @@ impl App {
 
         // Build the same PromptParts the original spawn produces so
         // the rebuilt core emits the full first-turn preamble.
-        let all_ids: Vec<String> = self.config.agents.iter().map(|a| a.id.clone()).collect();
+        let all_ids: Vec<String> = self.config.all_addressable_ids();
         let contactable: Vec<&str> = match &agent.can_message {
             Some(list) => list.iter().map(String::as_str).collect(),
             None => all_ids

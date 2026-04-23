@@ -48,6 +48,41 @@ schema "worker" {
   compaction: string @optional
 }
 
+// A script-backed pseudo-agent. Unlike `agent`/`worker`, an automaton
+// has no AI core — each delivered event (direct mail, channel message,
+// or user input typed in its chat window) spawns a child process with
+// the event written as a single JSON document on stdin. The process
+// exits when done; stdout/stderr lines land in the automaton's chat
+// pane. The child gets `ACIDDOG_AGENT_ID` and `ACIDDOG_AGENT_SOCKET`
+// in its environment so it can call back through the `aciddog` CLI
+// exactly like any other fleet member. Only one child runs at a time
+// per automaton: while it's alive the status shows `Working` and any
+// incoming messages queue in the usual priority order (user > agent
+// > channel), pulled the moment the current child exits.
+schema "automaton" {
+  id: identifier @inline(0)
+  role: string
+  role_description: string @optional
+  // Executable to spawn. Either a bare binary name on PATH (e.g.
+  // `python3`) or an absolute path. Not a shell line — use `args`
+  // for additional argv entries and `env` for environment.
+  command: string
+  // Extra argv entries appended after `command`.
+  args: list(string) @optional
+  // Working directory for the child. Omit to inherit the harness cwd.
+  cwd: string @optional
+  // Extra environment variables passed to the child as `KEY=VAL`
+  // strings. Each entry must contain at least one `=`; everything
+  // after the first `=` is the value.
+  env: list(string) @optional
+  // Kill the child if it runs longer than this many seconds. Omit
+  // for no timeout.
+  timeout_seconds: number @optional
+  // Allowlist of agent/automaton ids this automaton may target with
+  // `aciddog send --to`. `None` ⇒ unrestricted; `Some([])` ⇒ none.
+  can_message: list(string) @optional
+}
+
 // A reusable multi-step procedure declared at the fleet level. Each
 // workflow block contains nested `property` blocks (typed inputs) and
 // `step` blocks (one of command / worker / conditional / check, keyed
@@ -700,6 +735,23 @@ channel planning {
   description = "Shared planning and coordination for engineering work."
   welcome     = "Welcome to #planning. Keep messages terse and on-topic; don't reply just to ack."
   members     = ["planner", "coder", "tester"]
+}
+
+// Example automaton: a tiny Python echo bot. Each event arriving in
+// quokka's mailbox / chat window / channel spawns a one-shot Python
+// interpreter. The script reads the JSON envelope from stdin, prints
+// a summary, and exits; the status flips to 🟨 while the child runs
+// and back to 🟩 on clean exit (🟥 on non-zero or timeout). Everything
+// it prints on stdout/stderr lands in its chat pane.
+automaton quokka {
+  role         = "echo bot"
+  role_description = "Demo automaton: echoes incoming events back to its chat pane."
+  command      = "python3"
+  args         = [
+    "-c",
+    "import json,sys\nev = json.load(sys.stdin)\nprint(f\"got {ev['kind']} from {ev['from']}: {ev['body']}\")",
+  ]
+  can_message  = ["planner"]
 }
 
 // A reusable procedure with typed inputs and sequential steps. Trigger

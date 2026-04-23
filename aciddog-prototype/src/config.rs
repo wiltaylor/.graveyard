@@ -111,13 +111,50 @@ pub struct Worker {
     pub compaction: Option<String>,
 }
 
+/// A script-backed pseudo-agent. Unlike [`Agent`]/[`Worker`], an
+/// automaton has no AI core — each delivered event spawns a child
+/// process with the event written as a single JSON document on stdin;
+/// the process exits when done and its stdout/stderr lines become
+/// blocks in the automaton's chat pane. The child inherits the same
+/// `ACIDDOG_AGENT_ID` + `ACIDDOG_AGENT_SOCKET` env vars that agents
+/// get, so it can call back through the `aciddog` CLI. One child at a
+/// time per automaton: while it's running the status is `Working` and
+/// new messages queue in the usual priority channels (user > agent >
+/// channel).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Automaton {
+    pub id: String,
+    pub role: String,
+    /// Long-form description of the automaton's purpose. Not sent
+    /// anywhere — displayed as pane metadata in the TUI.
+    pub role_description: Option<String>,
+    /// Executable to spawn. A bare binary name on PATH or an absolute
+    /// path. Not a shell string — extra argv goes in `args`.
+    pub command: String,
+    /// Extra argv entries appended after `command`. Empty vec ⇒ the
+    /// child is spawned with only `command` as argv[0].
+    pub args: Vec<String>,
+    /// Working directory for the child. `None` inherits the harness
+    /// cwd.
+    pub cwd: Option<String>,
+    /// Extra environment variables passed to the child. Parsed at
+    /// config load time from `KEY=VAL` strings; malformed entries
+    /// (missing `=`) are rejected via [`ConfigError::BadEnvEntry`].
+    pub env: Vec<(String, String)>,
+    /// Kill the child after this many seconds. `None` ⇒ no timeout.
+    pub timeout_seconds: Option<u32>,
+    /// Allowlist of agent/automaton ids this automaton may mail via
+    /// `aciddog send --to`. Same semantics as [`Agent::can_message`].
+    pub can_message: Option<Vec<String>>,
+}
+
 /// A virtual chat room shared by a named subset of agents plus the
 /// human operator. Messages posted into a channel are broadcast to
 /// every member (except the sender) as
 /// `<ChannelMessage channel="<id>" from="<sender>">body</ChannelMessage>`
 /// at the lowest priority of any inbound message (below user input and
-/// direct mailbox messages). Only declared `agent` ids can be members —
-/// workers are ephemeral and don't participate.
+/// direct mailbox messages). Members can be either declared `agent` or
+/// `automaton` ids — workers are ephemeral and don't participate.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Channel {
     pub id: String,
@@ -609,6 +646,9 @@ pub struct AciddogConfig {
     pub team: Team,
     pub agents: Vec<Agent>,
     pub workers: Vec<Worker>,
+    /// Script-backed pseudo-agents declared at the fleet level. See
+    /// [`Automaton`] for the runtime model.
+    pub automatons: Vec<Automaton>,
     pub ai_cores: Vec<AiCore>,
     /// Named memory banks available to this team. Agents/workers opt in
     /// to specific banks via their `memory_banks` allowlist.
@@ -756,7 +796,7 @@ pub enum ConfigError {
     #[error("`{from}` references unknown compaction `{to}` in `compaction`")]
     UnknownCompactionRef { from: String, to: String },
 
-    #[error("channel `{channel}` references unknown agent `{member}` in `members` (must be a declared `agent`, not a worker template)")]
+    #[error("channel `{channel}` references unknown member `{member}` in `members` (must be a declared `agent` or `automaton`, not a worker template)")]
     UnknownChannelMember { channel: String, member: String },
 
     #[error("channel `{channel}` has a duplicate member `{member}` in `members`")]
@@ -857,6 +897,11 @@ pub enum ConfigError {
         "ai_core `{core}` reasoningEffort `{value}` is invalid (expected `low`, `medium`, `high`; `minimal` is rejected by the ChatGPT endpoint)"
     )]
     InvalidReasoningEffort { core: String, value: String },
+
+    #[error(
+        "automaton `{automaton}` env entry `{entry}` is malformed (expected `KEY=VAL`)"
+    )]
+    BadEnvEntry { automaton: String, entry: String },
 }
 
 pub fn load_config(path: &Path) -> Result<AciddogConfig, ConfigError> {
@@ -932,6 +977,38 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 memory_banks: optional_string_list(b, "memory_banks")?,
                 skills: optional_string_list(b, "skills")?,
                 compaction: optional_string(b, "compaction"),
+            })
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+
+    let automatons = doc
+        .blocks_of_type_resolved("automaton")
+        .iter()
+        .map(|b| {
+            let id = require_id(&b.id, &b.kind)?;
+            let env_raw = optional_string_list(b, "env")?.unwrap_or_default();
+            let mut env: Vec<(String, String)> = Vec::with_capacity(env_raw.len());
+            for entry in env_raw {
+                match entry.split_once('=') {
+                    Some((k, v)) if !k.is_empty() => env.push((k.to_string(), v.to_string())),
+                    _ => {
+                        return Err(ConfigError::BadEnvEntry {
+                            automaton: id.clone(),
+                            entry,
+                        })
+                    }
+                }
+            }
+            Ok(Automaton {
+                id,
+                role: require_string(b, "role")?,
+                role_description: optional_string(b, "role_description"),
+                command: require_string(b, "command")?,
+                args: optional_string_list(b, "args")?.unwrap_or_default(),
+                cwd: optional_string(b, "cwd"),
+                env,
+                timeout_seconds: optional_u32(b, "timeout_seconds")?,
+                can_message: optional_string_list(b, "can_message")?,
             })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -1101,16 +1178,17 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         .map(parse_workflow)
         .collect::<Result<Vec<_>, ConfigError>>()?;
 
-    validate_agent_refs(&agents)?;
+    validate_agent_refs(&agents, &automatons)?;
     validate_worker_refs(&agents, &workers)?;
     validate_ai_core_refs(&team, &agents, &workers, &ai_cores)?;
     validate_ai_core_tools(&ai_cores)?;
     validate_memory_bank_refs(&agents, &workers, &memory_banks)?;
     validate_skill_names(&agents, &workers)?;
     validate_compaction_refs(&team, &agents, &workers, &ai_cores, &compactions)?;
-    validate_channel_refs(&agents, &channels)?;
+    validate_channel_refs(&agents, &automatons, &channels)?;
     validate_workflow_refs(&workflows, &workers)?;
     validate_workflow_allowlists(&agents, &workers, &workflows)?;
+    validate_automaton_refs(&agents, &automatons)?;
 
     let mut user_messages: Vec<String> = Vec::new();
     for block in doc.blocks_of_type_resolved("thinking_messages").iter() {
@@ -1142,6 +1220,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         team,
         agents,
         workers,
+        automatons,
         ai_cores,
         memory_banks,
         compactions,
@@ -1269,11 +1348,44 @@ fn parse_step(b: &wcl_lang::BlockRef) -> Result<WorkflowStep, ConfigError> {
 }
 
 /// Every id mentioned in a `can_message` list must correspond to a real
-/// agent declared in the same config; otherwise the allowlist silently
-/// lets nothing through and the typo is hard to diagnose.
-fn validate_agent_refs(agents: &[Agent]) -> Result<(), ConfigError> {
-    let known: std::collections::HashSet<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+/// agent or automaton declared in the same config; otherwise the
+/// allowlist silently lets nothing through and the typo is hard to
+/// diagnose.
+fn validate_agent_refs(agents: &[Agent], automatons: &[Automaton]) -> Result<(), ConfigError> {
+    let known: std::collections::HashSet<&str> = agents
+        .iter()
+        .map(|a| a.id.as_str())
+        .chain(automatons.iter().map(|a| a.id.as_str()))
+        .collect();
     for a in agents {
+        if let Some(list) = &a.can_message {
+            for id in list {
+                if !known.contains(id.as_str()) {
+                    return Err(ConfigError::UnknownAgentRef {
+                        from: a.id.clone(),
+                        attr: "can_message".to_string(),
+                        to: id.clone(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Mirror of [`validate_agent_refs`] for automaton `can_message`
+/// allowlists. An automaton may target either a declared agent or
+/// another declared automaton.
+fn validate_automaton_refs(
+    agents: &[Agent],
+    automatons: &[Automaton],
+) -> Result<(), ConfigError> {
+    let known: std::collections::HashSet<&str> = agents
+        .iter()
+        .map(|a| a.id.as_str())
+        .chain(automatons.iter().map(|a| a.id.as_str()))
+        .collect();
+    for a in automatons {
         if let Some(list) = &a.can_message {
             for id in list {
                 if !known.contains(id.as_str()) {
@@ -1533,12 +1645,20 @@ fn validate_compaction_refs(
     Ok(())
 }
 
-/// Channel membership must reference declared `agent` ids (workers
-/// are ephemeral and cannot join), and each agent may appear at most
-/// once per channel. Channel ids themselves must be unique across the
-/// config.
-fn validate_channel_refs(agents: &[Agent], channels: &[Channel]) -> Result<(), ConfigError> {
-    let known: std::collections::HashSet<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+/// Channel membership must reference declared `agent` or `automaton`
+/// ids (workers are ephemeral and cannot join), and each member may
+/// appear at most once per channel. Channel ids themselves must be
+/// unique across the config.
+fn validate_channel_refs(
+    agents: &[Agent],
+    automatons: &[Automaton],
+    channels: &[Channel],
+) -> Result<(), ConfigError> {
+    let known: std::collections::HashSet<&str> = agents
+        .iter()
+        .map(|a| a.id.as_str())
+        .chain(automatons.iter().map(|a| a.id.as_str()))
+        .collect();
     let mut seen_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for c in channels {
         if !seen_ids.insert(c.id.as_str()) {
@@ -1758,19 +1878,42 @@ fn validate_worker_refs(agents: &[Agent], workers: &[Worker]) -> Result<(), Conf
 }
 
 impl AciddogConfig {
-    /// Returns true if agent `from` is permitted to send a message to
-    /// agent `to`. Unknown `from` id → false (conservative default).
+    /// Returns true if fleet member `from` (agent or automaton) is
+    /// permitted to send a message to `to`. Unknown `from` id → false
+    /// (conservative default).
     pub fn can_send(&self, from: &str, to: &str) -> bool {
-        match self
-            .agents
-            .iter()
-            .find(|a| a.id == from)
-            .map(|a| a.can_message.as_ref())
-        {
-            Some(Some(list)) => list.iter().any(|id| id == to),
-            Some(None) => true,
-            None => false,
+        let allowlist = if let Some(a) = self.agents.iter().find(|a| a.id == from) {
+            a.can_message.as_ref()
+        } else if let Some(a) = self.automatons.iter().find(|a| a.id == from) {
+            a.can_message.as_ref()
+        } else {
+            return false;
+        };
+        match allowlist {
+            Some(list) => list.iter().any(|id| id == to),
+            None => true,
         }
+    }
+
+    /// Every id an agent with unrestricted `can_message` should be
+    /// able to reach — all declared agents plus all automatons.
+    /// Used to build the default "Agents you can message" list when
+    /// `can_message` is omitted.
+    pub fn all_addressable_ids(&self) -> Vec<String> {
+        self.agents
+            .iter()
+            .map(|a| a.id.clone())
+            .chain(self.automatons.iter().map(|a| a.id.clone()))
+            .collect()
+    }
+
+    /// `true` iff `id` is a declared agent or automaton — i.e. a
+    /// persistent fleet member that can be mailed, broadcast to in a
+    /// channel, or added to one at runtime. Worker templates and
+    /// ephemeral worker instances deliberately return `false`.
+    pub fn is_addressable(&self, id: &str) -> bool {
+        self.agents.iter().any(|a| a.id == id)
+            || self.automatons.iter().any(|a| a.id == id)
     }
 
     /// Returns true if the actor identified by `actor_template_id` is
@@ -2818,6 +2961,142 @@ mod tests {
             cfg.ai_cores[0].usage_provider,
             Some(UsageProvider::GithubCopilot)
         );
+    }
+
+    #[test]
+    fn parses_automaton_block_with_full_fieldset() {
+        let src = r#"
+            team default { description = "t" }
+            agent alice { role = "r" instructions = "i" }
+            automaton quokka {
+                role = "echo bot"
+                role_description = "demo"
+                command = "python3"
+                args = ["-c", "import sys; print('hi')"]
+                cwd = "/tmp"
+                env = ["LOG=1", "MODE=safe"]
+                timeout_seconds = 30
+                can_message = ["alice"]
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).expect("parse ok");
+        assert_eq!(cfg.automatons.len(), 1);
+        let q = &cfg.automatons[0];
+        assert_eq!(q.id, "quokka");
+        assert_eq!(q.role, "echo bot");
+        assert_eq!(q.role_description.as_deref(), Some("demo"));
+        assert_eq!(q.command, "python3");
+        assert_eq!(q.args, vec!["-c".to_string(), "import sys; print('hi')".to_string()]);
+        assert_eq!(q.cwd.as_deref(), Some("/tmp"));
+        assert_eq!(q.env, vec![
+            ("LOG".to_string(), "1".to_string()),
+            ("MODE".to_string(), "safe".to_string()),
+        ]);
+        assert_eq!(q.timeout_seconds, Some(30));
+        assert_eq!(q.can_message.as_deref(), Some(&["alice".to_string()][..]));
+    }
+
+    #[test]
+    fn automaton_defaults_fill_in_when_optional_fields_omitted() {
+        let src = r#"
+            team default { description = "t" }
+            automaton bare {
+                role = "idle"
+                command = "/bin/true"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).expect("parse ok");
+        let b = &cfg.automatons[0];
+        assert!(b.args.is_empty());
+        assert!(b.cwd.is_none());
+        assert!(b.env.is_empty());
+        assert!(b.timeout_seconds.is_none());
+        assert!(b.can_message.is_none());
+    }
+
+    #[test]
+    fn automaton_rejects_env_entry_without_equals() {
+        let src = r#"
+            team default { description = "t" }
+            automaton bad {
+                role = "x"
+                command = "cat"
+                env = ["OK=1", "MALFORMED"]
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::BadEnvEntry { automaton, entry } if automaton == "bad" && entry == "MALFORMED"
+        ));
+    }
+
+    #[test]
+    fn automaton_id_is_valid_in_agent_can_message_list() {
+        let src = r#"
+            team default { description = "t" }
+            automaton logger { role = "x" command = "cat" }
+            agent talker {
+                role = "r"
+                instructions = "i"
+                can_message = ["logger"]
+            }
+        "#;
+        parse_config(src, &dummy_path()).expect("automaton is a valid can_message target");
+    }
+
+    #[test]
+    fn automaton_can_send_to_ids_in_its_allowlist() {
+        let src = r#"
+            team default { description = "t" }
+            agent alice { role = "r" instructions = "i" }
+            agent bob   { role = "r" instructions = "i" }
+            automaton logger {
+                role = "x"
+                command = "cat"
+                can_message = ["alice"]
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert!(cfg.can_send("logger", "alice"));
+        assert!(!cfg.can_send("logger", "bob"));
+    }
+
+    #[test]
+    fn automaton_with_no_allowlist_can_send_to_anyone() {
+        let src = r#"
+            team default { description = "t" }
+            agent alice { role = "r" instructions = "i" }
+            automaton logger { role = "x" command = "cat" }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert!(cfg.can_send("logger", "alice"));
+    }
+
+    #[test]
+    fn all_addressable_ids_includes_agents_and_automatons() {
+        let src = r#"
+            team default { description = "t" }
+            agent alice { role = "r" instructions = "i" }
+            automaton logger { role = "x" command = "cat" }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        let ids = cfg.all_addressable_ids();
+        assert_eq!(ids, vec!["alice".to_string(), "logger".to_string()]);
+    }
+
+    #[test]
+    fn automaton_id_is_valid_in_channel_members() {
+        let src = r#"
+            team default { description = "t" }
+            agent alice { role = "r" instructions = "i" }
+            automaton logger { role = "x" command = "cat" }
+            channel ops {
+                members = ["alice", "logger"]
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).expect("automaton can join a channel");
+        assert_eq!(cfg.channels[0].members, vec!["alice".to_string(), "logger".to_string()]);
     }
 
     #[test]

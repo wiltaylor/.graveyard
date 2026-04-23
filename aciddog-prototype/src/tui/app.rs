@@ -471,15 +471,37 @@ pub(super) fn build_team_block(
     let mut out = String::new();
     out.push_str(&format!("Team: {}\n", cfg.team.description));
 
-    if !contactable.is_empty() {
+    // Split the contactable allowlist into agents (AI peers) vs.
+    // automatons (script-backed fleet members) so the model knows
+    // when it's messaging something that isn't an LLM. Unknown ids
+    // fall back into the agent bucket with a generic label — the
+    // parser's validation shouldn't let that happen, but keep the
+    // fallback so config drift doesn't silently swallow an entry.
+    let mut agent_entries: Vec<(&str, &str)> = Vec::new();
+    let mut automaton_entries: Vec<(&str, &str)> = Vec::new();
+    for id in contactable {
+        if let Some(a) = cfg.agents.iter().find(|a| a.id == *id) {
+            agent_entries.push((id, a.role.as_str()));
+        } else if let Some(a) = cfg.automatons.iter().find(|a| a.id == *id) {
+            automaton_entries.push((id, a.role.as_str()));
+        } else {
+            agent_entries.push((id, "agent"));
+        }
+    }
+
+    if !agent_entries.is_empty() {
         out.push_str("\nAgents you can message:\n");
-        for id in contactable {
-            let role = cfg
-                .agents
-                .iter()
-                .find(|a| a.id == *id)
-                .map(|a| a.role.as_str())
-                .unwrap_or("agent");
+        for (id, role) in &agent_entries {
+            out.push_str(&format!("- {id} — {role}\n"));
+        }
+    }
+
+    if !automaton_entries.is_empty() {
+        out.push_str(
+            "\nAutomatons you can message (script-backed fleet members, not AI agents — \
+             each message spawns a one-shot child process):\n",
+        );
+        for (id, role) in &automaton_entries {
             out.push_str(&format!("- {id} — {role}\n"));
         }
     }
@@ -1248,6 +1270,24 @@ pub struct ChannelState {
     pub is_ephemeral: bool,
 }
 
+/// Flavour of the chat entry shown in the agent list. Controls both
+/// the row icon (circle family vs square family) and the runtime
+/// backend (`run_core` for AI-driven kinds, `run_automaton_core` for
+/// script-driven automatons). The discriminant is set once at spawn
+/// and never changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChatKind {
+    /// Statically declared AI agent from `agent { ... }` blocks.
+    #[default]
+    Agent,
+    /// Ephemeral AI worker spawned from a `worker { ... }` template.
+    Worker,
+    /// Script-backed pseudo-agent from `automaton { ... }` blocks. No
+    /// AI core; events spawn a child process whose stdout/stderr land
+    /// in this chat pane.
+    Automaton,
+}
+
 #[derive(Debug, Default)]
 pub struct AgentChat {
     pub blocks: Vec<ChatBlock>,
@@ -1285,6 +1325,15 @@ pub struct AgentChat {
     /// statically declared agents and `<template>#<uuid-prefix>` for
     /// worker instances. Also used as the `send --to` target.
     pub display_name: String,
+    /// Flavour of the chat — drives the list icon and which runtime
+    /// backend task is responsible for the chat's input queues. See
+    /// [`ChatKind`].
+    pub kind: ChatKind,
+    /// For automatons only: the last child process's exit code.
+    /// `None` until the first child exits or when a child is in
+    /// flight. Used in tests; not read by the UI.
+    #[allow(dead_code)]
+    pub automaton_last_exit: Option<i32>,
     /// Id of the `ai_core` backing this chat (post-resolution of any
     /// agent/worker override). `None` until the agent is wired up; set
     /// once at spawn and preserved across worker hibernation/resurrection.
@@ -2013,7 +2062,7 @@ impl App {
             })
             .collect();
 
-        let chats: Vec<AgentChat> = config
+        let mut chats: Vec<AgentChat> = config
             .agents
             .iter()
             .map(|agent| {
@@ -2035,10 +2084,40 @@ impl App {
                     display_name: agent.id.clone(),
                     context_window,
                     context_usage_mode,
+                    kind: ChatKind::Agent,
                     ..Default::default()
                 }
             })
             .collect();
+
+        // Automatons are peer fleet members in the agent list. They
+        // don't carry an AI core, so the seeded `AgentInfo` block uses
+        // a synthetic label ("automaton: <command>") and the
+        // `instructions` slot carries the role description for
+        // visibility in the expanded panel.
+        for automaton in &config.automatons {
+            let argv = std::iter::once(automaton.command.as_str())
+                .chain(automaton.args.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let label = format!("automaton ({argv})");
+            let info = ChatBlock::agent_info(
+                label,
+                Vec::new(),
+                automaton
+                    .role_description
+                    .clone()
+                    .unwrap_or_else(|| automaton.role.clone()),
+                None,
+            );
+            chats.push(AgentChat {
+                blocks: vec![info],
+                sticky_bottom: true,
+                display_name: automaton.id.clone(),
+                kind: ChatKind::Automaton,
+                ..Default::default()
+            });
+        }
         Self {
             config,
             selected: 0,
@@ -2250,6 +2329,7 @@ impl App {
 
     pub fn handle_ai_event(&mut self, idx: usize, ev: AIEvent) {
         let binary = self.aciddog_binary.clone();
+        let pool_len = self.config.thinking_messages.len();
         let Some(chat) = self.chats.get_mut(idx) else {
             debug!(agent_idx = idx, "dropping AI event for unknown agent");
             return;
@@ -2397,6 +2477,50 @@ impl App {
             }
             AIEvent::Other(v) => {
                 debug!(event = ?v, agent_idx = idx, "unhandled ai event");
+            }
+            AIEvent::AutomatonStarted => {
+                chat.begin_working(pool_len);
+            }
+            AIEvent::AutomatonStdout { line } => {
+                chat.push_block(ChatBlock::AutomatonStdout { line });
+            }
+            AIEvent::AutomatonStderr { line } => {
+                chat.push_block(ChatBlock::AutomatonStderr { line });
+            }
+            AIEvent::AutomatonExit {
+                code,
+                duration_ms,
+                timed_out,
+            } => {
+                chat.automaton_last_exit = code;
+                let (status, note): (AgentStatus, ChatBlock) = if timed_out {
+                    (
+                        AgentStatus::Error,
+                        ChatBlock::system_error(format!(
+                            "[timed out after {duration_ms}ms; child killed]"
+                        )),
+                    )
+                } else {
+                    match code {
+                        Some(0) => (
+                            AgentStatus::Ready,
+                            ChatBlock::system_info(format!("[exit 0 in {duration_ms}ms]")),
+                        ),
+                        Some(n) => (
+                            AgentStatus::Error,
+                            ChatBlock::system_error(format!("[exit {n} in {duration_ms}ms]")),
+                        ),
+                        None => (
+                            AgentStatus::Error,
+                            ChatBlock::system_error(format!(
+                                "[killed by signal after {duration_ms}ms]"
+                            )),
+                        ),
+                    }
+                };
+                chat.push_block(note);
+                chat.status = status;
+                chat.end_working();
             }
         }
     }
@@ -3005,6 +3129,7 @@ impl App {
             hibernated: false,
             context_window,
             context_usage_mode,
+            kind: ChatKind::Worker,
             ..Default::default()
         };
         // Surface the initial task as a user message on the worker's
@@ -3788,6 +3913,18 @@ impl App {
         else {
             return;
         };
+        // Automatons receive real channel broadcasts via their own
+        // `channel_tx`; they don't benefit from an LLM-style onboarding
+        // notice (it'd just spawn a child process with prose about
+        // "the `channel send` tool"), so skip the notice for them.
+        if self
+            .chats
+            .get(recipient_idx)
+            .map(|c| c.kind == ChatKind::Automaton)
+            .unwrap_or(false)
+        {
+            return;
+        }
         if self
             .chats
             .get(recipient_idx)
@@ -3835,9 +3972,9 @@ impl App {
         channel_id: &str,
         agent: &str,
     ) -> Result<(), String> {
-        if !self.config.agents.iter().any(|a| a.id == agent) {
+        if !self.config.is_addressable(agent) {
             return Err(format!(
-                "`{agent}` is not a declared agent (workers cannot be channel members)"
+                "`{agent}` is not a declared agent or automaton (workers cannot be channel members)"
             ));
         }
         let Some(cfg_idx) = self.config.channels.iter().position(|c| c.id == channel_id) else {
@@ -3914,9 +4051,9 @@ impl App {
         channel_id: &str,
         agent: &str,
     ) -> Result<(), String> {
-        if !self.config.agents.iter().any(|a| a.id == agent) {
+        if !self.config.is_addressable(agent) {
             return Err(format!(
-                "`{agent}` is not a declared agent (workers cannot be channel members)"
+                "`{agent}` is not a declared agent or automaton (workers cannot be channel members)"
             ));
         }
         let Some(cfg_idx) = self.config.channels.iter().position(|c| c.id == channel_id) else {
@@ -10109,7 +10246,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         std::sync::Arc::new(app.config.clone()),
         wf_event_tx,
     ));
-    let all_ids: Vec<String> = app.config.agents.iter().map(|a| a.id.clone()).collect();
+    let all_ids: Vec<String> = app.config.all_addressable_ids();
     for (idx, agent) in app.config.agents.iter().enumerate() {
         let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
         let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
@@ -10258,6 +10395,41 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
             ai_tx.clone(),
         ));
     }
+
+    // Automatons share the agent list but run a lightweight
+    // script-per-event backend. Each occupies its own `AgentChat`
+    // (appended after the agents in `App::new`) and registers its
+    // session id in `app.agent_ids` so the existing IPC / mail / ACL
+    // paths treat it as any other addressable fleet member.
+    let automaton_offset = app.config.agents.len();
+    for (auto_idx, automaton) in app.config.automatons.iter().enumerate() {
+        let idx = automaton_offset + auto_idx;
+        let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
+        let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
+        let (channel_tx, channel_rx) = mpsc::channel::<String>(256);
+        let (cancel_tx, cancel_rx) = mpsc::channel::<()>(1);
+        app.chats[idx].user_tx = Some(user_tx);
+        app.chats[idx].agent_tx = Some(agent_tx);
+        app.chats[idx].channel_tx = Some(channel_tx);
+        app.chats[idx].cancel_tx = Some(cancel_tx);
+
+        let session_id = Uuid::new_v4();
+        app.chats[idx].session_id = Some(session_id);
+        app.agent_ids.insert(session_id, automaton.id.clone());
+
+        tokio::spawn(run_automaton_core(
+            idx,
+            automaton.clone(),
+            session_id,
+            socket_path_str.clone(),
+            user_rx,
+            agent_rx,
+            channel_rx,
+            cancel_rx,
+            ai_tx.clone(),
+        ));
+    }
+
     drop(ai_tx);
     // `app.ai_tx` retains a sender clone so runtime worker spawns can
     // route their stream into the same loop. That clone is dropped
@@ -10370,6 +10542,271 @@ pub(super) async fn run_core(
                     .await;
             }
         }
+    }
+}
+
+/// Kind of message pulled off an automaton's priority queues. Used to
+/// stamp the JSON envelope the child receives on stdin — `from` and
+/// `channel` are extracted from the wrapper tags the main event loop
+/// already applies when enqueueing agent/channel messages.
+#[derive(Debug, Clone, Copy)]
+enum AutomatonEventKind {
+    UserMessage,
+    AgentMessage,
+    ChannelMessage,
+}
+
+impl AutomatonEventKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::UserMessage => "user_message",
+            Self::AgentMessage => "agent_message",
+            Self::ChannelMessage => "channel_message",
+        }
+    }
+}
+
+/// Parse the `from="..."` attribute out of a `<Message …>` or
+/// `<ChannelMessage …>` wrapper. Returns `None` if the attribute is
+/// absent — callers fall back to a default (empty string) so malformed
+/// input is still delivered instead of being dropped.
+fn extract_attr(wrapper: &str, attr: &str) -> Option<String> {
+    let needle = format!("{attr}=\"");
+    let start = wrapper.find(&needle)? + needle.len();
+    let rest = &wrapper[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Unwrap a `<Message from="x">body</Message>` or
+/// `<ChannelMessage channel="c" from="x">body</ChannelMessage>` into
+/// the inner body. Returns the original string on any structural
+/// mismatch so the child still sees *something* rather than an empty
+/// body.
+fn strip_outer_tag<'a>(wrapper: &'a str, tag: &str) -> &'a str {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    if let Some(open_end) = wrapper.find('>').map(|i| i + 1) {
+        if wrapper.starts_with(&open) && wrapper.ends_with(&close) {
+            let body_end = wrapper.len() - close.len();
+            if body_end > open_end {
+                return &wrapper[open_end..body_end];
+            }
+        }
+    }
+    wrapper
+}
+
+/// Per-automaton event loop. Mirrors `run_core`'s priority select
+/// (user > agent > channel) but spawns a fresh child process for each
+/// dequeued message, writes a JSON envelope to stdin, pipes
+/// stdout/stderr lines back via `AIEvent::AutomatonStdout`/`Stderr`,
+/// and enforces **one-child-at-a-time** by awaiting the child's exit
+/// before pulling the next message. This is what makes the chat's
+/// status stay `Working` for the full run and causes incoming
+/// messages to queue up in their `mpsc` channels rather than race.
+pub(super) async fn run_automaton_core(
+    idx: usize,
+    automaton: crate::config::Automaton,
+    session_id: Uuid,
+    socket_path: String,
+    mut user_rx: mpsc::UnboundedReceiver<String>,
+    mut agent_rx: mpsc::Receiver<String>,
+    mut channel_rx: mpsc::Receiver<String>,
+    mut cancel_rx: mpsc::Receiver<()>,
+    ai_tx: mpsc::Sender<(usize, AIEvent)>,
+) {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    loop {
+        // Priority: user > agent > channel. Cancel sits first so any
+        // queued `/stop` between children is drained as a no-op.
+        let (raw, kind) = tokio::select! {
+            biased;
+            _ = cancel_rx.recv() => continue,
+            Some(m) = user_rx.recv() => (m, AutomatonEventKind::UserMessage),
+            Some(m) = agent_rx.recv() => (m, AutomatonEventKind::AgentMessage),
+            Some(m) = channel_rx.recv() => (m, AutomatonEventKind::ChannelMessage),
+            else => return,
+        };
+
+        // Unwrap whichever tag the orchestrator applied. User messages
+        // arrive raw; agent/channel wrappers are stripped back to the
+        // inner body for the JSON envelope so scripts never have to
+        // parse XML-ish markup.
+        let (from, channel, body): (String, Option<String>, String) = match kind {
+            AutomatonEventKind::UserMessage => ("user".to_string(), None, raw.clone()),
+            AutomatonEventKind::AgentMessage => {
+                let from = extract_attr(&raw, "from").unwrap_or_default();
+                let body = strip_outer_tag(&raw, "Message").to_string();
+                (from, None, body)
+            }
+            AutomatonEventKind::ChannelMessage => {
+                let from = extract_attr(&raw, "from").unwrap_or_default();
+                let channel = extract_attr(&raw, "channel");
+                let body = strip_outer_tag(&raw, "ChannelMessage").to_string();
+                (from, channel, body)
+            }
+        };
+
+        let envelope = serde_json::json!({
+            "kind": kind.as_str(),
+            "from": from,
+            "channel": channel,
+            "body": body,
+            "ts": chrono::Utc::now().to_rfc3339(),
+        });
+        let envelope_text = envelope.to_string();
+
+        // Let the TUI flip the status to `Working` *before* the child
+        // spawns. Brief window between now and first stdout would
+        // otherwise show `Ready` even though work is imminent.
+        if ai_tx.send((idx, AIEvent::AutomatonStarted)).await.is_err() {
+            return;
+        }
+
+        let start = std::time::Instant::now();
+        let mut cmd = tokio::process::Command::new(&automaton.command);
+        cmd.args(&automaton.args);
+        if let Some(cwd) = automaton.cwd.as_ref() {
+            cmd.current_dir(cwd);
+        }
+        for (k, v) in &automaton.env {
+            cmd.env(k, v);
+        }
+        cmd.env(agent_ipc::ENV_AGENT_ID, session_id.to_string());
+        cmd.env(agent_ipc::ENV_AGENT_SOCKET, &socket_path);
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = ai_tx
+                    .send((
+                        idx,
+                        AIEvent::AutomatonStderr {
+                            line: format!("spawn failed: {e}"),
+                        },
+                    ))
+                    .await;
+                let _ = ai_tx
+                    .send((
+                        idx,
+                        AIEvent::AutomatonExit {
+                            code: None,
+                            duration_ms: start.elapsed().as_millis(),
+                            timed_out: false,
+                        },
+                    ))
+                    .await;
+                continue;
+            }
+        };
+
+        // Deliver the envelope on stdin and close it so scripts see EOF.
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(e) = stdin.write_all(envelope_text.as_bytes()).await {
+                warn!(%e, agent_idx = idx, "failed to write envelope to automaton stdin");
+            }
+            let _ = stdin.write_all(b"\n").await;
+            drop(stdin);
+        }
+
+        // Pipe stdout/stderr back as line-oriented events. Run both
+        // pumps concurrently so a chatty stream can't starve the
+        // other. Each pump finishes when the child closes its end.
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let ai_tx_out = ai_tx.clone();
+        let ai_tx_err = ai_tx.clone();
+        let out_task = tokio::spawn(async move {
+            if let Some(out) = stdout {
+                let mut lines = BufReader::new(out).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if ai_tx_out
+                        .send((idx, AIEvent::AutomatonStdout { line }))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        });
+        let err_task = tokio::spawn(async move {
+            if let Some(err) = stderr {
+                let mut lines = BufReader::new(err).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if ai_tx_err
+                        .send((idx, AIEvent::AutomatonStderr { line }))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Wait on the child, respecting cancel and timeout. `biased`
+        // so cancel wins over a just-completed child when both fire
+        // in the same tick. All three branches' futures are dropped
+        // the moment one completes, which releases `&mut child` and
+        // lets the follow-up kill/await path borrow it again.
+        enum Outcome {
+            Cancelled,
+            TimedOut,
+            Exited(Option<i32>),
+        }
+        let timeout_dur = automaton
+            .timeout_seconds
+            .map(|s| Duration::from_secs(s as u64));
+        let outcome = tokio::select! {
+            biased;
+            _ = cancel_rx.recv() => Outcome::Cancelled,
+            _ = async { tokio::time::sleep(timeout_dur.unwrap_or_default()).await }, if timeout_dur.is_some() => Outcome::TimedOut,
+            exit = child.wait() => match exit {
+                Ok(status) => Outcome::Exited(status.code()),
+                Err(e) => {
+                    warn!(%e, agent_idx = idx, "automaton child wait failed");
+                    Outcome::Exited(None)
+                }
+            }
+        };
+        let (code, timed_out) = match outcome {
+            Outcome::Cancelled => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                (None, false)
+            }
+            Outcome::TimedOut => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                (None, true)
+            }
+            Outcome::Exited(code) => (code, false),
+        };
+
+        // Wait for pipe pumps to drain any buffered output so lines
+        // don't arrive after the `AutomatonExit` event that should
+        // close the block.
+        let _ = out_task.await;
+        let _ = err_task.await;
+
+        let _ = ai_tx
+            .send((
+                idx,
+                AIEvent::AutomatonExit {
+                    code,
+                    duration_ms: start.elapsed().as_millis(),
+                    timed_out,
+                },
+            ))
+            .await;
     }
 }
 
@@ -10511,8 +10948,114 @@ async fn event_loop<B: ratatui::backend::Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AciddogConfig, Agent, Team};
+    use crate::config::{AciddogConfig, Agent, Automaton, Team};
     use serde_json::json;
+
+    #[test]
+    fn team_block_splits_agents_and_automatons_into_labelled_sections() {
+        let cfg = AciddogConfig {
+            team: Team {
+                id: "t".into(),
+                description: "the team".into(),
+                replace_thinking_messages: false,
+                default_ai_core: None,
+            },
+            agents: vec![Agent {
+                id: "planner".into(),
+                role: "coordinates work".into(),
+                role_description: None,
+                model: None,
+                instructions: "i".into(),
+                can_message: None,
+                can_create_workers: None,
+                can_run_workflows: None,
+                tools: None,
+                ai_core: None,
+                memory_banks: None,
+                skills: None,
+                compaction: None,
+            }],
+            workers: vec![],
+            automatons: vec![Automaton {
+                id: "quokka".into(),
+                role: "echo bot".into(),
+                role_description: None,
+                command: "python3".into(),
+                args: vec![],
+                cwd: None,
+                env: vec![],
+                timeout_seconds: None,
+                can_message: None,
+            }],
+            ai_cores: vec![],
+            memory_banks: vec![],
+            compactions: vec![],
+            channels: vec![],
+            workflows: vec![],
+            thinking_messages: vec!["t".into()],
+        };
+        let block = build_team_block(&cfg, &["planner", "quokka"], &[]);
+
+        assert!(block.contains("Agents you can message:"), "{block}");
+        assert!(
+            block.contains("- planner — coordinates work"),
+            "agent entry missing: {block}"
+        );
+        assert!(
+            block.contains("Automatons you can message"),
+            "automaton section heading missing: {block}"
+        );
+        assert!(
+            block.contains("- quokka — echo bot"),
+            "automaton entry missing: {block}"
+        );
+        // The agent's own section must not shadow the automaton under
+        // the same heading — the two entries live in different blocks.
+        let agents_idx = block.find("Agents you can message:").unwrap();
+        let autos_idx = block.find("Automatons you can message").unwrap();
+        assert!(agents_idx < autos_idx, "section order wrong: {block}");
+        assert!(
+            !block[agents_idx..autos_idx].contains("quokka"),
+            "quokka leaked into agent section: {block}"
+        );
+    }
+
+    #[test]
+    fn team_block_omits_automaton_heading_when_none_are_contactable() {
+        let cfg = AciddogConfig {
+            team: Team {
+                id: "t".into(),
+                description: "d".into(),
+                replace_thinking_messages: false,
+                default_ai_core: None,
+            },
+            agents: vec![Agent {
+                id: "a".into(),
+                role: "r".into(),
+                role_description: None,
+                model: None,
+                instructions: "i".into(),
+                can_message: None,
+                can_create_workers: None,
+                can_run_workflows: None,
+                tools: None,
+                ai_core: None,
+                memory_banks: None,
+                skills: None,
+                compaction: None,
+            }],
+            workers: vec![],
+            automatons: vec![],
+            ai_cores: vec![],
+            memory_banks: vec![],
+            compactions: vec![],
+            channels: vec![],
+            workflows: vec![],
+            thinking_messages: vec!["t".into()],
+        };
+        let block = build_team_block(&cfg, &["a"], &[]);
+        assert!(!block.contains("Automatons you can message"), "{block}");
+    }
 
     fn sample_config() -> AciddogConfig {
         AciddogConfig {
@@ -10570,6 +11113,7 @@ mod tests {
                 },
             ],
             workers: vec![],
+            automatons: vec![],
             ai_cores: vec![crate::config::AiCore {
                 id: "default".into(),
                 kind: crate::config::AiCoreKind::ClaudeCode {
@@ -12288,6 +12832,7 @@ mod tests {
                     compaction: None,
                 },
             ],
+            automatons: vec![],
             ai_cores: vec![crate::config::AiCore {
                 id: "default".into(),
                 kind: crate::config::AiCoreKind::ClaudeCode {

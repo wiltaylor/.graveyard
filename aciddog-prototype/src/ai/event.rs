@@ -92,6 +92,28 @@ pub enum AIEvent {
         is_using_overage: bool,
         raw: Value,
     },
+    /// Orchestrator-emitted: an automaton pulled a message off its
+    /// priority queue and spawned a child process to handle it. The
+    /// TUI flips the chat's status to `Working` on this event so the
+    /// row icon reflects the in-flight state before the child has
+    /// written any output.
+    AutomatonStarted,
+    /// Orchestrator-emitted: an automaton child process just printed a
+    /// line on stdout. The TUI appends it as a plain-text block to the
+    /// automaton's chat pane.
+    AutomatonStdout { line: String },
+    /// Orchestrator-emitted: an automaton child printed a line on
+    /// stderr. Styled distinctly from stdout in the TUI.
+    AutomatonStderr { line: String },
+    /// Orchestrator-emitted: an automaton child has exited. `code` is
+    /// `None` when the child was killed by a signal or by the
+    /// `timeout_seconds` watchdog. `duration_ms` is wall-clock time
+    /// from spawn to reap.
+    AutomatonExit {
+        code: Option<i32>,
+        duration_ms: u128,
+        timed_out: bool,
+    },
     Other(Value),
 }
 

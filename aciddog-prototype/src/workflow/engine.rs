@@ -764,6 +764,7 @@ mod tests {
             },
             agents: vec![],
             workers: vec![],
+            automatons: vec![],
             ai_cores: vec![],
             memory_banks: vec![],
             compactions: vec![],

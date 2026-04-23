@@ -241,6 +241,9 @@ pub fn block_fingerprint(b: &ChatBlock) -> u64 {
             body.hash(&mut h);
             is_welcome.hash(&mut h);
         }
+        ChatBlock::AutomatonStdout { line } | ChatBlock::AutomatonStderr { line } => {
+            line.hash(&mut h);
+        }
     }
 
     h.finish()
@@ -471,6 +474,14 @@ pub enum ChatBlock {
         collapsed: bool,
         pending: bool,
     },
+    /// One line of stdout from an automaton child process. Rendered as
+    /// plain monospace text with no markdown parsing so a script that
+    /// accidentally prints backticks doesn't upset the layout.
+    AutomatonStdout { line: String },
+    /// One line of stderr from an automaton child process. Rendered
+    /// like `AutomatonStdout` but coloured red so error output stays
+    /// visually distinct while interleaved with stdout lines.
+    AutomatonStderr { line: String },
 }
 
 impl ChatBlock {
@@ -545,6 +556,9 @@ impl ChatBlock {
                 } else {
                     Some(subject.clone())
                 }
+            }
+            Self::AutomatonStdout { line } | Self::AutomatonStderr { line } => {
+                Some(line.clone())
             }
         }
     }
@@ -665,6 +679,9 @@ impl ChatBlock {
             } => {
                 let shown = task_op_shown_body(body, reply);
                 tool_body_height(subject, &shown, *collapsed, w)
+            }
+            Self::AutomatonStdout { line } | Self::AutomatonStderr { line } => {
+                wrapped_rows(line, w.saturating_sub(2)).max(1)
             }
         }
     }
@@ -1118,6 +1135,20 @@ impl ChatBlock {
                     body_copy,
                 );
             }
+            Self::AutomatonStdout { line } => self.render_prefix_text(
+                buf,
+                body_rect,
+                "» ",
+                line,
+                Style::default().fg(Color::Gray),
+            ),
+            Self::AutomatonStderr { line } => self.render_prefix_text(
+                buf,
+                body_rect,
+                "» ",
+                line,
+                Style::default().fg(Color::Red),
+            ),
         }
     }
 

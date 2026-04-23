@@ -8,7 +8,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use super::app::{format_task_detail, ActiveView, AgentStatus, App, Focus, VIEW_ENTRIES};
+use super::app::{format_task_detail, ActiveView, AgentStatus, App, ChatKind, Focus, VIEW_ENTRIES};
 use super::blocks::{block_fingerprint, AnchorScratch, ChatButton, ScrollAnchor};
 use super::cores_view::{agents_using_core, format_usage_cell, is_team_default, CoreRow};
 use super::memory_view::{
@@ -242,12 +242,21 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
         .iter()
         .map(|&(i, depth)| {
             let c = &app.chats[i];
-            let dot = match c.status {
-                AgentStatus::Ready => "🟢",
-                AgentStatus::Working => "🟡",
-                AgentStatus::Error => "🔴",
-                AgentStatus::Hibernated => "💤",
-                AgentStatus::Asleep => "🌙",
+            // Automatons share the agent list but live in a distinct
+            // square-family icon set so the kind is always visible —
+            // not just when they're idle. Hibernated / Asleep don't
+            // apply to automatons (no AI state to park), so they
+            // silently fall back to the square `Ready` glyph on the
+            // off-chance a future path ever routes those states here.
+            let dot = match (c.kind, c.status) {
+                (ChatKind::Automaton, AgentStatus::Working) => "🟨",
+                (ChatKind::Automaton, AgentStatus::Error) => "🟥",
+                (ChatKind::Automaton, _) => "🟩",
+                (_, AgentStatus::Ready) => "🟢",
+                (_, AgentStatus::Working) => "🟡",
+                (_, AgentStatus::Error) => "🔴",
+                (_, AgentStatus::Hibernated) => "💤",
+                (_, AgentStatus::Asleep) => "🌙",
             };
             let name_style = if i == app.selected && (active_here || focused) {
                 Style::default()
@@ -299,7 +308,23 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
             // fall back to "worker · <template>" since the chat
             // itself carries the display name and template, not the
             // role/model pair from an `agent` config block.
-            if let Some(template) = &chat.worker_template {
+            if chat.kind == ChatKind::Automaton {
+                let auto = app
+                    .config
+                    .automatons
+                    .iter()
+                    .find(|a| a.id == chat.display_name);
+                match auto {
+                    Some(a) => {
+                        let argv = std::iter::once(a.command.as_str())
+                            .chain(a.args.iter().map(String::as_str))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        format!(" {} · automaton · {} ", a.id, argv)
+                    }
+                    None => format!(" {} · automaton ", chat.display_name),
+                }
+            } else if let Some(template) = &chat.worker_template {
                 if let Some(w) = app.config.worker(template) {
                     let core = app.config.effective_ai_core(w.ai_core.as_deref());
                     let model = app
