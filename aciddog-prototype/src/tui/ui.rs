@@ -336,6 +336,21 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
                                     }
                                 }
                             }
+                            crate::config::AutomatonBackend::Remote {
+                                transport,
+                                remote_target,
+                                ..
+                            } => match transport {
+                                crate::config::RemoteTransport::Https { url, .. } => {
+                                    format!("remote {url} → {remote_target}")
+                                }
+                                crate::config::RemoteTransport::UnixSocket { path } => {
+                                    format!(
+                                        "remote unix:{} → {remote_target}",
+                                        path.display()
+                                    )
+                                }
+                            },
                         };
                         format!(" {} · automaton · {} ", a.id, desc)
                     }

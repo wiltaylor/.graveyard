@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use aciddog::config::{load_config, parse_config, AiCoreKind, ConfigError};
+use aciddog::config::{
+    load_config, parse_config, AiCoreKind, AutomatonBackend, ConfigError, RemoteTransport,
+};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -199,6 +201,265 @@ fn unknown_memory_bank_ref_errors() {
     let err = parse_config(src, Path::new("<test>")).expect_err("should fail");
     assert!(
         matches!(err, ConfigError::UnknownMemoryBankRef { ref from, ref to } if from == "alpha" && to == "ghost"),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn loads_remote_demo_server_config() {
+    let path = repo_root()
+        .join("demo-remote-server")
+        .join("aciddog.wcl");
+    let cfg = load_config(&path).expect("demo-remote-server/aciddog.wcl should parse");
+    assert_eq!(cfg.team.id, "server");
+    let gateway = cfg
+        .automatons
+        .iter()
+        .find(|a| a.id == "gateway")
+        .expect("gateway automaton declared");
+    match &gateway.backend {
+        AutomatonBackend::Webservice { .. } => {}
+        other => panic!("expected webservice backend, got {other:?}"),
+    }
+}
+
+#[test]
+fn loads_remote_demo_client_config() {
+    let path = repo_root()
+        .join("demo-remote-client")
+        .join("aciddog.wcl");
+    let cfg = load_config(&path).expect("demo-remote-client/aciddog.wcl should parse");
+    assert_eq!(cfg.team.id, "client");
+    let mothership = cfg
+        .automatons
+        .iter()
+        .find(|a| a.id == "mothership")
+        .expect("mothership automaton declared");
+    match &mothership.backend {
+        AutomatonBackend::Remote {
+            remote_target,
+            deliver_to,
+            transport,
+            ..
+        } => {
+            assert_eq!(remote_target, "user");
+            assert_eq!(deliver_to, "user");
+            match transport {
+                RemoteTransport::UnixSocket { path } => {
+                    assert!(path.to_string_lossy().ends_with("aciddog-remote-demo.sock"));
+                }
+                other => panic!("expected UnixSocket transport, got {other:?}"),
+            }
+        }
+        other => panic!("expected remote backend, got {other:?}"),
+    }
+}
+
+#[test]
+fn remote_automaton_parses_with_unix_socket() {
+    let src = r#"
+        team default { description = "t" }
+        agent planner {
+          role = "p"
+          instructions = "i"
+        }
+        automaton peer {
+          type          = :remote
+          role          = "bridge"
+          socket_path   = "/tmp/remote.sock"
+          remote_target = "bridge"
+          deliver_to    = "planner"
+        }
+    "#;
+    let cfg = parse_config(src, Path::new("<test>")).expect("parses");
+    let a = &cfg.automatons[0];
+    assert_eq!(a.id, "peer");
+    match &a.backend {
+        AutomatonBackend::Remote {
+            transport,
+            remote_target,
+            deliver_to,
+            proxy_socket_path,
+        } => {
+            match transport {
+                RemoteTransport::UnixSocket { path } => {
+                    assert_eq!(path.to_str(), Some("/tmp/remote.sock"));
+                }
+                other => panic!("unexpected transport: {other:?}"),
+            }
+            assert_eq!(remote_target, "bridge");
+            assert_eq!(deliver_to, "planner");
+            assert!(proxy_socket_path.is_none());
+        }
+        other => panic!("unexpected backend: {other:?}"),
+    }
+}
+
+#[test]
+fn remote_automaton_parses_with_https() {
+    let src = r#"
+        team default { description = "t" }
+        agent planner {
+          role = "p"
+          instructions = "i"
+        }
+        automaton peer {
+          type          = :remote
+          role          = "bridge"
+          url           = "https://host:8443"
+          api_key_env   = "REMOTE_TOKEN"
+          remote_target = "bridge"
+          deliver_to    = "planner"
+          proxy_socket_path = "/tmp/proxy.sock"
+        }
+    "#;
+    let cfg = parse_config(src, Path::new("<test>")).expect("parses");
+    let a = &cfg.automatons[0];
+    match &a.backend {
+        AutomatonBackend::Remote {
+            transport,
+            proxy_socket_path,
+            ..
+        } => {
+            match transport {
+                RemoteTransport::Https {
+                    url,
+                    api_key_env,
+                    tls_ca,
+                } => {
+                    assert_eq!(url, "https://host:8443");
+                    assert_eq!(api_key_env, "REMOTE_TOKEN");
+                    assert!(tls_ca.is_none());
+                }
+                other => panic!("unexpected transport: {other:?}"),
+            }
+            assert_eq!(
+                proxy_socket_path.as_ref().and_then(|p| p.to_str()),
+                Some("/tmp/proxy.sock")
+            );
+        }
+        other => panic!("unexpected backend: {other:?}"),
+    }
+}
+
+#[test]
+fn remote_automaton_rejects_both_transports() {
+    let src = r#"
+        team default { description = "t" }
+        agent planner { role = "p" instructions = "i" }
+        automaton peer {
+          type          = :remote
+          role          = "bridge"
+          url           = "https://host:8443"
+          api_key_env   = "REMOTE_TOKEN"
+          socket_path   = "/tmp/remote.sock"
+          remote_target = "bridge"
+          deliver_to    = "planner"
+        }
+    "#;
+    let err = parse_config(src, Path::new("<test>")).expect_err("should fail");
+    assert!(
+        matches!(err, ConfigError::RemoteTransportConflict { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn remote_automaton_rejects_https_without_api_key() {
+    let src = r#"
+        team default { description = "t" }
+        agent planner { role = "p" instructions = "i" }
+        automaton peer {
+          type          = :remote
+          role          = "bridge"
+          url           = "https://host:8443"
+          remote_target = "bridge"
+          deliver_to    = "planner"
+        }
+    "#;
+    let err = parse_config(src, Path::new("<test>")).expect_err("should fail");
+    assert!(
+        matches!(err, ConfigError::RemoteMissingApiKeyEnv { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn remote_automaton_rejects_api_key_on_unix_socket() {
+    let src = r#"
+        team default { description = "t" }
+        agent planner { role = "p" instructions = "i" }
+        automaton peer {
+          type          = :remote
+          role          = "bridge"
+          socket_path   = "/tmp/remote.sock"
+          api_key_env   = "REMOTE_TOKEN"
+          remote_target = "bridge"
+          deliver_to    = "planner"
+        }
+    "#;
+    let err = parse_config(src, Path::new("<test>")).expect_err("should fail");
+    assert!(
+        matches!(err, ConfigError::RemoteUnixSocketApiKey { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn remote_automaton_rejects_unknown_deliver_to() {
+    let src = r#"
+        team default { description = "t" }
+        agent planner { role = "p" instructions = "i" }
+        automaton peer {
+          type          = :remote
+          role          = "bridge"
+          socket_path   = "/tmp/remote.sock"
+          remote_target = "bridge"
+          deliver_to    = "ghost"
+        }
+    "#;
+    let err = parse_config(src, Path::new("<test>")).expect_err("should fail");
+    assert!(
+        matches!(err, ConfigError::RemoteUnknownDeliverTo { ref target, .. } if target == "ghost"),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn remote_automaton_rejects_missing_transport() {
+    let src = r#"
+        team default { description = "t" }
+        agent planner { role = "p" instructions = "i" }
+        automaton peer {
+          type          = :remote
+          role          = "bridge"
+          remote_target = "bridge"
+          deliver_to    = "planner"
+        }
+    "#;
+    let err = parse_config(src, Path::new("<test>")).expect_err("should fail");
+    assert!(
+        matches!(err, ConfigError::RemoteMissingTransport { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn script_automaton_rejects_remote_fields() {
+    let src = r#"
+        team default { description = "t" }
+        automaton bot {
+          role          = "r"
+          command       = "echo"
+          remote_target = "bridge"
+        }
+    "#;
+    let err = parse_config(src, Path::new("<test>")).expect_err("should fail");
+    assert!(
+        matches!(
+            err,
+            ConfigError::ScriptUnexpectedWebserviceField { ref field, .. } if field == "remote_target"
+        ),
         "got {err:?}"
     );
 }

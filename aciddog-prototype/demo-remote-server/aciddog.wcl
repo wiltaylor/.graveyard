@@ -1,0 +1,75 @@
+// Remote-demo, server side.
+//
+// Pairs with `demo-remote-client/aciddog.wcl`. Run the two in separate
+// terminals via:
+//
+//   just run-remote-server   # this side
+//   just run-remote-client   # the dialing side
+//
+// The two instances communicate over a Unix socket at
+// `/tmp/aciddog-remote-demo.sock`. The server hosts a `:webservice`
+// automaton (`gateway`) bound to that path; the client hosts a
+// `:remote` automaton (`mothership`) that dials it and proxies the
+// server's user inbox as a local fleet member.
+//
+// Typing in the `gateway` pane on the server broadcasts the message
+// via SSE to the client, which delivers it to the client's user
+// inbox. Typing in the `mothership` pane on the client forwards the
+// message as a `send_message(to=user)` RPC to the server, which lands
+// in the server's user inbox attributed to `gateway`. Both
+// directions end-to-end, no auth (filesystem perms on the UDS are the
+// trust boundary).
+
+schema "team" {
+  id: identifier @inline(0)
+  description: string
+  replace_thinking_messages: bool @optional @default(false)
+  default_ai_core: string @optional
+}
+
+@tagged(field = "type")
+schema "automaton" {
+  id: identifier @inline(0)
+  role: string
+  role_description: string @optional
+  type: symbol @optional
+  can_message: list(string) @optional
+
+  variant "script" {
+    command: string
+    args: list(string) @optional
+    cwd: string @optional
+    env: list(string) @optional
+    timeout_seconds: number @optional
+  }
+
+  variant "webservice" {
+    bind: string @optional
+    tls_cert: string @optional
+    tls_key: string @optional
+    api_key_env: string @optional
+    socket_path: string @optional
+  }
+
+  variant "remote" {
+    url: string @optional
+    api_key_env: string @optional
+    tls_ca: string @optional
+    socket_path: string @optional
+    remote_target: string
+    deliver_to: string
+    proxy_socket_path: string @optional
+  }
+}
+
+team server {
+  description = "Remote-demo server. Hosts a Unix-socket webservice that the client dials."
+}
+
+automaton gateway {
+  type             = :webservice
+  role             = "bridge to the remote client"
+  role_description = "Unix-socket webservice at /tmp/aciddog-remote-demo.sock. Messages typed into this pane are broadcast to any connected client via SSE. RPCs from the client are stamped with gateway's identity and delivered into this instance's orchestrator."
+  socket_path      = "/tmp/aciddog-remote-demo.sock"
+  can_message      = ["user"]
+}

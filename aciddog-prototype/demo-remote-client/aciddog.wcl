@@ -1,0 +1,72 @@
+// Remote-demo, client side.
+//
+// Pairs with `demo-remote-server/aciddog.wcl`. See that file for the
+// end-to-end scenario and how messages flow in each direction.
+//
+// Start the server first:
+//
+//   just run-remote-server
+//
+// …then in another terminal:
+//
+//   just run-remote-client
+//
+// If you start the client first, the `:remote` automaton will log a
+// retry line each time its SSE subscription fails, then connect
+// automatically once the socket appears.
+
+schema "team" {
+  id: identifier @inline(0)
+  description: string
+  replace_thinking_messages: bool @optional @default(false)
+  default_ai_core: string @optional
+}
+
+@tagged(field = "type")
+schema "automaton" {
+  id: identifier @inline(0)
+  role: string
+  role_description: string @optional
+  type: symbol @optional
+  can_message: list(string) @optional
+
+  variant "script" {
+    command: string
+    args: list(string) @optional
+    cwd: string @optional
+    env: list(string) @optional
+    timeout_seconds: number @optional
+  }
+
+  variant "webservice" {
+    bind: string @optional
+    tls_cert: string @optional
+    tls_key: string @optional
+    api_key_env: string @optional
+    socket_path: string @optional
+  }
+
+  variant "remote" {
+    url: string @optional
+    api_key_env: string @optional
+    tls_ca: string @optional
+    socket_path: string @optional
+    remote_target: string
+    deliver_to: string
+    proxy_socket_path: string @optional
+  }
+}
+
+team client {
+  description = "Remote-demo client. Proxies the server's user inbox as a local fleet member."
+}
+
+automaton mothership {
+  type             = :remote
+  role             = "bridge to the remote server"
+  role_description = "Dials /tmp/aciddog-remote-demo.sock. Local messages to this automaton are forwarded as send_message(to=user) RPCs and land in the server's user inbox. Inbound SSE events are delivered to this instance's user inbox."
+  socket_path      = "/tmp/aciddog-remote-demo.sock"
+  remote_target    = "user"
+  deliver_to       = "user"
+  can_message      = ["user"]
+}

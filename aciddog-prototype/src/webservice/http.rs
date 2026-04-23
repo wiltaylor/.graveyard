@@ -201,12 +201,21 @@ pub async fn serve_unix(
     mut shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
+        // Only chmod the parent if we created it. Otherwise a
+        // user-chosen path like `/tmp/foo.sock` would try to restrict
+        // `/tmp` itself, which fails with EPERM for non-root users.
+        // The 0o660 mode on the socket file itself is the real trust
+        // boundary; this extra 0o700 is defence-in-depth for
+        // app-owned runtime directories.
+        let existed = tokio::fs::metadata(parent).await.is_ok();
         tokio::fs::create_dir_all(parent)
             .await
             .with_context(|| format!("creating socket parent {}", parent.display()))?;
-        let mut perms = tokio::fs::metadata(parent).await?.permissions();
-        perms.set_mode(0o700);
-        tokio::fs::set_permissions(parent, perms).await?;
+        if !existed {
+            let mut perms = tokio::fs::metadata(parent).await?.permissions();
+            perms.set_mode(0o700);
+            tokio::fs::set_permissions(parent, perms).await?;
+        }
     }
     if path.exists() {
         if let Ok(_stream) = tokio::net::UnixStream::connect(&path).await {

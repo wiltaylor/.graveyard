@@ -5,4 +5,5 @@
 /demo/.aciddog/cron.json
 /demo/.aciddog/memory/
 /demo/.aciddog/chat/
+/demo-remote-*/.aciddog/
 Cargo.lock

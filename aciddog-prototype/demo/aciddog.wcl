@@ -103,6 +103,38 @@ schema "automaton" {
     // Unix-socket path. Mutually exclusive with `bind`.
     socket_path: string @optional
   }
+
+  // Client-side counterpart to `:webservice`. Dials a remote aciddog
+  // instance's `/v1/rpc` + `/v1/events` and proxies one identity on
+  // that remote as a local fleet member.
+  variant "remote" {
+    // HTTPS base URL of the remote (mutually exclusive with
+    // `socket_path`). The client appends `/v1/rpc` and `/v1/events`.
+    url: string @optional
+    // Env var holding the Bearer token sent in `Authorization`.
+    // Required for `url`; forbidden for `socket_path`.
+    api_key_env: string @optional
+    // Optional PEM-encoded CA bundle for verifying a self-signed
+    // remote certificate.
+    tls_ca: string @optional
+    // Unix-socket path of the remote webservice. Mutually exclusive
+    // with `url`. Trust model is filesystem permissions.
+    socket_path: string @optional
+    // Id of the fleet member on the remote that local traffic is
+    // forwarded to. Free-form — the remote rejects unknown ids at
+    // runtime.
+    remote_target: string
+    // Local agent/automaton id that receives inbound SSE events from
+    // the remote. Validated to reference a declared id.
+    deliver_to: string
+    // Optional local Unix socket path. When set, a listener mounts
+    // the socket speaking the same JSON-per-line agent-IPC wire
+    // format used internally, and tunnels every `RequestCmd` through
+    // to the remote `/v1/rpc`. Lets local tools set
+    // `ACIDDOG_AGENT_SOCKET` to this path and drive the full RPC
+    // surface against the remote.
+    proxy_socket_path: string @optional
+  }
 }
 
 // Inbound HTTP webhook mounted on a webservice-backed automaton. When
@@ -835,6 +867,28 @@ automaton quokka {
 //   tls_key      = "./demo/tls/key.pem"
 //   api_key_env  = "ACIDDOG_API_KEY"
 //   can_message  = ["planner", "coder"]
+// }
+
+// Example `:remote` automaton — the client-side counterpart to
+// `:webservice`. Dials a remote aciddog's webservice and proxies one
+// identity on that remote as a local fleet member. Any message you
+// send to `remote_peer` is forwarded as `send_message(to=bridge)` on
+// the remote; traffic flowing the other way lands in `planner`'s
+// inbox attributed to `remote_peer`.
+//
+// An optional `proxy_socket_path` turns this automaton into a full
+// RPC tunnel: set `ACIDDOG_AGENT_SOCKET=/tmp/aciddog-remote.sock` on a
+// local tool and every `aciddog` CLI call transparently hits the
+// remote's `/v1/rpc`.
+//
+// automaton remote_peer {
+//   type              = :remote
+//   role              = "bridge to remote aciddog"
+//   socket_path       = "/run/aciddog-remote/api.sock"
+//   remote_target     = "bridge"
+//   deliver_to        = "planner"
+//   proxy_socket_path = "/tmp/aciddog-remote.sock"
+//   can_message       = ["planner"]
 // }
 
 // Example webhook: a GitHub push hook with HMAC-SHA256 signing. Mounts

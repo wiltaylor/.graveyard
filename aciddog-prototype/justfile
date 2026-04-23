@@ -48,6 +48,16 @@ app-test: app-test-unit app-test-integration
 run:
 	cd demo && cargo run --manifest-path ../Cargo.toml
 
+# Remote-demo server side: :webservice on /tmp/aciddog-remote-demo.sock (pair with `run-remote-client`)
+[group('run')]
+run-remote-server:
+	cd demo-remote-server && cargo run --manifest-path ../Cargo.toml
+
+# Remote-demo client side: :remote dialing the server's socket (start the server first or watch it retry)
+[group('run')]
+run-remote-client:
+	cd demo-remote-client && cargo run --manifest-path ../Cargo.toml
+
 # Build everything
 [group('build')]
 build: app-build

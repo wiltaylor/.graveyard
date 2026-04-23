@@ -20,7 +20,7 @@ pub mod webhook;
 
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -36,8 +36,9 @@ const BROADCAST_CAPACITY: usize = 256;
 
 /// Event pushed to every SSE subscriber when this automaton receives
 /// mail. Shape mirrors the JSON envelope a script-backed automaton
-/// sees on stdin.
-#[derive(Debug, Clone, Serialize)]
+/// sees on stdin. Also re-used by the `:remote` client automaton
+/// when deserializing the peer's SSE stream.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InboundEvent {
     UserMessage {
@@ -87,8 +88,8 @@ pub async fn run_webservice_core(
 ) {
     let (bind, api_key_env) = match automaton.backend {
         AutomatonBackend::Webservice { bind, api_key_env } => (bind, api_key_env),
-        AutomatonBackend::Script { .. } => {
-            warn!(automaton = %automaton.id, "run_webservice_core called with Script backend; ignoring");
+        AutomatonBackend::Script { .. } | AutomatonBackend::Remote { .. } => {
+            warn!(automaton = %automaton.id, "run_webservice_core called with non-Webservice backend; ignoring");
             return;
         }
     };
@@ -188,7 +189,12 @@ pub async fn run_webservice_core(
             },
         ))
         .await;
-    let _ = ai_tx.send((idx, AIEvent::AutomatonStarted)).await;
+    // Don't emit `AutomatonStarted` — that event is for script-backed
+    // automatons to mark a per-event child spawn, and flips the pane
+    // to `Working` until a matching `AutomatonExit` arrives. A
+    // webservice listener is long-lived and has no matching exit on
+    // each request, so the pane would stay stuck at `Working`.
+    // Default `Ready` is the right status for a listening webservice.
 
     // Mail-reception loop: forward each incoming message to the SSE
     // broadcaster and also log a single stdout line in the TUI pane so
@@ -287,7 +293,7 @@ fn extract_attr(wrapper: &str, attr: &str) -> Option<String> {
 
 /// Strip `<Tag …>body</Tag>` wrappers. Returns the original string on
 /// any structural mismatch so we still emit *something*.
-fn strip_outer_tag<'a>(wrapper: &'a str, tag: &str) -> &'a str {
+pub(crate) fn strip_outer_tag<'a>(wrapper: &'a str, tag: &str) -> &'a str {
     let open = format!("<{tag}");
     let close = format!("</{tag}>");
     if let Some(open_end) = wrapper.find('>').map(|i| i + 1) {

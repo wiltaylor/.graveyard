@@ -117,7 +117,7 @@ pub struct Worker {
 
 /// A script-backed pseudo-agent. Unlike [`Agent`]/[`Worker`], an
 /// automaton is a pseudo-agent driven by a per-event backend rather
-/// than by an AI core. Two backends exist:
+/// than by an AI core. Three backends exist:
 ///
 /// - [`AutomatonBackend::Script`] — each delivered event spawns a
 ///   child process with the event written as a single JSON document
@@ -138,6 +138,13 @@ pub struct Worker {
 ///   traffic that a script-backed automaton would see on stdin.
 ///   `webhook` blocks mount as additional paths on this same
 ///   listener.
+/// - [`AutomatonBackend::Remote`] — client-side counterpart to
+///   `Webservice`. The automaton dials a remote aciddog's `/v1/rpc`
+///   + `/v1/events` endpoints and proxies them as a local fleet
+///   member. Local traffic becomes `send_message(to=remote_target)`
+///   RPCs against the remote; inbound SSE is delivered to a
+///   configured `deliver_to`. An optional `proxy_socket_path`
+///   exposes the full `RequestCmd` surface to local tools.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Automaton {
     pub id: String,
@@ -185,6 +192,31 @@ pub enum AutomatonBackend {
         /// [`WebserviceBind::UnixSocket`].
         api_key_env: Option<String>,
     },
+    /// Client-side counterpart to [`AutomatonBackend::Webservice`]: this
+    /// automaton *dials* a remote aciddog's webservice (HTTPS with an
+    /// API key, or a Unix socket on the local filesystem) and forwards
+    /// local traffic to a fixed identity on the remote. Local members
+    /// that message this automaton get their body sent to
+    /// `remote_target` on the remote; inbound SSE events from the
+    /// remote are delivered to `deliver_to` locally. An optional
+    /// `proxy_socket_path` mounts a local Unix socket that speaks the
+    /// same JSON-per-line wire format as the internal agent IPC, so
+    /// local tools can set `ACIDDOG_AGENT_SOCKET` to that path and
+    /// drive the full `RequestCmd` surface against the remote.
+    Remote {
+        transport: RemoteTransport,
+        /// Id on the remote instance that local messages are addressed
+        /// to. Free-form — validated only at runtime when the remote
+        /// rejects an unknown recipient.
+        remote_target: String,
+        /// Local agent/automaton id that receives inbound SSE events.
+        /// Validated at config load to reference a declared id.
+        deliver_to: String,
+        /// Optional Unix socket path — when set, a listener mounts that
+        /// socket and tunnels every JSON `RequestCmd` through to the
+        /// remote `/v1/rpc`. `None` ⇒ no tunnel, chat-only bridge.
+        proxy_socket_path: Option<PathBuf>,
+    },
 }
 
 /// Transport a webservice-backed automaton listens on.
@@ -196,6 +228,26 @@ pub enum WebserviceBind {
         address: String,
         tls_cert: PathBuf,
         tls_key: PathBuf,
+    },
+    UnixSocket {
+        path: PathBuf,
+    },
+}
+
+/// Transport a `:remote`-backed automaton dials to reach the remote
+/// aciddog instance.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RemoteTransport {
+    Https {
+        /// Base URL of the remote webservice, e.g. `https://host:8443`.
+        /// The client appends `/v1/rpc` and `/v1/events`.
+        url: String,
+        /// Env var holding the Bearer token sent in `Authorization`.
+        api_key_env: String,
+        /// Optional path to a PEM-encoded CA bundle used to verify the
+        /// remote's TLS certificate. `None` ⇒ use the system roots.
+        tls_ca: Option<PathBuf>,
     },
     UnixSocket {
         path: PathBuf,
@@ -1026,11 +1078,40 @@ pub enum ConfigError {
     #[error("automaton `{automaton}` env entry `{entry}` is malformed (expected `KEY=VAL`)")]
     BadEnvEntry { automaton: String, entry: String },
 
-    #[error("automaton `{automaton}` has unknown type `{type_name}` (expected `:script` or `:webservice`)")]
+    #[error("automaton `{automaton}` has unknown type `{type_name}` (expected `:script`, `:webservice`, or `:remote`)")]
     UnknownAutomatonType {
         automaton: String,
         type_name: String,
     },
+
+    #[error("automaton `{automaton}` is `:remote`-backed but sets field `{field}` (only valid on `:script` / `:webservice` backends)")]
+    RemoteUnexpectedField { automaton: String, field: String },
+
+    #[error(
+        "automaton `{automaton}` has both `url` (HTTPS) and `socket_path` (Unix) set — pick one"
+    )]
+    RemoteTransportConflict { automaton: String },
+
+    #[error("automaton `{automaton}` has no `url` or `socket_path` set — one is required for `:remote`")]
+    RemoteMissingTransport { automaton: String },
+
+    #[error("automaton `{automaton}` is an HTTPS `:remote` automaton; `api_key_env` is required")]
+    RemoteMissingApiKeyEnv { automaton: String },
+
+    #[error("automaton `{automaton}` is a Unix-socket `:remote` automaton; `api_key_env` is rejected (trust model is filesystem perms)")]
+    RemoteUnixSocketApiKey { automaton: String },
+
+    #[error("automaton `{automaton}` is a Unix-socket `:remote` automaton; `tls_ca` is rejected (no TLS on UDS)")]
+    RemoteUnixSocketTlsCa { automaton: String },
+
+    #[error("automaton `{automaton}` is `:remote`-backed; `remote_target` is required")]
+    RemoteMissingTarget { automaton: String },
+
+    #[error("automaton `{automaton}` is `:remote`-backed; `deliver_to` is required")]
+    RemoteMissingDeliverTo { automaton: String },
+
+    #[error("automaton `{automaton}` `deliver_to = \"{target}\"` does not reference a declared agent or automaton")]
+    RemoteUnknownDeliverTo { automaton: String, target: String },
 
     #[error("automaton `{automaton}` is `:webservice`-backed but sets script field `{field}` (only valid on `:script`-backed automatons)")]
     WebserviceUnexpectedScriptField { automaton: String, field: String },
@@ -1418,8 +1499,19 @@ fn parse_automaton(b: &wcl_lang::BlockRef) -> Result<Automaton, ConfigError> {
     let type_symbol = optional_symbol(b, "type")?;
     let backend = match type_symbol.as_deref() {
         None | Some("script") => {
-            // Webservice fields must not leak into a script backend.
-            for field in ["bind", "socket_path", "tls_cert", "tls_key", "api_key_env"] {
+            // Webservice / remote fields must not leak into a script backend.
+            for field in [
+                "bind",
+                "socket_path",
+                "tls_cert",
+                "tls_key",
+                "api_key_env",
+                "url",
+                "tls_ca",
+                "remote_target",
+                "deliver_to",
+                "proxy_socket_path",
+            ] {
                 if b.attributes.contains_key(field) {
                     return Err(ConfigError::ScriptUnexpectedWebserviceField {
                         automaton: id.clone(),
@@ -1449,7 +1541,18 @@ fn parse_automaton(b: &wcl_lang::BlockRef) -> Result<Automaton, ConfigError> {
             }
         }
         Some("webservice") => {
-            for field in ["command", "args", "cwd", "env", "timeout_seconds"] {
+            for field in [
+                "command",
+                "args",
+                "cwd",
+                "env",
+                "timeout_seconds",
+                "url",
+                "tls_ca",
+                "remote_target",
+                "deliver_to",
+                "proxy_socket_path",
+            ] {
                 if b.attributes.contains_key(field) {
                     return Err(ConfigError::WebserviceUnexpectedScriptField {
                         automaton: id.clone(),
@@ -1503,6 +1606,86 @@ fn parse_automaton(b: &wcl_lang::BlockRef) -> Result<Automaton, ConfigError> {
                 }
             };
             AutomatonBackend::Webservice { bind, api_key_env }
+        }
+        Some("remote") => {
+            for field in [
+                "command",
+                "args",
+                "cwd",
+                "env",
+                "timeout_seconds",
+                "bind",
+                "tls_cert",
+                "tls_key",
+            ] {
+                if b.attributes.contains_key(field) {
+                    return Err(ConfigError::RemoteUnexpectedField {
+                        automaton: id.clone(),
+                        field: field.to_string(),
+                    });
+                }
+            }
+            let has_url = b.attributes.contains_key("url");
+            let has_sock = b.attributes.contains_key("socket_path");
+            let api_key_env = optional_string(b, "api_key_env");
+            let tls_ca = optional_string(b, "tls_ca").map(PathBuf::from);
+            let transport = match (has_url, has_sock) {
+                (true, true) => {
+                    return Err(ConfigError::RemoteTransportConflict {
+                        automaton: id.clone(),
+                    })
+                }
+                (false, false) => {
+                    return Err(ConfigError::RemoteMissingTransport {
+                        automaton: id.clone(),
+                    })
+                }
+                (true, false) => {
+                    let url = require_string(b, "url")?;
+                    let api_key_env = api_key_env.ok_or_else(|| {
+                        ConfigError::RemoteMissingApiKeyEnv {
+                            automaton: id.clone(),
+                        }
+                    })?;
+                    RemoteTransport::Https {
+                        url,
+                        api_key_env,
+                        tls_ca,
+                    }
+                }
+                (false, true) => {
+                    if api_key_env.is_some() {
+                        return Err(ConfigError::RemoteUnixSocketApiKey {
+                            automaton: id.clone(),
+                        });
+                    }
+                    if tls_ca.is_some() {
+                        return Err(ConfigError::RemoteUnixSocketTlsCa {
+                            automaton: id.clone(),
+                        });
+                    }
+                    RemoteTransport::UnixSocket {
+                        path: PathBuf::from(require_string(b, "socket_path")?),
+                    }
+                }
+            };
+            let remote_target = require_string(b, "remote_target").map_err(|_| {
+                ConfigError::RemoteMissingTarget {
+                    automaton: id.clone(),
+                }
+            })?;
+            let deliver_to = require_string(b, "deliver_to").map_err(|_| {
+                ConfigError::RemoteMissingDeliverTo {
+                    automaton: id.clone(),
+                }
+            })?;
+            let proxy_socket_path = optional_string(b, "proxy_socket_path").map(PathBuf::from);
+            AutomatonBackend::Remote {
+                transport,
+                remote_target,
+                deliver_to,
+                proxy_socket_path,
+            }
         }
         Some(other) => {
             return Err(ConfigError::UnknownAutomatonType {
@@ -1881,7 +2064,9 @@ fn validate_webhooks(
 
 /// Mirror of [`validate_agent_refs`] for automaton `can_message`
 /// allowlists. An automaton may target either a declared agent,
-/// another declared automaton, or the reserved `user` id.
+/// another declared automaton, or the reserved `user` id. Also
+/// validates that `:remote`-backed automatons' `deliver_to` references
+/// a declared agent/automaton.
 fn validate_automaton_refs(agents: &[Agent], automatons: &[Automaton]) -> Result<(), ConfigError> {
     let mut known: std::collections::HashSet<&str> = agents
         .iter()
@@ -1899,6 +2084,14 @@ fn validate_automaton_refs(agents: &[Agent], automatons: &[Automaton]) -> Result
                         to: id.clone(),
                     });
                 }
+            }
+        }
+        if let AutomatonBackend::Remote { deliver_to, .. } = &a.backend {
+            if !known.contains(deliver_to.as_str()) {
+                return Err(ConfigError::RemoteUnknownDeliverTo {
+                    automaton: a.id.clone(),
+                    target: deliver_to.clone(),
+                });
             }
         }
     }

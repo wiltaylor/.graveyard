@@ -2141,6 +2141,21 @@ impl App {
                         format!("automaton (webservice unix:{})", path.display())
                     }
                 },
+                crate::config::AutomatonBackend::Remote {
+                    transport,
+                    remote_target,
+                    ..
+                } => match transport {
+                    crate::config::RemoteTransport::Https { url, .. } => {
+                        format!("automaton (remote {url} → {remote_target})")
+                    }
+                    crate::config::RemoteTransport::UnixSocket { path } => {
+                        format!(
+                            "automaton (remote unix:{} → {remote_target})",
+                            path.display()
+                        )
+                    }
+                },
             };
             let info = ChatBlock::agent_info(
                 label,
@@ -10841,6 +10856,20 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
                     events_tx,
                 ));
             }
+            crate::config::AutomatonBackend::Remote { .. } => {
+                let events_tx = socket.events_tx();
+                tokio::spawn(crate::remote_automaton::run_remote_core(
+                    idx,
+                    automaton.clone(),
+                    session_id,
+                    user_rx,
+                    agent_rx,
+                    channel_rx,
+                    cancel_rx,
+                    ai_tx.clone(),
+                    events_tx,
+                ));
+            }
         }
     }
 
@@ -11045,7 +11074,8 @@ pub(super) async fn run_automaton_core(
             env,
             timeout_seconds,
         } => (command, args, cwd, env, timeout_seconds),
-        crate::config::AutomatonBackend::Webservice { .. } => return,
+        crate::config::AutomatonBackend::Webservice { .. }
+        | crate::config::AutomatonBackend::Remote { .. } => return,
     };
 
     loop {
