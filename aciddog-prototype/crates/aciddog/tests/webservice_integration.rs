@@ -35,11 +35,13 @@ fn fake_state_with(
     let (events_tx, events_rx) = mpsc::channel::<AgentSocketEvent>(16);
     let (broadcast_tx, _) = broadcast::channel(16);
     let (chat_block_tx, _) = broadcast::channel(64);
+    let (channel_message_tx, _) = broadcast::channel(64);
     let state = WebserviceState {
         session_id: Uuid::new_v4(),
         events_tx,
         broadcast_tx,
         chat_block_tx: chat_block_tx.clone(),
+        channel_message_tx,
         is_supervisor,
         api_key: api_key.map(|s| std::sync::Arc::new(s.to_string())),
     };
@@ -113,6 +115,16 @@ async fn rpc_forwards_new_task_and_inbox_variants() {
         serde_json::json!({ "cmd": "task_list_json", "mine": false, "unassigned": false }),
         serde_json::json!({ "cmd": "inbox_list" }),
         serde_json::json!({ "cmd": "inbox_delete", "index": 0 }),
+        serde_json::json!({ "cmd": "team_info" }),
+        serde_json::json!({ "cmd": "channel_list" }),
+        serde_json::json!({ "cmd": "channel_history", "channel": "general" }),
+        serde_json::json!({ "cmd": "channel_send_as_user", "channel": "general", "body": "hi" }),
+        serde_json::json!({ "cmd": "memory_banks" }),
+        serde_json::json!({ "cmd": "memory_search_json", "bank": "notes" }),
+        serde_json::json!({
+            "cmd": "memory_store_json", "bank": "notes", "body": "hi"
+        }),
+        serde_json::json!({ "cmd": "memory_graph", "bank": "notes" }),
     ];
     for probe in probes {
         let req = Request::builder()

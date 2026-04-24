@@ -111,6 +111,80 @@ pub enum RequestCmd {
         task: Uuid,
         id: Uuid,
     },
+    // ---- Team ------------------------------------------------------
+    /// Supervisor snapshot of the team + AI core config. Response
+    /// carries `wire_team::WireTeamInfo` in `data`.
+    TeamInfo,
+    // ---- Memory ----------------------------------------------------
+    MemoryBanks,
+    MemorySearchJson {
+        bank: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title_contains: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        include_tags: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exclude_tags: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+    },
+    MemoryStoreJson {
+        bank: String,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tags: Vec<String>,
+    },
+    MemoryUpdate {
+        bank: String,
+        id: Uuid,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tags: Vec<String>,
+    },
+    MemoryRemove {
+        bank: String,
+        id: Uuid,
+    },
+    MemoryLinksJson {
+        bank: String,
+        id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        include_tags: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exclude_tags: Vec<String>,
+    },
+    MemoryLink {
+        bank: String,
+        from: Uuid,
+        to: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+    },
+    MemoryUnlink {
+        bank: String,
+        from: Uuid,
+        to: Uuid,
+    },
+    MemoryGraph {
+        bank: String,
+    },
+    // ---- Channels --------------------------------------------------
+    ChannelList,
+    ChannelHistory {
+        channel: String,
+    },
+    ChannelSendAsUser {
+        channel: String,
+        body: String,
+    },
     // ---- Inbox -----------------------------------------------------
     /// Supervisor snapshot of the human-operator inbox. Response
     /// carries `Vec<wire_inbox::WireInboxMessage>` in `data`.

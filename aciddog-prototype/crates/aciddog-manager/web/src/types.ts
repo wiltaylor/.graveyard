@@ -273,3 +273,173 @@ export interface InboxListResponse {
   messages: WireInboxMessage[];
   error?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Team
+// ---------------------------------------------------------------------------
+
+export type UsageProvider =
+  | "zai"
+  | "chatgpt_oauth"
+  | "openrouter"
+  | "github_copilot";
+
+export interface WireTeam {
+  id: string;
+  description: string;
+  replace_thinking_messages: boolean;
+  default_ai_core?: string;
+}
+
+export interface WireFleetCounts {
+  agents: number;
+  workers: number;
+  automatons: number;
+  channels: number;
+  workflows: number;
+}
+
+export interface WireAiCore {
+  id: string;
+  kind_label: string;
+  model?: string;
+  credential?: string;
+  default_tools?: string[];
+  has_system_prompt: boolean;
+  usage_provider?: UsageProvider;
+  is_team_default: boolean;
+  agents_using: string[];
+}
+
+export interface WireTeamInfo {
+  team: WireTeam;
+  ai_cores: WireAiCore[];
+  fleet: WireFleetCounts;
+}
+
+export interface TeamInfoResponse {
+  ok: boolean;
+  info?: WireTeamInfo;
+  error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Channels
+// ---------------------------------------------------------------------------
+
+export interface WireChannelInfo {
+  id: string;
+  description?: string;
+  welcome?: string;
+  members: string[];
+  message_count: number;
+}
+
+export interface WireChannelMessage {
+  sender: string;
+  body: string;
+  is_welcome: boolean;
+}
+
+export interface ChannelListResponse {
+  ok: boolean;
+  channels: WireChannelInfo[];
+  error?: string;
+}
+
+export interface ChannelHistoryResponse {
+  ok: boolean;
+  messages: WireChannelMessage[];
+  error?: string;
+}
+
+export interface ChannelMessageEvent {
+  channel: string;
+  sender: string;
+  body: string;
+  ts: string;
+  seq: number;
+}
+
+// ---------------------------------------------------------------------------
+// Memory
+// ---------------------------------------------------------------------------
+
+export interface WireBankInfo {
+  id: string;
+  description: string;
+  embed_model?: string;
+  entry_count: number;
+}
+
+export interface WireHit {
+  id: string;
+  title: string;
+  body: string;
+  tags: string[];
+  created_at: string;
+  distance?: number;
+}
+
+export type WireLinkDirection = "out" | "in" | "both";
+
+export interface WireLink {
+  peer_id: string;
+  peer_title: string;
+  peer_body: string;
+  peer_tags: string[];
+  kind: string;
+  direction: WireLinkDirection;
+  created_at: string;
+}
+
+export interface WireGraphNode {
+  id: string;
+  title: string;
+  tags: string[];
+  created_at: string;
+}
+
+export interface WireGraphEdge {
+  from: string;
+  to: string;
+  kind: string;
+  created_at: string;
+}
+
+export interface WireGraph {
+  bank: string;
+  nodes: WireGraphNode[];
+  edges: WireGraphEdge[];
+}
+
+export interface BanksResponse {
+  ok: boolean;
+  banks: WireBankInfo[];
+  error?: string;
+}
+
+export interface SearchResponse {
+  ok: boolean;
+  hits: WireHit[];
+  error?: string;
+}
+
+export interface LinksResponse {
+  ok: boolean;
+  links: WireLink[];
+  error?: string;
+}
+
+export interface GraphResponse {
+  ok: boolean;
+  graph?: WireGraph;
+  error?: string;
+}
+
+export interface MemoryMutationResponse {
+  ok: boolean;
+  message?: string;
+  error?: string;
+  id?: string;
+}

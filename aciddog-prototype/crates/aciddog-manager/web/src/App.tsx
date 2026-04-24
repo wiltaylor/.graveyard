@@ -1,19 +1,28 @@
 import { For, Show, createEffect, createResource, createSignal, type JSX } from "solid-js";
 import AddInstanceForm from "./components/AddInstanceForm";
+import ChannelView from "./components/ChannelView";
 import ChatPane from "./components/ChatPane";
 import InboxView from "./components/InboxView";
 import InstanceDetail from "./components/InstanceDetail";
 import InstanceTree from "./components/InstanceTree";
+import MemoryView from "./components/MemoryView";
 import TasksView from "./components/TasksView";
+import TeamView from "./components/TeamView";
 import { api } from "./api";
-import type { AgentListResponse, InstanceSummary } from "./types";
+import type {
+  AgentListResponse,
+  ChannelListResponse,
+  InstanceSummary,
+} from "./types";
 
-type TabId = "agents" | "tasks" | "inbox";
+type TabId = "team" | "agents" | "tasks" | "inbox" | "memory";
 
 const TABS: { id: TabId; label: string }[] = [
+  { id: "team", label: "Team" },
   { id: "agents", label: "Agents" },
   { id: "tasks", label: "Tasks" },
   { id: "inbox", label: "Inbox" },
+  { id: "memory", label: "Memory" },
 ];
 
 export default function App(): JSX.Element {
@@ -23,17 +32,24 @@ export default function App(): JSX.Element {
 
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
   const [selectedAgent, setSelectedAgent] = createSignal<string | null>(null);
-  const [activeTab, setActiveTab] = createSignal<TabId>("agents");
+  const [selectedChannel, setSelectedChannel] = createSignal<string | null>(
+    null,
+  );
+  const [activeTab, setActiveTab] = createSignal<TabId>("team");
   const [agentsByInstance, setAgentsByInstance] = createSignal<
     Record<string, AgentListResponse>
   >({});
+  const [channelsByInstance, setChannelsByInstance] = createSignal<
+    Record<string, ChannelListResponse>
+  >({});
 
-  // Changing instances resets both the agent selection and the tab —
-  // each instance gets a fresh Agents view.
+  // Changing instances resets the agent/channel selection and drops
+  // the user back on the Team overview tab.
   createEffect(() => {
     selectedId();
     setSelectedAgent(null);
-    setActiveTab("agents");
+    setSelectedChannel(null);
+    setActiveTab("team");
   });
 
   const loadAgents = async (id: string) => {
@@ -48,6 +64,23 @@ export default function App(): JSX.Element {
           agents: [],
           ok: false,
           raw: null,
+          error: message,
+        },
+      });
+    }
+  };
+
+  const loadChannels = async (id: string) => {
+    try {
+      const resp = await api.listChannels(id);
+      setChannelsByInstance({ ...channelsByInstance(), [id]: resp });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setChannelsByInstance({
+        ...channelsByInstance(),
+        [id]: {
+          channels: [],
+          ok: false,
           error: message,
         },
       });
@@ -69,6 +102,9 @@ export default function App(): JSX.Element {
       const rest = { ...agentsByInstance() };
       delete rest[deletedId];
       setAgentsByInstance(rest);
+      const restCh = { ...channelsByInstance() };
+      delete restCh[deletedId];
+      setChannelsByInstance(restCh);
     }
     await refetchInstances();
   };
@@ -97,15 +133,25 @@ export default function App(): JSX.Element {
               instances={instances() ?? []}
               selectedId={selectedId()}
               selectedAgent={selectedAgent()}
+              selectedChannel={selectedChannel()}
               onSelect={setSelectedId}
               onSelectAgent={(instId, agentId) => {
                 setSelectedId(instId);
                 setSelectedAgent(agentId);
+                setSelectedChannel(null);
+                setActiveTab("agents");
+              }}
+              onSelectChannel={(instId, channelId) => {
+                setSelectedId(instId);
+                setSelectedChannel(channelId);
+                setSelectedAgent(null);
                 setActiveTab("agents");
               }}
               agentsFor={(id) => agentsByInstance()[id]}
+              channelsFor={(id) => channelsByInstance()[id]}
               onExpand={(id) => {
                 if (!agentsByInstance()[id]) loadAgents(id);
+                if (!channelsByInstance()[id]) loadChannels(id);
               }}
             />
           </Show>
@@ -137,7 +183,10 @@ export default function App(): JSX.Element {
                       type="button"
                       onClick={() => {
                         setActiveTab(tab.id);
-                        if (tab.id !== "agents") setSelectedAgent(null);
+                        if (tab.id !== "agents") {
+                          setSelectedAgent(null);
+                          setSelectedChannel(null);
+                        }
                       }}
                       class="px-3 py-1.5 text-sm border-b-2 -mb-px"
                       classList={{
@@ -154,26 +203,48 @@ export default function App(): JSX.Element {
               </nav>
 
               <div class="flex-1 overflow-hidden">
+                <Show when={activeTab() === "team"}>
+                  <TeamView instanceId={inst().id} />
+                </Show>
+
                 <Show when={activeTab() === "agents"}>
                   <Show
-                    when={selectedAgent()}
+                    when={selectedChannel()}
                     fallback={
-                      <div class="p-6 overflow-y-auto h-full">
-                        <InstanceDetail
-                          instance={inst()}
-                          agents={agentsByInstance()[inst().id]}
-                          onRefreshAgents={() => loadAgents(inst().id)}
-                          onDeleted={handleDeleted}
-                          onSelectAgent={(agentId) => setSelectedAgent(agentId)}
-                        />
-                      </div>
+                      <Show
+                        when={selectedAgent()}
+                        fallback={
+                          <div class="p-6 overflow-y-auto h-full">
+                            <InstanceDetail
+                              instance={inst()}
+                              agents={agentsByInstance()[inst().id]}
+                              onRefreshAgents={() => loadAgents(inst().id)}
+                              onDeleted={handleDeleted}
+                              onSelectAgent={(agentId) =>
+                                setSelectedAgent(agentId)
+                              }
+                            />
+                          </div>
+                        }
+                      >
+                        {(agent) => (
+                          <ChatPane
+                            instanceId={inst().id}
+                            agent={agent()}
+                            onClose={() => setSelectedAgent(null)}
+                          />
+                        )}
+                      </Show>
                     }
                   >
-                    {(agent) => (
-                      <ChatPane
+                    {(channel) => (
+                      <ChannelView
                         instanceId={inst().id}
-                        agent={agent()}
-                        onClose={() => setSelectedAgent(null)}
+                        channel={channel()}
+                        info={channelsByInstance()[inst().id]?.channels.find(
+                          (c) => c.id === channel(),
+                        )}
+                        onClose={() => setSelectedChannel(null)}
                       />
                     )}
                   </Show>
@@ -191,6 +262,10 @@ export default function App(): JSX.Element {
                     instanceId={inst().id}
                     agents={agentsByInstance()[inst().id]?.agents ?? []}
                   />
+                </Show>
+
+                <Show when={activeTab() === "memory"}>
+                  <MemoryView instanceId={inst().id} />
                 </Show>
               </div>
             </>

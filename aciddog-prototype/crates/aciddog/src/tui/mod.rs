@@ -15,4 +15,5 @@ mod workflow_view;
 
 pub use app::run;
 pub use blocks::{ChatBlock, MailDirection, SystemKind, TaskOpKind};
+pub use cores_view::agents_using_core;
 pub use inbox_view::InboxMessage;

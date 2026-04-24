@@ -883,13 +883,26 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             ChatBlock::task_op(k, s, b)
         }
         RequestCmd::MemorySearch { .. } => ChatBlock::from_tool_use("aciddog memory search", input),
+        RequestCmd::MemorySearchJson { .. } => {
+            ChatBlock::from_tool_use("aciddog memory search --json", input)
+        }
         RequestCmd::MemoryStore { .. } => ChatBlock::from_tool_use("aciddog memory store", input),
+        RequestCmd::MemoryStoreJson { .. } => {
+            ChatBlock::from_tool_use("aciddog memory store --json", input)
+        }
         RequestCmd::MemoryUpdate { .. } => ChatBlock::from_tool_use("aciddog memory update", input),
         RequestCmd::MemoryRemove { .. } => ChatBlock::from_tool_use("aciddog memory remove", input),
         RequestCmd::MemoryShow { .. } => ChatBlock::from_tool_use("aciddog memory show", input),
         RequestCmd::MemoryLink { .. } => ChatBlock::from_tool_use("aciddog memory link", input),
         RequestCmd::MemoryUnlink { .. } => ChatBlock::from_tool_use("aciddog memory unlink", input),
         RequestCmd::MemoryLinks { .. } => ChatBlock::from_tool_use("aciddog memory links", input),
+        RequestCmd::MemoryLinksJson { .. } => {
+            ChatBlock::from_tool_use("aciddog memory links --json", input)
+        }
+        RequestCmd::MemoryBanks => ChatBlock::from_tool_use("aciddog memory banks", input),
+        RequestCmd::MemoryGraph { bank } => {
+            ChatBlock::from_tool_use(&format!("aciddog memory graph --bank {bank}"), input)
+        }
         RequestCmd::Info => ChatBlock::from_tool_use("aciddog info", input),
         RequestCmd::CronAdd { .. } => ChatBlock::from_tool_use("aciddog cron add", input),
         RequestCmd::CronList { .. } => ChatBlock::from_tool_use("aciddog cron list", input),
@@ -928,6 +941,15 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         }
         RequestCmd::AgentSendAsUser { to, body } => {
             ChatBlock::mail_sent(format!("{to} (as user)"), body)
+        }
+        RequestCmd::TeamInfo => ChatBlock::from_tool_use("aciddog team info", input),
+        RequestCmd::ChannelList => ChatBlock::from_tool_use("aciddog channel list", input),
+        RequestCmd::ChannelHistory { channel } => ChatBlock::from_tool_use(
+            &format!("aciddog channel history --id {channel}"),
+            input,
+        ),
+        RequestCmd::ChannelSendAsUser { channel, body } => {
+            ChatBlock::channel_message("user".to_string(), format!("→ #{channel}: {body}"))
         }
         RequestCmd::InboxList => ChatBlock::from_tool_use("aciddog inbox list", input),
         RequestCmd::InboxDelete { index } => {
@@ -2221,6 +2243,13 @@ pub struct App {
     /// Kept at the `App` level so worker-spawn paths can attach this
     /// sink to the new chat at construction time.
     pub chat_block_tx: broadcast::Sender<crate::wire_chat::ChatBlockEvent>,
+    /// Broadcast sender for channel wire events. Fed from
+    /// [`App::broadcast_to_channel`] every time a message is
+    /// appended to any channel's transcript — regardless of whether
+    /// the webservice automaton is a member of that channel — so the
+    /// supervisor-scoped `/v1/channel/events` stream can follow any
+    /// channel.
+    pub channel_message_tx: broadcast::Sender<crate::wire_channel::ChannelMessageEvent>,
 }
 
 /// Time window for detecting a double-click. Matches the typical
@@ -2349,6 +2378,13 @@ impl App {
         for chat in &mut chats {
             chat.chat_block_tx = Some(chat_block_tx.clone());
         }
+        // Parallel broadcaster for channel messages — fed from
+        // `broadcast_to_channel` so the supervisor SSE stream can
+        // observe any channel regardless of local membership.
+        let (channel_message_tx, _channel_keepalive_rx) =
+            broadcast::channel::<crate::wire_channel::ChannelMessageEvent>(
+                CHAT_BLOCK_BROADCAST_CAPACITY,
+            );
         Self {
             config,
             selected: 0,
@@ -2357,6 +2393,7 @@ impl App {
             focus: Focus::Chat,
             chats,
             chat_block_tx,
+            channel_message_tx,
             layout: LayoutRects::default(),
             copied_at: None,
             agent_ids: HashMap::new(),
@@ -2972,6 +3009,56 @@ impl App {
                     reply,
                 );
             }
+            RequestCmd::MemoryBanks => {
+                self.handle_admin_memory_banks(idx, reply);
+            }
+            RequestCmd::MemorySearchJson {
+                bank,
+                query,
+                title_contains,
+                include_tags,
+                exclude_tags,
+                limit,
+            } => {
+                self.handle_admin_memory_search_json(
+                    idx,
+                    bank,
+                    query,
+                    title_contains,
+                    include_tags,
+                    exclude_tags,
+                    limit,
+                    reply,
+                );
+            }
+            RequestCmd::MemoryStoreJson {
+                bank,
+                body,
+                title,
+                tags,
+            } => {
+                self.handle_admin_memory_store_json(idx, bank, body, title, tags, reply);
+            }
+            RequestCmd::MemoryLinksJson {
+                bank,
+                id,
+                direction,
+                include_tags,
+                exclude_tags,
+            } => {
+                self.handle_admin_memory_links_json(
+                    idx,
+                    bank,
+                    id,
+                    direction,
+                    include_tags,
+                    exclude_tags,
+                    reply,
+                );
+            }
+            RequestCmd::MemoryGraph { bank } => {
+                self.handle_admin_memory_graph(idx, bank, reply);
+            }
             RequestCmd::Info => {
                 self.handle_info(reply);
             }
@@ -3086,6 +3173,18 @@ impl App {
             }
             RequestCmd::AgentSendAsUser { to, body } => {
                 self.handle_admin_agent_send_as_user(idx, to, body, reply);
+            }
+            RequestCmd::TeamInfo => {
+                self.handle_admin_team_info(idx, reply);
+            }
+            RequestCmd::ChannelList => {
+                self.handle_admin_channel_list(idx, reply);
+            }
+            RequestCmd::ChannelHistory { channel } => {
+                self.handle_admin_channel_history(idx, channel, reply);
+            }
+            RequestCmd::ChannelSendAsUser { channel, body } => {
+                self.handle_admin_channel_send_as_user(idx, channel, body, reply);
             }
             RequestCmd::InboxList => {
                 self.handle_admin_inbox_list(idx, reply);
@@ -4074,6 +4173,7 @@ impl App {
         );
 
         // Find channel state + append display block + disk line.
+        let mut emitted_seq: Option<u64> = None;
         if let Some(ch_state) = self.channels.iter_mut().find(|c| c.id == channel_id) {
             ch_state
                 .blocks
@@ -4084,6 +4184,31 @@ impl App {
                     tracing::warn!(channel = %channel_id, error = %e, "failed to append channel log");
                 }
             }
+            // Seq counts visible messages excluding the welcome
+            // banner (if any) so web clients can detect gaps on
+            // reconnect.
+            let seq = ch_state
+                .blocks
+                .iter()
+                .filter(|b| matches!(b, ChatBlock::ChannelMessage { is_welcome: false, .. }))
+                .count()
+                .saturating_sub(1) as u64;
+            emitted_seq = Some(seq);
+        }
+
+        // Fan out to the supervisor SSE broadcaster. `receiver_count`
+        // is typically 0 when no portal is attached, so the send is
+        // effectively free — but we still skip the struct build in
+        // that case.
+        if self.channel_message_tx.receiver_count() > 0 {
+            let ev = crate::wire_channel::ChannelMessageEvent {
+                channel: channel_id.clone(),
+                sender: from_label.clone(),
+                body: body.clone(),
+                ts: chrono::Utc::now().to_rfc3339(),
+                seq: emitted_seq.unwrap_or(0),
+            };
+            let _ = self.channel_message_tx.send(ev);
         }
 
         // Enqueue payload on every other member's channel_tx. When
@@ -4772,6 +4897,160 @@ impl App {
             }
             Err(e) => {
                 let _ = reply.send(Response::err(format!("serialize tasks: {e}")));
+            }
+        }
+    }
+
+    /// Supervisor: list every declared channel with member ids and
+    /// in-memory message count. Channels defined in the WCL config
+    /// appear even if no live `ChannelState` exists yet (for runtime-
+    /// created channels the state is the authority).
+    fn handle_admin_channel_list(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        // Walk declared channels first (preserving config order); then
+        // append any ephemeral runtime channels that aren't in the
+        // config yet.
+        let mut infos: Vec<crate::wire_channel::WireChannelInfo> = Vec::new();
+        for cfg in &self.config.channels {
+            let state = self.channels.iter().find(|c| c.id == cfg.id);
+            let message_count = state
+                .map(|s| {
+                    s.blocks
+                        .iter()
+                        .filter(|b| {
+                            matches!(b, ChatBlock::ChannelMessage { is_welcome: false, .. })
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            infos.push(crate::wire_channel::WireChannelInfo {
+                id: cfg.id.clone(),
+                description: cfg.description.clone(),
+                welcome: cfg.welcome.clone(),
+                members: cfg.members.clone(),
+                message_count,
+            });
+        }
+        for state in &self.channels {
+            if self.config.channels.iter().any(|c| c.id == state.id) {
+                continue;
+            }
+            let message_count = state
+                .blocks
+                .iter()
+                .filter(|b| matches!(b, ChatBlock::ChannelMessage { is_welcome: false, .. }))
+                .count();
+            infos.push(crate::wire_channel::WireChannelInfo {
+                id: state.id.clone(),
+                description: None,
+                welcome: None,
+                members: state.members.clone(),
+                message_count,
+            });
+        }
+        match serde_json::to_value(&infos) {
+            Ok(v) => {
+                let _ = reply.send(Response::ok_data(v));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(format!("serialize channel list: {e}")));
+            }
+        }
+    }
+
+    /// Supervisor: transcript of a single channel in oldest-first
+    /// order. Welcome banner (if any) appears first with `is_welcome =
+    /// true`.
+    fn handle_admin_channel_history(
+        &mut self,
+        sender_idx: usize,
+        channel: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let Some(state) = self.channels.iter().find(|c| c.id == channel) else {
+            let _ = reply.send(Response::err(format!("unknown channel `{channel}`")));
+            return;
+        };
+        let mut out: Vec<crate::wire_channel::WireChannelMessage> = Vec::new();
+        for block in &state.blocks {
+            if let ChatBlock::ChannelMessage {
+                sender,
+                body,
+                is_welcome,
+            } = block
+            {
+                out.push(crate::wire_channel::WireChannelMessage {
+                    sender: sender.clone(),
+                    body: body.clone(),
+                    is_welcome: *is_welcome,
+                });
+            }
+        }
+        match serde_json::to_value(&out) {
+            Ok(v) => {
+                let _ = reply.send(Response::ok_data(v));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(format!(
+                    "serialize channel history: {e}"
+                )));
+            }
+        }
+    }
+
+    /// Supervisor: post into `channel` as if the human operator typed
+    /// it into the TUI's channel input box. Delegates to the same
+    /// `broadcast_to_channel` path with `ChannelSender::User` so
+    /// membership validation, `@mention` routing, disk logging, and
+    /// per-recipient delivery all behave identically to the TUI.
+    fn handle_admin_channel_send_as_user(
+        &mut self,
+        sender_idx: usize,
+        channel: String,
+        body: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let body = body.trim().to_string();
+        if body.is_empty() {
+            let _ = reply.send(Response::err("body is empty"));
+            return;
+        }
+        self.broadcast_to_channel(ChannelSender::User, channel, body, reply);
+    }
+
+    /// Supervisor: snapshot the running team + AI cores config.
+    /// Returns a [`crate::wire_team::WireTeamInfo`] in `Response::data`.
+    fn handle_admin_team_info(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let info = crate::wire_team::WireTeamInfo::project(&self.config);
+        match serde_json::to_value(&info) {
+            Ok(v) => {
+                let _ = reply.send(Response::ok_data(v));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(format!("serialize team info: {e}")));
             }
         }
     }
@@ -5722,15 +6001,16 @@ impl App {
     }
 
     /// Resolve the sender's template id for `memory_banks` allowlist
-    /// checks. Configured agents use their agent id; workers use their
-    /// spawn template id (the `memory_banks` list lives on the
-    /// template, not the running instance).
+    /// checks. Configured agents and automatons use their declared id
+    /// (same as their chat `display_name`); workers use the spawn
+    /// template id (the `memory_banks` list lives on the template,
+    /// not the running instance).
     fn sender_template_id(&self, sender_idx: usize) -> Option<String> {
         let chat = self.chats.get(sender_idx)?;
         if let Some(tpl) = &chat.worker_template {
             return Some(tpl.clone());
         }
-        self.config.agents.get(sender_idx).map(|a| a.id.clone())
+        Some(chat.display_name.clone())
     }
 
     fn handle_memory_search(
@@ -5892,6 +6172,320 @@ impl App {
         }
     }
 
+    /// Supervisor: list declared memory banks with entry counts.
+    /// Returns `Vec<WireBankInfo>` in `Response::data`. Entry counts
+    /// come from a cheap `search(None, large_limit)` per bank; for
+    /// the demo scale this is well under 10ms.
+    fn handle_admin_memory_banks(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let Some(registry) = self.memory.clone() else {
+            let _ = reply.send(Response::err(
+                "memory registry is not initialised on this orchestrator",
+            ));
+            return;
+        };
+        let banks = self.config.memory_banks.clone();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                let mut out: Vec<crate::wire_memory::WireBankInfo> = Vec::new();
+                for bank in &banks {
+                    let opts = crate::memory::SearchOptions {
+                        query: None,
+                        title_contains: None,
+                        tags: crate::memory::TagFilter::default(),
+                        // Cozo's `:limit` can't accept usize::MAX-sized
+                        // integers — 10k is well beyond any demo/teamscale
+                        // bank and safely fits an i64.
+                        limit: 10_000,
+                    };
+                    let count = registry
+                        .search(bank, opts)
+                        .map(|hits| hits.len())
+                        .unwrap_or(0);
+                    out.push(crate::wire_memory::WireBankInfo {
+                        id: bank.id.clone(),
+                        description: bank.description.clone(),
+                        embed_model: bank.embed_model.clone(),
+                        entry_count: count,
+                    });
+                }
+                out
+            })
+            .await;
+            match result {
+                Ok(out) => match serde_json::to_value(&out) {
+                    Ok(v) => {
+                        let _ = reply.send(Response::ok_data(v));
+                    }
+                    Err(e) => {
+                        let _ = reply.send(Response::err(format!(
+                            "serialize memory banks: {e}"
+                        )));
+                    }
+                },
+                Err(join_err) => {
+                    let _ = reply.send(Response::err(format!(
+                        "memory banks task: {join_err}"
+                    )));
+                }
+            }
+        });
+    }
+
+    /// Supervisor structured variant of `handle_memory_search`.
+    /// Returns `Vec<WireHit>` via `Response::data`.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_admin_memory_search_json(
+        &mut self,
+        sender_idx: usize,
+        bank: String,
+        query: Option<String>,
+        title_contains: Option<String>,
+        include_tags: Vec<String>,
+        exclude_tags: Vec<String>,
+        limit: Option<usize>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let (registry, bank_decl) = match self.resolve_memory(sender_idx, &bank) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+                return;
+            }
+        };
+        let opts = crate::memory::SearchOptions {
+            query,
+            title_contains,
+            tags: crate::memory::TagFilter {
+                include: include_tags,
+                exclude: exclude_tags,
+            },
+            limit: limit.unwrap_or(50).max(1),
+        };
+        tokio::spawn(async move {
+            let result =
+                tokio::task::spawn_blocking(move || registry.search(&bank_decl, opts)).await;
+            match result {
+                Ok(Ok(hits)) => {
+                    let wire: Vec<crate::wire_memory::WireHit> =
+                        hits.iter().map(Into::into).collect();
+                    match serde_json::to_value(&wire) {
+                        Ok(v) => {
+                            let _ = reply.send(Response::ok_data(v));
+                        }
+                        Err(e) => {
+                            let _ = reply
+                                .send(Response::err(format!("serialize hits: {e}")));
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    let _ = reply.send(Response::err(e.to_string()));
+                }
+                Err(join_err) => {
+                    let _ = reply
+                        .send(Response::err(format!("memory search task: {join_err}")));
+                }
+            }
+        });
+    }
+
+    /// Structured `MemoryStore` — returns `{"id": <uuid>}` in data.
+    fn handle_admin_memory_store_json(
+        &mut self,
+        sender_idx: usize,
+        bank: String,
+        body: String,
+        title: Option<String>,
+        tags: Vec<String>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let (registry, bank_decl) = match self.resolve_memory(sender_idx, &bank) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+                return;
+            }
+        };
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                registry.store(&bank_decl, &body, title.as_deref(), &tags)
+            })
+            .await;
+            match result {
+                Ok(Ok(id)) => {
+                    let _ = reply
+                        .send(Response::ok_data(serde_json::json!({ "id": id })));
+                }
+                Ok(Err(e)) => {
+                    let _ = reply.send(Response::err(e.to_string()));
+                }
+                Err(join_err) => {
+                    let _ = reply
+                        .send(Response::err(format!("memory store task: {join_err}")));
+                }
+            }
+        });
+    }
+
+    /// Structured `MemoryLinks` — returns `Vec<WireLink>` in data.
+    fn handle_admin_memory_links_json(
+        &mut self,
+        sender_idx: usize,
+        bank: String,
+        id: Uuid,
+        direction: Option<String>,
+        include_tags: Vec<String>,
+        exclude_tags: Vec<String>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let dir = match direction.as_deref() {
+            None => crate::memory::LinkDirection::Both,
+            Some(s) => match crate::memory::LinkDirection::parse(s) {
+                Some(d) => d,
+                None => {
+                    let _ = reply.send(Response::err(format!(
+                        "unknown direction `{s}`; expected `out`, `in`, or `both`"
+                    )));
+                    return;
+                }
+            },
+        };
+        let (registry, bank_decl) = match self.resolve_memory(sender_idx, &bank) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+                return;
+            }
+        };
+        let tag_filter = crate::memory::TagFilter {
+            include: include_tags,
+            exclude: exclude_tags,
+        };
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                registry.links(&bank_decl, id, dir, &tag_filter)
+            })
+            .await;
+            match result {
+                Ok(Ok(links)) => {
+                    let wire: Vec<crate::wire_memory::WireLink> =
+                        links.iter().map(Into::into).collect();
+                    match serde_json::to_value(&wire) {
+                        Ok(v) => {
+                            let _ = reply.send(Response::ok_data(v));
+                        }
+                        Err(e) => {
+                            let _ = reply
+                                .send(Response::err(format!("serialize links: {e}")));
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    let _ = reply.send(Response::err(e.to_string()));
+                }
+                Err(join_err) => {
+                    let _ = reply
+                        .send(Response::err(format!("memory links task: {join_err}")));
+                }
+            }
+        });
+    }
+
+    /// Supervisor full-bank graph: nodes + edges. Does one scan for
+    /// nodes (relational list) and walks outgoing links per node —
+    /// O(N) queries per call. Acceptable for demo-scale banks; a
+    /// proper bulk query can come later.
+    fn handle_admin_memory_graph(
+        &mut self,
+        sender_idx: usize,
+        bank: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let (registry, bank_decl) = match self.resolve_memory(sender_idx, &bank) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+                return;
+            }
+        };
+        let bank_id = bank.clone();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                let opts = crate::memory::SearchOptions {
+                    query: None,
+                    title_contains: None,
+                    tags: crate::memory::TagFilter::default(),
+                    // Cozo's `:limit` can't accept usize::MAX-sized
+                    // integers — 10k is well beyond any demo/teamscale
+                    // bank and safely fits an i64.
+                    limit: 10_000,
+                };
+                let hits = registry.search(&bank_decl, opts)?;
+                let mut nodes: Vec<crate::wire_memory::WireGraphNode> =
+                    Vec::with_capacity(hits.len());
+                let mut edges: Vec<crate::wire_memory::WireGraphEdge> = Vec::new();
+                let empty_filter = crate::memory::TagFilter::default();
+                for hit in &hits {
+                    nodes.push(crate::wire_memory::WireGraphNode {
+                        id: hit.id,
+                        title: hit.title.clone(),
+                        tags: hit.tags.clone(),
+                        created_at: hit.created_at,
+                    });
+                    // Outgoing-only to avoid double-counting edges.
+                    let outgoing = registry.links(
+                        &bank_decl,
+                        hit.id,
+                        crate::memory::LinkDirection::Out,
+                        &empty_filter,
+                    )?;
+                    for link in outgoing {
+                        edges.push(crate::wire_memory::WireGraphEdge {
+                            from: hit.id,
+                            to: link.peer_id,
+                            kind: link.kind,
+                            created_at: link.created_at,
+                        });
+                    }
+                }
+                Ok::<_, crate::memory::MemoryError>(
+                    crate::wire_memory::WireGraph {
+                        bank: bank_id,
+                        nodes,
+                        edges,
+                    },
+                )
+            })
+            .await;
+            match result {
+                Ok(Ok(graph)) => match serde_json::to_value(&graph) {
+                    Ok(v) => {
+                        let _ = reply.send(Response::ok_data(v));
+                    }
+                    Err(e) => {
+                        let _ = reply
+                            .send(Response::err(format!("serialize graph: {e}")));
+                    }
+                },
+                Ok(Err(e)) => {
+                    let _ = reply.send(Response::err(e.to_string()));
+                }
+                Err(join_err) => {
+                    let _ = reply
+                        .send(Response::err(format!("memory graph task: {join_err}")));
+                }
+            }
+        });
+    }
+
     /// Shared access-control + bank-lookup prelude for the link
     /// handlers. On failure returns the error string the caller should
     /// echo back to the agent; on success returns the registry handle
@@ -5904,7 +6498,12 @@ impl App {
         let template_id = self
             .sender_template_id(sender_idx)
             .ok_or_else(|| "unknown sender".to_string())?;
-        if !self.config.can_access_bank(&template_id, bank) {
+        // Supervisors (agents or webservice automatons flagged
+        // `supervisor = true`) bypass the per-agent `memory_banks`
+        // allowlist. Typical use: the manager web portal's gateway
+        // automaton reads/writes every bank on behalf of the human
+        // operator.
+        if !self.is_supervisor(sender_idx) && !self.config.can_access_bank(&template_id, bank) {
             return Err(format!(
                 "bank `{bank}` is not accessible to `{template_id}`"
             ));
@@ -11683,6 +12282,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
                     .collect();
                 let events_tx = socket.events_tx();
                 let chat_block_tx = app.chat_block_tx.clone();
+                let channel_message_tx = app.channel_message_tx.clone();
                 tokio::spawn(crate::webservice::run_webservice_core(
                     idx,
                     automaton.clone(),
@@ -11695,6 +12295,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
                     ai_tx.clone(),
                     events_tx,
                     chat_block_tx,
+                    channel_message_tx,
                 ));
             }
             crate::config::AutomatonBackend::Remote { .. } => {

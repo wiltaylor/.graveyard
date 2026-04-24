@@ -1,13 +1,20 @@
 import { For, Show, createSignal, type JSX } from "solid-js";
-import type { AgentListResponse, InstanceSummary } from "../types";
+import type {
+  AgentListResponse,
+  ChannelListResponse,
+  InstanceSummary,
+} from "../types";
 
 interface Props {
   instances: InstanceSummary[];
   selectedId: string | null;
   selectedAgent: string | null;
+  selectedChannel: string | null;
   onSelect: (id: string) => void;
   onSelectAgent: (instanceId: string, agentId: string) => void;
+  onSelectChannel: (instanceId: string, channelId: string) => void;
   agentsFor: (id: string) => AgentListResponse | undefined;
+  channelsFor: (id: string) => ChannelListResponse | undefined;
   onExpand: (id: string) => void;
 }
 
@@ -37,6 +44,7 @@ export default function InstanceTree(props: Props): JSX.Element {
             const open = () => !!expanded()[inst.id];
             const selected = () => props.selectedId === inst.id;
             const agents = () => props.agentsFor(inst.id);
+            const channels = () => props.channelsFor(inst.id);
             return (
               <li>
                 <div
@@ -100,6 +108,59 @@ export default function InstanceTree(props: Props): JSX.Element {
                                     {agent.id}{" "}
                                     <span class="text-xs text-slate-500">
                                       ({agent.kind} · {agent.status})
+                                    </span>
+                                  </button>
+                                </li>
+                              );
+                            }}
+                          </For>
+                        </Show>
+                      )}
+                    </Show>
+                    <li class="mt-2 text-slate-400 uppercase text-xs tracking-wider">
+                      Channels
+                    </li>
+                    <Show
+                      when={channels()}
+                      fallback={
+                        <li class="text-slate-500 italic">Loading…</li>
+                      }
+                    >
+                      {(resp) => (
+                        <Show
+                          when={resp().ok && resp().channels.length > 0}
+                          fallback={
+                            <li class="text-slate-500 italic">
+                              {resp().error ?? "No channels declared."}
+                            </li>
+                          }
+                        >
+                          <For each={resp().channels}>
+                            {(channel) => {
+                              const isSelected = () =>
+                                props.selectedId === inst.id &&
+                                props.selectedChannel === channel.id;
+                              return (
+                                <li>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      props.onSelectChannel(
+                                        inst.id,
+                                        channel.id,
+                                      );
+                                    }}
+                                    class="w-full text-left rounded px-2 py-0.5 text-slate-200 hover:bg-slate-800"
+                                    classList={{
+                                      "bg-slate-700 text-slate-50": isSelected(),
+                                    }}
+                                  >
+                                    <span class="text-slate-400">#</span>
+                                    {channel.id}{" "}
+                                    <span class="text-xs text-slate-500">
+                                      ({channel.members.length} members ·{" "}
+                                      {channel.message_count} msgs)
                                     </span>
                                   </button>
                                 </li>

@@ -8,10 +8,9 @@
 //
 // The two instances communicate over a Unix socket at
 // `/tmp/aciddog-remote-demo.sock`. The server hosts a `:webservice`
-// automaton (`gateway`) bound to that path plus a Claude Code agent
-// (`harbor`) that receives the forwarded traffic; the client dials
-// the socket with a `:remote` automaton that proxies `harbor` as a
-// local fleet member.
+// automaton (`gateway`) bound to that path plus a small Claude Code
+// team; the client dials the socket with a `:remote` automaton that
+// proxies `harbor` as a local fleet member.
 //
 // Message flow:
 //
@@ -94,8 +93,21 @@ schema "automaton" {
   }
 }
 
+schema "memory_bank" {
+  id: identifier @inline(0)
+  description: string
+  embed_model: string @optional
+}
+
+schema "channel" {
+  id: identifier @inline(0)
+  description: string @optional
+  welcome: string @optional
+  members: list(string)
+}
+
 team server {
-  description    = "Remote-demo server. Unix-socket webservice + local Claude Code agent."
+  description    = "Remote-demo server. Unix-socket webservice + a small Claude Code team."
   default_ai_core = "default_core"
 }
 
@@ -109,22 +121,74 @@ ai_core default_core {
   EOT
 }
 
-// The agent that receives traffic forwarded from the client side.
-// Replies it sends back to `gateway` are broadcast over SSE and land
-// in the client's `scout` pane.
+// Shared memory bank. Every agent below lists it in `memory_banks`
+// so they can jot durable facts (e.g. decisions reached in
+// `#planning`) and look them up on later turns.
+memory_bank team_notes {
+  description = "Durable notes shared across the remote-demo server team: decisions, conventions, quirks, and anything worth a future agent's attention."
+}
+
+// harbor is the front-door agent: mail from the client arrives here
+// via `gateway`, and this agent's replies go back out the same way.
 agent harbor {
-  role             = "server-side demo agent"
+  role             = "server-side front door"
   role_description = <<EOT
     You are the server-side agent in a two-instance aciddog demo. Messages you receive came from the client instance via the `gateway` bridge. When you reply, `send --to gateway` and the reply will flow back to the client.
+
+    You can delegate to teammates by `send --to planner` or `send --to librarian`, and you can chat with the team in `#planning` or `#library`. Check `team_notes` before asking questions the memory bank already answers.
   EOT
   model        = "claude-haiku-4-5"
-  instructions = "Respond conversationally to whatever the client sends. Send your reply via `aciddog send --to gateway <body>` so it reaches the client."
-  can_message  = ["gateway", "user"]
+  instructions = "Respond conversationally. Use `aciddog send --to gateway <body>` to reply to the client. Delegate work to `planner` or `librarian` when it's outside your scope."
+  can_message  = ["gateway", "planner", "librarian", "user"]
+  memory_banks = ["team_notes"]
+}
+
+// planner owns scope + sequencing. A pushy but terse PM-style voice;
+// delegates to librarian for any lookup work.
+agent planner {
+  role             = "scope + sequencing"
+  role_description = <<EOT
+    You break multi-step asks into small, ordered steps. You do not execute the steps yourself — delegate to `harbor` (for replies back to the client) or `librarian` (for lookup + memory bank writes).
+  EOT
+  model        = "claude-haiku-4-5"
+  instructions = "When asked to plan, produce 2–5 numbered steps and suggest which teammate owns each. Keep it to a few lines."
+  can_message  = ["harbor", "librarian", "user"]
+  memory_banks = ["team_notes"]
+}
+
+// librarian curates the shared memory bank.
+agent librarian {
+  role             = "memory + lookups"
+  role_description = <<EOT
+    You curate `team_notes` — store durable facts, look them up when teammates ask, and keep entries terse. If asked for something you don't know, say so plainly.
+  EOT
+  model        = "claude-haiku-4-5"
+  instructions = "Prefer `aciddog memory search team_notes <query>` before answering from first principles. Store anything that looks like a decision or convention with `aciddog memory store team_notes`."
+  can_message  = ["harbor", "planner", "user"]
+  memory_banks = ["team_notes"]
+}
+
+// Channels for the team to coordinate without clogging mailboxes.
+// The human operator (you, via the manager portal's Channels tab) is
+// always implicitly allowed to post into any channel.
+channel planning {
+  description = "Scope + sequencing chatter. Drop a goal here and planner will break it down."
+  welcome     = "Welcome to #planning. Keep messages terse; decisions worth preserving go into team_notes via librarian."
+  members     = ["harbor", "planner", "librarian"]
+}
+
+channel library {
+  description = "Memory-bank curation: `what did we decide about X?`, `note this for later`, etc."
+  welcome     = "Welcome to #library. Ping librarian when you need a lookup or want something stored."
+  members     = ["planner", "librarian"]
 }
 
 // Unix-socket webservice. The client dials this path; its RPCs are
 // stamped with `gateway`'s identity before being routed locally, so
 // messages from the client appear as `from: gateway` to `harbor`.
+// `supervisor = true` is required for the manager portal to drive
+// AgentSendAsUser, channel posts, inbox, and team info through this
+// automaton.
 automaton gateway {
   type             = :webservice
   role             = "bridge to the remote client"

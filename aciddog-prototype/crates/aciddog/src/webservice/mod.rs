@@ -70,6 +70,12 @@ pub struct WebserviceState {
     /// publishes here, so a supervisor-capable webservice can observe
     /// any agent's transcript in real time.
     pub chat_block_tx: broadcast::Sender<crate::wire_chat::ChatBlockEvent>,
+    /// Per-`App` fan-out of channel message events. Peer of
+    /// `chat_block_tx`; the `/v1/channel/events?channel=<id>` stream
+    /// filters on this. Populated by `App::broadcast_to_channel` —
+    /// even for channels this automaton isn't a member of.
+    pub channel_message_tx:
+        broadcast::Sender<crate::wire_channel::ChannelMessageEvent>,
     /// Whether the automaton backing this webservice is flagged
     /// `supervisor = true`. Gates the `/v1/chat/events` handler —
     /// non-supervisor webservices have no business snooping on other
@@ -97,6 +103,7 @@ pub async fn run_webservice_core(
     ai_tx: mpsc::Sender<(usize, AIEvent)>,
     events_tx: mpsc::Sender<AgentSocketEvent>,
     chat_block_tx: broadcast::Sender<crate::wire_chat::ChatBlockEvent>,
+    channel_message_tx: broadcast::Sender<crate::wire_channel::ChannelMessageEvent>,
 ) {
     let is_supervisor = automaton.supervisor;
     let (bind, api_key_env) = match automaton.backend {
@@ -136,6 +143,7 @@ pub async fn run_webservice_core(
         events_tx,
         broadcast_tx: broadcast_tx.clone(),
         chat_block_tx,
+        channel_message_tx,
         is_supervisor,
         api_key,
     };

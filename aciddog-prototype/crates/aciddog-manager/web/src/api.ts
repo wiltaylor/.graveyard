@@ -1,16 +1,25 @@
 import type {
   AgentListResponse,
   ApiError,
+  BanksResponse,
+  ChannelHistoryResponse,
+  ChannelListResponse,
   ChatHistoryResponse,
   CreateInstanceInput,
+  GraphResponse,
   HealthResponse,
   InboxListResponse,
   InstanceSummary,
+  LinksResponse,
+  MemoryMutationResponse,
   MutationResponse,
+  SearchResponse,
   SendResponse,
   TaskListResponse,
   TaskStatus,
+  TeamInfoResponse,
   TodoStatus,
+  WireLinkDirection,
 } from "./types";
 
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -50,6 +59,22 @@ export const api = {
 
   health: (id: string) =>
     request<HealthResponse>(`/api/instances/${id}/health`),
+
+  teamInfo: (id: string) =>
+    request<TeamInfoResponse>(`/api/instances/${id}/team`),
+
+  // Channels
+  listChannels: (id: string) =>
+    request<ChannelListResponse>(`/api/instances/${id}/channels`),
+  channelHistory: (id: string, channel: string) =>
+    request<ChannelHistoryResponse>(
+      `/api/instances/${id}/channels/${encodeURIComponent(channel)}/history`,
+    ),
+  sendChannelMessage: (id: string, channel: string, body: string) =>
+    request<MutationResponse>(
+      `/api/instances/${id}/channels/${encodeURIComponent(channel)}/messages`,
+      { method: "POST", body: JSON.stringify({ body }) },
+    ),
 
   chatHistory: (id: string, agent: string) =>
     request<ChatHistoryResponse>(
@@ -158,10 +183,100 @@ export const api = {
       `/api/instances/${id}/inbox/${index}/forward`,
       { method: "POST", body: JSON.stringify({ to, body }) },
     ),
+
+  // Memory
+  listMemoryBanks: (id: string) =>
+    request<BanksResponse>(`/api/instances/${id}/memory/banks`),
+  searchMemory: (
+    id: string,
+    bank: string,
+    params: {
+      q?: string;
+      title_contains?: string;
+      include_tags?: string[];
+      exclude_tags?: string[];
+      limit?: number;
+    },
+  ) => {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.title_contains)
+      qs.set("title_contains", params.title_contains);
+    if (params.include_tags && params.include_tags.length > 0)
+      qs.set("include_tags", params.include_tags.join(","));
+    if (params.exclude_tags && params.exclude_tags.length > 0)
+      qs.set("exclude_tags", params.exclude_tags.join(","));
+    if (params.limit) qs.set("limit", String(params.limit));
+    const query = qs.toString();
+    return request<SearchResponse>(
+      `/api/instances/${id}/memory/banks/${encodeURIComponent(bank)}/search${
+        query ? `?${query}` : ""
+      }`,
+    );
+  },
+  storeMemoryEntry: (
+    id: string,
+    bank: string,
+    body: { body: string; title?: string; tags?: string[] },
+  ) =>
+    request<MemoryMutationResponse>(
+      `/api/instances/${id}/memory/banks/${encodeURIComponent(bank)}/entries`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  updateMemoryEntry: (
+    id: string,
+    bank: string,
+    entryId: string,
+    body: { body: string; title?: string; tags?: string[] },
+  ) =>
+    request<MemoryMutationResponse>(
+      `/api/instances/${id}/memory/banks/${encodeURIComponent(bank)}/entries/${entryId}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
+  removeMemoryEntry: (id: string, bank: string, entryId: string) =>
+    request<MemoryMutationResponse>(
+      `/api/instances/${id}/memory/banks/${encodeURIComponent(bank)}/entries/${entryId}`,
+      { method: "DELETE" },
+    ),
+  memoryEntryLinks: (
+    id: string,
+    bank: string,
+    entryId: string,
+    direction: WireLinkDirection = "both",
+  ) =>
+    request<LinksResponse>(
+      `/api/instances/${id}/memory/banks/${encodeURIComponent(bank)}/entries/${entryId}/links?direction=${direction}`,
+    ),
+  linkMemory: (
+    id: string,
+    bank: string,
+    body: { from: string; to: string; kind?: string },
+  ) =>
+    request<MemoryMutationResponse>(
+      `/api/instances/${id}/memory/banks/${encodeURIComponent(bank)}/links`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  unlinkMemory: (
+    id: string,
+    bank: string,
+    body: { from: string; to: string },
+  ) =>
+    request<MemoryMutationResponse>(
+      `/api/instances/${id}/memory/banks/${encodeURIComponent(bank)}/links`,
+      { method: "DELETE", body: JSON.stringify(body) },
+    ),
+  memoryGraph: (id: string, bank: string) =>
+    request<GraphResponse>(
+      `/api/instances/${id}/memory/banks/${encodeURIComponent(bank)}/graph`,
+    ),
 };
 
 export function instanceEventsUrl(id: string): string {
   return `/api/instances/${id}/events`;
+}
+
+export function channelEventsUrl(id: string, channel: string): string {
+  return `/api/instances/${id}/channels/${encodeURIComponent(channel)}/events`;
 }
 
 /// Path for an EventSource that streams `ChatBlockEvent`s for a single

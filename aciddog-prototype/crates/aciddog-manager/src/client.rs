@@ -169,6 +169,48 @@ impl Client {
         }
     }
 
+    /// Scoped SSE stream of channel message events, mirroring
+    /// `open_chat_events` but against `/v1/channel/events?channel=<id>`.
+    pub async fn open_channel_events(
+        &self,
+        channel: &str,
+    ) -> Result<(
+        u16,
+        std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, anyhow::Error>> + Send>>,
+    )> {
+        let encoded = encode_query(channel);
+        match &self.inner {
+            Inner::Https {
+                client,
+                base_url,
+                bearer,
+            } => {
+                let url = format!("{base_url}/v1/channel/events?channel={encoded}");
+                let mut req = client.get(&url).header("accept", "text/event-stream");
+                if let Some(token) = bearer.as_deref() {
+                    req = req.bearer_auth(token);
+                }
+                let resp = req.send().await.with_context(|| format!("GET {url}"))?;
+                let status = resp.status().as_u16();
+                let stream = resp
+                    .bytes_stream()
+                    .map(|r| r.map_err(|e| anyhow!("sse chunk: {e}")));
+                Ok((status, Box::pin(stream)))
+            }
+            Inner::Unix { path } => {
+                let target = format!("/v1/channel/events?channel={encoded}");
+                let (status, body_stream) = uds_stream_request(
+                    path,
+                    "GET",
+                    &target,
+                    &[("accept", "text/event-stream")],
+                )
+                .await?;
+                Ok((status, body_stream))
+            }
+        }
+    }
+
     /// Like [`Client::open_chat_events`], but against the webservice's
     /// existing instance-wide `/v1/events` stream — the same feed the
     /// `:remote` client automaton consumes. Used by the manager's

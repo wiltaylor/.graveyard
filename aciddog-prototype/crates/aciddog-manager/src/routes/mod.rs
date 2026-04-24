@@ -1,9 +1,12 @@
 pub mod agents;
+pub mod channels;
 pub mod chat;
 pub mod health;
 pub mod inbox;
 pub mod instances;
+pub mod memory;
 pub mod tasks;
+pub mod team;
 
 use std::path::Path;
 
@@ -20,6 +23,7 @@ pub fn build_router(state: AppState, static_dir: &Path) -> Router {
         .route("/instances/:id", delete(instances::delete))
         .route("/instances/:id/agents", get(agents::list))
         .route("/instances/:id/health", get(health::probe))
+        .route("/instances/:id/team", get(team::get))
         .route(
             "/instances/:id/agents/:agent/history",
             get(chat::history),
@@ -72,7 +76,47 @@ pub fn build_router(state: AppState, static_dir: &Path) -> Router {
             "/instances/:id/inbox/:index/forward",
             post(inbox::forward),
         )
-        .route("/instances/:id/events", get(inbox::events));
+        .route("/instances/:id/events", get(inbox::events))
+        // Channels
+        .route("/instances/:id/channels", get(channels::list))
+        .route(
+            "/instances/:id/channels/:channel/history",
+            get(channels::history),
+        )
+        .route(
+            "/instances/:id/channels/:channel/messages",
+            post(channels::send),
+        )
+        .route(
+            "/instances/:id/channels/:channel/events",
+            get(channels::events),
+        )
+        // Memory
+        .route("/instances/:id/memory/banks", get(memory::list_banks))
+        .route(
+            "/instances/:id/memory/banks/:bank/search",
+            get(memory::search),
+        )
+        .route(
+            "/instances/:id/memory/banks/:bank/entries",
+            post(memory::store),
+        )
+        .route(
+            "/instances/:id/memory/banks/:bank/entries/:entry_id",
+            patch(memory::update).delete(memory::remove),
+        )
+        .route(
+            "/instances/:id/memory/banks/:bank/entries/:entry_id/links",
+            get(memory::links),
+        )
+        .route(
+            "/instances/:id/memory/banks/:bank/links",
+            post(memory::add_link).delete(memory::remove_link),
+        )
+        .route(
+            "/instances/:id/memory/banks/:bank/graph",
+            get(memory::graph),
+        );
 
     let static_service = ServeDir::new(static_dir).append_index_html_on_directories(true);
 

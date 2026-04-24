@@ -314,6 +314,55 @@ pub enum RequestCmd {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         exclude_tags: Vec<String>,
     },
+    /// Supervisor: list every declared memory bank + its entry count.
+    /// Returns `Vec<WireBankInfo>` in `Response::data`.
+    MemoryBanks,
+    /// Supervisor structured memory search. Same selector shape as
+    /// `MemorySearch`; response carries `Vec<WireHit>` in `data`.
+    MemorySearchJson {
+        bank: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title_contains: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        include_tags: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exclude_tags: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+    },
+    /// Like `MemoryStore` but returns `{ "id": "<uuid>" }` in `data`
+    /// so the caller can link/display the new entry without parsing
+    /// the plaintext reply.
+    MemoryStoreJson {
+        bank: String,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tags: Vec<String>,
+    },
+    /// Supervisor structured `MemoryLinks`. Response carries
+    /// `Vec<WireLink>` in `data`.
+    MemoryLinksJson {
+        bank: String,
+        id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        include_tags: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exclude_tags: Vec<String>,
+    },
+    /// Supervisor: full graph snapshot of a bank. Returns
+    /// `WireGraph` (nodes + edges) in `data`. Nodes project only
+    /// title/tags/timestamps to keep the payload small; callers
+    /// fetch bodies on demand via `MemoryShow` /
+    /// `MemorySearchJson`.
+    MemoryGraph {
+        bank: String,
+    },
     /// Return current time (local + UTC) and the orchestrator's
     /// timezone. Cheap, in-process, the canonical way for an agent to
     /// discover "now" before scheduling a cron job.
@@ -445,6 +494,32 @@ pub enum RequestCmd {
     /// human typing the body into the TUI pane.
     AgentSendAsUser {
         to: String,
+        body: String,
+    },
+    /// Supervisor: snapshot of the running team + AI cores config.
+    /// Returns a serialized `WireTeamInfo` in `Response::data`.
+    /// Intended for the manager web portal's Team tab.
+    TeamInfo,
+    /// Supervisor: list every declared channel with its membership +
+    /// in-memory message count. Returns `Vec<WireChannelInfo>` in
+    /// `Response::data`.
+    ChannelList,
+    /// Supervisor: message transcript for a single channel, oldest
+    /// first. The welcome banner (if any) is included as the first
+    /// entry with `is_welcome = true`. Returns
+    /// `Vec<WireChannelMessage>` in `Response::data`.
+    ChannelHistory {
+        channel: String,
+    },
+    /// Supervisor: post a message into `channel` as if the human
+    /// operator had typed it into the TUI's channel pane
+    /// (`ChannelSender::User`). Same path as the TUI's
+    /// `submit_channel_input` — validates the channel, appends a
+    /// `ChannelMessage` block to the transcript + JSONL log,
+    /// broadcasts to every member's channel_tx, and fans out on the
+    /// channel SSE broadcaster.
+    ChannelSendAsUser {
+        channel: String,
         body: String,
     },
     /// Supervisor: snapshot of the human operator's inbox. Returns a
