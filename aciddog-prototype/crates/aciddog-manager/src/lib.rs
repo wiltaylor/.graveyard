@@ -7,3 +7,5 @@ pub mod model;
 pub mod routes;
 pub mod state;
 pub mod wire_chat;
+pub mod wire_inbox;
+pub mod wire_tasks;

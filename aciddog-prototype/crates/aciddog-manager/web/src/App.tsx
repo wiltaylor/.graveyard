@@ -1,10 +1,20 @@
-import { Show, createEffect, createResource, createSignal, type JSX } from "solid-js";
+import { For, Show, createEffect, createResource, createSignal, type JSX } from "solid-js";
 import AddInstanceForm from "./components/AddInstanceForm";
 import ChatPane from "./components/ChatPane";
+import InboxView from "./components/InboxView";
 import InstanceDetail from "./components/InstanceDetail";
 import InstanceTree from "./components/InstanceTree";
+import TasksView from "./components/TasksView";
 import { api } from "./api";
 import type { AgentListResponse, InstanceSummary } from "./types";
+
+type TabId = "agents" | "tasks" | "inbox";
+
+const TABS: { id: TabId; label: string }[] = [
+  { id: "agents", label: "Agents" },
+  { id: "tasks", label: "Tasks" },
+  { id: "inbox", label: "Inbox" },
+];
 
 export default function App(): JSX.Element {
   const [instances, { refetch: refetchInstances }] = createResource<
@@ -13,17 +23,17 @@ export default function App(): JSX.Element {
 
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
   const [selectedAgent, setSelectedAgent] = createSignal<string | null>(null);
+  const [activeTab, setActiveTab] = createSignal<TabId>("agents");
   const [agentsByInstance, setAgentsByInstance] = createSignal<
     Record<string, AgentListResponse>
   >({});
 
-  // When the user picks a different instance, drop any agent selection
-  // carried over from the previous instance. Running the effect on
-  // `selectedId()` alone (not `selectedAgent`) avoids clobbering
-  // fresh selections.
+  // Changing instances resets both the agent selection and the tab —
+  // each instance gets a fresh Agents view.
   createEffect(() => {
     selectedId();
     setSelectedAgent(null);
+    setActiveTab("agents");
   });
 
   const loadAgents = async (id: string) => {
@@ -91,6 +101,7 @@ export default function App(): JSX.Element {
               onSelectAgent={(instId, agentId) => {
                 setSelectedId(instId);
                 setSelectedAgent(agentId);
+                setActiveTab("agents");
               }}
               agentsFor={(id) => agentsByInstance()[id]}
               onExpand={(id) => {
@@ -108,7 +119,7 @@ export default function App(): JSX.Element {
         </section>
       </aside>
 
-      <main class="overflow-hidden">
+      <main class="overflow-hidden flex flex-col">
         <Show
           when={selectedInstance()}
           fallback={
@@ -118,28 +129,71 @@ export default function App(): JSX.Element {
           }
         >
           {(inst) => (
-            <Show
-              when={selectedAgent()}
-              fallback={
-                <div class="p-6 overflow-y-auto h-full">
-                  <InstanceDetail
-                    instance={inst()}
-                    agents={agentsByInstance()[inst().id]}
-                    onRefreshAgents={() => loadAgents(inst().id)}
-                    onDeleted={handleDeleted}
-                    onSelectAgent={(agentId) => setSelectedAgent(agentId)}
+            <>
+              <nav class="flex items-center gap-1 border-b border-slate-800 bg-slate-900/40 px-4 pt-2">
+                <For each={TABS}>
+                  {(tab) => (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab(tab.id);
+                        if (tab.id !== "agents") setSelectedAgent(null);
+                      }}
+                      class="px-3 py-1.5 text-sm border-b-2 -mb-px"
+                      classList={{
+                        "border-sky-500 text-slate-100":
+                          activeTab() === tab.id,
+                        "border-transparent text-slate-400 hover:text-slate-200":
+                          activeTab() !== tab.id,
+                      }}
+                    >
+                      {tab.label}
+                    </button>
+                  )}
+                </For>
+              </nav>
+
+              <div class="flex-1 overflow-hidden">
+                <Show when={activeTab() === "agents"}>
+                  <Show
+                    when={selectedAgent()}
+                    fallback={
+                      <div class="p-6 overflow-y-auto h-full">
+                        <InstanceDetail
+                          instance={inst()}
+                          agents={agentsByInstance()[inst().id]}
+                          onRefreshAgents={() => loadAgents(inst().id)}
+                          onDeleted={handleDeleted}
+                          onSelectAgent={(agentId) => setSelectedAgent(agentId)}
+                        />
+                      </div>
+                    }
+                  >
+                    {(agent) => (
+                      <ChatPane
+                        instanceId={inst().id}
+                        agent={agent()}
+                        onClose={() => setSelectedAgent(null)}
+                      />
+                    )}
+                  </Show>
+                </Show>
+
+                <Show when={activeTab() === "tasks"}>
+                  <TasksView
+                    instanceId={inst().id}
+                    agents={agentsByInstance()[inst().id]?.agents ?? []}
                   />
-                </div>
-              }
-            >
-              {(agent) => (
-                <ChatPane
-                  instanceId={inst().id}
-                  agent={agent()}
-                  onClose={() => setSelectedAgent(null)}
-                />
-              )}
-            </Show>
+                </Show>
+
+                <Show when={activeTab() === "inbox"}>
+                  <InboxView
+                    instanceId={inst().id}
+                    agents={agentsByInstance()[inst().id]?.agents ?? []}
+                  />
+                </Show>
+              </div>
+            </>
           )}
         </Show>
       </main>

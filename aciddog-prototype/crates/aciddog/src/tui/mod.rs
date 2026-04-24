@@ -15,3 +15,4 @@ mod workflow_view;
 
 pub use app::run;
 pub use blocks::{ChatBlock, MailDirection, SystemKind, TaskOpKind};
+pub use inbox_view::InboxMessage;

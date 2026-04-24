@@ -141,6 +141,21 @@ pub enum RequestCmd {
         #[serde(default)]
         unassigned: bool,
     },
+    /// Supervisor: structured variant of `TaskList`. Returns a
+    /// serialized `Vec<Task>` in `Response::data` (full nested shape
+    /// including todos, comments, notes, blocked_by). Same filter
+    /// arguments as `TaskList`. Intended for the manager web portal's
+    /// Kanban view — plaintext parsing is too lossy for rich UIs.
+    TaskListJson {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        assignee: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(default)]
+        mine: bool,
+        #[serde(default)]
+        unassigned: bool,
+    },
     /// Update fields on an existing task. Fields set to `None` are
     /// left unchanged. `unassign` clears the assignee (mutually
     /// exclusive with `assignee`). `add_blocked_by` / `remove_blocked_by`
@@ -431,6 +446,17 @@ pub enum RequestCmd {
     AgentSendAsUser {
         to: String,
         body: String,
+    },
+    /// Supervisor: snapshot of the human operator's inbox. Returns a
+    /// `Vec<WireInboxMessage>` in `Response::data`. Order matches the
+    /// TUI's list (oldest first, same as `App::inbox`); the `index`
+    /// used by `InboxDelete` refers to this order.
+    InboxList,
+    /// Supervisor: delete one inbox entry by its list index. Mirrors
+    /// the TUI's `d` key — purely local, no wire event emitted. A
+    /// bogus index (out of range) fails with `ok: false`.
+    InboxDelete {
+        index: usize,
     },
     /// Supervisor: list every running worker across the fleet,
     /// optionally filtered to workers spawned by a specific parent.

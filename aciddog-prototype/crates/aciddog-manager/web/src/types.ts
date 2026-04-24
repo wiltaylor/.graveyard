@@ -194,3 +194,82 @@ export interface SendResponse {
   ok: boolean;
   error?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Tasks — mirrors `aciddog::tasks` on the wire.
+// ---------------------------------------------------------------------------
+
+export type TaskStatus =
+  | "open"
+  | "assigned"
+  | "in_progress"
+  | "done"
+  | "cancelled";
+
+export type TodoStatus = "pending" | "in_progress" | "completed";
+
+export interface Note {
+  author: string;
+  timestamp_secs: number;
+  body: string;
+}
+
+export interface Todo {
+  id: string;
+  body: string;
+  status: TodoStatus;
+  created_by: string;
+  created_at_secs: number;
+  updated_at_secs: number;
+}
+
+export interface Comment {
+  id: string;
+  author: string;
+  timestamp_secs: number;
+  body: string;
+}
+
+export interface Task {
+  id: string;
+  title: string;
+  description?: string;
+  status: TaskStatus;
+  assignee?: string;
+  created_by: string;
+  created_at_secs: number;
+  updated_at_secs: number;
+  notes: Note[];
+  blocked_by: string[];
+  todos: Todo[];
+  comments: Comment[];
+}
+
+export interface TaskListResponse {
+  ok: boolean;
+  tasks: Task[];
+  error?: string;
+}
+
+export interface MutationResponse {
+  ok: boolean;
+  message?: string;
+  error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Inbox
+// ---------------------------------------------------------------------------
+
+export interface WireInboxMessage {
+  from: string;
+  body: string;
+  /// Unix-epoch seconds with sub-second precision.
+  received_at: number;
+}
+
+export interface InboxListResponse {
+  ok: boolean;
+  messages: WireInboxMessage[];
+  error?: string;
+}

@@ -98,6 +98,35 @@ async fn rpc_forwards_and_replies() {
     }
 }
 
+/// Smoke: every new RPC variant added for the manager's Tasks / Inbox
+/// views deserializes server-side and forwards to the orchestrator.
+/// Guards against serde renames — any `cmd` string drift will show up
+/// here as a 400 instead of being caught far downstream in a route
+/// handler.
+#[tokio::test]
+async fn rpc_forwards_new_task_and_inbox_variants() {
+    let (state, events_rx) = fake_state(None);
+    let mut seen = spawn_auto_responder(events_rx);
+    let router = build_router(state, vec![]);
+
+    let probes = [
+        serde_json::json!({ "cmd": "task_list_json", "mine": false, "unassigned": false }),
+        serde_json::json!({ "cmd": "inbox_list" }),
+        serde_json::json!({ "cmd": "inbox_delete", "index": 0 }),
+    ];
+    for probe in probes {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/rpc")
+            .header("content-type", "application/json")
+            .body(Body::from(probe.to_string()))
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "probe {probe} rejected");
+        let _seen = seen.recv().await.expect("orchestrator saw the cmd");
+    }
+}
+
 #[tokio::test]
 async fn rpc_rejects_missing_bearer_when_api_key_required() {
     let (state, _events_rx) = fake_state(Some("secret"));

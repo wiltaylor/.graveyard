@@ -9,6 +9,7 @@
 //! `aciddog-ipc-types` and depend on that from both sides.
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Wire-level request body for `POST /v1/rpc`. Variants are serialized
 /// with `#[serde(tag = "cmd", rename_all = "snake_case")]`, matching
@@ -32,6 +33,91 @@ pub enum RequestCmd {
     AgentSendAsUser {
         to: String,
         body: String,
+    },
+    // ---- Tasks -----------------------------------------------------
+    /// Supervisor structured task list. Response carries
+    /// `Vec<wire_tasks::Task>` in `IpcResponse::data`.
+    TaskListJson {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        assignee: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(default)]
+        mine: bool,
+        #[serde(default)]
+        unassigned: bool,
+    },
+    TaskAdd {
+        title: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        assignee: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        blocked_by: Vec<Uuid>,
+    },
+    TaskUpdate {
+        id: Uuid,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        assignee: Option<String>,
+        #[serde(default)]
+        unassign: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        add_blocked_by: Vec<Uuid>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        remove_blocked_by: Vec<Uuid>,
+    },
+    TaskRemove {
+        id: Uuid,
+    },
+    TaskNote {
+        id: Uuid,
+        body: String,
+    },
+    TaskTodoAdd {
+        task: Uuid,
+        body: String,
+    },
+    TaskTodoUpdate {
+        task: Uuid,
+        id: Uuid,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        body: Option<String>,
+    },
+    TaskTodoRemove {
+        task: Uuid,
+        id: Uuid,
+    },
+    TaskCommentAdd {
+        task: Uuid,
+        body: String,
+    },
+    TaskCommentUpdate {
+        task: Uuid,
+        id: Uuid,
+        body: String,
+    },
+    TaskCommentRemove {
+        task: Uuid,
+        id: Uuid,
+    },
+    // ---- Inbox -----------------------------------------------------
+    /// Supervisor snapshot of the human-operator inbox. Response
+    /// carries `Vec<wire_inbox::WireInboxMessage>` in `data`.
+    InboxList,
+    /// Supervisor delete by list index.
+    InboxDelete {
+        index: usize,
     },
 }
 

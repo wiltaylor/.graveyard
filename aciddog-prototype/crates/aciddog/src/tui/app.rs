@@ -770,6 +770,20 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             });
             ChatBlock::task_op(k, s, b)
         }
+        RequestCmd::TaskListJson {
+            assignee,
+            status,
+            mine,
+            unassigned,
+        } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::List {
+                assignee,
+                status,
+                mine,
+                unassigned,
+            });
+            ChatBlock::task_op(k, s, b)
+        }
         RequestCmd::TaskShow { id } => {
             let (k, s, b) = task_op_summary(&TaskCommand::Show { id });
             ChatBlock::task_op(k, s, b)
@@ -914,6 +928,10 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         }
         RequestCmd::AgentSendAsUser { to, body } => {
             ChatBlock::mail_sent(format!("{to} (as user)"), body)
+        }
+        RequestCmd::InboxList => ChatBlock::from_tool_use("aciddog inbox list", input),
+        RequestCmd::InboxDelete { index } => {
+            ChatBlock::from_tool_use(&format!("aciddog inbox delete --index {index}"), input)
         }
         RequestCmd::WorkerList { .. } => ChatBlock::from_tool_use("aciddog worker list", input),
         RequestCmd::WorkerForceArchive { worker } => ChatBlock::from_tool_use(
@@ -2808,6 +2826,16 @@ impl App {
             } => {
                 self.handle_task_list(idx, assignee, status, mine, unassigned, reply);
             }
+            RequestCmd::TaskListJson {
+                assignee,
+                status,
+                mine,
+                unassigned,
+            } => {
+                self.handle_admin_task_list_json(
+                    idx, assignee, status, mine, unassigned, reply,
+                );
+            }
             RequestCmd::TaskUpdate {
                 id,
                 title,
@@ -3058,6 +3086,12 @@ impl App {
             }
             RequestCmd::AgentSendAsUser { to, body } => {
                 self.handle_admin_agent_send_as_user(idx, to, body, reply);
+            }
+            RequestCmd::InboxList => {
+                self.handle_admin_inbox_list(idx, reply);
+            }
+            RequestCmd::InboxDelete { index } => {
+                self.handle_admin_inbox_delete(idx, index, reply);
             }
             RequestCmd::WorkerList { parent } => {
                 self.handle_admin_worker_list(idx, parent, reply);
@@ -4692,6 +4726,105 @@ impl App {
             ));
         }
         let _ = reply.send(Response::ok(out.trim_end().to_string()));
+    }
+
+    /// Supervisor: structured variant of `handle_task_list`. Same
+    /// filter semantics, but returns a `Vec<Task>` via
+    /// `Response::data` so the manager portal's Kanban view can work
+    /// with nested todos / comments / notes / blocked_by without
+    /// parsing plaintext.
+    fn handle_admin_task_list_json(
+        &mut self,
+        sender_idx: usize,
+        assignee: Option<String>,
+        status: Option<String>,
+        mine: bool,
+        unassigned: bool,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let who = match self.chats.get(sender_idx) {
+            Some(c) => c.display_name.clone(),
+            None => {
+                let _ = reply.send(Response::err("unknown sender"));
+                return;
+            }
+        };
+        let parsed_status = match status.as_deref().map(TaskStatus::parse).transpose() {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+                return;
+            }
+        };
+        let filter = TaskFilter {
+            assignee: if mine { Some(who) } else { assignee },
+            status: parsed_status,
+            unassigned_only: unassigned,
+        };
+        let rows: Vec<&Task> = self.tasks.list(&filter);
+        match serde_json::to_value(&rows) {
+            Ok(v) => {
+                let _ = reply.send(Response::ok_data(v));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(format!("serialize tasks: {e}")));
+            }
+        }
+    }
+
+    /// Supervisor: snapshot the human-operator inbox. Returns a
+    /// `Vec<WireInboxMessage>` in `Response::data`.
+    fn handle_admin_inbox_list(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let now = std::time::Instant::now();
+        let wire: Vec<crate::wire_inbox::WireInboxMessage> = self
+            .inbox
+            .iter()
+            .map(|m| crate::wire_inbox::WireInboxMessage::project(m, now))
+            .collect();
+        match serde_json::to_value(&wire) {
+            Ok(v) => {
+                let _ = reply.send(Response::ok_data(v));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(format!("serialize inbox: {e}")));
+            }
+        }
+    }
+
+    /// Supervisor: delete one inbox entry by list index. Mirrors the
+    /// TUI's `d` key — purely local, no wire event is emitted.
+    fn handle_admin_inbox_delete(
+        &mut self,
+        sender_idx: usize,
+        index: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        if index >= self.inbox.len() {
+            let _ = reply.send(Response::err(format!(
+                "inbox index {index} out of range (len={})",
+                self.inbox.len()
+            )));
+            return;
+        }
+        self.inbox.remove(index);
+        self.inbox_screen.reclamp(self.inbox.len());
+        let _ = reply.send(Response::ok("deleted"));
     }
 
     #[allow(clippy::too_many_arguments)]
