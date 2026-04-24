@@ -127,6 +127,7 @@ export default function App(): JSX.Element {
                     agents={agentsByInstance()[inst().id]}
                     onRefreshAgents={() => loadAgents(inst().id)}
                     onDeleted={handleDeleted}
+                    onSelectAgent={(agentId) => setSelectedAgent(agentId)}
                   />
                 </div>
               }

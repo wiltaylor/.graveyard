@@ -6415,14 +6415,21 @@ impl App {
             let _ = reply.send(Response::err(format!("no agent named `{to}`")));
             return;
         };
-        let Some(tx) = self.chats[target_idx].user_tx.clone() else {
+        // Offline short-circuit: without a user_tx the local-input path
+        // silently drops the message, which would leave the caller with
+        // an ok reply and a dangling user block. Error out first so the
+        // web portal can show an actionable message.
+        if self.chats[target_idx].user_tx.is_none() {
             let _ = reply.send(Response::err(format!("agent `{to}` is not online")));
             return;
-        };
-        if tx.send(body).is_err() {
-            let _ = reply.send(Response::err(format!("agent `{to}` is not receiving")));
-            return;
         }
+        // Delegate to the same path the TUI uses when a human types
+        // into the pane. It echoes a UserText block, routes slash
+        // commands, flips status to Working, and surfaces asleep /
+        // closed-channel errors as system blocks in the chat —
+        // anything watching the scoped SSE stream sees the full
+        // trajectory just like the TUI operator would.
+        self.handle_local_input(target_idx, body);
         let _ = reply.send(Response::ok("sent"));
     }
 

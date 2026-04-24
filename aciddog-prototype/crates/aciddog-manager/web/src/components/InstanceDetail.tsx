@@ -7,6 +7,7 @@ interface Props {
   agents: AgentListResponse | undefined;
   onRefreshAgents: () => void;
   onDeleted: () => void;
+  onSelectAgent: (agentId: string) => void;
 }
 
 export default function InstanceDetail(props: Props): JSX.Element {
@@ -149,8 +150,14 @@ export default function InstanceDetail(props: Props): JSX.Element {
                   </thead>
                   <tbody>
                     {resp().agents.map((a) => (
-                      <tr class="border-t border-slate-800">
-                        <td class="py-1 pr-4 font-medium">{a.id}</td>
+                      <tr
+                        class="border-t border-slate-800 cursor-pointer hover:bg-slate-800/60"
+                        onClick={() => props.onSelectAgent(a.id)}
+                        title={`Open chat with ${a.id}`}
+                      >
+                        <td class="py-1 pr-4 font-medium text-sky-300">
+                          {a.id}
+                        </td>
                         <td class="py-1 pr-4">{a.kind}</td>
                         <td class="py-1 pr-4">{a.status}</td>
                         <td class="py-1 pr-4 text-slate-400">
