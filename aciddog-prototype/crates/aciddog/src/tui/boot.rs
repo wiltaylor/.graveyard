@@ -405,6 +405,7 @@ pub(crate) async fn boot_orchestrator(config: AciddogConfig) -> Result<Orchestra
                 let events_tx = socket.events_tx();
                 let chat_block_tx = app.chat_block_tx.clone();
                 let channel_message_tx = app.channel_message_tx.clone();
+                let workflow_event_tx = app.workflow_event_tx.clone();
                 tokio::spawn(crate::webservice::run_webservice_core(
                     idx,
                     automaton.clone(),
@@ -418,6 +419,7 @@ pub(crate) async fn boot_orchestrator(config: AciddogConfig) -> Result<Orchestra
                     events_tx,
                     chat_block_tx,
                     channel_message_tx,
+                    workflow_event_tx,
                 ));
             }
             crate::config::AutomatonBackend::Remote { .. } => {

@@ -12,7 +12,7 @@ mod markdown;
 mod memory_view;
 mod tasks_view;
 mod ui;
-mod workflow_view;
+pub(crate) mod workflow_view;
 
 pub use app::run;
 pub use blocks::{ChatBlock, MailDirection, SystemKind, TaskOpKind};

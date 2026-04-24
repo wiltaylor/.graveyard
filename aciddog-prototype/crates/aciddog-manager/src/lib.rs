@@ -12,3 +12,4 @@ pub mod wire_inbox;
 pub mod wire_memory;
 pub mod wire_tasks;
 pub mod wire_team;
+pub mod wire_workflow;

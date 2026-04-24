@@ -75,9 +75,8 @@ pub async fn list(
             ),
         }));
     };
-    let tasks: Vec<Task> = serde_json::from_value(data).map_err(|e| {
-        AppError::Remote(anyhow::anyhow!("decoding task list: {e}"))
-    })?;
+    let tasks: Vec<Task> = serde_json::from_value(data)
+        .map_err(|e| AppError::Remote(anyhow::anyhow!("decoding task list: {e}")))?;
     Ok(Json(TaskListResponse {
         ok: true,
         tasks,
@@ -169,7 +168,9 @@ pub async fn delete(
 ) -> AppResult<Json<MutationResponse>> {
     let row = load_row_for_routes(&state, id).await?;
     let client = Client::from_row(&row)?;
-    let resp = client.send_rpc(&RequestCmd::TaskRemove { id: task_id }).await?;
+    let resp = client
+        .send_rpc(&RequestCmd::TaskRemove { id: task_id })
+        .await?;
     Ok(Json(MutationResponse::from_ipc(resp)))
 }
 

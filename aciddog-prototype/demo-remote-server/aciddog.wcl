@@ -140,7 +140,12 @@ agent harbor {
   model        = "claude-haiku-4-5"
   instructions = "Respond conversationally. Use `aciddog send --to gateway <body>` to reply to the client. Delegate work to `planner` or `librarian` when it's outside your scope."
   can_message  = ["gateway", "planner", "librarian", "user"]
-  memory_banks = ["team_notes"]
+  // Permit harbor (and only harbor) to kick off the `smoke` workflow
+  // via `aciddog workflow run --id smoke`. The workflow is also
+  // startable from the manager portal's Workflows tab without any
+  // allowlist — the supervisor webservice bypasses that gate.
+  can_run_workflows = ["smoke"]
+  memory_banks      = ["team_notes"]
 }
 
 // planner owns scope + sequencing. A pushy but terse PM-style voice;
@@ -181,6 +186,48 @@ channel library {
   description = "Memory-bank curation: `what did we decide about X?`, `note this for later`, etc."
   welcome     = "Welcome to #library. Ping librarian when you need a lookup or want something stored."
   members     = ["planner", "librarian"]
+}
+
+// A reusable multi-step procedure. Startable from the manager portal's
+// Workflows tab, or from agents listed in `can_run_workflows` via
+// `aciddog workflow run --id smoke`. Ships with a mix of step kinds
+// so the TUI's Workflows panel / web portal render something
+// recognisable on first open: one `command`, a `sleep` for visibility,
+// a `check` gate, and a final summary `command`.
+workflow smoke {
+  description = "Smoke-test the workflow engine with a command + gate."
+  max_retries = 2
+
+  // Visible inputs appear in the property form.
+  property branch { kind = :text default = "main" }
+  property suites { kind = :multiSelect options = ["unit","integ"] default = ["unit"] }
+
+  // Single-choice select: rendered as a dropdown in the web portal,
+  // cycled with ←/→ + Enter in the TUI.
+  property environment {
+    kind    = :select
+    options = ["dev","staging","prod"]
+    default = "dev"
+  }
+
+  // Hidden variables are never shown in the form. Seeded from
+  // `default` at instance start, mutated at runtime by the
+  // `workflow_set` tool when a worker step runs.
+  property last_check { kind = :hidden default = "ok" }
+
+  // $$VAR$$ substitution resolves at step start from the live
+  // variable map.
+  step echo { kind = :command command = "echo ran on $$branch$$ env=$$environment$$ suites=$$suites$$" }
+
+  // 10-second sleep so the instance lingers in the sidebar / portal
+  // long enough to observe progress (three commands + a gate would
+  // otherwise finish in milliseconds and flash by).
+  step wait { kind = :command command = "sleep 10" }
+
+  // Pure variable gate: pass ⇒ advance; fail ⇒ jump back to `echo`.
+  step gate { kind = :check variable = "last_check" op = :equals value = "ok" target = "echo" }
+
+  step done { kind = :command command = "echo all gates passed" }
 }
 
 // Unix-socket webservice. The client dials this path; its RPCs are

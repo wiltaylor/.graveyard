@@ -199,13 +199,9 @@ impl Client {
             }
             Inner::Unix { path } => {
                 let target = format!("/v1/channel/events?channel={encoded}");
-                let (status, body_stream) = uds_stream_request(
-                    path,
-                    "GET",
-                    &target,
-                    &[("accept", "text/event-stream")],
-                )
-                .await?;
+                let (status, body_stream) =
+                    uds_stream_request(path, "GET", &target, &[("accept", "text/event-stream")])
+                        .await?;
                 Ok((status, body_stream))
             }
         }
@@ -247,6 +243,51 @@ impl Client {
                     &[("accept", "text/event-stream")],
                 )
                 .await?;
+                Ok((status, body_stream))
+            }
+        }
+    }
+
+    /// Scoped SSE stream of workflow events, mirroring
+    /// `open_chat_events` but against
+    /// `/v1/workflow/events[?instance=<id>]`. When `instance_id` is
+    /// `None`, the daemon streams every workflow event for every
+    /// instance; when `Some(id)`, it filters server-side to only
+    /// events for that instance.
+    pub async fn open_workflow_events(
+        &self,
+        instance_id: Option<u64>,
+    ) -> Result<(
+        u16,
+        std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, anyhow::Error>> + Send>>,
+    )> {
+        let suffix = match instance_id {
+            Some(id) => format!("?instance={id}"),
+            None => String::new(),
+        };
+        match &self.inner {
+            Inner::Https {
+                client,
+                base_url,
+                bearer,
+            } => {
+                let url = format!("{base_url}/v1/workflow/events{suffix}");
+                let mut req = client.get(&url).header("accept", "text/event-stream");
+                if let Some(token) = bearer.as_deref() {
+                    req = req.bearer_auth(token);
+                }
+                let resp = req.send().await.with_context(|| format!("GET {url}"))?;
+                let status = resp.status().as_u16();
+                let stream = resp
+                    .bytes_stream()
+                    .map(|r| r.map_err(|e| anyhow!("sse chunk: {e}")));
+                Ok((status, Box::pin(stream)))
+            }
+            Inner::Unix { path } => {
+                let target = format!("/v1/workflow/events{suffix}");
+                let (status, body_stream) =
+                    uds_stream_request(path, "GET", &target, &[("accept", "text/event-stream")])
+                        .await?;
                 Ok((status, body_stream))
             }
         }

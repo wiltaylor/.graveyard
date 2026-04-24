@@ -34,6 +34,28 @@ pub enum RequestCmd {
         to: String,
         body: String,
     },
+    // ---- Workflows -------------------------------------------------
+    /// Start a new instance of a declared workflow. `properties` is a
+    /// map of property-id → JSON value; each is coerced against the
+    /// declared `PropertyKind` on the daemon side.
+    WorkflowRun {
+        workflow: String,
+        #[serde(default)]
+        properties: std::collections::BTreeMap<String, serde_json::Value>,
+    },
+    /// Supervisor: declared workflow library with enough property
+    /// metadata to render a portal form. Response carries
+    /// `Vec<wire_workflow::WireWorkflowTemplate>` in `IpcResponse::data`.
+    WorkflowTemplatesJson,
+    /// Supervisor: live snapshot of the daemon's running + failed +
+    /// lingering instances. Response carries
+    /// `Vec<wire_workflow::WireWorkflowInstance>` in `IpcResponse::data`.
+    WorkflowInstancesJson,
+    /// Supervisor: drop a failed workflow instance. Running instances
+    /// cannot be dismissed (the daemon rejects with an error).
+    WorkflowDismiss {
+        instance_id: u64,
+    },
     // ---- Tasks -----------------------------------------------------
     /// Supervisor structured task list. Response carries
     /// `Vec<wire_tasks::Task>` in `IpcResponse::data`.

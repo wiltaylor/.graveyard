@@ -67,9 +67,8 @@ pub async fn history(
         }));
     };
 
-    let blocks: Vec<WireChatBlock> = serde_json::from_value(data).map_err(|e| {
-        AppError::Remote(anyhow::anyhow!("decoding chat history blocks: {e}"))
-    })?;
+    let blocks: Vec<WireChatBlock> = serde_json::from_value(data)
+        .map_err(|e| AppError::Remote(anyhow::anyhow!("decoding chat history blocks: {e}")))?;
 
     Ok(Json(ChatHistoryResponse {
         ok: true,
@@ -139,8 +138,7 @@ pub async fn events(
         // automaton isn't a supervisor) with the same code to the
         // browser — gives the UI the signal it needs to show an
         // actionable message.
-        let status = StatusCode::from_u16(upstream_status)
-            .unwrap_or(StatusCode::BAD_GATEWAY);
+        let status = StatusCode::from_u16(upstream_status).unwrap_or(StatusCode::BAD_GATEWAY);
         let mut collected = Vec::new();
         let mut s = stream;
         while let Some(chunk) = s.next().await {

@@ -304,9 +304,7 @@ pub async fn add_link(
     Json(req): Json<LinkRequest>,
 ) -> AppResult<Json<MutationResponse>> {
     if req.from == req.to {
-        return Err(AppError::Validation(
-            "from and to must differ".into(),
-        ));
+        return Err(AppError::Validation("from and to must differ".into()));
     }
     let row = load_row_for_routes(&state, id).await?;
     let client = Client::from_row(&row)?;

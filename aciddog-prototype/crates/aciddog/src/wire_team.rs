@@ -128,8 +128,8 @@ fn core_has_system_prompt(kind: &AiCoreKind) -> bool {
         | AiCoreKind::AnthropicApi { system_prompt, .. }
         | AiCoreKind::OpenAiApi { system_prompt, .. }
         | AiCoreKind::OpenAiChatgpt { system_prompt, .. } => system_prompt.is_some(),
-        AiCoreKind::CopilotCli { .. }
-        | AiCoreKind::GeminiCli { .. }
-        | AiCoreKind::Jules { .. } => false,
+        AiCoreKind::CopilotCli { .. } | AiCoreKind::GeminiCli { .. } | AiCoreKind::Jules { .. } => {
+            false
+        }
     }
 }

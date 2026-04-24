@@ -59,9 +59,8 @@ pub async fn list(
             ),
         }));
     };
-    let messages: Vec<WireInboxMessage> = serde_json::from_value(data).map_err(|e| {
-        AppError::Remote(anyhow::anyhow!("decoding inbox list: {e}"))
-    })?;
+    let messages: Vec<WireInboxMessage> = serde_json::from_value(data)
+        .map_err(|e| AppError::Remote(anyhow::anyhow!("decoding inbox list: {e}")))?;
     Ok(Json(InboxListResponse {
         ok: true,
         messages,
@@ -188,16 +187,12 @@ pub async fn forward(
 /// stream. Carries `UserMessage`, `AgentMessage`, and
 /// `ChannelMessage` frames. The Inbox view subscribes and refetches
 /// the inbox on any `user_message` event.
-pub async fn events(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> AppResult<Response> {
+pub async fn events(State(state): State<AppState>, Path(id): Path<Uuid>) -> AppResult<Response> {
     let row = load_row_for_routes(&state, id).await?;
     let client = Client::from_row(&row)?;
     let (upstream_status, stream) = client.open_instance_events().await?;
     if upstream_status != 200 {
-        let status =
-            StatusCode::from_u16(upstream_status).unwrap_or(StatusCode::BAD_GATEWAY);
+        let status = StatusCode::from_u16(upstream_status).unwrap_or(StatusCode::BAD_GATEWAY);
         let mut collected = Vec::new();
         let mut s = stream;
         while let Some(chunk) = s.next().await {

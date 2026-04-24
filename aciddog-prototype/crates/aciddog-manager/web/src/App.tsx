@@ -8,6 +8,7 @@ import InstanceTree from "./components/InstanceTree";
 import MemoryView from "./components/MemoryView";
 import TasksView from "./components/TasksView";
 import TeamView from "./components/TeamView";
+import WorkflowsView from "./components/WorkflowsView";
 import { api } from "./api";
 import type {
   AgentListResponse,
@@ -15,12 +16,19 @@ import type {
   InstanceSummary,
 } from "./types";
 
-type TabId = "team" | "agents" | "tasks" | "inbox" | "memory";
+type TabId =
+  | "team"
+  | "agents"
+  | "tasks"
+  | "workflows"
+  | "inbox"
+  | "memory";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "team", label: "Team" },
   { id: "agents", label: "Agents" },
   { id: "tasks", label: "Tasks" },
+  { id: "workflows", label: "Workflows" },
   { id: "inbox", label: "Inbox" },
   { id: "memory", label: "Memory" },
 ];
@@ -255,6 +263,10 @@ export default function App(): JSX.Element {
                     instanceId={inst().id}
                     agents={agentsByInstance()[inst().id]?.agents ?? []}
                   />
+                </Show>
+
+                <Show when={activeTab() === "workflows"}>
+                  <WorkflowsView instanceId={inst().id} />
                 </Show>
 
                 <Show when={activeTab() === "inbox"}>

@@ -189,10 +189,13 @@ mod tests {
 
     #[test]
     fn bash_tool_round_trips() {
-        let wire = r#"{"kind":"bash_tool","command":"ls","stdout":"a","is_error":false,"pending":false}"#;
+        let wire =
+            r#"{"kind":"bash_tool","command":"ls","stdout":"a","is_error":false,"pending":false}"#;
         let parsed: WireChatBlock = serde_json::from_str(wire).unwrap();
         match parsed {
-            WireChatBlock::BashTool { command, stdout, .. } => {
+            WireChatBlock::BashTool {
+                command, stdout, ..
+            } => {
                 assert_eq!(command, "ls");
                 assert_eq!(stdout, "a");
             }

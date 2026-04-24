@@ -42,7 +42,8 @@ pub fn build_router(state: WebserviceState, webhooks: Vec<Webhook>) -> Router {
         .route("/v1/rpc", post(rpc))
         .route("/v1/events", get(events))
         .route("/v1/chat/events", get(chat_events))
-        .route("/v1/channel/events", get(channel_events));
+        .route("/v1/channel/events", get(channel_events))
+        .route("/v1/workflow/events", get(workflow_events));
 
     for hook in webhooks {
         let path = hook.path.clone();
@@ -114,7 +115,7 @@ async fn events(
     State(state): State<WebserviceState>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
     let rx = state.broadcast_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|msg| async move {
+    let events = BroadcastStream::new(rx).filter_map(|msg| async move {
         match msg {
             Ok(ev) => {
                 // `json_data` only errors if serde fails — our concrete
@@ -132,6 +133,7 @@ async fn events(
             }
         }
     });
+    let stream = futures::stream::once(async { Ok::<_, Infallible>(ready_event()) }).chain(events);
     Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
@@ -152,6 +154,14 @@ struct ChannelEventsQuery {
     channel: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct WorkflowEventsQuery {
+    /// Optional instance id filter. When `None`, the stream returns
+    /// events for every running instance.
+    #[serde(default)]
+    instance: Option<u64>,
+}
+
 /// Supervisor-only scoped SSE stream of `ChannelMessageEvent`s.
 /// Filters the shared `App::channel_message_tx` broadcaster down to
 /// events whose `channel` field matches the query string.
@@ -170,7 +180,7 @@ async fn channel_events(
     }
     let wanted = q.channel;
     let rx = state.channel_message_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(move |msg| {
+    let events = BroadcastStream::new(rx).filter_map(move |msg| {
         let wanted = wanted.clone();
         async move {
             match msg {
@@ -187,6 +197,7 @@ async fn channel_events(
             }
         }
     });
+    let stream = futures::stream::once(async { Ok::<_, Infallible>(ready_event()) }).chain(events);
     Sse::new(stream)
         .keep_alive(
             KeepAlive::new()
@@ -194,6 +205,67 @@ async fn channel_events(
                 .text("keepalive"),
         )
         .into_response()
+}
+
+/// Supervisor-only SSE stream of workflow events. Optional `instance`
+/// query parameter scopes the stream to a single running instance;
+/// without it every event for every instance is forwarded.
+///
+/// The stream opens with a named `ready` frame so the browser's
+/// `EventSource.onopen` fires immediately. Without it a client
+/// connecting to an idle broadcaster (no declared workflows, no
+/// running instances) would sit in CONNECTING for up to the keepalive
+/// interval — the 15s of silence reads like a hang.
+async fn workflow_events(
+    State(state): State<WebserviceState>,
+    Query(q): Query<WorkflowEventsQuery>,
+) -> Response {
+    if !state.is_supervisor {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(IpcResponse::err(
+                "this webservice automaton is not flagged `supervisor = true`",
+            )),
+        )
+            .into_response();
+    }
+    let wanted = q.instance;
+    let rx = state.workflow_event_tx.subscribe();
+    let events = BroadcastStream::new(rx).filter_map(move |msg| async move {
+        match msg {
+            Ok(ev) => {
+                if let Some(id) = wanted {
+                    if ev.instance_id() != id {
+                        return None;
+                    }
+                }
+                Event::default().json_data(&ev).ok().map(Ok)
+            }
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                let payload = serde_json::json!({ "kind": "lagged", "dropped": n });
+                Event::default()
+                    .event("lagged")
+                    .json_data(payload)
+                    .ok()
+                    .map(Ok::<_, Infallible>)
+            }
+        }
+    });
+    let stream = futures::stream::once(async { Ok::<_, Infallible>(ready_event()) }).chain(events);
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keepalive"),
+        )
+        .into_response()
+}
+
+/// Zero-payload `ready` frame. Emitted as the first event on every
+/// scoped SSE stream so `EventSource.onopen` fires immediately,
+/// regardless of how long the broadcaster stays idle.
+fn ready_event() -> Event {
+    Event::default().event("ready").data("")
 }
 
 /// Supervisor-only scoped SSE stream of `ChatBlockEvent`s. Filters the
@@ -215,7 +287,7 @@ async fn chat_events(
     }
     let wanted = q.agent;
     let rx = state.chat_block_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(move |msg| {
+    let events = BroadcastStream::new(rx).filter_map(move |msg| {
         let wanted = wanted.clone();
         async move {
             match msg {
@@ -232,6 +304,7 @@ async fn chat_events(
             }
         }
     });
+    let stream = futures::stream::once(async { Ok::<_, Infallible>(ready_event()) }).chain(events);
     Sse::new(stream)
         .keep_alive(
             KeepAlive::new()

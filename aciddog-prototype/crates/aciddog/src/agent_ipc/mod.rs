@@ -118,6 +118,21 @@ pub enum RequestCmd {
         #[serde(default)]
         properties: std::collections::BTreeMap<String, serde_json::Value>,
     },
+    /// Supervisor: structured list of every declared workflow, with
+    /// enough property metadata to render a portal form. Reply carries
+    /// `Vec<wire_workflow::WireWorkflowTemplate>` in `Response::data`.
+    WorkflowTemplatesJson,
+    /// Supervisor: live snapshot of the TUI's `workflow_instances`
+    /// mirror — running, failed, and lingering-after-success instances.
+    /// Reply carries `Vec<wire_workflow::WireWorkflowInstance>` in
+    /// `Response::data`.
+    WorkflowInstancesJson,
+    /// Supervisor: drop a failed workflow instance (parity with the
+    /// TUI's `d` keybind). Running instances can't be dismissed; the
+    /// handler replies with `error` in that case.
+    WorkflowDismiss {
+        instance_id: u64,
+    },
     /// Add a new task to the shared team board.
     TaskAdd {
         title: String,

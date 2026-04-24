@@ -20,6 +20,8 @@ import type {
   TeamInfoResponse,
   TodoStatus,
   WireLinkDirection,
+  WorkflowInstancesResponse,
+  WorkflowTemplatesResponse,
 } from "./types";
 
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -269,6 +271,29 @@ export const api = {
     request<GraphResponse>(
       `/api/instances/${id}/memory/banks/${encodeURIComponent(bank)}/graph`,
     ),
+
+  // Workflows
+  listWorkflowTemplates: (id: string) =>
+    request<WorkflowTemplatesResponse>(
+      `/api/instances/${id}/workflows/templates`,
+    ),
+  listWorkflowInstances: (id: string) =>
+    request<WorkflowInstancesResponse>(
+      `/api/instances/${id}/workflows/instances`,
+    ),
+  startWorkflow: (
+    id: string,
+    body: { workflow: string; properties: Record<string, unknown> },
+  ) =>
+    request<MutationResponse>(`/api/instances/${id}/workflows/instances`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  dismissWorkflowInstance: (id: string, wfId: number) =>
+    request<MutationResponse>(
+      `/api/instances/${id}/workflows/instances/${wfId}`,
+      { method: "DELETE" },
+    ),
 };
 
 export function instanceEventsUrl(id: string): string {
@@ -283,4 +308,12 @@ export function channelEventsUrl(id: string, channel: string): string {
 /// agent. Exposed here so callers don't hand-build the URL.
 export function chatEventsUrl(id: string, agent: string): string {
   return `/api/instances/${id}/agents/${encodeURIComponent(agent)}/events`;
+}
+
+/// Path for an EventSource that streams `WireWorkflowEvent`s. Without
+/// `instanceId` the stream carries events for every instance; passing
+/// one scopes it to that single instance server-side.
+export function workflowEventsUrl(id: string, instanceId?: number): string {
+  const base = `/api/instances/${id}/workflows/events`;
+  return instanceId === undefined ? base : `${base}?instance=${instanceId}`;
 }

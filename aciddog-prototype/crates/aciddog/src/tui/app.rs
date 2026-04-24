@@ -741,6 +741,15 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             };
             ChatBlock::from_tool_use(&summary, input)
         }
+        RequestCmd::WorkflowTemplatesJson => {
+            ChatBlock::from_tool_use("aciddog workflow templates --json", input)
+        }
+        RequestCmd::WorkflowInstancesJson => {
+            ChatBlock::from_tool_use("aciddog workflow instances --json", input)
+        }
+        RequestCmd::WorkflowDismiss { instance_id } => {
+            ChatBlock::from_tool_use(&format!("aciddog workflow dismiss {instance_id}"), input)
+        }
         RequestCmd::Test => ChatBlock::from_tool_use("aciddog test", input),
         RequestCmd::TaskAdd {
             title,
@@ -944,10 +953,9 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         }
         RequestCmd::TeamInfo => ChatBlock::from_tool_use("aciddog team info", input),
         RequestCmd::ChannelList => ChatBlock::from_tool_use("aciddog channel list", input),
-        RequestCmd::ChannelHistory { channel } => ChatBlock::from_tool_use(
-            &format!("aciddog channel history --id {channel}"),
-            input,
-        ),
+        RequestCmd::ChannelHistory { channel } => {
+            ChatBlock::from_tool_use(&format!("aciddog channel history --id {channel}"), input)
+        }
         RequestCmd::ChannelSendAsUser { channel, body } => {
             ChatBlock::channel_message("user".to_string(), format!("→ #{channel}: {body}"))
         }
@@ -2250,6 +2258,11 @@ pub struct App {
     /// supervisor-scoped `/v1/channel/events` stream can follow any
     /// channel.
     pub channel_message_tx: broadcast::Sender<crate::wire_channel::ChannelMessageEvent>,
+    /// Broadcast sender for workflow events. Populated at the end of
+    /// [`App::on_workflow_event`], after the TUI mirror is updated.
+    /// The supervisor-scoped `/v1/workflow/events` handler subscribes
+    /// here and optionally filters by `instance_id`.
+    pub workflow_event_tx: broadcast::Sender<crate::wire_workflow::WireWorkflowEvent>,
 }
 
 /// Time window for detecting a double-click. Matches the typical
@@ -2369,9 +2382,8 @@ impl App {
         // of the sender. Sender clones are cheap (internally an Arc),
         // `receiver_count()` starts at 0 so the `push_block` fast-path
         // skips projection work until someone subscribes.
-        let (chat_block_tx, _keepalive_rx) = broadcast::channel::<crate::wire_chat::ChatBlockEvent>(
-            CHAT_BLOCK_BROADCAST_CAPACITY,
-        );
+        let (chat_block_tx, _keepalive_rx) =
+            broadcast::channel::<crate::wire_chat::ChatBlockEvent>(CHAT_BLOCK_BROADCAST_CAPACITY);
         // NOTE: `_keepalive_rx` is dropped immediately — that's fine.
         // `Sender::subscribe()` creates fresh receivers on demand from
         // the SSE handler; the sender stays alive as long as `App` does.
@@ -2381,10 +2393,15 @@ impl App {
         // Parallel broadcaster for channel messages — fed from
         // `broadcast_to_channel` so the supervisor SSE stream can
         // observe any channel regardless of local membership.
-        let (channel_message_tx, _channel_keepalive_rx) =
-            broadcast::channel::<crate::wire_channel::ChannelMessageEvent>(
-                CHAT_BLOCK_BROADCAST_CAPACITY,
-            );
+        let (channel_message_tx, _channel_keepalive_rx) = broadcast::channel::<
+            crate::wire_channel::ChannelMessageEvent,
+        >(CHAT_BLOCK_BROADCAST_CAPACITY);
+        // Parallel broadcaster for workflow events. The supervisor
+        // `/v1/workflow/events` stream subscribes here. See
+        // `on_workflow_event` for the fan-out site.
+        let (workflow_event_tx, _workflow_keepalive_rx) = broadcast::channel::<
+            crate::wire_workflow::WireWorkflowEvent,
+        >(CHAT_BLOCK_BROADCAST_CAPACITY);
         Self {
             config,
             selected: 0,
@@ -2394,6 +2411,7 @@ impl App {
             chats,
             chat_block_tx,
             channel_message_tx,
+            workflow_event_tx,
             layout: LayoutRects::default(),
             copied_at: None,
             agent_ids: HashMap::new(),
@@ -2847,6 +2865,15 @@ impl App {
             } => {
                 self.handle_workflow_run(idx, workflow, properties, reply);
             }
+            RequestCmd::WorkflowTemplatesJson => {
+                self.handle_workflow_templates_json(idx, reply);
+            }
+            RequestCmd::WorkflowInstancesJson => {
+                self.handle_workflow_instances_json(idx, reply);
+            }
+            RequestCmd::WorkflowDismiss { instance_id } => {
+                self.handle_workflow_dismiss(idx, instance_id, reply);
+            }
             RequestCmd::TaskAdd {
                 title,
                 description,
@@ -2869,9 +2896,7 @@ impl App {
                 mine,
                 unassigned,
             } => {
-                self.handle_admin_task_list_json(
-                    idx, assignee, status, mine, unassigned, reply,
-                );
+                self.handle_admin_task_list_json(idx, assignee, status, mine, unassigned, reply);
             }
             RequestCmd::TaskUpdate {
                 id,
@@ -3218,21 +3243,23 @@ impl App {
         properties: std::collections::BTreeMap<String, serde_json::Value>,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
+        // Resolve the sender's "template id" for the allowlist check.
+        // Workers are identified by their spawn template; agents and
+        // automatons by their configured id (which the chat records as
+        // `display_name`). Supervisor automatons bypass the allowlist
+        // entirely — this is how the manager portal drives workflow
+        // runs through a `supervisor = true` gateway automaton without
+        // needing a `can_run_workflows` entry there.
+        let is_supervisor = self.is_supervisor(sender_idx);
         let sender_template = match self.chats.get(sender_idx) {
             Some(c) if c.worker_template.is_some() => c.worker_template.clone().unwrap(),
-            Some(_) => match self.config.agents.get(sender_idx) {
-                Some(a) => a.id.clone(),
-                None => {
-                    let _ = reply.send(Response::err("unknown sender"));
-                    return;
-                }
-            },
+            Some(c) => c.display_name.clone(),
             None => {
                 let _ = reply.send(Response::err("unknown sender"));
                 return;
             }
         };
-        if !self.config.can_run_workflow(&sender_template, &workflow_id) {
+        if !is_supervisor && !self.config.can_run_workflow(&sender_template, &workflow_id) {
             let _ = reply.send(Response::err(format!(
                 "`{sender_template}` is not permitted to run workflow `{workflow_id}` (check can_run_workflows)"
             )));
@@ -3325,6 +3352,84 @@ impl App {
         let _ = reply.send(Response::ok(format!(
             "started workflow `{workflow_id}` as instance #{instance_id}"
         )));
+    }
+
+    /// Supervisor: serialize `self.config.workflows` into a wire-friendly
+    /// template list. Used by the manager portal to render the property
+    /// form.
+    fn handle_workflow_templates_json(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let templates: Vec<crate::wire_workflow::WireWorkflowTemplate> = self
+            .config
+            .workflows
+            .iter()
+            .map(crate::wire_workflow::WireWorkflowTemplate::from_config)
+            .collect();
+        match serde_json::to_value(&templates) {
+            Ok(v) => {
+                let _ = reply.send(Response::ok_data(v));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(format!("serialize workflow templates: {e}")));
+            }
+        }
+    }
+
+    /// Supervisor: serialize the TUI's live `workflow_instances` mirror.
+    /// Matches the sidebar/progress surface operators see in the TUI.
+    fn handle_workflow_instances_json(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let instances: Vec<crate::wire_workflow::WireWorkflowInstance> = self
+            .workflow_instances
+            .iter()
+            .map(crate::wire_workflow::WireWorkflowInstance::from_view)
+            .collect();
+        match serde_json::to_value(&instances) {
+            Ok(v) => {
+                let _ = reply.send(Response::ok_data(v));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(format!("serialize workflow instances: {e}")));
+            }
+        }
+    }
+
+    /// Supervisor: drop a failed instance. Parity with the TUI `d`
+    /// keybind — running instances cannot be dismissed.
+    fn handle_workflow_dismiss(
+        &mut self,
+        sender_idx: usize,
+        instance_id: u64,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        match self.dismiss_workflow_instance(instance_id) {
+            Ok(()) => {
+                let _ = reply.send(Response::ok(format!(
+                    "dismissed workflow instance #{instance_id}"
+                )));
+            }
+            Err(msg) => {
+                let _ = reply.send(Response::err(msg));
+            }
+        }
     }
 
     fn handle_worker_create(
@@ -4190,7 +4295,15 @@ impl App {
             let seq = ch_state
                 .blocks
                 .iter()
-                .filter(|b| matches!(b, ChatBlock::ChannelMessage { is_welcome: false, .. }))
+                .filter(|b| {
+                    matches!(
+                        b,
+                        ChatBlock::ChannelMessage {
+                            is_welcome: false,
+                            ..
+                        }
+                    )
+                })
                 .count()
                 .saturating_sub(1) as u64;
             emitted_seq = Some(seq);
@@ -4925,7 +5038,13 @@ impl App {
                     s.blocks
                         .iter()
                         .filter(|b| {
-                            matches!(b, ChatBlock::ChannelMessage { is_welcome: false, .. })
+                            matches!(
+                                b,
+                                ChatBlock::ChannelMessage {
+                                    is_welcome: false,
+                                    ..
+                                }
+                            )
                         })
                         .count()
                 })
@@ -4945,7 +5064,15 @@ impl App {
             let message_count = state
                 .blocks
                 .iter()
-                .filter(|b| matches!(b, ChatBlock::ChannelMessage { is_welcome: false, .. }))
+                .filter(|b| {
+                    matches!(
+                        b,
+                        ChatBlock::ChannelMessage {
+                            is_welcome: false,
+                            ..
+                        }
+                    )
+                })
                 .count();
             infos.push(crate::wire_channel::WireChannelInfo {
                 id: state.id.clone(),
@@ -5002,9 +5129,7 @@ impl App {
                 let _ = reply.send(Response::ok_data(v));
             }
             Err(e) => {
-                let _ = reply.send(Response::err(format!(
-                    "serialize channel history: {e}"
-                )));
+                let _ = reply.send(Response::err(format!("serialize channel history: {e}")));
             }
         }
     }
@@ -6225,15 +6350,11 @@ impl App {
                         let _ = reply.send(Response::ok_data(v));
                     }
                     Err(e) => {
-                        let _ = reply.send(Response::err(format!(
-                            "serialize memory banks: {e}"
-                        )));
+                        let _ = reply.send(Response::err(format!("serialize memory banks: {e}")));
                     }
                 },
                 Err(join_err) => {
-                    let _ = reply.send(Response::err(format!(
-                        "memory banks task: {join_err}"
-                    )));
+                    let _ = reply.send(Response::err(format!("memory banks task: {join_err}")));
                 }
             }
         });
@@ -6281,8 +6402,7 @@ impl App {
                             let _ = reply.send(Response::ok_data(v));
                         }
                         Err(e) => {
-                            let _ = reply
-                                .send(Response::err(format!("serialize hits: {e}")));
+                            let _ = reply.send(Response::err(format!("serialize hits: {e}")));
                         }
                     }
                 }
@@ -6290,8 +6410,7 @@ impl App {
                     let _ = reply.send(Response::err(e.to_string()));
                 }
                 Err(join_err) => {
-                    let _ = reply
-                        .send(Response::err(format!("memory search task: {join_err}")));
+                    let _ = reply.send(Response::err(format!("memory search task: {join_err}")));
                 }
             }
         });
@@ -6321,15 +6440,13 @@ impl App {
             .await;
             match result {
                 Ok(Ok(id)) => {
-                    let _ = reply
-                        .send(Response::ok_data(serde_json::json!({ "id": id })));
+                    let _ = reply.send(Response::ok_data(serde_json::json!({ "id": id })));
                 }
                 Ok(Err(e)) => {
                     let _ = reply.send(Response::err(e.to_string()));
                 }
                 Err(join_err) => {
-                    let _ = reply
-                        .send(Response::err(format!("memory store task: {join_err}")));
+                    let _ = reply.send(Response::err(format!("memory store task: {join_err}")));
                 }
             }
         });
@@ -6383,8 +6500,7 @@ impl App {
                             let _ = reply.send(Response::ok_data(v));
                         }
                         Err(e) => {
-                            let _ = reply
-                                .send(Response::err(format!("serialize links: {e}")));
+                            let _ = reply.send(Response::err(format!("serialize links: {e}")));
                         }
                     }
                 }
@@ -6392,8 +6508,7 @@ impl App {
                     let _ = reply.send(Response::err(e.to_string()));
                 }
                 Err(join_err) => {
-                    let _ = reply
-                        .send(Response::err(format!("memory links task: {join_err}")));
+                    let _ = reply.send(Response::err(format!("memory links task: {join_err}")));
                 }
             }
         });
@@ -6456,13 +6571,11 @@ impl App {
                         });
                     }
                 }
-                Ok::<_, crate::memory::MemoryError>(
-                    crate::wire_memory::WireGraph {
-                        bank: bank_id,
-                        nodes,
-                        edges,
-                    },
-                )
+                Ok::<_, crate::memory::MemoryError>(crate::wire_memory::WireGraph {
+                    bank: bank_id,
+                    nodes,
+                    edges,
+                })
             })
             .await;
             match result {
@@ -6471,16 +6584,14 @@ impl App {
                         let _ = reply.send(Response::ok_data(v));
                     }
                     Err(e) => {
-                        let _ = reply
-                            .send(Response::err(format!("serialize graph: {e}")));
+                        let _ = reply.send(Response::err(format!("serialize graph: {e}")));
                     }
                 },
                 Ok(Err(e)) => {
                     let _ = reply.send(Response::err(e.to_string()));
                 }
                 Err(join_err) => {
-                    let _ = reply
-                        .send(Response::err(format!("memory graph task: {join_err}")));
+                    let _ = reply.send(Response::err(format!("memory graph task: {join_err}")));
                 }
             }
         });
@@ -7434,6 +7545,12 @@ impl App {
     /// dismisses them.
     pub(crate) fn on_workflow_event(&mut self, ev: crate::workflow::WorkflowEvent) {
         use crate::workflow::{InstanceStatus, StepStatus, WorkflowEvent};
+        // Wire-level projection constructed before the consuming match
+        // so the SSE fan-out at the bottom sees the event in its entirety.
+        // `send` fails with SendError only when there are zero
+        // subscribers — that's the steady state when no browser is
+        // watching, and we simply drop the event.
+        let wire = crate::wire_workflow::WireWorkflowEvent::from_event(&ev);
         match ev {
             WorkflowEvent::Started {
                 instance_id, vars, ..
@@ -7554,6 +7671,7 @@ impl App {
                 }
             }
         }
+        let _ = self.workflow_event_tx.send(wire);
     }
 
     /// Drop any workflow instance whose `remove_at` deadline has
@@ -7978,20 +8096,41 @@ impl App {
             KeyCode::Char('d') => {
                 // Only dismiss failed instances; running ones ignore
                 // the key so the user can't accidentally lose state.
-                if let Some(pos) = self.workflow_instances.iter().position(|i| {
-                    i.id == instance_id
-                        && matches!(i.status, crate::workflow::InstanceStatus::Failed)
-                }) {
-                    self.workflow_instances.remove(pos);
-                    if let Some(engine) = self.workflow_engine.as_mut() {
-                        engine.forget(instance_id);
-                    }
+                if self.dismiss_workflow_instance(instance_id).is_ok() {
                     self.active_view = ActiveView::Chat;
                     self.focus = Focus::Chat;
                 }
             }
             _ => {}
         }
+    }
+
+    /// Drop a failed workflow instance from the TUI mirror + engine.
+    /// Shared by the `'d'` keybind and the `WorkflowDismiss` IPC.
+    /// Returns a stable string error on the refusal paths so IPC
+    /// callers can surface a useful message.
+    pub(crate) fn dismiss_workflow_instance(
+        &mut self,
+        instance_id: u64,
+    ) -> Result<(), &'static str> {
+        let Some(pos) = self
+            .workflow_instances
+            .iter()
+            .position(|i| i.id == instance_id)
+        else {
+            return Err("no such workflow instance");
+        };
+        if !matches!(
+            self.workflow_instances[pos].status,
+            crate::workflow::InstanceStatus::Failed
+        ) {
+            return Err("only failed workflow instances can be dismissed");
+        }
+        self.workflow_instances.remove(pos);
+        if let Some(engine) = self.workflow_engine.as_mut() {
+            engine.forget(instance_id);
+        }
+        Ok(())
     }
 
     /// Views-list entries for this fleet. Filters out items whose

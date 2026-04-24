@@ -499,9 +499,7 @@ mod tests {
     fn chat_block_event_serialises_compactly() {
         let ev = ChatBlockEvent {
             agent: "supervisor".into(),
-            block: WireChatBlock::UserText {
-                text: "hi".into(),
-            },
+            block: WireChatBlock::UserText { text: "hi".into() },
             ts: "2026-04-24T12:34:56Z".into(),
             seq: 7,
         };

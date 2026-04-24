@@ -443,3 +443,115 @@ export interface MemoryMutationResponse {
   error?: string;
   id?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Workflows — mirrors `aciddog::wire_workflow`.
+// ---------------------------------------------------------------------------
+
+export type WorkflowInstanceStatus = "running" | "failed" | "succeeded";
+export type WorkflowStepStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "retrying";
+
+export type WirePropertyKind =
+  | { kind: "text"; default?: string }
+  | { kind: "number"; default?: number; min?: number; max?: number }
+  | { kind: "select"; options: string[]; default?: string }
+  | { kind: "multi_select"; options: string[]; default?: string[] };
+
+export interface WireWorkflowProperty {
+  id: string;
+  label?: string;
+  required: boolean;
+  kind: WirePropertyKind;
+}
+
+export interface WireTemplateStep {
+  id: string;
+  kind: string;
+  /// Retry-target step id — set for `conditional` and `check` steps.
+  target?: string;
+}
+
+export interface WireWorkflowTemplate {
+  id: string;
+  description: string;
+  max_retries: number;
+  properties: WireWorkflowProperty[];
+  steps: WireTemplateStep[];
+}
+
+export interface WireStepProgress {
+  id: string;
+  kind: string;
+  status: WorkflowStepStatus;
+  retry_count: number;
+  reason?: string;
+}
+
+export interface WireVarSnapshot {
+  name: string;
+  display: string;
+}
+
+export interface WireWorkflowInstance {
+  id: number;
+  workflow_id: string;
+  status: WorkflowInstanceStatus;
+  current_step: number;
+  failure_reason?: string;
+  steps: WireStepProgress[];
+  tail_output: string[];
+  vars: WireVarSnapshot[];
+  remove_in_ms?: number;
+}
+
+export type WireStepOutcome =
+  | { outcome: "ok" }
+  | { outcome: "retry"; reason: string }
+  | { outcome: "failed"; reason: string };
+
+/// Discriminated union matching `wire_workflow::WireWorkflowEvent`.
+export type WireWorkflowEvent =
+  | {
+      event: "started";
+      instance_id: number;
+      workflow_id: string;
+      vars: WireVarSnapshot[];
+    }
+  | { event: "step_started"; instance_id: number; step_idx: number }
+  | { event: "step_output"; instance_id: number; line: string }
+  | {
+      event: "var_changed";
+      instance_id: number;
+      name: string;
+      display: string;
+    }
+  | {
+      event: "step_finished";
+      instance_id: number;
+      step_idx: number;
+      outcome: WireStepOutcome;
+    }
+  | {
+      event: "retrying";
+      instance_id: number;
+      target_step_idx: number;
+      attempt: number;
+    }
+  | { event: "finished"; instance_id: number; ok: boolean; reason?: string };
+
+export interface WorkflowTemplatesResponse {
+  ok: boolean;
+  templates: WireWorkflowTemplate[];
+  error?: string;
+}
+
+export interface WorkflowInstancesResponse {
+  ok: boolean;
+  instances: WireWorkflowInstance[];
+  error?: string;
+}

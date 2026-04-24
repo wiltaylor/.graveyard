@@ -204,9 +204,7 @@ async fn chat_events_filters_on_agent_id() {
         });
         let _ = chat_tx2.send(ChatBlockEvent {
             agent: "planner".into(),
-            block: WireChatBlock::UserText {
-                text: "hi".into(),
-            },
+            block: WireChatBlock::UserText { text: "hi".into() },
             ts: "2026-04-24T00:00:01Z".into(),
             seq: 2,
         });
@@ -220,9 +218,10 @@ async fn chat_events_filters_on_agent_id() {
                 collected.extend_from_slice(&chunk);
                 // Frames are `data: ...\n\n` separated. Stop once we've
                 // seen the "hi" body.
-                if collected.windows(b"\"text\":\"hi\"".len()).any(|w| {
-                    w == b"\"text\":\"hi\""
-                }) {
+                if collected
+                    .windows(b"\"text\":\"hi\"".len())
+                    .any(|w| w == b"\"text\":\"hi\"")
+                {
                     break;
                 }
             }

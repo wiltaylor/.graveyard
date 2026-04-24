@@ -74,8 +74,12 @@ pub struct WebserviceState {
     /// `chat_block_tx`; the `/v1/channel/events?channel=<id>` stream
     /// filters on this. Populated by `App::broadcast_to_channel` —
     /// even for channels this automaton isn't a member of.
-    pub channel_message_tx:
-        broadcast::Sender<crate::wire_channel::ChannelMessageEvent>,
+    pub channel_message_tx: broadcast::Sender<crate::wire_channel::ChannelMessageEvent>,
+    /// Per-`App` fan-out of workflow events. The
+    /// `/v1/workflow/events[?instance=<id>]` stream filters on this.
+    /// Populated at the end of `App::on_workflow_event` after the TUI
+    /// mirror has been updated.
+    pub workflow_event_tx: broadcast::Sender<crate::wire_workflow::WireWorkflowEvent>,
     /// Whether the automaton backing this webservice is flagged
     /// `supervisor = true`. Gates the `/v1/chat/events` handler —
     /// non-supervisor webservices have no business snooping on other
@@ -104,6 +108,7 @@ pub async fn run_webservice_core(
     events_tx: mpsc::Sender<AgentSocketEvent>,
     chat_block_tx: broadcast::Sender<crate::wire_chat::ChatBlockEvent>,
     channel_message_tx: broadcast::Sender<crate::wire_channel::ChannelMessageEvent>,
+    workflow_event_tx: broadcast::Sender<crate::wire_workflow::WireWorkflowEvent>,
 ) {
     let is_supervisor = automaton.supervisor;
     let (bind, api_key_env) = match automaton.backend {
@@ -144,6 +149,7 @@ pub async fn run_webservice_core(
         broadcast_tx: broadcast_tx.clone(),
         chat_block_tx,
         channel_message_tx,
+        workflow_event_tx,
         is_supervisor,
         api_key,
     };

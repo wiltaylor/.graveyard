@@ -103,9 +103,8 @@ pub async fn history(
             error: Some("remote returned ok but no `data`".into()),
         }));
     };
-    let messages: Vec<WireChannelMessage> = serde_json::from_value(data).map_err(|e| {
-        AppError::Remote(anyhow::anyhow!("decoding channel history: {e}"))
-    })?;
+    let messages: Vec<WireChannelMessage> = serde_json::from_value(data)
+        .map_err(|e| AppError::Remote(anyhow::anyhow!("decoding channel history: {e}")))?;
     Ok(Json(ChannelHistoryResponse {
         ok: true,
         messages,
@@ -155,8 +154,7 @@ pub async fn events(
     let client = Client::from_row(&row)?;
     let (upstream_status, stream) = client.open_channel_events(&channel).await?;
     if upstream_status != 200 {
-        let status =
-            StatusCode::from_u16(upstream_status).unwrap_or(StatusCode::BAD_GATEWAY);
+        let status = StatusCode::from_u16(upstream_status).unwrap_or(StatusCode::BAD_GATEWAY);
         let mut collected = Vec::new();
         let mut s = stream;
         while let Some(chunk) = s.next().await {
