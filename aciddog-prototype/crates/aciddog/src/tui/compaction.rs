@@ -159,7 +159,7 @@ impl App {
 
     /// Dispatcher for `CompactionEvent`s arriving from the summarise
     /// background task.
-    pub(super) fn handle_compaction_event(&mut self, ev: CompactionEvent) {
+    pub(crate) fn handle_compaction_event(&mut self, ev: CompactionEvent) {
         match ev {
             CompactionEvent::SummaryReady {
                 idx,

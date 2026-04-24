@@ -13,6 +13,7 @@ use aciddog::cli::{
     SkillCommand, TaskCommand, TodoCommand, WorkerCommand,
 };
 use aciddog::config::load_config;
+use aciddog::daemon;
 use aciddog::openai_auth;
 use aciddog::tui;
 
@@ -54,7 +55,19 @@ async fn main() -> ExitCode {
         }
         (None, None) => {
             let args = Args::parse();
-            // Dispatch top-level subcommands (auth login/logout/…)
+            // Daemon mode intercepts before the generic auth dispatch
+            // because it needs `args` for `--config` / `--log-level`,
+            // and its tracing setup differs (dual-writer: file + stdout).
+            if let Some(RootCommand::Daemon) = &args.command {
+                return match run_daemon(args).await {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("aciddog: {e:#}");
+                        ExitCode::from(1)
+                    }
+                };
+            }
+            // Dispatch other top-level subcommands (auth login/logout/…)
             // before touching the TUI or the config file. They run to
             // completion and exit.
             if let Some(command) = &args.command {
@@ -80,6 +93,11 @@ async fn main() -> ExitCode {
 async fn run_root_command(cmd: RootCommand) -> Result<ExitCode> {
     match cmd {
         RootCommand::Auth { cmd } => run_auth_command(cmd).await,
+        // Intercepted in `main()` before this call. The arm exists so
+        // the match stays exhaustive.
+        RootCommand::Daemon => {
+            unreachable!("RootCommand::Daemon is intercepted by main() before reaching here")
+        }
     }
 }
 
@@ -194,6 +212,37 @@ async fn run_tui(args: Args) -> Result<()> {
         .with_context(|| format!("loading config from {}", args.config.display()))?;
 
     tui::run(config).await
+}
+
+async fn run_daemon(args: Args) -> Result<()> {
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+    let file_appender = tracing_appender::rolling::never(".", "aciddog.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+    // Leak the guard: the daemon's lifetime is the process lifetime,
+    // and we want the non-blocking writer to keep flushing until the
+    // very end — including the final `info!("daemon exited")` line
+    // and any `warn!` on a forced second-signal exit.
+    Box::leak(Box::new(guard));
+
+    let filter = EnvFilter::try_new(args.effective_log_directive())
+        .unwrap_or_else(|_| EnvFilter::new("aciddog=info"));
+
+    // Layered subscriber: one fmt layer to ./aciddog.log (matches
+    // `run_tui` behavior so operators keep the on-disk log) and one
+    // fmt layer to stdout so systemd / journald / docker logs see
+    // live output. Both ANSI-free — journald stamps its own
+    // timestamps and disk grepping works better without escape codes.
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
+        .with(fmt::layer().with_writer(std::io::stdout).with_ansi(false))
+        .init();
+
+    let config = load_config(&args.config)
+        .with_context(|| format!("loading config from {}", args.config.display()))?;
+
+    daemon::run(config).await
 }
 
 async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCode> {

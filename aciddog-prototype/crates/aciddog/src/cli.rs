@@ -33,6 +33,18 @@ pub enum RootCommand {
         #[command(subcommand)]
         cmd: AuthCommand,
     },
+    /// Run the orchestrator without a terminal UI. All agents, cron
+    /// jobs, webservice automatons, and the agent IPC socket come up
+    /// exactly as in TUI mode — drive the instance via the
+    /// `:webservice` automaton declared in your `aciddog.wcl` (the
+    /// aciddog-manager web portal talks to that endpoint). SIGTERM /
+    /// SIGINT trigger a graceful shutdown; a second signal forces an
+    /// immediate exit.
+    ///
+    /// aciddog reads `aciddog.wcl`, `.env`, and `.aciddog/*` relative
+    /// to the current working directory. Set `WorkingDirectory=` in
+    /// your systemd unit, or `cd` before launching.
+    Daemon,
 }
 
 #[derive(Debug, Clone, Subcommand)]

@@ -3,6 +3,7 @@ pub mod ai;
 pub mod cli;
 pub mod config;
 pub mod cron;
+pub mod daemon;
 pub mod info;
 pub mod memory;
 pub mod openai_auth;

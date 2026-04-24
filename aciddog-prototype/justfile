@@ -48,6 +48,13 @@ app-test: app-test-unit app-test-integration
 run:
 	cd demo && cargo run --manifest-path ../crates/aciddog/Cargo.toml
 
+# Start the orchestrator as a daemon (no TUI) in the demo workspace.
+# Management happens via the :webservice automaton the demo config
+# declares and the aciddog-manager portal (see `run-manager`).
+[group('run')]
+run-daemon:
+	cd demo && cargo run --manifest-path ../crates/aciddog/Cargo.toml -- daemon
+
 # Remote-demo server side: :webservice on /tmp/aciddog-remote-demo.sock (pair with `run-remote-client`)
 [group('run')]
 run-remote-server:

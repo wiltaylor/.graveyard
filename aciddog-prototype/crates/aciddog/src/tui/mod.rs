@@ -1,5 +1,6 @@
-mod app;
+pub(crate) mod app;
 mod blocks;
+pub(crate) mod boot;
 mod channel_log;
 mod clipboard;
 mod commands;
