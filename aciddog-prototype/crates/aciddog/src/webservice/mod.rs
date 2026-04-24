@@ -64,6 +64,17 @@ pub struct WebserviceState {
     pub session_id: Uuid,
     pub events_tx: mpsc::Sender<AgentSocketEvent>,
     pub broadcast_tx: broadcast::Sender<InboundEvent>,
+    /// Per-`App` fan-out of `push_block` events. The scoped
+    /// `/v1/chat/events?agent=<id>` handler filters on this — every
+    /// chat in the running orchestrator (not just this automaton)
+    /// publishes here, so a supervisor-capable webservice can observe
+    /// any agent's transcript in real time.
+    pub chat_block_tx: broadcast::Sender<crate::wire_chat::ChatBlockEvent>,
+    /// Whether the automaton backing this webservice is flagged
+    /// `supervisor = true`. Gates the `/v1/chat/events` handler —
+    /// non-supervisor webservices have no business snooping on other
+    /// agents' chats, even with a valid api key.
+    pub is_supervisor: bool,
     /// `Some(key)` when the webservice is HTTPS-bound with an API key
     /// resolved from the env at startup. `None` for Unix-socket binds —
     /// auth middleware short-circuits in that case.
@@ -85,7 +96,9 @@ pub async fn run_webservice_core(
     mut cancel_rx: mpsc::Receiver<()>,
     ai_tx: mpsc::Sender<(usize, AIEvent)>,
     events_tx: mpsc::Sender<AgentSocketEvent>,
+    chat_block_tx: broadcast::Sender<crate::wire_chat::ChatBlockEvent>,
 ) {
+    let is_supervisor = automaton.supervisor;
     let (bind, api_key_env) = match automaton.backend {
         AutomatonBackend::Webservice { bind, api_key_env } => (bind, api_key_env),
         AutomatonBackend::Script { .. } | AutomatonBackend::Remote { .. } => {
@@ -122,6 +135,8 @@ pub async fn run_webservice_core(
         session_id,
         events_tx,
         broadcast_tx: broadcast_tx.clone(),
+        chat_block_tx,
+        is_supervisor,
         api_key,
     };
 

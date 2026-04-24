@@ -6,3 +6,4 @@ pub mod ipc;
 pub mod model;
 pub mod routes;
 pub mod state;
+pub mod wire_chat;

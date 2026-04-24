@@ -45,10 +45,13 @@ async fn spawn_fake_remote() -> FakeRemote {
 
     let (events_tx, mut events_rx) = mpsc::channel::<AgentSocketEvent>(32);
     let (broadcast_tx, _) = broadcast::channel::<InboundEvent>(32);
+    let (chat_block_tx, _) = broadcast::channel(32);
     let state = WebserviceState {
         session_id: Uuid::new_v4(),
         events_tx,
         broadcast_tx: broadcast_tx.clone(),
+        chat_block_tx,
+        is_supervisor: false,
         api_key: None,
     };
     let router = build_router(state, vec![]);
@@ -186,6 +189,7 @@ async fn remote_core_forwards_outbound_user_message() {
             deliver_to: "planner".into(),
             proxy_socket_path: None,
         },
+        supervisor: false,
     };
 
     let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
@@ -256,6 +260,7 @@ async fn proxy_socket_tunnels_request_cmd() {
             deliver_to: "planner".into(),
             proxy_socket_path: Some(proxy_path.clone()),
         },
+        supervisor: false,
     };
 
     let (_user_tx, user_rx) = mpsc::unbounded_channel::<String>();

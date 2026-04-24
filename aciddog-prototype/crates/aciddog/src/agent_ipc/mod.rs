@@ -399,6 +399,16 @@ pub enum RequestCmd {
         #[serde(flatten)]
         selector: HistorySelector,
     },
+    /// Supervisor: structured chat history for an agent/worker/automaton.
+    /// Like [`RequestCmd::AgentHistory`] but returns a serialized
+    /// `Vec<WireChatBlock>` in `Response::data` instead of a flat
+    /// plaintext summary in `message`. Intended for programmatic
+    /// consumers (e.g. the manager web portal's chat pane).
+    AgentHistoryJson {
+        agent: String,
+        #[serde(flatten)]
+        selector: HistorySelector,
+    },
     /// Supervisor: abort the target agent's in-flight turn (if any).
     /// Equivalent to the human running `/stop` on the target pane.
     AgentStop {
@@ -471,6 +481,12 @@ pub struct Response {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Optional structured payload. Used by commands whose reply is
+    /// easier to consume as JSON than as plaintext embedded in
+    /// `message` (e.g. `AgentHistoryJson`). Older callers that only
+    /// inspect `message`/`error` ignore this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 impl Response {
@@ -479,6 +495,19 @@ impl Response {
             ok: true,
             message: Some(message.into()),
             error: None,
+            data: None,
+        }
+    }
+
+    /// Successful reply carrying a structured JSON payload. Sets
+    /// `ok=true` and leaves `message` empty — the caller is expected
+    /// to read `data`.
+    pub fn ok_data(data: serde_json::Value) -> Self {
+        Self {
+            ok: true,
+            message: None,
+            error: None,
+            data: Some(data),
         }
     }
 
@@ -487,6 +516,7 @@ impl Response {
             ok: false,
             message: None,
             error: Some(error.into()),
+            data: None,
         }
     }
 }

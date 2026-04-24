@@ -4,7 +4,9 @@ import type { AgentListResponse, InstanceSummary } from "../types";
 interface Props {
   instances: InstanceSummary[];
   selectedId: string | null;
+  selectedAgent: string | null;
   onSelect: (id: string) => void;
+  onSelectAgent: (instanceId: string, agentId: string) => void;
   agentsFor: (id: string) => AgentListResponse | undefined;
   onExpand: (id: string) => void;
 }
@@ -78,14 +80,31 @@ export default function InstanceTree(props: Props): JSX.Element {
                           }
                         >
                           <For each={resp().agents}>
-                            {(agent) => (
-                              <li class="pl-2 text-slate-200">
-                                {agent.id}{" "}
-                                <span class="text-xs text-slate-500">
-                                  ({agent.kind} · {agent.status})
-                                </span>
-                              </li>
-                            )}
+                            {(agent) => {
+                              const isSelected = () =>
+                                props.selectedId === inst.id &&
+                                props.selectedAgent === agent.id;
+                              return (
+                                <li>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      props.onSelectAgent(inst.id, agent.id);
+                                    }}
+                                    class="w-full text-left rounded px-2 py-0.5 text-slate-200 hover:bg-slate-800"
+                                    classList={{
+                                      "bg-slate-700 text-slate-50": isSelected(),
+                                    }}
+                                  >
+                                    {agent.id}{" "}
+                                    <span class="text-xs text-slate-500">
+                                      ({agent.kind} · {agent.status})
+                                    </span>
+                                  </button>
+                                </li>
+                              );
+                            }}
                           </For>
                         </Show>
                       )}

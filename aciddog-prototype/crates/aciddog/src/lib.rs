@@ -12,4 +12,5 @@ pub mod tasks;
 pub mod tui;
 pub mod usage;
 pub mod webservice;
+pub mod wire_chat;
 pub mod workflow;

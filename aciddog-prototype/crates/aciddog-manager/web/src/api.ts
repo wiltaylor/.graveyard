@@ -1,9 +1,11 @@
 import type {
   AgentListResponse,
   ApiError,
+  ChatHistoryResponse,
   CreateInstanceInput,
   HealthResponse,
   InstanceSummary,
+  SendResponse,
 } from "./types";
 
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -43,4 +45,21 @@ export const api = {
 
   health: (id: string) =>
     request<HealthResponse>(`/api/instances/${id}/health`),
+
+  chatHistory: (id: string, agent: string) =>
+    request<ChatHistoryResponse>(
+      `/api/instances/${id}/agents/${encodeURIComponent(agent)}/history`,
+    ),
+
+  sendAsUser: (id: string, agent: string, body: string) =>
+    request<SendResponse>(
+      `/api/instances/${id}/agents/${encodeURIComponent(agent)}/messages`,
+      { method: "POST", body: JSON.stringify({ body }) },
+    ),
 };
+
+/// Path for an EventSource that streams `ChatBlockEvent`s for a single
+/// agent. Exposed here so callers don't hand-build the URL.
+export function chatEventsUrl(id: string, agent: string): string {
+  return `/api/instances/${id}/agents/${encodeURIComponent(agent)}/events`;
+}

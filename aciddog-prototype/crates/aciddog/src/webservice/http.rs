@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, Request as HttpRequest, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -40,7 +40,8 @@ pub fn build_router(state: WebserviceState, webhooks: Vec<Webhook>) -> Router {
     let mut router = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/rpc", post(rpc))
-        .route("/v1/events", get(events));
+        .route("/v1/events", get(events))
+        .route("/v1/chat/events", get(chat_events));
 
     for hook in webhooks {
         let path = hook.path.clone();
@@ -135,6 +136,58 @@ async fn events(
             .interval(Duration::from_secs(15))
             .text("keepalive"),
     )
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ChatEventsQuery {
+    /// `display_name` of the target chat. Must match exactly (the same
+    /// id used by `AgentSendAsUser`, `AgentHistory`, etc.).
+    agent: String,
+}
+
+/// Supervisor-only scoped SSE stream of `ChatBlockEvent`s. Filters the
+/// shared `App::chat_block_tx` broadcaster down to events whose
+/// `agent` field matches the query string — so the manager portal
+/// only sees the chat it's currently viewing.
+async fn chat_events(
+    State(state): State<WebserviceState>,
+    Query(q): Query<ChatEventsQuery>,
+) -> Response {
+    if !state.is_supervisor {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(IpcResponse::err(
+                "this webservice automaton is not flagged `supervisor = true`",
+            )),
+        )
+            .into_response();
+    }
+    let wanted = q.agent;
+    let rx = state.chat_block_tx.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(move |msg| {
+        let wanted = wanted.clone();
+        async move {
+            match msg {
+                Ok(ev) if ev.agent == wanted => Event::default().json_data(&ev).ok().map(Ok),
+                Ok(_) => None,
+                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                    let payload = serde_json::json!({ "kind": "lagged", "dropped": n });
+                    Event::default()
+                        .event("lagged")
+                        .json_data(payload)
+                        .ok()
+                        .map(Ok::<_, Infallible>)
+                }
+            }
+        }
+    });
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keepalive"),
+        )
+        .into_response()
 }
 
 /// Verify `Authorization: Bearer <api_key>` when the webservice has an

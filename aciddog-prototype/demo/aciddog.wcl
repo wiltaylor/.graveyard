@@ -81,6 +81,10 @@ schema "automaton" {
   // Allowlist of agent/automaton ids this automaton may target with
   // `aciddog send --to`. `None` ⇒ unrestricted; `Some([])` ⇒ none.
   can_message: list(string) @optional
+  // Grants supervisor RPC access (`agent list`, `agent history`,
+  // `agent send-as-user`, `/v1/chat/events`). Primary use: a
+  // `:webservice` automaton that backs the remote management portal.
+  supervisor: bool @optional @default(false)
 
   variant "script" {
     // Executable to spawn. Either a bare binary name on PATH (e.g.

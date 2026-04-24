@@ -64,6 +64,7 @@ schema "automaton" {
   role_description: string @optional
   type: symbol @optional
   can_message: list(string) @optional
+  supervisor: bool @optional @default(false)
 
   variant "script" {
     command: string

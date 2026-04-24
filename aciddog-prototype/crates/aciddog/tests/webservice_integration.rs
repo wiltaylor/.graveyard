@@ -19,15 +19,31 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 fn fake_state(api_key: Option<&str>) -> (WebserviceState, mpsc::Receiver<AgentSocketEvent>) {
+    fake_state_with(api_key, false).0
+}
+
+/// Like `fake_state` but lets the test supply the `is_supervisor` flag
+/// and returns the `chat_block_tx` sender clone so tests can inject
+/// wire events into the scoped SSE stream.
+fn fake_state_with(
+    api_key: Option<&str>,
+    is_supervisor: bool,
+) -> (
+    (WebserviceState, mpsc::Receiver<AgentSocketEvent>),
+    broadcast::Sender<aciddog::wire_chat::ChatBlockEvent>,
+) {
     let (events_tx, events_rx) = mpsc::channel::<AgentSocketEvent>(16);
     let (broadcast_tx, _) = broadcast::channel(16);
+    let (chat_block_tx, _) = broadcast::channel(64);
     let state = WebserviceState {
         session_id: Uuid::new_v4(),
         events_tx,
         broadcast_tx,
+        chat_block_tx: chat_block_tx.clone(),
+        is_supervisor,
         api_key: api_key.map(|s| std::sync::Arc::new(s.to_string())),
     };
-    (state, events_rx)
+    ((state, events_rx), chat_block_tx)
 }
 
 /// Spawn a tiny "orchestrator" that auto-replies `Response::ok("queued")`
@@ -95,6 +111,92 @@ async fn rpc_rejects_missing_bearer_when_api_key_required() {
         .unwrap();
     let resp = router.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn chat_events_rejects_non_supervisor() {
+    let ((state, _events_rx), _chat_tx) = fake_state_with(None, false);
+    let router = build_router(state, vec![]);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/chat/events?agent=planner")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn chat_events_filters_on_agent_id() {
+    use aciddog::wire_chat::{ChatBlockEvent, WireChatBlock};
+    use tokio::time::{timeout, Duration};
+
+    let ((state, _events_rx), chat_tx) = fake_state_with(None, true);
+    let router = build_router(state, vec![]);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/chat/events?agent=planner")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Stream the body, publishing two events along the way — one for
+    // a mismatched agent (should be filtered out) and one for the
+    // target. We stop reading after the expected frame or 500ms.
+    let mut body = resp.into_body().into_data_stream();
+    use futures::StreamExt;
+
+    // Producer task: push in a few events after a beat.
+    let chat_tx2 = chat_tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let _ = chat_tx2.send(ChatBlockEvent {
+            agent: "other".into(),
+            block: WireChatBlock::UserText {
+                text: "nope".into(),
+            },
+            ts: "2026-04-24T00:00:00Z".into(),
+            seq: 1,
+        });
+        let _ = chat_tx2.send(ChatBlockEvent {
+            agent: "planner".into(),
+            block: WireChatBlock::UserText {
+                text: "hi".into(),
+            },
+            ts: "2026-04-24T00:00:01Z".into(),
+            seq: 2,
+        });
+    });
+
+    let mut collected = Vec::<u8>::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        match timeout(Duration::from_millis(200), body.next()).await {
+            Ok(Some(Ok(chunk))) => {
+                collected.extend_from_slice(&chunk);
+                // Frames are `data: ...\n\n` separated. Stop once we've
+                // seen the "hi" body.
+                if collected.windows(b"\"text\":\"hi\"".len()).any(|w| {
+                    w == b"\"text\":\"hi\""
+                }) {
+                    break;
+                }
+            }
+            _ => continue,
+        }
+    }
+    let out = String::from_utf8_lossy(&collected);
+    assert!(
+        out.contains("\"agent\":\"planner\""),
+        "expected planner event in stream, got:\n{out}"
+    );
+    assert!(
+        !out.contains("\"text\":\"nope\""),
+        "mismatched-agent event leaked into stream:\n{out}"
+    );
 }
 
 #[tokio::test]

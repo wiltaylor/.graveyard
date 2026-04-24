@@ -1,5 +1,6 @@
-import { Show, createResource, createSignal, type JSX } from "solid-js";
+import { Show, createEffect, createResource, createSignal, type JSX } from "solid-js";
 import AddInstanceForm from "./components/AddInstanceForm";
+import ChatPane from "./components/ChatPane";
 import InstanceDetail from "./components/InstanceDetail";
 import InstanceTree from "./components/InstanceTree";
 import { api } from "./api";
@@ -11,9 +12,19 @@ export default function App(): JSX.Element {
   >(() => api.listInstances(), { initialValue: [] });
 
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
+  const [selectedAgent, setSelectedAgent] = createSignal<string | null>(null);
   const [agentsByInstance, setAgentsByInstance] = createSignal<
     Record<string, AgentListResponse>
   >({});
+
+  // When the user picks a different instance, drop any agent selection
+  // carried over from the previous instance. Running the effect on
+  // `selectedId()` alone (not `selectedAgent`) avoids clobbering
+  // fresh selections.
+  createEffect(() => {
+    selectedId();
+    setSelectedAgent(null);
+  });
 
   const loadAgents = async (id: string) => {
     try {
@@ -75,7 +86,12 @@ export default function App(): JSX.Element {
             <InstanceTree
               instances={instances() ?? []}
               selectedId={selectedId()}
+              selectedAgent={selectedAgent()}
               onSelect={setSelectedId}
+              onSelectAgent={(instId, agentId) => {
+                setSelectedId(instId);
+                setSelectedAgent(agentId);
+              }}
               agentsFor={(id) => agentsByInstance()[id]}
               onExpand={(id) => {
                 if (!agentsByInstance()[id]) loadAgents(id);
@@ -92,22 +108,37 @@ export default function App(): JSX.Element {
         </section>
       </aside>
 
-      <main class="p-6 overflow-y-auto">
+      <main class="overflow-hidden">
         <Show
           when={selectedInstance()}
           fallback={
-            <div class="text-slate-500">
+            <div class="p-6 text-slate-500">
               Select an instance from the left, or add a new one.
             </div>
           }
         >
           {(inst) => (
-            <InstanceDetail
-              instance={inst()}
-              agents={agentsByInstance()[inst().id]}
-              onRefreshAgents={() => loadAgents(inst().id)}
-              onDeleted={handleDeleted}
-            />
+            <Show
+              when={selectedAgent()}
+              fallback={
+                <div class="p-6 overflow-y-auto h-full">
+                  <InstanceDetail
+                    instance={inst()}
+                    agents={agentsByInstance()[inst().id]}
+                    onRefreshAgents={() => loadAgents(inst().id)}
+                    onDeleted={handleDeleted}
+                  />
+                </div>
+              }
+            >
+              {(agent) => (
+                <ChatPane
+                  instanceId={inst().id}
+                  agent={agent()}
+                  onClose={() => setSelectedAgent(null)}
+                />
+              )}
+            </Show>
           )}
         </Show>
       </main>

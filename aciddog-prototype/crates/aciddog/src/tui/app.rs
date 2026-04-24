@@ -15,7 +15,7 @@ use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -54,6 +54,16 @@ use super::clipboard;
 use super::ui;
 
 const COPIED_TOAST_MS: u64 = 1500;
+
+/// Capacity of the per-`App` chat-block broadcast channel. Larger than
+/// the webservice's mail-only `InboundEvent` backlog (256) because
+/// block events include every tool call and assistant-text chunk —
+/// well over an order of magnitude chattier per turn. A slow
+/// subscriber that falls behind this buffer receives
+/// `BroadcastStreamRecvError::Lagged` and the SSE handler forwards it
+/// as a named `lagged` event so the client can resync by re-fetching
+/// history.
+const CHAT_BLOCK_BROADCAST_CAPACITY: usize = 1024;
 
 /// Short label for the AgentInfo chat block. Format is
 /// `<variant> (<wcl-id>)` so the user can see both the runtime kind
@@ -890,6 +900,9 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         RequestCmd::AgentHistory { agent, .. } => {
             ChatBlock::from_tool_use(&format!("aciddog agent history --id {agent}"), input)
         }
+        RequestCmd::AgentHistoryJson { agent, .. } => {
+            ChatBlock::from_tool_use(&format!("aciddog agent history --id {agent} --json"), input)
+        }
         RequestCmd::AgentStop { agent, .. } => {
             ChatBlock::from_tool_use(&format!("aciddog agent stop --id {agent}"), input)
         }
@@ -1545,6 +1558,14 @@ pub struct AgentChat {
     /// by `promptAndDrop` after the final prompt is enqueued; consumed
     /// in `handle_ai_event` on `TurnResult` to trigger teardown.
     pub pending_compaction: Option<super::compaction::PendingCompaction>,
+    /// Broadcast sink for per-block wire events. When `Some`, every
+    /// call to [`AgentChat::push_block`] also emits a
+    /// [`crate::wire_chat::ChatBlockEvent`] tagged with this chat's
+    /// `display_name`. Populated on chats by `App::install_chat_broadcaster`
+    /// (called from `tui::run` for live sessions); left `None` in unit
+    /// tests and for chats built before the broadcaster is installed —
+    /// a `None` sink is a no-op, not an error.
+    pub chat_block_tx: Option<broadcast::Sender<crate::wire_chat::ChatBlockEvent>>,
 }
 
 /// How an agent's running token total should incorporate each new
@@ -1571,6 +1592,21 @@ impl Default for ContextUsageMode {
 impl AgentChat {
     pub(super) fn push_block(&mut self, block: ChatBlock) -> usize {
         let idx = self.blocks.len();
+        if let Some(tx) = &self.chat_block_tx {
+            // Skip the projection cost entirely when nobody is subscribed —
+            // the most common case for non-webservice sessions.
+            if tx.receiver_count() > 0 {
+                let ev = crate::wire_chat::ChatBlockEvent {
+                    agent: self.display_name.clone(),
+                    block: crate::wire_chat::WireChatBlock::from(&block),
+                    ts: chrono::Utc::now().to_rfc3339(),
+                    seq: idx as u64,
+                };
+                // `Err` only when there are zero receivers — already gated
+                // above — or if the channel was closed. Drop silently.
+                let _ = tx.send(ev);
+            }
+        }
         self.blocks.push(block);
         self.sticky_bottom = true;
         idx
@@ -2161,6 +2197,12 @@ pub struct App {
     pub inbox: Vec<super::inbox_view::InboxMessage>,
     /// UI-local state for the Inbox view (cursor, reply/forward forms).
     pub inbox_screen: super::inbox_view::InboxScreen,
+    /// Broadcast sender for per-block wire events, cloned into every
+    /// [`AgentChat`] so every `push_block` fans out to any subscribed
+    /// receiver (currently just the webservice's scoped SSE handler).
+    /// Kept at the `App` level so worker-spawn paths can attach this
+    /// sink to the new chat at construction time.
+    pub chat_block_tx: broadcast::Sender<crate::wire_chat::ChatBlockEvent>,
 }
 
 /// Time window for detecting a double-click. Matches the typical
@@ -2276,6 +2318,19 @@ impl App {
                 ..Default::default()
             });
         }
+        // Create a single block broadcaster and hand each chat a clone
+        // of the sender. Sender clones are cheap (internally an Arc),
+        // `receiver_count()` starts at 0 so the `push_block` fast-path
+        // skips projection work until someone subscribes.
+        let (chat_block_tx, _keepalive_rx) = broadcast::channel::<crate::wire_chat::ChatBlockEvent>(
+            CHAT_BLOCK_BROADCAST_CAPACITY,
+        );
+        // NOTE: `_keepalive_rx` is dropped immediately — that's fine.
+        // `Sender::subscribe()` creates fresh receivers on demand from
+        // the SSE handler; the sender stays alive as long as `App` does.
+        for chat in &mut chats {
+            chat.chat_block_tx = Some(chat_block_tx.clone());
+        }
         Self {
             config,
             selected: 0,
@@ -2283,6 +2338,7 @@ impl App {
             shutting_down: false,
             focus: Focus::Chat,
             chats,
+            chat_block_tx,
             layout: LayoutRects::default(),
             copied_at: None,
             agent_ids: HashMap::new(),
@@ -2988,6 +3044,9 @@ impl App {
             RequestCmd::AgentHistory { agent, selector } => {
                 self.handle_admin_agent_history(idx, agent, selector, reply);
             }
+            RequestCmd::AgentHistoryJson { agent, selector } => {
+                self.handle_admin_agent_history_json(idx, agent, selector, reply);
+            }
             RequestCmd::AgentStop { agent, reason } => {
                 self.handle_admin_agent_stop(idx, agent, reason, reply);
             }
@@ -3328,6 +3387,7 @@ impl App {
             context_window,
             context_usage_mode,
             kind: ChatKind::Worker,
+            chat_block_tx: Some(self.chat_block_tx.clone()),
             ..Default::default()
         };
         // Surface the initial task as a user message on the worker's
@@ -5993,15 +6053,26 @@ impl App {
         let Some(chat) = self.chats.get(idx) else {
             return false;
         };
-        if chat.parent_idx.is_some() || chat.kind != ChatKind::Agent {
+        if chat.parent_idx.is_some() {
             return false;
         }
-        self.config
-            .agents
-            .iter()
-            .find(|a| a.id == chat.display_name)
-            .map(|a| a.supervisor)
-            .unwrap_or(false)
+        match chat.kind {
+            ChatKind::Agent => self
+                .config
+                .agents
+                .iter()
+                .find(|a| a.id == chat.display_name)
+                .map(|a| a.supervisor)
+                .unwrap_or(false),
+            ChatKind::Automaton => self
+                .config
+                .automatons
+                .iter()
+                .find(|a| a.id == chat.display_name)
+                .map(|a| a.supervisor)
+                .unwrap_or(false),
+            ChatKind::Worker => false,
+        }
     }
 
     /// Is the caller at `idx` an agent flagged `sysadmin = true`?
@@ -6173,6 +6244,80 @@ impl App {
             slice.join("\n")
         };
         let _ = reply.send(Response::ok(msg));
+    }
+
+    /// Structured variant of `handle_admin_agent_history`. Returns the
+    /// selector-filtered blocks as `Vec<WireChatBlock>` in
+    /// `Response::data`. Mirrors the supervisor gate and the selector
+    /// semantics exactly so callers get the same answer as the
+    /// plaintext form — just in a machine-friendly shape.
+    fn handle_admin_agent_history_json(
+        &mut self,
+        sender_idx: usize,
+        agent: String,
+        selector: HistorySelector,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        let Some(chat) = self.chats.iter().find(|c| c.display_name == agent) else {
+            let _ = reply.send(Response::err(format!("no agent named `{agent}`")));
+            return;
+        };
+        let blocks: Vec<&crate::tui::ChatBlock> = match &selector {
+            HistorySelector::All => chat.blocks.iter().collect(),
+            HistorySelector::Last { n } => {
+                let start = chat.blocks.len().saturating_sub(*n);
+                chat.blocks[start..].iter().collect()
+            }
+            HistorySelector::LastMessage => chat
+                .blocks
+                .iter()
+                .rev()
+                .find(|b| matches!(b, crate::tui::ChatBlock::AiMarkdown { .. }))
+                .into_iter()
+                .collect(),
+            HistorySelector::Kind { kind } => {
+                let want = kind.to_ascii_lowercase();
+                let known = matches!(
+                    want.as_str(),
+                    "user"
+                        | "ai"
+                        | "mail_sent"
+                        | "mail_received"
+                        | "channel"
+                        | "tool_use"
+                        | "system_info"
+                        | "system_warn"
+                        | "system_error"
+                        | "worker_spawn"
+                        | "worker_complete"
+                        | "agent_info"
+                );
+                if !known {
+                    let _ = reply.send(Response::err(format!("unknown history kind `{kind}`")));
+                    return;
+                }
+                chat.blocks
+                    .iter()
+                    .filter(|b| history_block_kind(b) == want)
+                    .collect()
+            }
+        };
+        let wire: Vec<crate::wire_chat::WireChatBlock> = blocks
+            .iter()
+            .map(|b| crate::wire_chat::WireChatBlock::from(*b))
+            .collect();
+        match serde_json::to_value(&wire) {
+            Ok(v) => {
+                let _ = reply.send(Response::ok_data(v));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(format!("serialize wire blocks: {e}")));
+            }
+        }
     }
 
     fn handle_admin_agent_stop(
@@ -11397,6 +11542,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
                     .cloned()
                     .collect();
                 let events_tx = socket.events_tx();
+                let chat_block_tx = app.chat_block_tx.clone();
                 tokio::spawn(crate::webservice::run_webservice_core(
                     idx,
                     automaton.clone(),
@@ -11408,6 +11554,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
                     cancel_rx,
                     ai_tx.clone(),
                     events_tx,
+                    chat_block_tx,
                 ));
             }
             crate::config::AutomatonBackend::Remote { .. } => {
@@ -12001,6 +12148,7 @@ mod tests {
                     env: vec![],
                     timeout_seconds: None,
                 },
+                supervisor: false,
             }],
             ai_cores: vec![],
             memory_banks: vec![],

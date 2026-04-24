@@ -171,6 +171,11 @@ pub struct Automaton {
     /// How inbound events are handled. Driven by the `type` symbol on
     /// the WCL block (`:script` default, `:webservice` for HTTP).
     pub backend: AutomatonBackend,
+    /// Same semantics as [`Agent::supervisor`] — grants the automaton
+    /// access to supervisor RPCs (`AgentList`, `AgentHistory`,
+    /// `AgentSendAsUser`, etc.). Primary use: a `:webservice`
+    /// automaton that backs the remote management portal.
+    pub supervisor: bool,
 }
 
 /// The two delivery backends an automaton can use. See [`Automaton`].
@@ -1722,12 +1727,14 @@ fn parse_automaton(b: &wcl_lang::BlockRef) -> Result<Automaton, ConfigError> {
         }
     };
 
+    let supervisor = optional_bool(b, "supervisor")?.unwrap_or(false);
     Ok(Automaton {
         id,
         role,
         role_description,
         can_message,
         backend,
+        supervisor,
     })
 }
 

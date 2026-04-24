@@ -65,6 +65,7 @@ schema "automaton" {
   role_description: string @optional
   type: symbol @optional
   can_message: list(string) @optional
+  supervisor: bool @optional @default(false)
 
   variant "script" {
     command: string
@@ -130,4 +131,5 @@ automaton gateway {
   role_description = "Unix-socket webservice at /tmp/aciddog-remote-demo.sock. Client RPCs route as `from: gateway` into the local fleet; any mail gateway itself receives is broadcast over SSE to the client."
   socket_path      = "/tmp/aciddog-remote-demo.sock"
   can_message      = ["harbor", "user"]
+  supervisor       = true
 }
