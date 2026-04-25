@@ -555,3 +555,66 @@ export interface WorkflowInstancesResponse {
   instances: WireWorkflowInstance[];
   error?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Cron — mirrors `aciddog_manager::wire_cron` and the server's Cron routes.
+// ---------------------------------------------------------------------------
+
+export type WireCronTz = "utc" | "local";
+
+export type WireCronPayload =
+  | { kind: "message"; body: string }
+  | { kind: "slash_command"; command: string };
+
+export type WireCronSchedule =
+  | { kind: "recurring"; expression: string }
+  | { kind: "one_off"; run_at_local: string };
+
+export interface WireCronJob {
+  id: string;
+  target_agent: string;
+  payload: WireCronPayload;
+  schedule: WireCronSchedule;
+  timezone: WireCronTz;
+  catchup_on_startup: boolean;
+  enabled: boolean;
+  created_by: string;
+  created_at: string;
+  last_run: string | null;
+  next_run: string | null;
+}
+
+export type WireCronEvent =
+  | { kind: "created"; job: WireCronJob }
+  | { kind: "updated"; job: WireCronJob }
+  | { kind: "removed"; id: string }
+  | { kind: "fired"; id: string; at: string };
+
+export interface CronListResponse {
+  ok: boolean;
+  jobs: WireCronJob[];
+  error?: string;
+}
+
+export interface CreateCronRequest {
+  target: string;
+  /// `"message"` or `"command"`.
+  kind: string;
+  payload: string;
+  schedule: string;
+  tz?: string | null;
+  oneoff?: boolean;
+  catchup_on_startup?: boolean;
+  disabled?: boolean;
+}
+
+export interface PatchCronRequest {
+  target?: string;
+  kind?: string;
+  payload?: string;
+  schedule?: string;
+  tz?: string | null;
+  oneoff?: boolean;
+  catchup_on_startup?: boolean;
+  enabled?: boolean;
+}

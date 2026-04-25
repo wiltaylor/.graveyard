@@ -35,6 +35,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.layout.memory_link_rows.clear();
     app.layout.memory_modal_outer = None;
     app.layout.inbox_hotspots.clear();
+    app.layout.cron_hotspots.clear();
 
     // Input height: in Chat and Channel views, grow from 3 to 7 rows
     // (1–5 usable + 2 for borders) based on the wrapped line count of
@@ -68,6 +69,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ActiveView::Memory => 3,
         ActiveView::Cores => 3,
         ActiveView::Inbox => 3,
+        ActiveView::Cron => 3,
         ActiveView::WorkflowForm { .. } | ActiveView::WorkflowInstance { .. } => 3,
     };
 
@@ -152,6 +154,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ActiveView::Memory => render_memory_screen(f, main_area, app),
         ActiveView::Cores => render_cores_screen(f, main_area, app),
         ActiveView::Inbox => render_inbox_screen(f, main_area, app),
+        ActiveView::Cron => render_cron_screen(f, main_area, app),
         ActiveView::WorkflowForm { workflow_idx } => {
             render_workflow_form(f, main_area, app, workflow_idx)
         }
@@ -181,6 +184,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // Memory view modals: form / detail / links overlay / confirm.
     if app.active_view == ActiveView::Memory {
         render_memory_modals(f, main_area, app);
+    }
+
+    // Cron view modals: edit / add form, delete confirmation.
+    if app.active_view == ActiveView::Cron {
+        render_cron_modals(f, main_area, app);
     }
 
     app.layout.agent_list_inner = Some(list_inner);
@@ -1094,6 +1102,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
         },
         Focus::Cores => "cores",
         Focus::Inbox => "inbox",
+        Focus::Cron => "cron",
     };
     let mut hint_spans: Vec<Span> = match app.focus {
         Focus::Agents => vec![
@@ -1275,6 +1284,28 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             Span::raw(" delete  "),
             Span::styled("ctrl+⏎", Style::default().fg(Color::Cyan)),
             Span::raw(" send  "),
+            Span::styled("esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" back"),
+        ],
+        Focus::Cron => vec![
+            Span::styled(" focus: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                focus_label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("j/k", Style::default().fg(Color::Cyan)),
+            Span::raw(" nav  "),
+            Span::styled("a", Style::default().fg(Color::Cyan)),
+            Span::raw(" add  "),
+            Span::styled("e", Style::default().fg(Color::Cyan)),
+            Span::raw(" edit  "),
+            Span::styled("d", Style::default().fg(Color::Cyan)),
+            Span::raw(" del  "),
+            Span::styled("x", Style::default().fg(Color::Cyan)),
+            Span::raw(" toggle  "),
             Span::styled("esc", Style::default().fg(Color::Cyan)),
             Span::raw(" back"),
         ],
@@ -4691,4 +4722,459 @@ fn render_workflow_instance(
 
     f.render_widget(Paragraph::new(lines), inner);
     inner
+}
+
+fn render_cron_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
+    use super::cron_view::CronHotspot;
+    let focused = app.focus == Focus::Cron;
+    let jobs = super::cron_view::listed_jobs(&app.cron);
+    app.cron_screen.reclamp(jobs.len());
+
+    let split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    let toolbar_area = split[0];
+    let list_area = split[1];
+    let status_area = split[2];
+
+    // Toolbar with a clickable "+ new" chip on the right and a
+    // keybinds hint on the left.
+    let new_label = "[ + new ]";
+    let new_width = new_label.chars().count() as u16;
+    let (hint_area, new_area) = if toolbar_area.width > new_width + 1 {
+        let new_rect = Rect {
+            x: toolbar_area.x + toolbar_area.width - new_width,
+            y: toolbar_area.y,
+            width: new_width,
+            height: 1,
+        };
+        let hint_rect = Rect {
+            x: toolbar_area.x,
+            y: toolbar_area.y,
+            width: toolbar_area.width - new_width - 1,
+            height: 1,
+        };
+        (hint_rect, Some(new_rect))
+    } else {
+        (toolbar_area, None)
+    };
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " cron  ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "a add · e edit · d delete · x toggle · esc back",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    f.render_widget(hint, hint_area);
+    if let Some(rect) = new_area {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                new_label,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            rect,
+        );
+        app.layout.cron_hotspots.push((rect, CronHotspot::NewButton));
+    }
+
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" cron jobs ({}) ", jobs.len()))
+        .border_style(focus_border_style(focused));
+    let list_inner = list_block.inner(list_area);
+    f.render_widget(list_block, list_area);
+
+    if jobs.is_empty() {
+        let p = Paragraph::new("No cron jobs yet. Press `a` or click `+ new` to schedule one.")
+            .style(Style::default().fg(Color::DarkGray))
+            .wrap(Wrap { trim: true });
+        f.render_widget(p, list_inner);
+    } else {
+        // Each row is split into: dot (2 cols) | body (fills) | edit (6) | del (5).
+        let dot_w: u16 = 2;
+        let edit_label = " [edit] ";
+        let del_label = " [del] ";
+        let edit_w: u16 = edit_label.chars().count() as u16;
+        let del_w: u16 = del_label.chars().count() as u16;
+
+        for (i, j) in jobs.iter().enumerate() {
+            let row_y = list_inner.y + i as u16;
+            if row_y >= list_inner.y + list_inner.height {
+                break;
+            }
+            let row_rect = Rect {
+                x: list_inner.x,
+                y: row_y,
+                width: list_inner.width,
+                height: 1,
+            };
+            let selected = i == app.cron_screen.cursor;
+            let base_style = if selected && focused {
+                Style::default()
+                    .bg(Color::Cyan)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else if selected {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            // Dot column
+            let dot_rect = Rect {
+                x: row_rect.x,
+                y: row_rect.y,
+                width: dot_w.min(row_rect.width),
+                height: 1,
+            };
+            let dot = if j.enabled { "●" } else { "○" };
+            let dot_style = if j.enabled {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            // Compose the body so hover-highlight still fills its width
+            // when the row is selected — render a solid styled
+            // paragraph across the whole row first, then overlay the
+            // dot and the two trailing buttons.
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    " ".repeat(row_rect.width as usize),
+                    base_style,
+                ))),
+                row_rect,
+            );
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(dot, dot_style))),
+                dot_rect,
+            );
+            app.layout
+                .cron_hotspots
+                .push((dot_rect, CronHotspot::ToggleEnabled(i)));
+
+            // Reserve the trailing two buttons first so the body never
+            // overwrites them when the job's text is long.
+            let right_avail = edit_w + del_w + 1;
+            let (body_rect, edit_rect, del_rect) = if row_rect.width > dot_w + right_avail {
+                let body = Rect {
+                    x: row_rect.x + dot_w,
+                    y: row_rect.y,
+                    width: row_rect.width - dot_w - right_avail,
+                    height: 1,
+                };
+                let edit = Rect {
+                    x: row_rect.x + row_rect.width - edit_w - del_w - 1,
+                    y: row_rect.y,
+                    width: edit_w,
+                    height: 1,
+                };
+                let del = Rect {
+                    x: row_rect.x + row_rect.width - del_w,
+                    y: row_rect.y,
+                    width: del_w,
+                    height: 1,
+                };
+                (body, Some(edit), Some(del))
+            } else {
+                // Too narrow — drop the inline buttons gracefully.
+                let body = Rect {
+                    x: row_rect.x + dot_w,
+                    y: row_rect.y,
+                    width: row_rect.width.saturating_sub(dot_w),
+                    height: 1,
+                };
+                (body, None, None)
+            };
+
+            // Trim the formatted text to fit; cron rows can be long.
+            let text = super::cron_view::fmt_cron_row(j);
+            let body_str: String = text.chars().take(body_rect.width as usize).collect();
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(body_str, base_style))),
+                body_rect,
+            );
+            app.layout
+                .cron_hotspots
+                .push((body_rect, CronHotspot::SelectRow(i)));
+
+            if let Some(rect) = edit_rect {
+                f.render_widget(
+                    Paragraph::new(Span::styled(
+                        edit_label,
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Blue)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    rect,
+                );
+                app.layout
+                    .cron_hotspots
+                    .push((rect, CronHotspot::EditRow(i)));
+            }
+            if let Some(rect) = del_rect {
+                f.render_widget(
+                    Paragraph::new(Span::styled(
+                        del_label,
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Red)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    rect,
+                );
+                app.layout
+                    .cron_hotspots
+                    .push((rect, CronHotspot::DeleteRow(i)));
+            }
+        }
+    }
+
+    // Status / toast line beneath the list.
+    let status_line = app.cron_screen.status_msg.clone().unwrap_or_default();
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            status_line,
+            Style::default().fg(Color::Yellow),
+        )),
+        status_area,
+    );
+
+    list_inner
+}
+
+fn render_cron_modals(f: &mut Frame, area: Rect, app: &mut App) {
+    use super::cron_view::{CronFormField, CronHotspot, CronMode};
+
+    match app.cron_screen.mode.clone() {
+        CronMode::List => {}
+        CronMode::ConfirmDelete { display, .. } => {
+            let width = 60.min(area.width.saturating_sub(4));
+            let height = 6.min(area.height.saturating_sub(2));
+            let rect = centered_rect(area, width.max(24), height.max(4));
+            f.render_widget(Clear, rect);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(" delete cron job? ")
+                .border_style(Style::default().fg(Color::Red));
+            let inner = block.inner(rect);
+            f.render_widget(block, rect);
+            // Layout: line 0 caption · line 1 blank · line 2 buttons
+            //         line 3 hint.
+            let caption_rect = Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: 1,
+            };
+            f.render_widget(Paragraph::new(Span::raw(display)), caption_rect);
+
+            let yes_label = " [ yes · y ] ";
+            let no_label = " [ no · n ] ";
+            let yes_w = yes_label.chars().count() as u16;
+            let no_w = no_label.chars().count() as u16;
+            if inner.height >= 3 && inner.width >= yes_w + no_w + 1 {
+                let buttons_y = inner.y + 2;
+                let yes_rect = Rect {
+                    x: inner.x,
+                    y: buttons_y,
+                    width: yes_w,
+                    height: 1,
+                };
+                let no_rect = Rect {
+                    x: inner.x + yes_w + 1,
+                    y: buttons_y,
+                    width: no_w,
+                    height: 1,
+                };
+                f.render_widget(
+                    Paragraph::new(Span::styled(
+                        yes_label,
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Red)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    yes_rect,
+                );
+                f.render_widget(
+                    Paragraph::new(Span::styled(
+                        no_label,
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Gray)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    no_rect,
+                );
+                app.layout
+                    .cron_hotspots
+                    .push((yes_rect, CronHotspot::ConfirmDeleteYes));
+                app.layout
+                    .cron_hotspots
+                    .push((no_rect, CronHotspot::ConfirmDeleteNo));
+            }
+            if inner.height >= 4 {
+                let hint_rect = Rect {
+                    x: inner.x,
+                    y: inner.y + 3,
+                    width: inner.width,
+                    height: 1,
+                };
+                f.render_widget(
+                    Paragraph::new(Span::styled(
+                        "y confirm · n / esc cancel",
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                    hint_rect,
+                );
+            }
+        }
+        CronMode::Form(form) => {
+            let fields = CronFormField::all();
+            // One line per field + 2 for title separator + 2 for error
+            // banner + 2 for hint.
+            let width = 72.min(area.width.saturating_sub(4));
+            let height = (fields.len() as u16 + 6).min(area.height.saturating_sub(2));
+            let rect = centered_rect(area, width.max(40), height.max(10));
+            f.render_widget(Clear, rect);
+            let title = match form.kind {
+                super::cron_view::CronFormKind::Add => " new cron job ",
+                super::cron_view::CronFormKind::Edit(_) => " edit cron job ",
+            };
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(Color::Yellow));
+            let inner = block.inner(rect);
+            f.render_widget(block, rect);
+
+            // Render each field on its own row so we can register a
+            // matching rect per-row as a clickable hotspot.
+            for (i, field) in fields.iter().enumerate() {
+                let row_y = inner.y + i as u16;
+                if row_y >= inner.y + inner.height {
+                    break;
+                }
+                let row_rect = Rect {
+                    x: inner.x,
+                    y: row_y,
+                    width: inner.width,
+                    height: 1,
+                };
+                let label = format!("{:<20}", field.label());
+                let value = match field {
+                    CronFormField::Target => form.target.clone(),
+                    CronFormField::PayloadKind => form.payload_kind.label().to_string(),
+                    CronFormField::PayloadBody => form
+                        .payload_body
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .to_string(),
+                    CronFormField::ScheduleKind => form.schedule_kind.label().to_string(),
+                    CronFormField::ScheduleText => form.schedule_text.clone(),
+                    CronFormField::Timezone => form.timezone.as_str().to_string(),
+                    CronFormField::CatchupOnStartup => {
+                        if form.catchup_on_startup { "yes" } else { "no" }.to_string()
+                    }
+                    CronFormField::Enabled => if form.enabled { "yes" } else { "no" }.to_string(),
+                    CronFormField::SaveButton | CronFormField::CancelButton => String::new(),
+                };
+                let is_focused = *field == form.focused;
+                let marker = if is_focused { "▶ " } else { "  " };
+                let is_button = matches!(
+                    field,
+                    CronFormField::SaveButton | CronFormField::CancelButton
+                );
+                let style = if is_button {
+                    let (fg, bg) = match field {
+                        CronFormField::SaveButton => (Color::Black, Color::Green),
+                        _ => (Color::Black, Color::Gray),
+                    };
+                    Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)
+                } else if is_focused {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                let line_text = if is_button {
+                    format!("{marker}{}", field.label())
+                } else {
+                    format!("{marker}{label} {value}")
+                };
+                f.render_widget(
+                    Paragraph::new(Line::from(Span::styled(line_text, style))),
+                    row_rect,
+                );
+                let hotspot = match field {
+                    CronFormField::SaveButton => CronHotspot::FormSave,
+                    CronFormField::CancelButton => CronHotspot::FormCancel,
+                    other => CronHotspot::FormField(*other),
+                };
+                app.layout.cron_hotspots.push((row_rect, hotspot));
+            }
+
+            // Hint + error lines fill whatever vertical space is left.
+            let hint = match form.focused {
+                CronFormField::Target => "configured agent id (e.g. `reviewer`)",
+                CronFormField::PayloadKind => "click / space toggles message / command",
+                CronFormField::PayloadBody => "free-form; slash commands must start with `/`",
+                CronFormField::ScheduleKind => "click / space toggles recurring / one-off",
+                CronFormField::ScheduleText => form.schedule_kind.hint(),
+                CronFormField::Timezone => "click / space toggles local / utc",
+                CronFormField::CatchupOnStartup => "one-off only; click / space toggles",
+                CronFormField::Enabled => "click / space toggles; disabled jobs never fire",
+                CronFormField::SaveButton | CronFormField::CancelButton => {
+                    "click or enter to activate · tab cycles fields · esc cancels"
+                }
+            };
+            let hint_y = inner.y + fields.len() as u16 + 1;
+            if hint_y < inner.y + inner.height {
+                let rr = Rect {
+                    x: inner.x,
+                    y: hint_y,
+                    width: inner.width,
+                    height: 1,
+                };
+                f.render_widget(
+                    Paragraph::new(Span::styled(
+                        format!(" hint: {hint}"),
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                    rr,
+                );
+            }
+            if let Some(err) = &form.error {
+                let err_y = inner.y + fields.len() as u16 + 2;
+                if err_y < inner.y + inner.height {
+                    let rr = Rect {
+                        x: inner.x,
+                        y: err_y,
+                        width: inner.width,
+                        height: 1,
+                    };
+                    f.render_widget(
+                        Paragraph::new(Span::styled(
+                            format!(" error: {err}"),
+                            Style::default().fg(Color::Red),
+                        )),
+                        rr,
+                    );
+                }
+            }
+        }
+    }
 }

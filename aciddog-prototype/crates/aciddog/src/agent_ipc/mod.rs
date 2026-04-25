@@ -445,6 +445,19 @@ pub enum RequestCmd {
     CronRemove {
         id: Uuid,
     },
+    /// Structured `cron list` — same filtering as [`RequestCmd::CronList`]
+    /// but the reply carries a `Vec<WireCronJob>` in `Response::data`
+    /// instead of a preformatted text block in `message`. Intended for
+    /// programmatic consumers (e.g. the manager web portal's Cron tab).
+    CronListJson {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default)]
+        include_disabled: bool,
+        /// Only show jobs created by the calling agent.
+        #[serde(default)]
+        mine: bool,
+    },
     /// List every skill in the caller's allowlist as `id — description`
     /// lines. Scoped to the caller's assigned skills.
     SkillList,
@@ -1206,6 +1219,29 @@ mod tests {
                 include_disabled: true,
                 mine: false,
                 ..
+            }
+        ));
+    }
+
+    #[test]
+    fn cron_list_json_roundtrips() {
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::CronListJson {
+                target: None,
+                include_disabled: false,
+                mine: true,
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"cron_list_json\""), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        assert!(matches!(
+            back.cmd,
+            RequestCmd::CronListJson {
+                target: None,
+                include_disabled: false,
+                mine: true,
             }
         ));
     }

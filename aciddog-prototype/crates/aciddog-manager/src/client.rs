@@ -293,6 +293,47 @@ impl Client {
         }
     }
 
+    /// Scoped SSE stream of cron events, mirroring
+    /// [`Client::open_workflow_events`] but against `/v1/cron/events`.
+    /// No server-side filter — the supervisor always gets every
+    /// mutation (create, update, remove, fire).
+    pub async fn open_cron_events(
+        &self,
+    ) -> Result<(
+        u16,
+        std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, anyhow::Error>> + Send>>,
+    )> {
+        match &self.inner {
+            Inner::Https {
+                client,
+                base_url,
+                bearer,
+            } => {
+                let url = format!("{base_url}/v1/cron/events");
+                let mut req = client.get(&url).header("accept", "text/event-stream");
+                if let Some(token) = bearer.as_deref() {
+                    req = req.bearer_auth(token);
+                }
+                let resp = req.send().await.with_context(|| format!("GET {url}"))?;
+                let status = resp.status().as_u16();
+                let stream = resp
+                    .bytes_stream()
+                    .map(|r| r.map_err(|e| anyhow!("sse chunk: {e}")));
+                Ok((status, Box::pin(stream)))
+            }
+            Inner::Unix { path } => {
+                let (status, body_stream) = uds_stream_request(
+                    path,
+                    "GET",
+                    "/v1/cron/events",
+                    &[("accept", "text/event-stream")],
+                )
+                .await?;
+                Ok((status, body_stream))
+            }
+        }
+    }
+
     /// GET /v1/health. Returns the raw status code and the response body.
     pub async fn health(&self) -> Result<(u16, String)> {
         match &self.inner {

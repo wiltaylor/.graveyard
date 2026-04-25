@@ -83,6 +83,56 @@ pub struct CronJob {
     pub next_run: Option<DateTime<Utc>>,
 }
 
+/// Wire-facing shape of a cron job. Structurally identical to
+/// [`CronJob`] but without `deny_unknown_fields`, so a newer manager
+/// talking to an older daemon (or vice versa) degrades gracefully
+/// across forward-compatible schema additions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WireCronJob {
+    pub id: Uuid,
+    pub target_agent: String,
+    pub payload: CronPayload,
+    pub schedule: CronSchedule,
+    pub timezone: CronTz,
+    pub catchup_on_startup: bool,
+    pub enabled: bool,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub last_run: Option<DateTime<Utc>>,
+    pub next_run: Option<DateTime<Utc>>,
+}
+
+impl From<&CronJob> for WireCronJob {
+    fn from(j: &CronJob) -> Self {
+        Self {
+            id: j.id,
+            target_agent: j.target_agent.clone(),
+            payload: j.payload.clone(),
+            schedule: j.schedule.clone(),
+            timezone: j.timezone,
+            catchup_on_startup: j.catchup_on_startup,
+            enabled: j.enabled,
+            created_by: j.created_by.clone(),
+            created_at: j.created_at,
+            last_run: j.last_run,
+            next_run: j.next_run,
+        }
+    }
+}
+
+/// Broadcast event fan-out for cron mutations. Published from the
+/// supervisor's mutation handlers (add/update/remove) and from
+/// `tick_cron` on each fire. The supervisor-scoped
+/// `/v1/cron/events` SSE handler subscribes here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CronEvent {
+    Created { job: WireCronJob },
+    Updated { job: WireCronJob },
+    Removed { id: Uuid },
+    Fired { id: Uuid, at: DateTime<Utc> },
+}
+
 #[derive(Debug, Error)]
 pub enum CronError {
     #[error("cron job {0} not found")]

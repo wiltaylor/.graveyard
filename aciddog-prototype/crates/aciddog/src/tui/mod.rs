@@ -6,6 +6,7 @@ mod clipboard;
 mod commands;
 mod compaction;
 mod cores_view;
+mod cron_view;
 mod diff;
 mod inbox_view;
 mod markdown;

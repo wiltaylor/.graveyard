@@ -215,6 +215,56 @@ pub enum RequestCmd {
     InboxDelete {
         index: usize,
     },
+    // ---- Cron ------------------------------------------------------
+    /// Structured cron list. Response carries
+    /// `Vec<wire_cron::WireCronJob>` in `IpcResponse::data`.
+    CronListJson {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default)]
+        include_disabled: bool,
+        #[serde(default)]
+        mine: bool,
+    },
+    /// Create a new cron job. Shape mirrors
+    /// `aciddog::agent_ipc::RequestCmd::CronAdd` byte-for-byte.
+    CronAdd {
+        target: String,
+        kind: String,
+        payload: String,
+        schedule: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tz: Option<String>,
+        #[serde(default)]
+        oneoff: bool,
+        #[serde(default)]
+        catchup_on_startup: bool,
+        #[serde(default)]
+        disabled: bool,
+    },
+    /// Partial update. Omitted fields are left unchanged.
+    CronUpdate {
+        id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schedule: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tz: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        oneoff: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        catchup_on_startup: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+    CronRemove {
+        id: Uuid,
+    },
 }
 
 /// Which slice of a target agent's chat log to return from
@@ -281,6 +331,45 @@ mod tests {
         assert_eq!(v["cmd"], "agent_history_json");
         assert_eq!(v["agent"], "supervisor");
         assert_eq!(v["select"], "all");
+    }
+
+    #[test]
+    fn cron_list_json_serializes_as_expected() {
+        let json = serde_json::to_value(&RequestCmd::CronListJson {
+            target: Some("reviewer".into()),
+            include_disabled: true,
+            mine: false,
+        })
+        .unwrap();
+        assert_eq!(json["cmd"], "cron_list_json");
+        assert_eq!(json["target"], "reviewer");
+        assert_eq!(json["include_disabled"], true);
+        assert_eq!(json["mine"], false);
+    }
+
+    #[test]
+    fn cron_add_omits_optional_tz_when_none() {
+        let cmd = RequestCmd::CronAdd {
+            target: "reviewer".into(),
+            kind: "message".into(),
+            payload: "ping".into(),
+            schedule: "*/5 * * * *".into(),
+            tz: None,
+            oneoff: false,
+            catchup_on_startup: false,
+            disabled: false,
+        };
+        let s = serde_json::to_string(&cmd).unwrap();
+        assert!(s.contains("\"cmd\":\"cron_add\""), "got: {s}");
+        assert!(!s.contains("\"tz\""), "tz should be omitted: {s}");
+    }
+
+    #[test]
+    fn cron_remove_round_trips() {
+        let id = Uuid::new_v4();
+        let s = serde_json::to_string(&RequestCmd::CronRemove { id }).unwrap();
+        assert!(s.contains("\"cmd\":\"cron_remove\""), "got: {s}");
+        assert!(s.contains(&id.to_string()), "got: {s}");
     }
 
     #[test]

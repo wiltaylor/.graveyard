@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod channels;
 pub mod chat;
+pub mod cron;
 pub mod health;
 pub mod inbox;
 pub mod instances;
@@ -107,7 +108,14 @@ pub fn build_router(state: AppState, static_dir: &Path) -> Router {
             "/instances/:id/workflows/instances/:wf_id",
             delete(workflows::dismiss),
         )
-        .route("/instances/:id/workflows/events", get(workflows::events));
+        .route("/instances/:id/workflows/events", get(workflows::events))
+        // Cron
+        .route("/instances/:id/cron", get(cron::list).post(cron::create))
+        .route(
+            "/instances/:id/cron/:job_id",
+            patch(cron::patch).delete(cron::delete),
+        )
+        .route("/instances/:id/cron/events", get(cron::events));
 
     let static_service = ServeDir::new(static_dir).append_index_html_on_directories(true);
 

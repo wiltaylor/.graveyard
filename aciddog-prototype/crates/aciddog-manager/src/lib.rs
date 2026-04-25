@@ -8,6 +8,7 @@ pub mod routes;
 pub mod state;
 pub mod wire_channel;
 pub mod wire_chat;
+pub mod wire_cron;
 pub mod wire_inbox;
 pub mod wire_memory;
 pub mod wire_tasks;

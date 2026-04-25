@@ -915,6 +915,7 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         RequestCmd::Info => ChatBlock::from_tool_use("aciddog info", input),
         RequestCmd::CronAdd { .. } => ChatBlock::from_tool_use("aciddog cron add", input),
         RequestCmd::CronList { .. } => ChatBlock::from_tool_use("aciddog cron list", input),
+        RequestCmd::CronListJson { .. } => ChatBlock::from_tool_use("aciddog cron list", input),
         RequestCmd::CronShow { .. } => ChatBlock::from_tool_use("aciddog cron show", input),
         RequestCmd::CronUpdate { .. } => ChatBlock::from_tool_use("aciddog cron update", input),
         RequestCmd::CronRemove { .. } => ChatBlock::from_tool_use("aciddog cron remove", input),
@@ -1240,6 +1241,10 @@ pub enum Focus {
     /// goes to the inbox-view handler (list navigation, reply/forward
     /// modals, delete).
     Inbox,
+    /// The main area while `active_view == Cron` — keyboard input
+    /// goes to the cron-view handler (list navigation, add/edit
+    /// modal, confirm-delete, toggle-enabled).
+    Cron,
 }
 
 /// Which scrollable zone inside the Memory view the wheel cursor is
@@ -1270,6 +1275,9 @@ pub enum ActiveView {
     /// id `"user"` land here. Counter rendered next to the entry in
     /// the Views list.
     Inbox,
+    /// Cron jobs management — schedule, edit, and remove recurring or
+    /// one-off payloads delivered to team members.
+    Cron,
     Channel(usize),
     /// Property-entry form for the workflow at
     /// `config.workflows[workflow_idx]`.
@@ -1289,7 +1297,7 @@ pub enum ActiveView {
 /// view up. Runtime filtering (e.g. hiding `Memory` when no banks are
 /// declared) happens in [`App::view_entries`]; prefer that helper over
 /// this const at every call site that has an `App` in scope.
-pub const VIEW_ENTRIES: &[&str] = &["Inbox", "Tasks", "Memory", "Cores"];
+pub const VIEW_ENTRIES: &[&str] = &["Inbox", "Tasks", "Memory", "Cores", "Cron"];
 
 #[derive(Debug, Default, Clone)]
 pub struct LayoutRects {
@@ -1376,6 +1384,12 @@ pub struct LayoutRects {
     /// Painted top-to-bottom; the mouse handler picks the first hit
     /// so overlays stacked above the list take precedence.
     pub inbox_hotspots: Vec<(Rect, super::inbox_view::InboxHotspot)>,
+    /// Clickable hot-rects drawn by the Cron view each frame.
+    /// Populated by `render_cron_screen` + `render_cron_modals`, and
+    /// cleared at the start of every frame. Modal overlays are
+    /// pushed last, so their hotspots take precedence in the linear
+    /// "first-hit wins" scan.
+    pub cron_hotspots: Vec<(Rect, super::cron_view::CronHotspot)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -2245,6 +2259,9 @@ pub struct App {
     pub inbox: Vec<super::inbox_view::InboxMessage>,
     /// UI-local state for the Inbox view (cursor, reply/forward forms).
     pub inbox_screen: super::inbox_view::InboxScreen,
+    /// UI-local state for the Cron view (cursor, edit/add form, delete
+    /// confirmation prompt, transient status toasts).
+    pub cron_screen: super::cron_view::CronScreen,
     /// Broadcast sender for per-block wire events, cloned into every
     /// [`AgentChat`] so every `push_block` fans out to any subscribed
     /// receiver (currently just the webservice's scoped SSE handler).
@@ -2263,6 +2280,11 @@ pub struct App {
     /// The supervisor-scoped `/v1/workflow/events` handler subscribes
     /// here and optionally filters by `instance_id`.
     pub workflow_event_tx: broadcast::Sender<crate::wire_workflow::WireWorkflowEvent>,
+    /// Broadcast sender for cron mutations. Published from the cron
+    /// mutation handlers (add/update/remove) and from `tick_cron` on
+    /// each fire. The supervisor-scoped `/v1/cron/events` handler
+    /// subscribes here.
+    pub cron_event_tx: broadcast::Sender<crate::cron::CronEvent>,
 }
 
 /// Time window for detecting a double-click. Matches the typical
@@ -2402,6 +2424,10 @@ impl App {
         let (workflow_event_tx, _workflow_keepalive_rx) = broadcast::channel::<
             crate::wire_workflow::WireWorkflowEvent,
         >(CHAT_BLOCK_BROADCAST_CAPACITY);
+        // Parallel broadcaster for cron events. The supervisor
+        // `/v1/cron/events` stream subscribes here.
+        let (cron_event_tx, _cron_keepalive_rx) =
+            broadcast::channel::<crate::cron::CronEvent>(CHAT_BLOCK_BROADCAST_CAPACITY);
         Self {
             config,
             selected: 0,
@@ -2412,6 +2438,7 @@ impl App {
             chat_block_tx,
             channel_message_tx,
             workflow_event_tx,
+            cron_event_tx,
             layout: LayoutRects::default(),
             copied_at: None,
             agent_ids: HashMap::new(),
@@ -2442,6 +2469,7 @@ impl App {
             usage_event_tx: None,
             inbox: Vec::new(),
             inbox_screen: super::inbox_view::InboxScreen::default(),
+            cron_screen: super::cron_view::CronScreen::default(),
         }
     }
 
@@ -3125,6 +3153,13 @@ impl App {
                 mine,
             } => {
                 self.handle_cron_list(idx, target, include_disabled, mine, reply);
+            }
+            RequestCmd::CronListJson {
+                target,
+                include_disabled,
+                mine,
+            } => {
+                self.handle_cron_list_json(idx, target, include_disabled, mine, reply);
             }
             RequestCmd::CronShow { id } => {
                 self.handle_cron_show(idx, id, reply);
@@ -5585,7 +5620,11 @@ impl App {
         ) {
             Ok(j) => {
                 let id = j.id;
+                let wire = crate::cron::WireCronJob::from(j);
                 self.cron_invalidate.notify_one();
+                let _ = self
+                    .cron_event_tx
+                    .send(crate::cron::CronEvent::Created { job: wire });
                 let _ = reply.send(Response::ok(format!("created cron job {id}")));
             }
             Err(e) => {
@@ -5626,6 +5665,44 @@ impl App {
             out.trim_end().to_string()
         };
         let _ = reply.send(Response::ok(body));
+    }
+
+    fn handle_cron_list_json(
+        &mut self,
+        sender_idx: usize,
+        target: Option<String>,
+        include_disabled: bool,
+        mine: bool,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let sender_id = match self.cron_caller_id(sender_idx) {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = reply.send(Response::err(e));
+                return;
+            }
+        };
+        let filter = crate::cron::CronFilter {
+            target,
+            include_disabled,
+            created_by: if mine { Some(sender_id) } else { None },
+        };
+        let jobs: Vec<crate::cron::WireCronJob> = self
+            .cron
+            .list(&filter)
+            .into_iter()
+            .map(crate::cron::WireCronJob::from)
+            .collect();
+        match serde_json::to_value(&jobs) {
+            Ok(value) => {
+                let _ = reply.send(Response::ok_data(value));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(format!(
+                    "failed to serialize cron list: {e}"
+                )));
+            }
+        }
     }
 
     fn handle_cron_show(
@@ -5752,8 +5829,12 @@ impl App {
         };
 
         match self.cron.update(id, patch) {
-            Ok(_) => {
+            Ok(updated) => {
+                let wire = crate::cron::WireCronJob::from(updated);
                 self.cron_invalidate.notify_one();
+                let _ = self
+                    .cron_event_tx
+                    .send(crate::cron::CronEvent::Updated { job: wire });
                 let _ = reply.send(Response::ok(format!("updated cron job {id}")));
             }
             Err(e) => {
@@ -5775,6 +5856,9 @@ impl App {
         match self.cron.remove(id) {
             Ok(_) => {
                 self.cron_invalidate.notify_one();
+                let _ = self
+                    .cron_event_tx
+                    .send(crate::cron::CronEvent::Removed { id });
                 let _ = reply.send(Response::ok(format!("removed cron job {id}")));
             }
             Err(e) => {
@@ -5818,10 +5902,22 @@ impl App {
                 );
                 match job.schedule {
                     crate::cron::CronSchedule::OneOff { .. } => {
-                        let _ = self.cron.remove(job.id);
+                        if self.cron.remove(job.id).is_ok() {
+                            let _ = self
+                                .cron_event_tx
+                                .send(crate::cron::CronEvent::Removed { id: job.id });
+                        }
                     }
                     crate::cron::CronSchedule::Recurring { .. } => {
-                        let _ = self.cron.disable(job.id);
+                        if self.cron.disable(job.id).is_ok() {
+                            if let Some(j) = self.cron.get(job.id) {
+                                let _ = self.cron_event_tx.send(
+                                    crate::cron::CronEvent::Updated {
+                                        job: crate::cron::WireCronJob::from(j),
+                                    },
+                                );
+                            }
+                        }
                     }
                 }
                 continue;
@@ -5845,8 +5941,30 @@ impl App {
                 }
             }
 
-            if let Err(e) = self.cron.mark_fired(job.id, now) {
-                tracing::warn!(job_id = %job.id, error = %e, "cron mark_fired failed");
+            match self.cron.mark_fired(job.id, now) {
+                Ok(post_fire) => {
+                    let _ = self
+                        .cron_event_tx
+                        .send(crate::cron::CronEvent::Fired { id: job.id, at: now });
+                    // Recurring: the surviving job carries a fresh
+                    // `next_run` and `last_run`. One-off: already gone.
+                    match post_fire {
+                        Some(updated) => {
+                            let wire = crate::cron::WireCronJob::from(&updated);
+                            let _ = self
+                                .cron_event_tx
+                                .send(crate::cron::CronEvent::Updated { job: wire });
+                        }
+                        None => {
+                            let _ = self
+                                .cron_event_tx
+                                .send(crate::cron::CronEvent::Removed { id: job.id });
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(job_id = %job.id, error = %e, "cron mark_fired failed");
+                }
             }
         }
     }
@@ -7735,6 +7853,7 @@ impl App {
                 ActiveView::Memory => Focus::Memory,
                 ActiveView::Cores => Focus::Cores,
                 ActiveView::Inbox => Focus::Inbox,
+                ActiveView::Cron => Focus::Cron,
                 ActiveView::WorkflowForm { .. } | ActiveView::WorkflowInstance { .. } => {
                     Focus::Workflow
                 }
@@ -7780,6 +7899,7 @@ impl App {
             Focus::Workflow => self.handle_key_workflow_view(code, mods),
             Focus::Cores => self.handle_key_cores(code, mods),
             Focus::Inbox => self.handle_key_inbox(code, mods),
+            Focus::Cron => self.handle_key_cron(code, mods),
         }
     }
 
@@ -7826,6 +7946,10 @@ impl App {
             ActiveView::Inbox => {
                 self.active_view = ActiveView::Chat;
                 self.inbox_screen.mode = super::inbox_view::InboxMode::List;
+            }
+            ActiveView::Cron => {
+                self.active_view = ActiveView::Chat;
+                self.cron_screen.mode = super::cron_view::CronMode::List;
             }
             ActiveView::Channel(_) => {
                 self.active_view = ActiveView::Chat;
@@ -8177,6 +8301,9 @@ impl App {
                 Some("Inbox") => {
                     self.open_inbox_view();
                 }
+                Some("Cron") => {
+                    self.open_cron_view();
+                }
                 _ => {}
             },
             _ => {}
@@ -8187,6 +8314,329 @@ impl App {
         self.active_view = ActiveView::Inbox;
         self.focus = Focus::Inbox;
         self.inbox_screen.reclamp(self.inbox.len());
+    }
+
+    pub(super) fn open_cron_view(&mut self) {
+        self.active_view = ActiveView::Cron;
+        self.focus = Focus::Cron;
+        self.cron_screen.mode = super::cron_view::CronMode::List;
+        self.cron_screen.status_msg = None;
+        let len = super::cron_view::listed_jobs(&self.cron).len();
+        self.cron_screen.reclamp(len);
+    }
+
+    fn handle_key_cron(&mut self, code: KeyCode, mods: KeyModifiers) {
+        use super::cron_view::{
+            CronForm, CronFormField, CronFormKind, CronMode, CronPayloadKind, CronScheduleKind,
+        };
+
+        // Snapshot jobs once — repeated mutable borrows below would
+        // make the match arms hard to read.
+        let jobs = super::cron_view::listed_jobs(&self.cron);
+
+        // Clear stale toast on any keypress once we've read it.
+        let had_status = self.cron_screen.status_msg.is_some();
+        let clear_status = |this: &mut Self| {
+            if had_status {
+                this.cron_screen.status_msg = None;
+            }
+        };
+
+        // --- ConfirmDelete overlay ---------------------------------
+        if let CronMode::ConfirmDelete { job_id, .. } = self.cron_screen.mode.clone() {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    match self.cron.remove(job_id) {
+                        Ok(_) => {
+                            self.cron_invalidate.notify_one();
+                            let _ = self
+                                .cron_event_tx
+                                .send(crate::cron::CronEvent::Removed { id: job_id });
+                            self.cron_screen.status_msg =
+                                Some(format!("removed cron job {job_id}"));
+                        }
+                        Err(e) => {
+                            self.cron_screen.status_msg = Some(format!("remove failed: {e}"));
+                        }
+                    }
+                    self.cron_screen.mode = CronMode::List;
+                    let len = super::cron_view::listed_jobs(&self.cron).len();
+                    self.cron_screen.reclamp(len);
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.cron_screen.mode = CronMode::List;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // --- Form overlay -----------------------------------------
+        if let CronMode::Form(mut form) = self.cron_screen.mode.clone() {
+            clear_status(self);
+            form.error = None;
+
+            match code {
+                KeyCode::Esc => {
+                    self.cron_screen.mode = CronMode::List;
+                    return;
+                }
+                KeyCode::Tab => {
+                    form.cycle_focus(!mods.contains(KeyModifiers::SHIFT));
+                    self.cron_screen.mode = CronMode::Form(form);
+                    return;
+                }
+                KeyCode::BackTab => {
+                    form.cycle_focus(false);
+                    self.cron_screen.mode = CronMode::Form(form);
+                    return;
+                }
+                KeyCode::Char(' ') if !form.focused.is_text() => {
+                    match form.focused {
+                        CronFormField::PayloadKind => {
+                            form.payload_kind = form.payload_kind.toggle();
+                        }
+                        CronFormField::ScheduleKind => {
+                            form.schedule_kind = form.schedule_kind.toggle();
+                            // Catchup only makes sense for one-off jobs —
+                            // clear it whenever we flip back to recurring
+                            // so a stale checkbox doesn't confuse the
+                            // next commit-time validation.
+                            if form.schedule_kind == CronScheduleKind::Recurring {
+                                form.catchup_on_startup = false;
+                            }
+                        }
+                        CronFormField::Timezone => {
+                            form.timezone = match form.timezone {
+                                crate::cron::CronTz::Local => crate::cron::CronTz::Utc,
+                                crate::cron::CronTz::Utc => crate::cron::CronTz::Local,
+                            };
+                        }
+                        CronFormField::CatchupOnStartup => {
+                            if form.schedule_kind == CronScheduleKind::OneOff {
+                                form.catchup_on_startup = !form.catchup_on_startup;
+                            } else {
+                                form.error = Some(
+                                    "catchup_on_startup only applies to one-off jobs".into(),
+                                );
+                            }
+                        }
+                        CronFormField::Enabled => {
+                            form.enabled = !form.enabled;
+                        }
+                        _ => {}
+                    }
+                    self.cron_screen.mode = CronMode::Form(form);
+                    return;
+                }
+                KeyCode::Enter => {
+                    match form.focused {
+                        CronFormField::SaveButton => {
+                            match self.commit_cron_form(&form) {
+                                Ok(msg) => {
+                                    self.cron_screen.status_msg = Some(msg);
+                                    self.cron_screen.mode = CronMode::List;
+                                    let len = super::cron_view::listed_jobs(&self.cron).len();
+                                    self.cron_screen.reclamp(len);
+                                }
+                                Err(e) => {
+                                    form.error = Some(e);
+                                    self.cron_screen.mode = CronMode::Form(form);
+                                }
+                            }
+                        }
+                        CronFormField::CancelButton => {
+                            self.cron_screen.mode = CronMode::List;
+                        }
+                        _ => {
+                            // Enter on a plain text field advances to
+                            // the next field — same convention as the
+                            // Tasks form so a fast typist doesn't need
+                            // Tab.
+                            form.cycle_focus(true);
+                            self.cron_screen.mode = CronMode::Form(form);
+                        }
+                    }
+                    return;
+                }
+                KeyCode::Backspace if form.focused.is_text() => {
+                    let buf = match form.focused {
+                        CronFormField::Target => &mut form.target,
+                        CronFormField::PayloadBody => &mut form.payload_body,
+                        CronFormField::ScheduleText => &mut form.schedule_text,
+                        _ => unreachable!(),
+                    };
+                    buf.pop();
+                    self.cron_screen.mode = CronMode::Form(form);
+                    return;
+                }
+                KeyCode::Char(c) if form.focused.is_text() => {
+                    let buf = match form.focused {
+                        CronFormField::Target => &mut form.target,
+                        CronFormField::PayloadBody => &mut form.payload_body,
+                        CronFormField::ScheduleText => &mut form.schedule_text,
+                        _ => unreachable!(),
+                    };
+                    buf.push(c);
+                    self.cron_screen.mode = CronMode::Form(form);
+                    return;
+                }
+                _ => {
+                    self.cron_screen.mode = CronMode::Form(form);
+                    return;
+                }
+            }
+        }
+
+        // --- List mode --------------------------------------------
+        clear_status(self);
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.active_view = ActiveView::Chat;
+                self.focus = Focus::Chat;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.cron_screen.cursor + 1 < jobs.len() {
+                    self.cron_screen.cursor += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.cron_screen.cursor > 0 {
+                    self.cron_screen.cursor -= 1;
+                }
+            }
+            KeyCode::Char('a') => {
+                self.cron_screen.mode =
+                    CronMode::Form(super::cron_view::CronForm::new_add());
+            }
+            KeyCode::Char('e') => {
+                if let Some(j) = jobs.get(self.cron_screen.cursor) {
+                    self.cron_screen.mode =
+                        CronMode::Form(super::cron_view::CronForm::new_edit(j));
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(j) = jobs.get(self.cron_screen.cursor) {
+                    let display = format!("{} → {}", &j.id.to_string()[..8], j.target_agent);
+                    self.cron_screen.mode = CronMode::ConfirmDelete {
+                        job_id: j.id,
+                        display,
+                    };
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some(j) = jobs.get(self.cron_screen.cursor) {
+                    let id = j.id;
+                    let patch = crate::cron::CronPatch {
+                        enabled: Some(!j.enabled),
+                        ..Default::default()
+                    };
+                    match self.cron.update(id, patch) {
+                        Ok(updated) => {
+                            let wire = crate::cron::WireCronJob::from(updated);
+                            self.cron_invalidate.notify_one();
+                            let _ = self
+                                .cron_event_tx
+                                .send(crate::cron::CronEvent::Updated { job: wire });
+                            self.cron_screen.status_msg =
+                                Some(format!("toggled cron job {id}"));
+                        }
+                        Err(e) => {
+                            self.cron_screen.status_msg = Some(format!("toggle failed: {e}"));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        // Keep `CronFormKind`, `CronForm`, `CronPayloadKind`,
+        // `CronFormField` imported even when list mode doesn't touch
+        // them — easier for future edits than scoping them per-branch.
+        let _ = CronFormKind::Add;
+        let _ = CronForm::new_add;
+        let _ = CronPayloadKind::Message;
+        let _ = CronFormField::Target;
+    }
+
+    /// Parse + apply a [`super::cron_view::CronForm`] against the
+    /// backing store. Returns a human-readable confirmation on success
+    /// or a human-readable error string on failure (the caller puts
+    /// the error back into the form's red banner).
+    fn commit_cron_form(
+        &mut self,
+        form: &super::cron_view::CronForm,
+    ) -> Result<String, String> {
+        use super::cron_view::{CronFormKind, CronScheduleKind};
+
+        let target = form.target.trim().to_string();
+        if target.is_empty() {
+            return Err("target is empty".into());
+        }
+        if !self.is_configured_agent(&target) {
+            return Err(format!(
+                "target `{target}` is not a configured agent"
+            ));
+        }
+
+        let payload_kind = match form.payload_kind {
+            super::cron_view::CronPayloadKind::Message => "message",
+            super::cron_view::CronPayloadKind::SlashCommand => "command",
+        };
+        let payload = parse_cron_payload(payload_kind, form.payload_body.clone())?;
+
+        let oneoff = form.schedule_kind == CronScheduleKind::OneOff;
+        let schedule = parse_cron_schedule(&form.schedule_text, oneoff)
+            .map_err(|e| e.to_string())?;
+
+        if form.catchup_on_startup && !oneoff {
+            return Err("catchup_on_startup only applies to one-off jobs".into());
+        }
+
+        match form.kind {
+            CronFormKind::Add => {
+                match self.cron.add(
+                    target,
+                    payload,
+                    schedule,
+                    form.timezone,
+                    form.catchup_on_startup,
+                    form.enabled,
+                    "user".to_string(),
+                ) {
+                    Ok(j) => {
+                        let wire = crate::cron::WireCronJob::from(j);
+                        let id = wire.id;
+                        self.cron_invalidate.notify_one();
+                        let _ = self
+                            .cron_event_tx
+                            .send(crate::cron::CronEvent::Created { job: wire });
+                        Ok(format!("created cron job {id}"))
+                    }
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+            CronFormKind::Edit(id) => {
+                let patch = crate::cron::CronPatch {
+                    target_agent: Some(target),
+                    payload: Some(payload),
+                    schedule: Some(schedule),
+                    timezone: Some(form.timezone),
+                    catchup_on_startup: Some(form.catchup_on_startup),
+                    enabled: Some(form.enabled),
+                };
+                match self.cron.update(id, patch) {
+                    Ok(updated) => {
+                        let wire = crate::cron::WireCronJob::from(updated);
+                        self.cron_invalidate.notify_one();
+                        let _ = self
+                            .cron_event_tx
+                            .send(crate::cron::CronEvent::Updated { job: wire });
+                        Ok(format!("updated cron job {id}"))
+                    }
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+        }
     }
 
     fn open_cores_view(&mut self) {
@@ -10674,6 +11124,15 @@ impl App {
                     return;
                 }
 
+                // 0e. Cron hotspots (toolbar new button, row select +
+                //     inline buttons, add/edit modal fields and
+                //     buttons, confirm-delete buttons). When a modal
+                //     is open, clicks outside it are swallowed to
+                //     prevent accidental dismissal via sidebar click.
+                if self.active_view == ActiveView::Cron && self.handle_mouse_cron(pos) {
+                    return;
+                }
+
                 // 1. Chat buttons take priority.
                 if let Some(btn) = self
                     .layout
@@ -10724,6 +11183,9 @@ impl App {
                                 }
                                 "Inbox" => {
                                     self.open_inbox_view();
+                                }
+                                "Cron" => {
+                                    self.open_cron_view();
                                 }
                                 _ => {
                                     self.focus = Focus::Views;
@@ -10824,6 +11286,7 @@ impl App {
                             ActiveView::Memory => Focus::Memory,
                             ActiveView::Cores => Focus::Cores,
                             ActiveView::Inbox => Focus::Inbox,
+                            ActiveView::Cron => Focus::Cron,
                             ActiveView::WorkflowForm { .. }
                             | ActiveView::WorkflowInstance { .. } => Focus::Workflow,
                         };
@@ -10901,6 +11364,7 @@ impl App {
                             ActiveView::Memory => Focus::Memory,
                             ActiveView::Cores => Focus::Cores,
                             ActiveView::Inbox => Focus::Inbox,
+                            ActiveView::Cron => Focus::Cron,
                             ActiveView::WorkflowForm { .. }
                             | ActiveView::WorkflowInstance { .. } => Focus::Workflow,
                         };
@@ -11093,6 +11557,174 @@ impl App {
                 }
             }
         }
+        true
+    }
+
+    /// Mouse entry point for the Cron view. Returns `true` when a
+    /// hotspot consumed the click (including modal-swallow clicks),
+    /// `false` to fall through to the generic sidebar / focus-grab
+    /// handlers.
+    ///
+    /// Hotspots are painted top-to-bottom so modal overlays (drawn
+    /// last) take precedence over list rows beneath them.
+    fn handle_mouse_cron(&mut self, pos: (u16, u16)) -> bool {
+        use super::cron_view::{
+            CronForm, CronFormField, CronHotspot, CronMode, CronScheduleKind,
+        };
+
+        let modal_open = !matches!(self.cron_screen.mode, CronMode::List);
+
+        let hit = self
+            .layout
+            .cron_hotspots
+            .iter()
+            .find(|(rect, _)| rect_contains(*rect, pos))
+            .map(|(_, h)| h.clone());
+
+        let Some(hotspot) = hit else {
+            // No hotspot under the cursor. With a modal open we
+            // swallow the click to prevent unexpected view switches
+            // from a stray sidebar click.
+            return modal_open;
+        };
+
+        // Any cron hotspot grabs focus, mirroring the keyboard path.
+        self.focus = Focus::Cron;
+        self.cron_screen.status_msg = None;
+
+        let jobs = super::cron_view::listed_jobs(&self.cron);
+
+        match hotspot {
+            CronHotspot::NewButton => {
+                self.cron_screen.mode = CronMode::Form(CronForm::new_add());
+            }
+            CronHotspot::SelectRow(i) => {
+                if i < jobs.len() {
+                    self.cron_screen.cursor = i;
+                }
+            }
+            CronHotspot::ToggleEnabled(i) => {
+                if let Some(j) = jobs.get(i) {
+                    let id = j.id;
+                    let patch = crate::cron::CronPatch {
+                        enabled: Some(!j.enabled),
+                        ..Default::default()
+                    };
+                    match self.cron.update(id, patch) {
+                        Ok(updated) => {
+                            let wire = crate::cron::WireCronJob::from(updated);
+                            self.cron_invalidate.notify_one();
+                            let _ = self
+                                .cron_event_tx
+                                .send(crate::cron::CronEvent::Updated { job: wire });
+                            self.cron_screen.cursor = i;
+                        }
+                        Err(e) => {
+                            self.cron_screen.status_msg =
+                                Some(format!("toggle failed: {e}"));
+                        }
+                    }
+                }
+            }
+            CronHotspot::EditRow(i) => {
+                if let Some(j) = jobs.get(i) {
+                    self.cron_screen.cursor = i;
+                    self.cron_screen.mode = CronMode::Form(CronForm::new_edit(j));
+                }
+            }
+            CronHotspot::DeleteRow(i) => {
+                if let Some(j) = jobs.get(i) {
+                    self.cron_screen.cursor = i;
+                    let display = format!("{} → {}", &j.id.to_string()[..8], j.target_agent);
+                    self.cron_screen.mode = CronMode::ConfirmDelete {
+                        job_id: j.id,
+                        display,
+                    };
+                }
+            }
+            CronHotspot::ConfirmDeleteYes => {
+                if let CronMode::ConfirmDelete { job_id, .. } = self.cron_screen.mode.clone() {
+                    match self.cron.remove(job_id) {
+                        Ok(_) => {
+                            self.cron_invalidate.notify_one();
+                            let _ = self
+                                .cron_event_tx
+                                .send(crate::cron::CronEvent::Removed { id: job_id });
+                            self.cron_screen.status_msg =
+                                Some(format!("removed cron job {job_id}"));
+                        }
+                        Err(e) => {
+                            self.cron_screen.status_msg =
+                                Some(format!("remove failed: {e}"));
+                        }
+                    }
+                }
+                self.cron_screen.mode = CronMode::List;
+                let len = super::cron_view::listed_jobs(&self.cron).len();
+                self.cron_screen.reclamp(len);
+            }
+            CronHotspot::ConfirmDeleteNo => {
+                self.cron_screen.mode = CronMode::List;
+            }
+            CronHotspot::FormSave => {
+                if let CronMode::Form(form) = self.cron_screen.mode.clone() {
+                    match self.commit_cron_form(&form) {
+                        Ok(msg) => {
+                            self.cron_screen.status_msg = Some(msg);
+                            self.cron_screen.mode = CronMode::List;
+                            let len = super::cron_view::listed_jobs(&self.cron).len();
+                            self.cron_screen.reclamp(len);
+                        }
+                        Err(e) => {
+                            if let CronMode::Form(ref mut f) = self.cron_screen.mode {
+                                f.error = Some(e);
+                            }
+                        }
+                    }
+                }
+            }
+            CronHotspot::FormCancel => {
+                self.cron_screen.mode = CronMode::List;
+            }
+            CronHotspot::FormField(field) => {
+                if let CronMode::Form(ref mut form) = self.cron_screen.mode {
+                    form.focused = field;
+                    form.error = None;
+                    // Clicking a toggleable field also cycles it —
+                    // matches the web portal's one-click UX for
+                    // checkboxes / segmented selects.
+                    match field {
+                        CronFormField::PayloadKind => {
+                            form.payload_kind = form.payload_kind.toggle();
+                        }
+                        CronFormField::ScheduleKind => {
+                            form.schedule_kind = form.schedule_kind.toggle();
+                            if form.schedule_kind == CronScheduleKind::Recurring {
+                                form.catchup_on_startup = false;
+                            }
+                        }
+                        CronFormField::Timezone => {
+                            form.timezone = match form.timezone {
+                                crate::cron::CronTz::Local => crate::cron::CronTz::Utc,
+                                crate::cron::CronTz::Utc => crate::cron::CronTz::Local,
+                            };
+                        }
+                        CronFormField::CatchupOnStartup => {
+                            if form.schedule_kind == CronScheduleKind::OneOff {
+                                form.catchup_on_startup = !form.catchup_on_startup;
+                            }
+                        }
+                        CronFormField::Enabled => {
+                            form.enabled = !form.enabled;
+                        }
+                        // Text fields just take focus; typing still
+                        // goes through the keyboard handler.
+                        _ => {}
+                    }
+                }
+            }
+        }
+
         true
     }
 

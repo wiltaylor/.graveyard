@@ -5,7 +5,9 @@ import type {
   ChannelHistoryResponse,
   ChannelListResponse,
   ChatHistoryResponse,
+  CreateCronRequest,
   CreateInstanceInput,
+  CronListResponse,
   GraphResponse,
   HealthResponse,
   InboxListResponse,
@@ -13,6 +15,7 @@ import type {
   LinksResponse,
   MemoryMutationResponse,
   MutationResponse,
+  PatchCronRequest,
   SearchResponse,
   SendResponse,
   TaskListResponse,
@@ -294,6 +297,24 @@ export const api = {
       `/api/instances/${id}/workflows/instances/${wfId}`,
       { method: "DELETE" },
     ),
+
+  // Cron
+  listCron: (id: string) =>
+    request<CronListResponse>(`/api/instances/${id}/cron`),
+  createCron: (id: string, body: CreateCronRequest) =>
+    request<MutationResponse>(`/api/instances/${id}/cron`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  patchCron: (id: string, jobId: string, body: PatchCronRequest) =>
+    request<MutationResponse>(`/api/instances/${id}/cron/${jobId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteCron: (id: string, jobId: string) =>
+    request<MutationResponse>(`/api/instances/${id}/cron/${jobId}`, {
+      method: "DELETE",
+    }),
 };
 
 export function instanceEventsUrl(id: string): string {
@@ -316,4 +337,11 @@ export function chatEventsUrl(id: string, agent: string): string {
 export function workflowEventsUrl(id: string, instanceId?: number): string {
   const base = `/api/instances/${id}/workflows/events`;
   return instanceId === undefined ? base : `${base}?instance=${instanceId}`;
+}
+
+/// Path for an EventSource that streams `WireCronEvent`s for the given
+/// instance. No filtering — the stream carries every created / updated /
+/// removed / fired mutation for every job.
+export function cronEventsUrl(id: string): string {
+  return `/api/instances/${id}/cron/events`;
 }

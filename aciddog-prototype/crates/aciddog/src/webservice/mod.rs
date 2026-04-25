@@ -80,6 +80,10 @@ pub struct WebserviceState {
     /// Populated at the end of `App::on_workflow_event` after the TUI
     /// mirror has been updated.
     pub workflow_event_tx: broadcast::Sender<crate::wire_workflow::WireWorkflowEvent>,
+    /// Per-`App` fan-out of cron events. The `/v1/cron/events` stream
+    /// subscribes here. Populated from `App::handle_cron_*` mutation
+    /// handlers and from `tick_cron` on each fire.
+    pub cron_event_tx: broadcast::Sender<crate::cron::CronEvent>,
     /// Whether the automaton backing this webservice is flagged
     /// `supervisor = true`. Gates the `/v1/chat/events` handler —
     /// non-supervisor webservices have no business snooping on other
@@ -109,6 +113,7 @@ pub async fn run_webservice_core(
     chat_block_tx: broadcast::Sender<crate::wire_chat::ChatBlockEvent>,
     channel_message_tx: broadcast::Sender<crate::wire_channel::ChannelMessageEvent>,
     workflow_event_tx: broadcast::Sender<crate::wire_workflow::WireWorkflowEvent>,
+    cron_event_tx: broadcast::Sender<crate::cron::CronEvent>,
 ) {
     let is_supervisor = automaton.supervisor;
     let (bind, api_key_env) = match automaton.backend {
@@ -150,6 +155,7 @@ pub async fn run_webservice_core(
         chat_block_tx,
         channel_message_tx,
         workflow_event_tx,
+        cron_event_tx,
         is_supervisor,
         api_key,
     };

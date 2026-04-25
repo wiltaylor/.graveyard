@@ -2,6 +2,7 @@ import { For, Show, createEffect, createResource, createSignal, type JSX } from 
 import AddInstanceForm from "./components/AddInstanceForm";
 import ChannelView from "./components/ChannelView";
 import ChatPane from "./components/ChatPane";
+import CronView from "./components/CronView";
 import InboxView from "./components/InboxView";
 import InstanceDetail from "./components/InstanceDetail";
 import InstanceTree from "./components/InstanceTree";
@@ -21,6 +22,7 @@ type TabId =
   | "agents"
   | "tasks"
   | "workflows"
+  | "cron"
   | "inbox"
   | "memory";
 
@@ -29,6 +31,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "agents", label: "Agents" },
   { id: "tasks", label: "Tasks" },
   { id: "workflows", label: "Workflows" },
+  { id: "cron", label: "Cron" },
   { id: "inbox", label: "Inbox" },
   { id: "memory", label: "Memory" },
 ];
@@ -267,6 +270,13 @@ export default function App(): JSX.Element {
 
                 <Show when={activeTab() === "workflows"}>
                   <WorkflowsView instanceId={inst().id} />
+                </Show>
+
+                <Show when={activeTab() === "cron"}>
+                  <CronView
+                    instanceId={inst().id}
+                    agents={agentsByInstance()[inst().id]?.agents ?? []}
+                  />
                 </Show>
 
                 <Show when={activeTab() === "inbox"}>
