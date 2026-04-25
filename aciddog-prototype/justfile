@@ -43,29 +43,35 @@ app-test-integration:
 [group('app')]
 app-test: app-test-unit app-test-integration
 
+# Install wcl/aciddog.wcl into ${XDG_DATA_HOME:-$HOME/.local/share}/wcl/lib/ so demos can `import <aciddog.wcl>`
+[group('wcl')]
+wcl-schema-install:
+	mkdir -p "${XDG_DATA_HOME:-$HOME/.local/share}/wcl/lib"
+	cp wcl/aciddog.wcl "${XDG_DATA_HOME:-$HOME/.local/share}/wcl/lib/aciddog.wcl"
+
 # Start the TUI in the demo workspace
 [group('run')]
-run:
+run: wcl-schema-install
 	cd demo && cargo run --manifest-path ../crates/aciddog/Cargo.toml
 
 # Headless aciddog (no TUI) in demo/ — drive via aciddog-manager
 [group('run')]
-run-daemon:
+run-daemon: wcl-schema-install
 	cd demo && cargo run --manifest-path ../crates/aciddog/Cargo.toml -- daemon
 
 # Remote-demo server side: :webservice on /tmp/aciddog-remote-demo.sock (pair with `run-remote-client`)
 [group('run')]
-run-remote-server:
+run-remote-server: wcl-schema-install
 	cd demo-remote-server && cargo run --manifest-path ../crates/aciddog/Cargo.toml
 
 # Headless remote-demo server (no TUI) — drive via aciddog-manager over unix:/tmp/aciddog-remote-demo.sock
 [group('run')]
-run-remote-server-daemon:
+run-remote-server-daemon: wcl-schema-install
 	cd demo-remote-server && cargo run --manifest-path ../crates/aciddog/Cargo.toml -- daemon
 
 # Remote-demo client side: :remote dialing the server's socket (start the server first or watch it retry)
 [group('run')]
-run-remote-client:
+run-remote-client: wcl-schema-install
 	cd demo-remote-client && cargo run --manifest-path ../crates/aciddog/Cargo.toml
 
 MANAGER_MANIFEST := "crates/aciddog-manager/Cargo.toml"

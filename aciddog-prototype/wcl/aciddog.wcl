@@ -1,0 +1,436 @@
+// aciddog WCL schema library.
+//
+// Source of truth for every schema the aciddog harness validates. Demo
+// configs pull this in with `import <aciddog.wcl>`. Install into the
+// user-wide WCL library directory with `just wcl-schema-install` (which
+// the demo `run-*` recipes run automatically before launch).
+
+schema "team" {
+  id: identifier @inline(0)
+  description: string
+  replace_thinking_messages: bool @optional @default(false)
+  default_ai_core: string @optional
+}
+
+schema "thinking_messages" {
+  messages: list(string)
+}
+
+schema "agent" {
+  id: identifier @inline(0)
+  role: string
+  role_description: string @optional
+  // Per-agent model override. Omit to inherit the resolved ai_core's
+  // `model`. Direct-API cores require a model somewhere — here or on
+  // the core. CLI-harness cores (claudeCode, copilotCli, geminiCli)
+  // fall through to the child binary's own default when both are
+  // unset.
+  model: string @optional
+  instructions: string
+  can_message: list(string) @optional
+  can_create_workers: list(string) @optional
+  can_run_workflows: list(string) @optional
+  tools: list(string) @optional
+  ai_core: string @optional
+  memory_banks: list(string) @optional
+  skills: list(string) @optional
+  compaction: string @optional
+  // Supervisors may observe and manage other agents (list, status,
+  // history, stop, sleep, wake, send-as-user, force-archive workers)
+  // and bypass their own `can_message` allowlist when using `send`.
+  // Only `agent` blocks may be supervisors — workers and automatons
+  // cannot.
+  supervisor: bool @optional @default(false)
+  // Sysadmins have everything a supervisor does plus `server shutdown`
+  // and `server exit`. Implies `supervisor = true` after parse.
+  sysadmin: bool @optional @default(false)
+}
+
+schema "worker" {
+  id: identifier @inline(0)
+  role: string
+  role_description: string @optional
+  // Per-worker-template model override. Same semantics as
+  // `schema "agent"`'s `model` field — overrides the resolved
+  // ai_core's model for instances of this template.
+  model: string @optional
+  instructions: string
+  tools: list(string) @optional
+  can_create_workers: list(string) @optional
+  can_run_workflows: list(string) @optional
+  ai_core: string @optional
+  memory_banks: list(string) @optional
+  skills: list(string) @optional
+  compaction: string @optional
+}
+
+// A script-backed pseudo-agent. Unlike `agent`/`worker`, an automaton
+// has no AI core — each delivered event (direct mail, channel message,
+// or user input typed in its chat window) spawns a child process with
+// the event written as a single JSON document on stdin. The process
+// exits when done; stdout/stderr lines land in the automaton's chat
+// pane. The child gets `ACIDDOG_AGENT_ID` and `ACIDDOG_AGENT_SOCKET`
+// in its environment so it can call back through the `aciddog` CLI
+// exactly like any other fleet member. Only one child runs at a time
+// per automaton: while it's alive the status shows `Working` and any
+// incoming messages queue in the usual priority order (user > agent
+// > channel), pulled the moment the current child exits.
+// An automaton has one of two backends selected by `type`. `:script`
+// (the default when omitted) spawns a subprocess per inbound event;
+// `:webservice` hosts a long-lived HTTPS or Unix-socket server that
+// external clients drive over JSON-RPC + SSE.
+@tagged(field = "type")
+schema "automaton" {
+  id: identifier @inline(0)
+  role: string
+  role_description: string @optional
+  type: symbol @optional
+  // Allowlist of agent/automaton ids this automaton may target with
+  // `aciddog send --to`. `None` ⇒ unrestricted; `Some([])` ⇒ none.
+  can_message: list(string) @optional
+  // Grants supervisor RPC access (`agent list`, `agent history`,
+  // `agent send-as-user`, `/v1/chat/events`). Primary use: a
+  // `:webservice` automaton that backs the remote management portal.
+  supervisor: bool @optional @default(false)
+
+  variant "script" {
+    // Executable to spawn. Either a bare binary name on PATH (e.g.
+    // `python3`) or an absolute path. Not a shell line — use `args`
+    // for additional argv entries and `env` for environment.
+    command: string
+    // Extra argv entries appended after `command`.
+    args: list(string) @optional
+    // Working directory for the child. Omit to inherit harness cwd.
+    cwd: string @optional
+    // Extra environment variables passed to the child as `KEY=VAL`
+    // strings. Each entry must contain at least one `=`.
+    env: list(string) @optional
+    // Kill the child if it runs longer than this many seconds.
+    timeout_seconds: number @optional
+  }
+
+  variant "webservice" {
+    // HTTPS bind (mutually exclusive with `socket_path`).
+    // `host:port` parsed as a SocketAddr.
+    bind: string @optional
+    // PEM-encoded cert + key files for HTTPS.
+    tls_cert: string @optional
+    tls_key: string @optional
+    // Name of the env var holding the expected API-key. Required for
+    // HTTPS; forbidden for Unix-socket webservices (fs perms are the
+    // trust boundary there).
+    api_key_env: string @optional
+    // Unix-socket path. Mutually exclusive with `bind`.
+    socket_path: string @optional
+  }
+
+  // Client-side counterpart to `:webservice`. Dials a remote aciddog
+  // instance's `/v1/rpc` + `/v1/events` and proxies one identity on
+  // that remote as a local fleet member.
+  variant "remote" {
+    // HTTPS base URL of the remote (mutually exclusive with
+    // `socket_path`). The client appends `/v1/rpc` and `/v1/events`.
+    url: string @optional
+    // Env var holding the Bearer token sent in `Authorization`.
+    // Required for `url`; forbidden for `socket_path`.
+    api_key_env: string @optional
+    // Optional PEM-encoded CA bundle for verifying a self-signed
+    // remote certificate.
+    tls_ca: string @optional
+    // Unix-socket path of the remote webservice. Mutually exclusive
+    // with `url`. Trust model is filesystem permissions.
+    socket_path: string @optional
+    // Id of the fleet member on the remote that local traffic is
+    // forwarded to. Free-form — the remote rejects unknown ids at
+    // runtime.
+    remote_target: string
+    // Local agent/automaton id that receives inbound SSE events from
+    // the remote. Validated to reference a declared id.
+    deliver_to: string
+    // Optional local Unix socket path. When set, a listener mounts
+    // the socket speaking the same JSON-per-line agent-IPC wire
+    // format used internally, and tunnels every `RequestCmd` through
+    // to the remote `/v1/rpc`. Lets local tools set
+    // `ACIDDOG_AGENT_SOCKET` to this path and drive the full RPC
+    // surface against the remote.
+    proxy_socket_path: string @optional
+  }
+}
+
+// Inbound HTTP webhook mounted on a webservice-backed automaton. When
+// a request arrives and passes the declared auth check, the handler
+// packages (method, path, query, headers, body) into a JSON envelope
+// and delivers it as a `send --to <deliver_to>` message sent from the
+// hosting automaton's identity. The host's `can_message` ACL gates
+// which agents webhooks can reach.
+schema "webhook" {
+  id: identifier @inline(0)
+  // Id of a declared automaton whose `type` is `:webservice`.
+  mount: string
+  // HTTP path (must start with `/`). Must not collide with reserved
+  // endpoints `/v1/rpc`, `/v1/events`, `/v1/health`.
+  path: string
+  // Agent or automaton id that receives the delivery.
+  deliver_to: string
+  // Reject bodies larger than this many bytes with 413. Default 1 MiB.
+  max_body_bytes: number @optional
+  // Auth scheme. One of :none :bearer :header :json_field :hmac_header
+  auth_kind: symbol @optional
+  // For :header / :hmac_header — the header name to inspect.
+  auth_header: string @optional
+  // For :json_field — dot-path into the JSON body (e.g. `data.token`).
+  auth_field: string @optional
+  // Env var holding the expected value. Required for every non-`:none`
+  // variant.
+  auth_secret_env: string @optional
+  // For :hmac_header — `:sha256` (default) or `:sha1`.
+  auth_algo: symbol @optional
+}
+
+// A reusable multi-step procedure declared at the fleet level. Each
+// workflow block contains nested `property` blocks (typed inputs) and
+// `step` blocks (one of command / worker / conditional / check, keyed
+// by the `kind` symbol). The nested blocks are parsed and validated
+// at config-load time by `validate_workflow_refs` in src/config.rs —
+// no WCL schema is declared here, so every workflow / property / step
+// remains unschemed at the wcl_lang level (child blocks with nested
+// tagged-union kinds are easier to validate in Rust than in schema).
+// Workflows are triggered from the TUI's Workflows panel or via
+// `aciddog workflow run --id <wf>` (agents need the workflow id in
+// their `can_run_workflows` allowlist).
+
+// Memory banks are semantic, embedding-indexed stores shared across a
+// subset of the team. Agents/workers opt in to specific banks via their
+// own `memory_banks` attribute. Each bank lives on disk under
+// `.aciddog/memory/<id>/` and can be safely removed to reset.
+schema "memory_bank" {
+  id: identifier @inline(0)
+  description: string
+  // fastembed model id. Omit to use the default (BGE-small-en-v1.5).
+  embed_model: string @optional
+}
+
+// A virtual chat room shared by a named subset of agents plus the
+// human operator. Messages posted here are broadcast as
+// `<ChannelMessage channel="<id>" from="<sender>">body</ChannelMessage>`
+// to every listed member on their next turn, at a priority strictly
+// below direct mailbox messages so channel chatter can never starve
+// point-to-point tasking. `welcome` is cosmetic — rendered at the top
+// of the channel pane but never injected into any agent's context.
+// Transcripts are appended to `.aciddog/chat/<id>.jsonl` and the
+// latest tail is re-loaded for display on startup (but never replayed
+// into an agent's context). Workers cannot be members — only declared
+// agents.
+schema "channel" {
+  id: identifier @inline(0)
+  description: string @optional
+  welcome: string @optional
+  members: list(string)
+}
+
+// A named compaction policy controlling `/compact` behaviour for any
+// agent or worker that references it via their own `compaction`
+// attribute. `/reset` ignores this config and always drops the
+// session; agents with no `compaction` fall back to the `drop`
+// strategy when `/compact` fires.
+//
+// Four strategies:
+//   - harness        forward the literal `/compact` to the backing CLI.
+//                    Only `claudeCode` actually processes `/compact` in
+//                    non-interactive (`-p`) mode; `geminiCli`,
+//                    `copilotCli`, and direct-API cores reject at parse
+//                    time (they'd either treat the string as a user
+//                    prompt or have no slash-command concept at all).
+//   - drop           discard the session and re-seed with the first-
+//                    turn preamble.
+//   - promptAndDrop  send one last `prompt` to the existing session,
+//                    capture the reply, then drop + re-seed.
+//   - summarise      serialise the transcript, run it through a
+//                    throwaway core using `prompt` (on `ai_core` if
+//                    supplied, else the agent's own core), then drop +
+//                    re-seed and deliver the summary as the first user
+//                    message of the new session.
+@tagged(field = "strategy")
+schema "compaction" {
+  id: identifier @inline(0)
+  strategy: symbol
+
+  variant "harness"       { }
+  variant "drop"          { }
+  variant "promptAndDrop" { prompt: string }
+  variant "summarise" {
+    prompt: string
+    ai_core: string @optional
+  }
+}
+
+// Configuration for a named AI runtime. The `type` symbol discriminates
+// which variant's extra fields apply. Agents and workers reference a
+// core by id via their own `ai_core` attribute, or fall back to the
+// `default_ai_core` set on the `team` block.
+@tagged(field = "type")
+schema "ai_core" {
+  id: identifier @inline(0)
+  type: symbol
+  // Where to fetch rate-limit / usage data for this core. Accepted
+  // values:
+  //   :zai             — hits api.z.ai /api/monitor/usage/quota/limit
+  //                      using the core's api_key_env as the token.
+  //   :chatgpt_oauth   — OpenAI ChatGPT subscription usage via the
+  //                      upstream Codex /wham/usage endpoint.
+  //   :openrouter      — hits openrouter.ai /api/v1/credits.
+  //   :github_copilot  — GitHub Copilot premium-request usage.
+  // claudeCode cores have no HTTP provider — their reset-window info
+  // is populated from `rate_limit_event` stream lines.
+  // Omit the field to disable usage tracking for the core.
+  usage_provider: symbol @optional
+
+  variant "claudeCode" {
+    // Written to a temporary file and passed to claude via
+    // `--system-prompt-file` on every turn.
+    systemPrompt: string @optional
+    // Optional `--model <id>` passed to the `claude` CLI on every
+    // turn. Agents/workers can override this per-actor via their own
+    // `model` field. Omit both and claude picks its own default.
+    model: string @optional
+    // Fallback tool allowlist for agents/workers using this core that
+    // don't declare their own `tools`. Tool names are core-specific,
+    // which is why this default lives on the core.
+    default_tools: list(string) @optional
+  }
+
+  // Generic Anthropic-Messages-API-compatible core. Works against
+  // api.anthropic.com, Z.ai's Anthropic-compatible endpoint, or any
+  // other provider that speaks the Messages wire protocol.
+  variant "anthropicApi" {
+    // Base URL (e.g. `https://api.anthropic.com` or
+    // `https://api.z.ai/api/anthropic`). `/v1/messages` is appended.
+    apiUrl: string
+    // Name of the environment variable that holds the API key.
+    // Loaded from `.env` at startup; never commit keys to the config.
+    apiKeyEnv: string
+    // Model id sent in the `model` request field.
+    model: string
+    // Optional top-level `system` field for every request.
+    systemPrompt: string @optional
+    // Fallback tool allowlist — names must resolve to built-in native
+    // tools (Bash, Read, Write, Edit, Glob, Grep, WebFetch).
+    default_tools: list(string) @optional
+  }
+
+  // GitHub Copilot CLI core. Drives the `copilot` binary (install
+  // with `npm i -g @github/copilot`) and streams its JSONL output.
+  // Copilot picks its own system prompt; none can be supplied here.
+  variant "copilotCli" {
+    // Optional `--model <id>` passed on every turn. Accepts copilot's
+    // native model ids (e.g. `claude-haiku-4.5`, `gpt-5.2`). Omit to
+    // let copilot use its default.
+    model: string @optional
+    // Fallback tool allowlist. Uses the aciddog-side capitalized
+    // names (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`) — only
+    // those six map to copilot built-ins. The core translates them to
+    // copilot's lowercase names at spawn time.
+    default_tools: list(string) @optional
+  }
+
+  // Google Gemini CLI core. Drives the `gemini` binary (install with
+  // `npm i -g @google/gemini-cli`). Gemini generates its own per-
+  // session UUID; aciddog captures it from the stream and uses it for
+  // `--resume` on subsequent turns. Tool restriction is enforced via
+  // a per-turn policy TOML file so unmapped gemini built-ins never
+  // run. Authentication happens inside `gemini auth` or a Google AI
+  // Studio key — no API key env var is configured here.
+  variant "geminiCli" {
+    // Optional `--model <id>` passed on every turn. Accepts gemini's
+    // native model ids (e.g. `auto-gemini-3`, `gemini-2.5-flash-lite`).
+    // Omit to let gemini use its default.
+    model: string @optional
+    // Fallback tool allowlist. Uses the aciddog-side capitalized
+    // names (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`) — only
+    // those six map to gemini built-ins. The core translates them to
+    // gemini's native names at turn time.
+    default_tools: list(string) @optional
+  }
+
+  // Generic OpenAI-chat-completions-compatible core. Works against
+  // api.openai.com, OpenRouter, Ollama's OpenAI-compatible endpoint,
+  // or any other provider that implements `/chat/completions`.
+  variant "openAiApi" {
+    // **v1 base** URL — e.g. `https://api.openai.com/v1`,
+    // `https://openrouter.ai/api/v1`, `http://localhost:11434/v1`.
+    // `/chat/completions` is appended. Matches how every OpenAI-
+    // compatible vendor documents their endpoint.
+    apiUrl: string
+    // Name of the environment variable that holds the API key.
+    // Loaded from `.env` at startup; never commit keys to the config.
+    apiKeyEnv: string
+    // Model id sent in the `model` request field. OpenRouter uses
+    // vendor-prefixed ids (e.g. `openai/gpt-5.4-mini`); OpenAI proper
+    // uses bare ids (e.g. `gpt-4o-mini`).
+    model: string
+    // Optional system prompt; prepended as a `role: "system"` message.
+    systemPrompt: string @optional
+    // Fallback tool allowlist — names must resolve to built-in native
+    // tools (Bash, Read, Write, Edit, Glob, Grep, WebFetch).
+    default_tools: list(string) @optional
+  }
+
+  // Google Jules remote-worker core. Unlike the other cores which
+  // run (or harness) the model on this machine, `jules` hands a task
+  // off to jules.google.com, which runs it against a GitHub repo
+  // inside its own sandbox. Aciddog polls the Jules activity stream
+  // to keep the worker's chat pane in sync and sends mail to the
+  // parent when Jules needs plan approval or user feedback. Only
+  // valid for `worker` templates — requires `properties.repo`
+  // ("owner/repo") at spawn time (optionally `properties.branch`).
+  variant "jules" {
+    // Name of the environment variable that holds the Jules API key
+    // (create one at jules.google.com/settings). Loaded from `.env`
+    // at startup; never commit keys to the config.
+    apiKeyEnv: string
+    // Fallback `startingBranch` when the parent doesn't pass
+    // `branch` in `properties`. Omit to let Jules default to the
+    // repo's configured default branch.
+    defaultBranch: string @optional
+    // Seconds between `/activities` + `/sessions/{id}` polls while
+    // Jules is working on a task. Clamped to 3..=120. Defaults to 10.
+    pollIntervalSeconds: number @optional
+    // When true (default), sessions are created with
+    // `requirePlanApproval = true` so Jules pauses for the parent to
+    // reply `approve` (or send feedback) before executing the plan.
+    requirePlanApproval: boolean @optional
+    // `AUTOMATION_MODE_UNSPECIFIED` (default) or `AUTO_CREATE_PR`.
+    // Forwarded verbatim to Jules on session creation.
+    automationMode: string @optional
+  }
+
+  // OpenAI ChatGPT-subscription core. Targets the Codex `/responses`
+  // surface on `chatgpt.com/backend-api/codex`, gated by the user's
+  // ChatGPT Plus/Pro/Team entitlement rather than per-token billing.
+  // Authenticates via OAuth 2.0 against auth.openai.com — run
+  // `aciddog auth login chatgpt --name <credential>` first so the
+  // tokens live in `~/.config/aciddog/auth.json`. No apiKeyEnv here;
+  // the `credential` field names the stored token set instead.
+  variant "openAiChatgpt" {
+    // Credential name stored in auth.json (e.g. "personal", "work").
+    // Create/refresh it with `aciddog auth login chatgpt --name <n>`.
+    credential: string
+    // Model id sent in the `model` request field (e.g. `gpt-5.1-codex`,
+    // `gpt-5.4`). Also selects which bundled Codex prompt file is sent
+    // as `instructions` — codex-suffixed ids get the Codex prompt,
+    // others get a generic coding-agent prompt.
+    model: string
+    // Optional user system prompt. Delivered as a `role: "developer"`
+    // message at the head of `input[]` every turn — **not** placed in
+    // the Responses API `instructions` field (the backend expects that
+    // to be the Codex prompt verbatim).
+    systemPrompt: string @optional
+    // Fallback tool allowlist — names must resolve to built-in native
+    // tools (Bash, Read, Write, Edit, Glob, Grep, WebFetch).
+    default_tools: list(string) @optional
+    // Reasoning depth on the response. Accepts `low` / `medium` /
+    // `high`; `minimal` is rejected at parse time because the ChatGPT
+    // endpoint returns HTTP 400 for it. Defaults to `medium`.
+    reasoningEffort: string @optional
+  }
+}
