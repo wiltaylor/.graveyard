@@ -101,6 +101,11 @@ schema "automaton" {
   // `agent send-as-user`, `/v1/chat/events`). Primary use: a
   // `:webservice` automaton that backs the remote management portal.
   supervisor: bool @optional @default(false)
+  // Grants server-lifecycle RPCs (`server shutdown`, `server exit`,
+  // `server reload`) on top of supervisor. Implies `supervisor =
+  // true` after parse. Mainly used by the manager portal automaton
+  // so the web UI can trigger config reloads.
+  sysadmin: bool @optional @default(false)
 
   variant "script" {
     // Executable to spawn. Either a bare binary name on PATH (e.g.

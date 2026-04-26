@@ -38,6 +38,7 @@ pub fn build_router(state: AppState, static_dir: &Path) -> Router {
         .route("/instances/:id/agents", get(agents::list))
         .route("/instances/:id/health", get(health::probe))
         .route("/instances/:id/team", get(team::get))
+        .route("/instances/:id/team/reload", post(team::reload))
         .route("/instances/:id/agents/:agent/history", get(chat::history))
         .route("/instances/:id/agents/:agent/messages", post(chat::send))
         .route("/instances/:id/agents/:agent/events", get(chat::events))

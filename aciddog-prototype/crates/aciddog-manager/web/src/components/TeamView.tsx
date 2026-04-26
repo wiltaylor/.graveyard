@@ -8,18 +8,73 @@ import {
   Card,
   Empty,
   Eyebrow,
+  Modal,
   Stat,
   Toast,
 } from "./ui";
 
 interface Props {
   instanceId: string;
+  instanceName: string;
+  onRemoved: () => void;
 }
 
 export default function TeamView(props: Props): JSX.Element {
   const [info, setInfo] = createSignal<WireTeamInfo | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
+  const [showRemove, setShowRemove] = createSignal(false);
+  const [removing, setRemoving] = createSignal(false);
+  const [removeError, setRemoveError] = createSignal<string | null>(null);
+  const [reloading, setReloading] = createSignal(false);
+  const [reloadToast, setReloadToast] = createSignal<{
+    tone: "success" | "danger";
+    text: string;
+  } | null>(null);
+
+  const teamLabel = () => info()?.team.id ?? props.instanceName;
+
+  const handleRemove = async () => {
+    setRemoveError(null);
+    setRemoving(true);
+    try {
+      await api.deleteInstance(props.instanceId);
+      setShowRemove(false);
+      props.onRemoved();
+    } catch (err) {
+      setRemoveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  const handleReload = async () => {
+    setReloading(true);
+    setReloadToast(null);
+    try {
+      const resp = await api.reloadTeam(props.instanceId);
+      if (resp.ok) {
+        setReloadToast({
+          tone: "success",
+          text: resp.summary ?? "config reloaded",
+        });
+        // Refresh the team snapshot so any agent / core changes show up.
+        void load();
+      } else {
+        setReloadToast({
+          tone: "danger",
+          text: resp.error ?? "reload failed",
+        });
+      }
+    } catch (err) {
+      setReloadToast({
+        tone: "danger",
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setReloading(false);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -88,10 +143,36 @@ export default function TeamView(props: Props): JSX.Element {
             </span>
           </Show>
         </div>
-        <Button variant="ghost" size="sm" icon="refresh" onClick={load}>
-          Refresh
-        </Button>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <Button variant="ghost" size="sm" icon="refresh" onClick={load}>
+            Refresh
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="refresh"
+            onClick={handleReload}
+            disabled={reloading()}
+          >
+            {reloading() ? "Reloading…" : "Reload config"}
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            icon="x"
+            onClick={() => {
+              setRemoveError(null);
+              setShowRemove(true);
+            }}
+          >
+            Remove team
+          </Button>
+        </div>
       </header>
+
+      <Show when={reloadToast()}>
+        {(t) => <Toast tone={t().tone}>{t().text}</Toast>}
+      </Show>
 
       <Show when={error()}>
         <Toast tone="danger">{error()}</Toast>
@@ -198,6 +279,59 @@ export default function TeamView(props: Props): JSX.Element {
           </>
         )}
       </Show>
+
+      <Modal
+        open={showRemove()}
+        onClose={() => {
+          if (!removing()) setShowRemove(false);
+        }}
+        title="Remove team"
+        width={440}
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => setShowRemove(false)}
+              disabled={removing()}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              icon="x"
+              onClick={handleRemove}
+              disabled={removing()}
+            >
+              {removing() ? "Removing…" : "Remove team"}
+            </Button>
+          </>
+        }
+      >
+        <div style={{ display: "flex", "flex-direction": "column", gap: "12px" }}>
+          <p style={{ margin: "0", color: "var(--fg-1)", "font-size": "13.5px" }}>
+            Remove team{" "}
+            <span style={{ "font-family": "var(--font-mono)", color: "var(--fg-0)" }}>
+              {teamLabel()}
+            </span>{" "}
+            from this manager?
+          </p>
+          <p
+            style={{
+              margin: "0",
+              color: "var(--fg-2)",
+              "font-size": "12.5px",
+              "line-height": "1.5",
+            }}
+          >
+            The remote aciddog instance keeps running — only the connection from
+            this portal is dropped. You can re-add it later with the same socket
+            or URL.
+          </p>
+          <Show when={removeError()}>
+            <Toast tone="danger">{removeError()}</Toast>
+          </Show>
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -18,6 +18,7 @@ import type {
   MemoryMutationResponse,
   MutationResponse,
   PatchCronRequest,
+  ReloadResponse,
   SearchResponse,
   SendResponse,
   TaskListResponse,
@@ -85,6 +86,11 @@ export const api = {
 
   teamInfo: (id: string) =>
     request<TeamInfoResponse>(`/api/instances/${id}/team`),
+
+  reloadTeam: (id: string) =>
+    request<ReloadResponse>(`/api/instances/${id}/team/reload`, {
+      method: "POST",
+    }),
 
   // Channels
   listChannels: (id: string) =>

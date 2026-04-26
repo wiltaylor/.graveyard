@@ -182,6 +182,11 @@ pub struct Automaton {
     /// `AgentSendAsUser`, etc.). Primary use: a `:webservice`
     /// automaton that backs the remote management portal.
     pub supervisor: bool,
+    /// Same semantics as [`Agent::sysadmin`] — grants the automaton
+    /// access to server-lifecycle RPCs (`ServerShutdown`, `ServerExit`,
+    /// `ServerReload`) on top of supervisor. Implies `supervisor =
+    /// true` after parse.
+    pub sysadmin: bool,
 }
 
 /// The two delivery backends an automaton can use. See [`Automaton`].
@@ -1780,7 +1785,9 @@ fn parse_automaton(b: &wcl_lang::BlockRef) -> Result<Automaton, ConfigError> {
         }
     };
 
-    let supervisor = optional_bool(b, "supervisor")?.unwrap_or(false);
+    let sysadmin = optional_bool(b, "sysadmin")?.unwrap_or(false);
+    // sysadmin implies supervisor, mirroring the agent rule.
+    let supervisor = optional_bool(b, "supervisor")?.unwrap_or(false) || sysadmin;
     Ok(Automaton {
         id,
         role,
@@ -1788,6 +1795,7 @@ fn parse_automaton(b: &wcl_lang::BlockRef) -> Result<Automaton, ConfigError> {
         can_message,
         backend,
         supervisor,
+        sysadmin,
     })
 }
 

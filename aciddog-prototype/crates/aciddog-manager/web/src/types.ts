@@ -323,6 +323,14 @@ export interface TeamInfoResponse {
   error?: string;
 }
 
+export interface ReloadResponse {
+  ok: boolean;
+  /// Reconciliation summary echoed from the daemon, e.g.
+  /// "reload: agents +1/-0/~2 (ignore=1 compact=1 reset=0), …".
+  summary?: string;
+  error?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Channels
 // ---------------------------------------------------------------------------

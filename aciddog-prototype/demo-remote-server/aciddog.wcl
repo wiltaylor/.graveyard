@@ -152,12 +152,14 @@ workflow smoke {
 // messages from the client appear as `from: gateway` to `harbor`.
 // `supervisor = true` is required for the manager portal to drive
 // AgentSendAsUser, channel posts, inbox, and team info through this
-// automaton.
+// automaton. `sysadmin = true` adds server-lifecycle RPCs on top —
+// notably `ServerReload`, which powers the "Reload config" button on
+// the manager's Team screen. Sysadmin implies supervisor.
 automaton gateway {
   type             = :webservice
   role             = "bridge to the remote client"
   role_description = "Unix-socket webservice at /tmp/aciddog-remote-demo.sock. Client RPCs route as `from: gateway` into the local fleet; any mail gateway itself receives is broadcast over SSE to the client."
   socket_path      = "/tmp/aciddog-remote-demo.sock"
   can_message      = ["harbor", "user"]
-  supervisor       = true
+  sysadmin         = true
 }

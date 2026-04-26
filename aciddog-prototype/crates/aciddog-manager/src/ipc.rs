@@ -137,6 +137,10 @@ pub enum RequestCmd {
     /// Supervisor snapshot of the team + AI core config. Response
     /// carries `wire_team::WireTeamInfo` in `data`.
     TeamInfo,
+    /// Sysadmin: re-read the WCL config and reconcile the running
+    /// fleet. Response message carries the reload summary on success.
+    /// Requires `sysadmin = true` on the manager-portal automaton.
+    ServerReload,
     // ---- Memory ----------------------------------------------------
     MemoryBanks,
     MemorySearchJson {

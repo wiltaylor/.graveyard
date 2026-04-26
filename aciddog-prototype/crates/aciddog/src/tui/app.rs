@@ -7085,20 +7085,33 @@ impl App {
         }
     }
 
-    /// Is the caller at `idx` an agent flagged `sysadmin = true`?
+    /// Is the caller at `idx` flagged `sysadmin = true`? Both
+    /// configured agents and configured automatons may be sysadmins
+    /// (mirroring the supervisor rule); workers cannot be.
     pub(crate) fn is_sysadmin(&self, idx: usize) -> bool {
         let Some(chat) = self.chats.get(idx) else {
             return false;
         };
-        if chat.parent_idx.is_some() || chat.kind != ChatKind::Agent {
+        if chat.parent_idx.is_some() {
             return false;
         }
-        self.config
-            .agents
-            .iter()
-            .find(|a| a.id == chat.display_name)
-            .map(|a| a.sysadmin)
-            .unwrap_or(false)
+        match chat.kind {
+            ChatKind::Agent => self
+                .config
+                .agents
+                .iter()
+                .find(|a| a.id == chat.display_name)
+                .map(|a| a.sysadmin)
+                .unwrap_or(false),
+            ChatKind::Automaton => self
+                .config
+                .automatons
+                .iter()
+                .find(|a| a.id == chat.display_name)
+                .map(|a| a.sysadmin)
+                .unwrap_or(false),
+            ChatKind::Worker => false,
+        }
     }
 
     fn status_label(chat: &AgentChat) -> &'static str {
@@ -13375,6 +13388,7 @@ mod tests {
                     timeout_seconds: None,
                 },
                 supervisor: false,
+                sysadmin: false,
             }],
             ai_cores: vec![],
             memory_banks: vec![],
