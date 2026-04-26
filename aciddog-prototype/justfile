@@ -133,3 +133,10 @@ test: app-test manager-test
 # Full CI pipeline: fmt check, lint, tests (app + manager)
 [group('ci')]
 ci: app-fmt-check app-lint app-test manager-fmt-check manager-lint manager-test
+
+# Stamp a version string into both Cargo.toml files and the web package.json. Used by the release workflow before building.
+[group('release')]
+version-set ver:
+	sed -i 's/^version = "[^"]*"/version = "{{ver}}"/' crates/aciddog/Cargo.toml
+	sed -i 's/^version = "[^"]*"/version = "{{ver}}"/' crates/aciddog-manager/Cargo.toml
+	sed -i 's/^  "version": "[^"]*"/  "version": "{{ver}}"/' crates/aciddog-manager/web/package.json
