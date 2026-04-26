@@ -1,4 +1,10 @@
-import { For, Show, createEffect, createResource, createSignal, type JSX } from "solid-js";
+import {
+  Show,
+  createEffect,
+  createResource,
+  createSignal,
+  type JSX,
+} from "solid-js";
 import AddInstanceForm from "./components/AddInstanceForm";
 import ChannelView from "./components/ChannelView";
 import ChatPane from "./components/ChatPane";
@@ -14,6 +20,8 @@ import TasksView from "./components/TasksView";
 import TeamView from "./components/TeamView";
 import UsersView from "./components/UsersView";
 import WorkflowsView from "./components/WorkflowsView";
+import { Button, Empty, Tabs, ToastHost } from "./components/ui";
+import type { TabItem } from "./components/ui";
 import { api } from "./api";
 import { authApi } from "./auth";
 import type {
@@ -36,14 +44,14 @@ type TabId =
   | "inbox"
   | "memory";
 
-const TABS: { id: TabId; label: string }[] = [
-  { id: "team", label: "Team" },
-  { id: "agents", label: "Agents" },
-  { id: "tasks", label: "Tasks" },
-  { id: "workflows", label: "Workflows" },
-  { id: "cron", label: "Cron" },
-  { id: "inbox", label: "Inbox" },
-  { id: "memory", label: "Memory" },
+const TABS: TabItem<TabId>[] = [
+  { id: "team", label: "Team", icon: "users" },
+  { id: "agents", label: "Agents", icon: "user" },
+  { id: "tasks", label: "Tasks", icon: "check" },
+  { id: "workflows", label: "Workflows", icon: "git-branch" },
+  { id: "cron", label: "Cron", icon: "clock" },
+  { id: "inbox", label: "Inbox", icon: "bell" },
+  { id: "memory", label: "Memory", icon: "database" },
 ];
 
 export default function AppShell(props: Props): JSX.Element {
@@ -78,8 +86,6 @@ export default function AppShell(props: Props): JSX.Element {
     Record<string, ChannelListResponse>
   >({});
 
-  // Changing instances resets the agent/channel selection and drops
-  // the user back on the Team overview tab.
   createEffect(() => {
     selectedId();
     setSelectedAgent(null);
@@ -148,134 +154,175 @@ export default function AppShell(props: Props): JSX.Element {
     try {
       await authApi.logout();
     } catch {
-      // logout best-effort — fall through to client state reset regardless
+      // best-effort
     }
     props.onLoggedOut();
   };
 
   return (
-    <div class="min-h-screen grid grid-cols-[20rem_1fr] grid-rows-[auto_1fr]">
-      <header class="col-span-2 border-b border-slate-800 bg-slate-900 px-4 py-3 flex items-center justify-between">
-        <div>
-          <h1 class="text-lg font-semibold">aciddog manager</h1>
-          <p class="text-xs text-slate-400">
-            Registered aciddog :webservice instances.
-          </p>
-        </div>
-        <div class="flex items-center gap-3 text-sm text-slate-300">
-          <span class="text-xs text-slate-400">
-            Signed in as <span class="text-slate-200">{props.username}</span>
+    <div
+      class="app-shell"
+      style={{
+        "grid-template-columns": "280px 1fr",
+        "grid-template-rows": "48px 1fr",
+      }}
+    >
+      <header class="ftopbar">
+        <div class="ftopbar-brand">
+          <img src="/logo-mark.svg" alt="" style={{ height: "20px" }} />
+          <span style={{ "font-weight": "600", "font-size": "14px" }}>
+            aciddog manager
           </span>
-          <button
-            type="button"
+        </div>
+        <div class="ftopbar-crumbs">
+          <Show when={selectedInstance()}>
+            {(inst) => (
+              <>
+                <span class="sep">/</span>
+                <span>{inst().name}</span>
+              </>
+            )}
+          </Show>
+          <Show when={settingsSelection()}>
+            <span class="sep">/</span>
+            <span>Settings · {settingsSelection()}</span>
+          </Show>
+        </div>
+        <div
+          style={{
+            "margin-left": "auto",
+            display: "flex",
+            "align-items": "center",
+            gap: "12px",
+          }}
+        >
+          <span style={{ "font-size": "12px", color: "var(--fg-2)" }}>
+            Signed in as{" "}
+            <span style={{ color: "var(--fg-0)" }}>{props.username}</span>
+          </span>
+          <Button
+            size="sm"
+            variant="secondary"
+            icon="log-out"
             onClick={handleLogout}
-            class="rounded border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800"
           >
             Log out
-          </button>
+          </Button>
         </div>
       </header>
 
-      <aside class="border-r border-slate-800 bg-slate-900/60 p-4 overflow-y-auto">
-        <section class="mb-6">
-          <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-2">
-            Instances
-          </h2>
-          <Show
-            when={!instances.loading}
-            fallback={
-              <div class="text-sm text-slate-500">Loading…</div>
-            }
-          >
-            <InstanceTree
-              instances={instances() ?? []}
-              selectedId={selectedId()}
-              selectedAgent={selectedAgent()}
-              selectedChannel={selectedChannel()}
-              onSelect={selectInstance}
-              onSelectAgent={(instId, agentId) => {
-                selectInstance(instId);
-                setSelectedAgent(agentId);
-                setSelectedChannel(null);
-                setActiveTab("agents");
+      <aside class="fsidebar" style={{ overflow: "auto" }}>
+        <div class="fsidebar-section">Instances</div>
+        <Show
+          when={!instances.loading}
+          fallback={
+            <div
+              style={{
+                padding: "8px 10px",
+                "font-size": "12px",
+                color: "var(--fg-2)",
               }}
-              onSelectChannel={(instId, channelId) => {
-                selectInstance(instId);
-                setSelectedChannel(channelId);
-                setSelectedAgent(null);
-                setActiveTab("agents");
-              }}
-              agentsFor={(id) => agentsByInstance()[id]}
-              channelsFor={(id) => channelsByInstance()[id]}
-              onExpand={(id) => {
-                if (!agentsByInstance()[id]) loadAgents(id);
-                if (!channelsByInstance()[id]) loadChannels(id);
-              }}
-            />
-          </Show>
-        </section>
-
-        <section class="mb-6">
-          <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-2">
-            Settings
-          </h2>
-          <SettingsTree
-            selected={settingsSelection()}
-            onSelect={selectSettings}
+            >
+              Loading…
+            </div>
+          }
+        >
+          <InstanceTree
+            instances={instances() ?? []}
+            selectedId={selectedId()}
+            selectedAgent={selectedAgent()}
+            selectedChannel={selectedChannel()}
+            onSelect={selectInstance}
+            onSelectAgent={(instId, agentId) => {
+              selectInstance(instId);
+              setSelectedAgent(agentId);
+              setSelectedChannel(null);
+              setActiveTab("agents");
+            }}
+            onSelectChannel={(instId, channelId) => {
+              selectInstance(instId);
+              setSelectedChannel(channelId);
+              setSelectedAgent(null);
+              setActiveTab("agents");
+            }}
+            agentsFor={(id) => agentsByInstance()[id]}
+            channelsFor={(id) => channelsByInstance()[id]}
+            onExpand={(id) => {
+              if (!agentsByInstance()[id]) loadAgents(id);
+              if (!channelsByInstance()[id]) loadChannels(id);
+            }}
           />
-        </section>
+        </Show>
 
-        <section>
-          <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-2">
-            Add instance
-          </h2>
+        <div class="fsidebar-section">Settings</div>
+        <SettingsTree
+          selected={settingsSelection()}
+          onSelect={selectSettings}
+        />
+
+        <div class="fsidebar-section">Add instance</div>
+        <div style={{ padding: "0 8px" }}>
           <AddInstanceForm onCreated={handleCreated} />
-        </section>
+        </div>
       </aside>
 
-      <main class="overflow-hidden flex flex-col">
+      <main
+        class="app-main"
+        style={{
+          padding: "0",
+          display: "flex",
+          "flex-direction": "column",
+          "min-height": "0",
+          overflow: "hidden",
+        }}
+      >
         <Show when={settingsSelection() === "users"}>
-          <UsersView currentUsername={props.username} />
+          <div style={{ flex: "1", overflow: "auto", padding: "20px 24px" }}>
+            <UsersView currentUsername={props.username} />
+          </div>
         </Show>
         <Show
           when={!settingsSelection() && selectedInstance()}
           fallback={
             <Show when={!settingsSelection()}>
-              <div class="p-6 text-slate-500">
-                Select an instance from the left, or add a new one.
+              <div style={{ padding: "32px" }}>
+                <Empty title="No instance selected">
+                  Select an instance from the left, or add a new one.
+                </Empty>
               </div>
             </Show>
           }
         >
           {(inst) => (
             <>
-              <nav class="flex items-center gap-1 border-b border-slate-800 bg-slate-900/40 px-4 pt-2">
-                <For each={TABS}>
-                  {(tab) => (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab(tab.id);
-                        if (tab.id !== "agents") {
-                          setSelectedAgent(null);
-                          setSelectedChannel(null);
-                        }
-                      }}
-                      class="px-3 py-1.5 text-sm border-b-2 -mb-px"
-                      classList={{
-                        "border-sky-500 text-slate-100":
-                          activeTab() === tab.id,
-                        "border-transparent text-slate-400 hover:text-slate-200":
-                          activeTab() !== tab.id,
-                      }}
-                    >
-                      {tab.label}
-                    </button>
-                  )}
-                </For>
-              </nav>
+              <div
+                style={{
+                  "border-bottom": "1px solid var(--border-subtle)",
+                  background: "var(--bg-0)",
+                }}
+              >
+                <Tabs
+                  items={TABS}
+                  active={activeTab()}
+                  onChange={(id) => {
+                    setActiveTab(id);
+                    if (id !== "agents") {
+                      setSelectedAgent(null);
+                      setSelectedChannel(null);
+                    }
+                  }}
+                />
+              </div>
 
-              <div class="flex-1 overflow-hidden">
+              <div
+                style={{
+                  flex: "1",
+                  overflow: "hidden",
+                  "min-height": "0",
+                  display: "flex",
+                  "flex-direction": "column",
+                }}
+              >
                 <Show when={activeTab() === "team"}>
                   <TeamView instanceId={inst().id} />
                 </Show>
@@ -287,7 +334,13 @@ export default function AppShell(props: Props): JSX.Element {
                       <Show
                         when={selectedAgent()}
                         fallback={
-                          <div class="p-6 overflow-y-auto h-full">
+                          <div
+                            style={{
+                              padding: "20px 24px",
+                              overflow: "auto",
+                              flex: "1",
+                            }}
+                          >
                             <InstanceDetail
                               instance={inst()}
                               agents={agentsByInstance()[inst().id]}
@@ -356,6 +409,7 @@ export default function AppShell(props: Props): JSX.Element {
           )}
         </Show>
       </main>
+      <ToastHost />
     </div>
   );
 }

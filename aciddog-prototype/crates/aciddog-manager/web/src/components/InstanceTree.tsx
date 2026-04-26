@@ -1,4 +1,6 @@
-import { For, Show, createSignal, type JSX } from "solid-js";
+import { Show, createSignal, type JSX } from "solid-js";
+import { Tree } from "./ui";
+import type { TreeNode } from "./ui";
 import type {
   AgentListResponse,
   ChannelListResponse,
@@ -19,164 +21,150 @@ interface Props {
 }
 
 export default function InstanceTree(props: Props): JSX.Element {
-  const [expanded, setExpanded] = createSignal<Record<string, boolean>>({});
+  const [expanded, setExpanded] = createSignal(new Set<string>());
 
   const toggle = (id: string) => {
-    const isOpen = !!expanded()[id];
-    setExpanded({ ...expanded(), [id]: !isOpen });
-    if (!isOpen) {
-      props.onExpand(id);
+    const next = new Set(expanded());
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+      // expand both agent + channel groups for the instance prefix
+      if (id.startsWith("inst:")) {
+        const instId = id.slice("inst:".length);
+        next.add(`agents:${instId}`);
+        next.add(`channels:${instId}`);
+        props.onExpand(instId);
+      }
+    }
+    setExpanded(next);
+  };
+
+  const handleSelect = (id: string) => {
+    if (id.startsWith("inst:")) {
+      const instId = id.slice("inst:".length);
+      props.onSelect(instId);
+      // also expand on first select
+      const next = new Set(expanded());
+      if (!next.has(id)) {
+        next.add(id);
+        next.add(`agents:${instId}`);
+        next.add(`channels:${instId}`);
+        props.onExpand(instId);
+        setExpanded(next);
+      }
+    } else if (id.startsWith("agent:")) {
+      const [, instId, agentId] = id.split(":");
+      props.onSelectAgent(instId, agentId);
+    } else if (id.startsWith("channel:")) {
+      const [, instId, channelId] = id.split(":");
+      props.onSelectChannel(instId, channelId);
     }
   };
 
+  const selectedTreeId = (): string | null => {
+    if (props.selectedAgent && props.selectedId) {
+      return `agent:${props.selectedId}:${props.selectedAgent}`;
+    }
+    if (props.selectedChannel && props.selectedId) {
+      return `channel:${props.selectedId}:${props.selectedChannel}`;
+    }
+    if (props.selectedId) {
+      return `inst:${props.selectedId}`;
+    }
+    return null;
+  };
+
+  const buildNodes = (): TreeNode[] => {
+    return props.instances.map((inst) => {
+      const agentsResp = props.agentsFor(inst.id);
+      const channelsResp = props.channelsFor(inst.id);
+
+      const agentChildren: TreeNode[] = agentsResp?.ok
+        ? agentsResp.agents.map((agent) => ({
+            id: `agent:${inst.id}:${agent.id}`,
+            label: agent.id,
+            icon: "user",
+            meta: agent.status,
+          }))
+        : [];
+
+      const channelChildren: TreeNode[] = channelsResp?.ok
+        ? channelsResp.channels.map((channel) => ({
+            id: `channel:${inst.id}:${channel.id}`,
+            label: `#${channel.id}`,
+            icon: "menu",
+            meta: `${channel.members.length}m`,
+          }))
+        : [];
+
+      const agentsGroup: TreeNode = {
+        id: `agents:${inst.id}`,
+        label: "Agents",
+        icon: "users",
+        children: agentChildren.length
+          ? agentChildren
+          : [
+              {
+                id: `agents-empty:${inst.id}`,
+                label: agentsResp
+                  ? agentsResp.error ?? "No agents reported."
+                  : "Loading…",
+                icon: "circle",
+              },
+            ],
+      };
+
+      const channelsGroup: TreeNode = {
+        id: `channels:${inst.id}`,
+        label: "Channels",
+        icon: "menu",
+        children: channelChildren.length
+          ? channelChildren
+          : [
+              {
+                id: `channels-empty:${inst.id}`,
+                label: channelsResp
+                  ? channelsResp.error ?? "No channels declared."
+                  : "Loading…",
+                icon: "circle",
+              },
+            ],
+      };
+
+      return {
+        id: `inst:${inst.id}`,
+        label: inst.name,
+        icon: "box",
+        meta: inst.transport,
+        children: [agentsGroup, channelsGroup],
+      };
+    });
+  };
+
   return (
-    <ul class="space-y-1">
-      <Show
-        when={props.instances.length > 0}
-        fallback={
-          <li class="text-sm text-slate-500 italic">
-            No instances registered yet.
-          </li>
-        }
-      >
-        <For each={props.instances}>
-          {(inst) => {
-            const open = () => !!expanded()[inst.id];
-            const selected = () => props.selectedId === inst.id;
-            const agents = () => props.agentsFor(inst.id);
-            const channels = () => props.channelsFor(inst.id);
-            return (
-              <li>
-                <div
-                  class="flex items-center gap-1 rounded px-2 py-1 hover:bg-slate-800 cursor-pointer"
-                  classList={{ "bg-slate-800": selected() }}
-                  onClick={() => props.onSelect(inst.id)}
-                >
-                  <button
-                    class="w-4 text-slate-400 hover:text-slate-100"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggle(inst.id);
-                    }}
-                    aria-label={open() ? "Collapse" : "Expand"}
-                  >
-                    {open() ? "▾" : "▸"}
-                  </button>
-                  <span class="font-medium">{inst.name}</span>
-                  <span class="ml-1 text-xs text-slate-400">
-                    ({inst.transport})
-                  </span>
-                </div>
-                <Show when={open()}>
-                  <ul class="ml-6 mt-1 space-y-0.5 text-sm">
-                    <li class="text-slate-400 uppercase text-xs tracking-wider">
-                      Agents
-                    </li>
-                    <Show
-                      when={agents()}
-                      fallback={
-                        <li class="text-slate-500 italic">Loading…</li>
-                      }
-                    >
-                      {(resp) => (
-                        <Show
-                          when={resp().ok && resp().agents.length > 0}
-                          fallback={
-                            <li class="text-amber-400 italic">
-                              {resp().error ?? "No agents reported."}
-                            </li>
-                          }
-                        >
-                          <For each={resp().agents}>
-                            {(agent) => {
-                              const isSelected = () =>
-                                props.selectedId === inst.id &&
-                                props.selectedAgent === agent.id;
-                              return (
-                                <li>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      props.onSelectAgent(inst.id, agent.id);
-                                    }}
-                                    class="w-full text-left rounded px-2 py-0.5 text-slate-200 hover:bg-slate-800"
-                                    classList={{
-                                      "bg-slate-700 text-slate-50": isSelected(),
-                                    }}
-                                  >
-                                    {agent.id}{" "}
-                                    <span class="text-xs text-slate-500">
-                                      ({agent.kind} · {agent.status})
-                                    </span>
-                                  </button>
-                                </li>
-                              );
-                            }}
-                          </For>
-                        </Show>
-                      )}
-                    </Show>
-                    <li class="mt-2 text-slate-400 uppercase text-xs tracking-wider">
-                      Channels
-                    </li>
-                    <Show
-                      when={channels()}
-                      fallback={
-                        <li class="text-slate-500 italic">Loading…</li>
-                      }
-                    >
-                      {(resp) => (
-                        <Show
-                          when={resp().ok && resp().channels.length > 0}
-                          fallback={
-                            <li class="text-slate-500 italic">
-                              {resp().error ?? "No channels declared."}
-                            </li>
-                          }
-                        >
-                          <For each={resp().channels}>
-                            {(channel) => {
-                              const isSelected = () =>
-                                props.selectedId === inst.id &&
-                                props.selectedChannel === channel.id;
-                              return (
-                                <li>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      props.onSelectChannel(
-                                        inst.id,
-                                        channel.id,
-                                      );
-                                    }}
-                                    class="w-full text-left rounded px-2 py-0.5 text-slate-200 hover:bg-slate-800"
-                                    classList={{
-                                      "bg-slate-700 text-slate-50": isSelected(),
-                                    }}
-                                  >
-                                    <span class="text-slate-400">#</span>
-                                    {channel.id}{" "}
-                                    <span class="text-xs text-slate-500">
-                                      ({channel.members.length} members ·{" "}
-                                      {channel.message_count} msgs)
-                                    </span>
-                                  </button>
-                                </li>
-                              );
-                            }}
-                          </For>
-                        </Show>
-                      )}
-                    </Show>
-                  </ul>
-                </Show>
-              </li>
-            );
+    <Show
+      when={props.instances.length > 0}
+      fallback={
+        <div
+          style={{
+            padding: "8px 10px",
+            "font-size": "12px",
+            color: "var(--fg-2)",
+            "font-style": "italic",
           }}
-        </For>
-      </Show>
-    </ul>
+        >
+          No instances registered yet.
+        </div>
+      }
+    >
+      <Tree
+        nodes={buildNodes()}
+        expanded={expanded()}
+        selectedId={selectedTreeId()}
+        onToggle={toggle}
+        onSelect={handleSelect}
+      />
+    </Show>
   );
 }

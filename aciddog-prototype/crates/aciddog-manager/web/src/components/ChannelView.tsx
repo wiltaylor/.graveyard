@@ -13,6 +13,7 @@ import type {
   WireChannelInfo,
   WireChannelMessage,
 } from "../types";
+import { Badge, Button, Eyebrow, Textarea, Toast } from "./ui";
 
 interface Props {
   instanceId: string;
@@ -115,55 +116,38 @@ export default function ChannelView(props: Props): JSX.Element {
 
   return (
     <div class="flex flex-col h-[calc(100vh-6rem)]">
-      <header class="border-b border-slate-800 px-4 py-2 bg-slate-900/60 space-y-1">
+      <header class="border-b border-border-subtle px-6 py-3 bg-bg-1 space-y-2">
         <div class="flex items-center justify-between gap-4">
-          <div class="flex items-center gap-2 min-w-0">
-            <button
-              type="button"
-              onClick={props.onClose}
-              class="text-sm text-slate-400 hover:text-slate-100"
-              title="Back to instance detail"
-            >
-              ← back
-            </button>
-            <h2 class="text-lg font-semibold truncate">#{props.channel}</h2>
+          <div class="flex items-center gap-3 min-w-0">
+            <Button size="sm" variant="ghost" icon="arrow-right" onClick={props.onClose}>
+              Back
+            </Button>
+            <h2 class="text-base font-semibold text-fg-0 truncate">#{props.channel}</h2>
             <StreamStatusBadge
               status={status()}
               dropped={droppedCount()}
             />
           </div>
-          <button
-            type="button"
-            onClick={loadHistory}
-            class="text-xs text-slate-400 hover:text-slate-100"
-          >
-            refresh
-          </button>
+          <Button size="sm" variant="ghost" icon="refresh" onClick={loadHistory}>
+            Refresh
+          </Button>
         </div>
         <Show when={props.info?.description}>
-          {(desc) => (
-            <p class="text-xs text-slate-400">{desc()}</p>
-          )}
+          {(desc) => <p class="text-xs text-fg-2 m-0">{desc()}</p>}
         </Show>
         <Show when={props.info && props.info.members.length > 0}>
           <div class="flex items-center flex-wrap gap-1 text-xs">
-            <span class="text-slate-500 uppercase tracking-wider">
-              Members ({props.info!.members.length})
-            </span>
+            <Eyebrow>Members ({props.info!.members.length})</Eyebrow>
             <For each={props.info!.members}>
-              {(m) => (
-                <span class="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-slate-300">
-                  {m}
-                </span>
-              )}
+              {(m) => <Badge tone="neutral">{m}</Badge>}
             </For>
           </div>
         </Show>
       </header>
 
       <Show when={error()}>
-        <div class="mx-4 mt-2 rounded border border-red-800 bg-red-900/40 px-2 py-1 text-sm text-red-200">
-          {error()}
+        <div class="mx-6 mt-3">
+          <Toast tone="danger">{error()}</Toast>
         </div>
       </Show>
 
@@ -171,7 +155,7 @@ export default function ChannelView(props: Props): JSX.Element {
         <Show
           when={messages().length > 0}
           fallback={
-            <div class="text-sm text-slate-500 italic">
+            <div class="text-sm text-fg-3 italic">
               {error() ? "channel unavailable." : "(no messages yet)"}
             </div>
           }
@@ -182,34 +166,34 @@ export default function ChannelView(props: Props): JSX.Element {
 
       <form
         onSubmit={submit}
-        class="border-t border-slate-800 p-3 bg-slate-900/60 space-y-2"
+        class="border-t border-border-subtle p-3 bg-bg-1 space-y-2"
       >
         <Show when={sendError()}>
-          <div class="rounded border border-red-800 bg-red-900/40 px-2 py-1 text-sm text-red-200">
-            {sendError()}
-          </div>
+          <Toast tone="danger">{sendError()}</Toast>
         </Show>
-        <div class="flex gap-2">
-          <textarea
-            value={input()}
-            onInput={(e) => setInput(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                (e.currentTarget.form as HTMLFormElement).requestSubmit();
-              }
-            }}
-            placeholder={`Post to #${props.channel} as the human operator. Enter to send, Shift+Enter for newline.`}
-            rows={2}
-            class="flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm resize-y"
-          />
-          <button
+        <div class="flex gap-2 items-end">
+          <div class="flex-1">
+            <Textarea
+              value={input()}
+              onInput={(e) => setInput(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  (e.currentTarget.form as HTMLFormElement).requestSubmit();
+                }
+              }}
+              placeholder={`Post to #${props.channel} as the human operator. Enter to send, Shift+Enter for newline.`}
+              rows={2}
+            />
+          </div>
+          <Button
             type="submit"
+            variant="primary"
+            icon="arrow-right"
             disabled={sending() || input().trim() === ""}
-            class="self-end rounded border border-emerald-700 bg-emerald-900/40 hover:bg-emerald-800 disabled:opacity-50 px-3 py-1 text-sm"
           >
             {sending() ? "Sending…" : "Send"}
-          </button>
+          </Button>
         </div>
       </form>
     </div>
@@ -223,7 +207,7 @@ function ChannelMessageRow(props: {
     <Show
       when={!props.msg.is_welcome}
       fallback={
-        <div class="rounded border border-slate-800 bg-slate-900/30 px-2 py-1 text-xs text-slate-400 italic">
+        <div class="rounded border border-border-subtle bg-bg-1/30 px-2 py-1 text-xs text-fg-2 italic">
           {props.msg.body}
         </div>
       }
@@ -231,11 +215,11 @@ function ChannelMessageRow(props: {
       <div
         class="rounded border px-2 py-1 text-sm"
         classList={{
-          "border-emerald-800 bg-emerald-950/30": props.msg.sender === "user",
-          "border-indigo-800 bg-indigo-950/30": props.msg.sender !== "user",
+          "border-success bg-success-bg": props.msg.sender === "user",
+          "border-accent bg-accent-bg": props.msg.sender !== "user",
         }}
       >
-        <div class="text-xs font-mono text-slate-400 mb-0.5">
+        <div class="text-xs font-mono text-fg-2 mb-0.5">
           {props.msg.sender}
         </div>
         <div class="whitespace-pre-wrap break-words">{props.msg.body}</div>
@@ -248,27 +232,21 @@ function StreamStatusBadge(props: {
   status: StreamStatus;
   dropped: number;
 }): JSX.Element {
+  const tone = () =>
+    props.status === "live"
+      ? "success"
+      : props.status === "lagged"
+        ? "warning"
+        : props.status === "closed"
+          ? "danger"
+          : "neutral";
+  const label = () =>
+    props.status === "lagged" && props.dropped > 0
+      ? `lagged · ${props.dropped} dropped`
+      : props.status;
   return (
-    <span
-      class="text-xs rounded px-1.5 py-0.5 border"
-      classList={{
-        "text-slate-400 border-slate-700": props.status === "connecting",
-        "text-emerald-300 border-emerald-800 bg-emerald-900/30":
-          props.status === "live",
-        "text-amber-300 border-amber-800 bg-amber-900/30":
-          props.status === "lagged",
-        "text-red-300 border-red-800 bg-red-900/30":
-          props.status === "closed",
-      }}
-      title={
-        props.status === "lagged" && props.dropped > 0
-          ? `dropped ${props.dropped} event(s); history re-fetched`
-          : undefined
-      }
-    >
-      {props.status === "lagged" && props.dropped > 0
-        ? `lagged · ${props.dropped} dropped`
-        : props.status}
-    </span>
+    <Badge tone={tone()} dot>
+      {label()}
+    </Badge>
   );
 }

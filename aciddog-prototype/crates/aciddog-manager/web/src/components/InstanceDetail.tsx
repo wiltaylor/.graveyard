@@ -1,6 +1,15 @@
 import { Show, createResource, createSignal, type JSX } from "solid-js";
 import { api } from "../api";
 import type { AgentListResponse, HealthResponse, InstanceSummary } from "../types";
+import {
+  Badge,
+  Button,
+  Card,
+  Empty,
+  Eyebrow,
+  Table,
+  Toast,
+} from "./ui";
 
 interface Props {
   instance: InstanceSummary;
@@ -22,6 +31,7 @@ export default function InstanceDetail(props: Props): JSX.Element {
   const [deleteError, setDeleteError] = createSignal<string | null>(null);
 
   const handleDelete = async () => {
+    if (!window.confirm(`Delete instance "${props.instance.name}"?`)) return;
     setDeleteError(null);
     setDeleting(true);
     try {
@@ -35,91 +45,114 @@ export default function InstanceDetail(props: Props): JSX.Element {
   };
 
   return (
-    <div class="space-y-6">
-      <header class="flex items-start justify-between gap-4">
+    <div style={{ display: "flex", "flex-direction": "column", gap: "20px" }}>
+      <header
+        style={{
+          display: "flex",
+          "align-items": "flex-start",
+          "justify-content": "space-between",
+          gap: "16px",
+        }}
+      >
         <div>
-          <h2 class="text-xl font-semibold">{props.instance.name}</h2>
-          <p class="text-sm text-slate-400">
+          <h2
+            style={{
+              "font-size": "22px",
+              "font-weight": "600",
+              color: "var(--fg-0)",
+              margin: "0",
+              "letter-spacing": "-0.01em",
+            }}
+          >
+            {props.instance.name}
+          </h2>
+          <p
+            style={{
+              color: "var(--fg-2)",
+              "font-size": "13px",
+              "font-family": "var(--font-mono)",
+              margin: "4px 0 0",
+            }}
+          >
             {props.instance.transport === "unix"
               ? props.instance.socket_path
               : props.instance.url}
           </p>
         </div>
-        <button
-          onClick={handleDelete}
+        <Button
+          variant="danger"
+          size="sm"
+          icon="x"
           disabled={deleting()}
-          class="rounded border border-red-800 bg-red-900/40 hover:bg-red-800 disabled:opacity-50 px-3 py-1 text-sm"
+          onClick={handleDelete}
         >
           {deleting() ? "Deleting…" : "Delete"}
-        </button>
+        </Button>
       </header>
 
       <Show when={deleteError()}>
-        <div class="rounded bg-red-900/40 border border-red-800 px-2 py-1 text-sm text-red-200">
-          {deleteError()}
-        </div>
+        <Toast tone="danger">{deleteError()}</Toast>
       </Show>
 
-      <section>
-        <div class="flex items-center justify-between mb-2">
-          <h3 class="text-sm uppercase tracking-wider text-slate-400">
-            Health
-          </h3>
-          <button
+      <Card
+        title="Health"
+        action={
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="refresh"
             onClick={() => refreshHealth()}
-            class="text-xs text-slate-400 hover:text-slate-100"
           >
-            refresh
-          </button>
-        </div>
+            Refresh
+          </Button>
+        }
+      >
         <Show
           when={!health.loading}
-          fallback={<div class="text-sm text-slate-500">probing…</div>}
+          fallback={
+            <span style={{ "font-size": "13px", color: "var(--fg-2)" }}>
+              probing…
+            </span>
+          }
         >
           <Show
             when={health()}
             fallback={
-              <div class="text-sm text-red-300">
+              <Toast tone="danger">
                 {health.error instanceof Error
                   ? health.error.message
                   : "unknown error"}
-              </div>
+              </Toast>
             }
           >
             {(h) => (
-              <div
-                class="rounded px-2 py-1 text-sm"
-                classList={{
-                  "bg-emerald-900/40 text-emerald-200 border border-emerald-800":
-                    h().ok,
-                  "bg-amber-900/40 text-amber-200 border border-amber-800":
-                    !h().ok,
-                }}
-              >
+              <Toast tone={h().ok ? "success" : "warning"}>
                 HTTP {h().status} — {h().body || "(empty body)"}
-              </div>
+              </Toast>
             )}
           </Show>
         </Show>
-      </section>
+      </Card>
 
-      <section>
-        <div class="flex items-center justify-between mb-2">
-          <h3 class="text-sm uppercase tracking-wider text-slate-400">
-            Agents
-          </h3>
-          <button
+      <Card
+        title="Agents"
+        action={
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="refresh"
             onClick={() => props.onRefreshAgents()}
-            class="text-xs text-slate-400 hover:text-slate-100"
           >
-            refresh
-          </button>
-        </div>
+            Refresh
+          </Button>
+        }
+        padded={false}
+      >
         <Show
           when={props.agents}
           fallback={
-            <div class="text-sm text-slate-500">
-              Expand this instance in the tree to load agents.
+            <div style={{ padding: "20px" }}>
+              <Empty>Expand this instance in the tree to load agents.</Empty>
             </div>
           }
         >
@@ -127,52 +160,77 @@ export default function InstanceDetail(props: Props): JSX.Element {
             <Show
               when={resp().ok}
               fallback={
-                <div class="rounded bg-amber-900/40 border border-amber-800 px-2 py-1 text-sm text-amber-200">
-                  {resp().error ?? "No agent data."}
+                <div style={{ padding: "16px" }}>
+                  <Toast tone="warning">{resp().error ?? "No agent data."}</Toast>
                 </div>
               }
             >
               <Show
                 when={resp().agents.length > 0}
                 fallback={
-                  <div class="text-sm text-slate-500">No agents reported.</div>
+                  <div style={{ padding: "20px" }}>
+                    <Empty>No agents reported.</Empty>
+                  </div>
                 }
               >
-                <table class="w-full text-sm">
-                  <thead class="text-left text-slate-400 uppercase text-xs tracking-wider">
-                    <tr>
-                      <th class="py-1 pr-4">ID</th>
-                      <th class="py-1 pr-4">Kind</th>
-                      <th class="py-1 pr-4">Status</th>
-                      <th class="py-1 pr-4">Parent</th>
-                      <th class="py-1">AI core</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {resp().agents.map((a) => (
-                      <tr
-                        class="border-t border-slate-800 cursor-pointer hover:bg-slate-800/60"
-                        onClick={() => props.onSelectAgent(a.id)}
-                        title={`Open chat with ${a.id}`}
-                      >
-                        <td class="py-1 pr-4 font-medium text-sky-300">
+                <Table
+                  rows={resp().agents}
+                  rowKey={(a) => a.id}
+                  onRowClick={(a) => props.onSelectAgent(a.id)}
+                  columns={[
+                    {
+                      key: "id",
+                      header: <Eyebrow>ID</Eyebrow>,
+                      render: (a) => (
+                        <span style={{ color: "var(--accent-fg)", "font-weight": "500" }}>
                           {a.id}
-                        </td>
-                        <td class="py-1 pr-4">{a.kind}</td>
-                        <td class="py-1 pr-4">{a.status}</td>
-                        <td class="py-1 pr-4 text-slate-400">
+                        </span>
+                      ),
+                    },
+                    {
+                      key: "kind",
+                      header: <Eyebrow>Kind</Eyebrow>,
+                      render: (a) => <Badge tone="neutral">{a.kind}</Badge>,
+                    },
+                    {
+                      key: "status",
+                      header: <Eyebrow>Status</Eyebrow>,
+                      render: (a) => {
+                        const tone =
+                          a.status === "running"
+                            ? "success"
+                            : a.status === "failed"
+                              ? "danger"
+                              : "neutral";
+                        return (
+                          <Badge tone={tone} dot>
+                            {a.status}
+                          </Badge>
+                        );
+                      },
+                    },
+                    {
+                      key: "parent",
+                      header: <Eyebrow>Parent</Eyebrow>,
+                      render: (a) => (
+                        <span style={{ color: "var(--fg-2)" }}>
                           {a.parent ?? "—"}
-                        </td>
-                        <td class="py-1 text-slate-400">{a.ai_core ?? "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                        </span>
+                      ),
+                    },
+                    {
+                      key: "ai_core",
+                      header: <Eyebrow>AI core</Eyebrow>,
+                      mono: true,
+                      render: (a) => a.ai_core ?? "—",
+                    },
+                  ]}
+                />
               </Show>
             </Show>
           )}
         </Show>
-      </section>
+      </Card>
     </div>
   );
 }

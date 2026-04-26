@@ -1,6 +1,7 @@
 import { createSignal, Show, type JSX } from "solid-js";
 import { authApi } from "../auth";
 import { UnauthorizedError } from "../errors";
+import { Button, Card, Input, Toast } from "./ui";
 
 interface Props {
   onLoggedIn: (username: string) => void;
@@ -31,57 +32,71 @@ export default function LoginPage(props: Props): JSX.Element {
   };
 
   return (
-    <div class="min-h-screen flex items-center justify-center bg-slate-950 text-slate-100">
+    <div class="min-h-screen flex items-center justify-center bg-bg-0">
       <form
         onSubmit={handleSubmit}
-        class="w-full max-w-sm rounded border border-slate-800 bg-slate-900/80 p-6 shadow-lg space-y-4"
+        style={{
+          width: "100%",
+          "max-width": "360px",
+        }}
       >
-        <div>
-          <h1 class="text-lg font-semibold">aciddog manager</h1>
-          <p class="text-xs text-slate-400">Sign in to continue.</p>
-        </div>
+        <Card>
+          <div style={{ display: "flex", "flex-direction": "column", gap: "16px" }}>
+            <div>
+              <h1
+                style={{
+                  "font-size": "18px",
+                  "font-weight": "600",
+                  color: "var(--fg-0)",
+                  margin: "0",
+                }}
+              >
+                aciddog manager
+              </h1>
+              <p
+                style={{
+                  "font-size": "12px",
+                  color: "var(--fg-2)",
+                  margin: "4px 0 0",
+                }}
+              >
+                Sign in to continue.
+              </p>
+            </div>
 
-        <label class="block">
-          <span class="text-xs uppercase tracking-wider text-slate-400">
-            Username
-          </span>
-          <input
-            type="text"
-            autocomplete="username"
-            required
-            value={username()}
-            onInput={(e) => setUsername(e.currentTarget.value)}
-            class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
-          />
-        </label>
+            <Input
+              label="Username"
+              type="text"
+              autocomplete="username"
+              required
+              icon="user"
+              value={username()}
+              onInput={(e) => setUsername(e.currentTarget.value)}
+            />
+            <Input
+              label="Password"
+              type="password"
+              autocomplete="current-password"
+              required
+              value={password()}
+              onInput={(e) => setPassword(e.currentTarget.value)}
+            />
 
-        <label class="block">
-          <span class="text-xs uppercase tracking-wider text-slate-400">
-            Password
-          </span>
-          <input
-            type="password"
-            autocomplete="current-password"
-            required
-            value={password()}
-            onInput={(e) => setPassword(e.currentTarget.value)}
-            class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:border-sky-500 focus:outline-none"
-          />
-        </label>
+            <Show when={error()}>
+              <Toast tone="danger">{error()}</Toast>
+            </Show>
 
-        <Show when={error()}>
-          <div class="rounded border border-red-800 bg-red-950/60 px-3 py-2 text-sm text-red-300">
-            {error()}
+            <Button
+              type="submit"
+              variant="primary"
+              size="lg"
+              disabled={submitting()}
+              class="w-full"
+            >
+              {submitting() ? "Signing in…" : "Sign in"}
+            </Button>
           </div>
-        </Show>
-
-        <button
-          type="submit"
-          disabled={submitting()}
-          class="w-full rounded bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {submitting() ? "Signing in…" : "Sign in"}
-        </button>
+        </Card>
       </form>
     </div>
   );

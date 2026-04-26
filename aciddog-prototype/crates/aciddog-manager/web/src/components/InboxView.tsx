@@ -9,12 +9,19 @@ import {
 
 import { api, instanceEventsUrl } from "../api";
 import type { AgentRow, WireInboxMessage } from "../types";
+import {
+  Badge,
+  Button,
+  Card,
+  Empty,
+  Eyebrow,
+  Select,
+  Textarea,
+  Toast,
+} from "./ui";
 
 interface Props {
   instanceId: string;
-  /// Full agents list from the sidebar, used to build the Forward
-  /// recipient dropdown. Same filter the TUI's `forward_candidates`
-  /// applies: agents + automatons, workers excluded.
   agents: AgentRow[];
 }
 
@@ -26,13 +33,10 @@ type RowMode =
 export default function InboxView(props: Props): JSX.Element {
   const [messages, setMessages] = createSignal<WireInboxMessage[]>([]);
   const [error, setError] = createSignal<string | null>(null);
-  const [status, setStatus] = createSignal<
-    "connecting" | "live" | "closed"
-  >("connecting");
+  const [status, setStatus] = createSignal<"connecting" | "live" | "closed">(
+    "connecting",
+  );
 
-  // One per-row composer state. Keyed by message index so the composer
-  // survives list refreshes as long as indices stay stable. Cleared
-  // after a successful send/delete.
   const [rowModes, setRowModes] = createSignal<Record<number, RowMode>>({});
   const [busy, setBusy] = createSignal<number | null>(null);
 
@@ -51,10 +55,6 @@ export default function InboxView(props: Props): JSX.Element {
     }
   };
 
-  // (Re)load when instance changes and subscribe to the instance-wide
-  // SSE stream. Any `user_message` frame triggers a refetch — that's
-  // the same event the webservice emits when an agent sends to
-  // "user", which is exactly what puts a message in the inbox.
   createEffect(() => {
     const id = props.instanceId;
     setMessages([]);
@@ -71,19 +71,15 @@ export default function InboxView(props: Props): JSX.Element {
           void loadInbox();
         }
       } catch {
-        // Ignore malformed frames.
+        // ignore malformed frames
       }
     };
     es.onerror = () => setStatus("closed");
     onCleanup(() => es.close());
   });
 
-  // Agents eligible as forward recipients (TUI parity: agents +
-  // automatons, workers excluded).
   const forwardCandidates = () =>
-    props.agents.filter(
-      (a) => a.kind === "agent" || a.kind === "automaton",
-    );
+    props.agents.filter((a) => a.kind === "agent" || a.kind === "automaton");
 
   const openReply = (idx: number) => {
     setRowModes({ ...rowModes(), [idx]: { kind: "reply", body: "" } });
@@ -151,6 +147,7 @@ export default function InboxView(props: Props): JSX.Element {
   };
 
   const submitDelete = async (idx: number) => {
+    if (!window.confirm("Delete this inbox message?")) return;
     setBusy(idx);
     setError(null);
     try {
@@ -168,32 +165,52 @@ export default function InboxView(props: Props): JSX.Element {
   };
 
   return (
-    <div class="h-full overflow-y-auto p-4 space-y-3">
-      <header class="flex items-center justify-between">
-        <h2 class="text-lg font-semibold">Inbox</h2>
-        <div class="flex items-center gap-2">
+    <div
+      style={{
+        height: "100%",
+        overflow: "auto",
+        padding: "20px 24px",
+        display: "flex",
+        "flex-direction": "column",
+        gap: "16px",
+      }}
+    >
+      <header
+        style={{
+          display: "flex",
+          "align-items": "center",
+          "justify-content": "space-between",
+        }}
+      >
+        <h2
+          style={{
+            "font-size": "22px",
+            "font-weight": "600",
+            color: "var(--fg-0)",
+            "letter-spacing": "-0.01em",
+            margin: "0",
+          }}
+        >
+          Inbox
+        </h2>
+        <div style={{ display: "flex", "align-items": "center", gap: "8px" }}>
           <StreamBadge status={status()} />
-          <button
-            onClick={loadInbox}
-            class="text-xs text-slate-400 hover:text-slate-100"
-          >
-            refresh
-          </button>
+          <Button variant="ghost" size="sm" icon="refresh" onClick={loadInbox}>
+            Refresh
+          </Button>
         </div>
       </header>
 
       <Show when={error()}>
-        <div class="rounded border border-red-800 bg-red-900/40 px-2 py-1 text-sm text-red-200">
-          {error()}
-        </div>
+        <Toast tone="danger">{error()}</Toast>
       </Show>
 
       <Show
         when={messages().length > 0}
         fallback={
-          <div class="text-sm text-slate-500 italic">
-            {error() ? "inbox unavailable." : "(no messages)"}
-          </div>
+          <Empty>
+            {error() ? "inbox unavailable." : "No messages in inbox."}
+          </Empty>
         }
       >
         <For each={messages()}>
@@ -243,19 +260,16 @@ export default function InboxView(props: Props): JSX.Element {
 function StreamBadge(props: {
   status: "connecting" | "live" | "closed";
 }): JSX.Element {
+  const tone = () =>
+    props.status === "live"
+      ? "success"
+      : props.status === "closed"
+        ? "danger"
+        : "neutral";
   return (
-    <span
-      class="text-xs rounded px-1.5 py-0.5 border"
-      classList={{
-        "text-slate-400 border-slate-700": props.status === "connecting",
-        "text-emerald-300 border-emerald-800 bg-emerald-900/30":
-          props.status === "live",
-        "text-red-300 border-red-800 bg-red-900/30":
-          props.status === "closed",
-      }}
-    >
+    <Badge tone={tone()} dot>
       {props.status}
-    </span>
+    </Badge>
   );
 }
 
@@ -290,75 +304,95 @@ function InboxRow(props: RowProps): JSX.Element {
   const mode = () => props.mode ?? { kind: "collapsed" as const };
 
   return (
-    <article class="rounded border border-slate-800 bg-slate-900/60">
-      <header class="flex items-center justify-between px-3 py-2 border-b border-slate-800">
-        <div>
-          <span class="font-medium">{props.msg.from}</span>
-          <span class="ml-2 text-xs text-slate-400">
+    <Card
+      title={
+        <span style={{ display: "inline-flex", "align-items": "baseline", gap: "8px" }}>
+          <span>{props.msg.from}</span>
+          <span style={{ "font-size": "11px", color: "var(--fg-2)" }}>
             {relativeTime(props.msg.received_at)}
           </span>
-        </div>
-        <div class="flex items-center gap-2 text-sm">
-          <button
-            type="button"
+        </span>
+      }
+      action={
+        <span style={{ display: "inline-flex", gap: "6px" }}>
+          <Button
+            size="sm"
+            variant="ghost"
             disabled={props.busy}
             onClick={props.onReplyClick}
-            class="text-sky-300 hover:text-sky-200 disabled:opacity-50"
           >
-            reply
-          </button>
-          <button
-            type="button"
+            Reply
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
             disabled={props.busy}
             onClick={props.onForwardClick}
-            class="text-sky-300 hover:text-sky-200 disabled:opacity-50"
           >
-            forward
-          </button>
-          <button
-            type="button"
+            Forward
+          </Button>
+          <Button
+            size="sm"
+            variant="danger"
             disabled={props.busy}
             onClick={props.onDelete}
-            class="text-red-300 hover:text-red-200 disabled:opacity-50"
           >
-            delete
-          </button>
-        </div>
-      </header>
-      <pre class="whitespace-pre-wrap break-words px-3 py-2 text-sm">
+            Delete
+          </Button>
+        </span>
+      }
+      padded={false}
+    >
+      <pre
+        style={{
+          "white-space": "pre-wrap",
+          "word-break": "break-word",
+          padding: "12px 16px",
+          "font-family": "var(--font-mono)",
+          "font-size": "13px",
+          color: "var(--fg-0)",
+          margin: "0",
+          background: "transparent",
+          border: "0",
+        }}
+      >
         {props.msg.body}
       </pre>
       <Show when={mode().kind === "reply"}>
         {(() => {
           const body = () => (props.mode as { body: string }).body;
           return (
-            <div class="border-t border-slate-800 p-3 space-y-2 bg-slate-950/40">
-              <div class="text-xs text-slate-400">
-                Replying to <span class="font-mono">{props.msg.from}</span>
-              </div>
-              <textarea
+            <div
+              style={{
+                "border-top": "1px solid var(--border-subtle)",
+                background: "var(--bg-2)",
+                padding: "12px 16px",
+                display: "flex",
+                "flex-direction": "column",
+                gap: "10px",
+              }}
+            >
+              <Eyebrow>
+                Replying to <span style={{ "font-family": "var(--font-mono)" }}>{props.msg.from}</span>
+              </Eyebrow>
+              <Textarea
                 rows={3}
                 value={body()}
                 onInput={(e) => props.onReplyChange(e.currentTarget.value)}
-                class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
                 placeholder="Reply body"
               />
-              <div class="flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={props.onCancel}
-                  class="text-xs text-slate-400 hover:text-slate-100"
-                >
-                  cancel
-                </button>
-                <button
-                  type="button"
+              <div style={{ display: "flex", "justify-content": "flex-end", gap: "6px" }}>
+                <Button size="sm" variant="ghost" onClick={props.onCancel}>
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
                   onClick={props.onSubmitReply}
                   disabled={props.busy || body().trim() === ""}
-                  class="rounded border border-emerald-700 bg-emerald-900/40 hover:bg-emerald-800 disabled:opacity-50 px-3 py-1 text-sm"
                 >
                   {props.busy ? "Sending…" : "Send"}
-                </button>
+                </Button>
               </div>
             </div>
           );
@@ -368,63 +402,65 @@ function InboxRow(props: RowProps): JSX.Element {
         {(() => {
           const m = () => props.mode as { to: string; body: string };
           return (
-            <div class="border-t border-slate-800 p-3 space-y-2 bg-slate-950/40">
-              <label class="block text-xs text-slate-400">
-                Forward to
-                <select
-                  value={m().to}
-                  onInput={(e) =>
-                    props.onForwardChange({ to: e.currentTarget.value })
-                  }
-                  class="mt-1 block w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
-                >
-                  <For each={props.forwardCandidates}>
-                    {(a) => (
-                      <option value={a.id}>
-                        {a.id} ({a.kind})
-                      </option>
-                    )}
-                  </For>
-                </select>
-              </label>
-              <div class="text-xs text-slate-500">
-                original from <span class="font-mono">{props.msg.from}</span>
-              </div>
-              <pre class="whitespace-pre-wrap break-words rounded bg-slate-950/60 px-2 py-1 text-xs text-slate-400 max-h-32 overflow-y-auto">
+            <div
+              style={{
+                "border-top": "1px solid var(--border-subtle)",
+                background: "var(--bg-2)",
+                padding: "12px 16px",
+                display: "flex",
+                "flex-direction": "column",
+                gap: "10px",
+              }}
+            >
+              <Select
+                label="Forward to"
+                value={m().to}
+                onChange={(v) => props.onForwardChange({ to: v })}
+                options={props.forwardCandidates.map((a) => ({
+                  value: a.id,
+                  label: `${a.id} (${a.kind})`,
+                }))}
+              />
+              <pre
+                style={{
+                  "white-space": "pre-wrap",
+                  "word-break": "break-word",
+                  background: "var(--bg-1)",
+                  border: "1px solid var(--border-subtle)",
+                  "border-radius": "4px",
+                  padding: "8px 10px",
+                  "font-size": "12px",
+                  color: "var(--fg-2)",
+                  "max-height": "120px",
+                  overflow: "auto",
+                  margin: "0",
+                }}
+              >
                 {props.msg.body}
               </pre>
-              <textarea
+              <Textarea
                 rows={3}
                 value={m().body}
-                onInput={(e) =>
-                  props.onForwardChange({ body: e.currentTarget.value })
-                }
-                class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
-                placeholder="Add a note (the original is attached above; include it or quote inline if you want it delivered)."
+                onInput={(e) => props.onForwardChange({ body: e.currentTarget.value })}
+                placeholder="Add a note (original attached above)."
               />
-              <div class="flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={props.onCancel}
-                  class="text-xs text-slate-400 hover:text-slate-100"
-                >
-                  cancel
-                </button>
-                <button
-                  type="button"
+              <div style={{ display: "flex", "justify-content": "flex-end", gap: "6px" }}>
+                <Button size="sm" variant="ghost" onClick={props.onCancel}>
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
                   onClick={props.onSubmitForward}
-                  disabled={
-                    props.busy || m().body.trim() === "" || m().to === ""
-                  }
-                  class="rounded border border-emerald-700 bg-emerald-900/40 hover:bg-emerald-800 disabled:opacity-50 px-3 py-1 text-sm"
+                  disabled={props.busy || m().body.trim() === "" || m().to === ""}
                 >
                   {props.busy ? "Forwarding…" : "Forward"}
-                </button>
+                </Button>
               </div>
             </div>
           );
         })()}
       </Show>
-    </article>
+    </Card>
   );
 }

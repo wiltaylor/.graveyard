@@ -28,6 +28,7 @@ import type {
   WorkflowInstanceStatus,
   WorkflowStepStatus,
 } from "../types";
+import { Badge, Button, Toast } from "./ui";
 
 interface Props {
   instanceId: string;
@@ -42,9 +43,9 @@ const STATUS_LABEL: Record<WorkflowInstanceStatus, string> = {
 };
 
 const STATUS_CLASS: Record<WorkflowInstanceStatus, string> = {
-  running: "border-sky-700 bg-sky-900/30 text-sky-200",
-  failed: "border-red-700 bg-red-900/40 text-red-200",
-  succeeded: "border-emerald-700 bg-emerald-900/30 text-emerald-200",
+  running: "border-accent bg-accent-bg text-accent-fg",
+  failed: "border-danger bg-danger-bg text-danger-fg",
+  succeeded: "border-success bg-success-bg text-success-fg",
 };
 
 const STEP_GLYPH: Record<WorkflowStepStatus, string> = {
@@ -465,48 +466,55 @@ export default function WorkflowsView(props: Props): JSX.Element {
 
   return (
     <div class="h-full flex flex-col">
-      <header class="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/40">
-        <h2 class="text-lg font-semibold">Workflows</h2>
-        <div class="flex items-center gap-3 text-xs text-slate-400">
+      <header class="flex items-center justify-between px-6 py-3 border-b border-border-subtle bg-bg-1">
+        <div class="flex items-center gap-3">
+          <h2 class="text-base font-semibold text-fg-0">Workflows</h2>
+          <Badge
+            tone={
+              streamStatus() === "live"
+                ? "success"
+                : streamStatus() === "lagged"
+                  ? "warning"
+                  : streamStatus() === "closed"
+                    ? "danger"
+                    : "neutral"
+            }
+            dot
+          >
+            {streamStatus()}
+          </Badge>
           <Show when={loading()}>
-            <span>loading…</span>
+            <span class="text-xs text-fg-2">loading…</span>
           </Show>
-          <span
-            classList={{
-              "text-emerald-400": streamStatus() === "live",
-              "text-amber-400": streamStatus() === "lagged",
-              "text-red-400":
-                streamStatus() === "closed" || streamStatus() === "connecting",
-            }}
-          >
-            stream: {streamStatus()}
-          </span>
-          <button
-            type="button"
-            class="text-xs hover:text-slate-100"
-            onClick={() => void loadInstances(props.instanceId)}
-          >
-            refresh
-          </button>
         </div>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon="refresh"
+          onClick={() => void loadInstances(props.instanceId)}
+        >
+          Refresh
+        </Button>
       </header>
 
       <Show when={error()}>
-        <div class="mx-4 mt-2 rounded border border-red-800 bg-red-900/40 px-2 py-1 text-sm text-red-200">
-          {error()}
-          <button
-            type="button"
-            class="ml-2 text-red-300 underline"
-            onClick={() => setError(null)}
-          >
-            dismiss
-          </button>
+        <div class="mx-6 mt-3">
+          <Toast tone="danger">
+            {error()}
+            <button
+              type="button"
+              class="ml-2 underline cursor-pointer"
+              onClick={() => setError(null)}
+            >
+              dismiss
+            </button>
+          </Toast>
         </div>
       </Show>
 
       {/* Running instances strip */}
       <Show when={instances().length > 0}>
-        <div class="px-4 py-2 border-b border-slate-800 bg-slate-950/50 overflow-x-auto">
+        <div class="px-4 py-2 border-b border-border-subtle bg-bg-0/50 overflow-x-auto">
           <div class="flex gap-2 min-w-max">
             <For each={sortedInstances()}>
               {(inst) => (
@@ -517,7 +525,7 @@ export default function WorkflowsView(props: Props): JSX.Element {
                     "rounded border px-3 py-1.5 text-xs text-left min-w-[12rem]":
                       true,
                     [STATUS_CLASS[inst.status]]: true,
-                    "ring-2 ring-sky-500": selectedInstanceId() === inst.id,
+                    "ring-2 ring-accent": selectedInstanceId() === inst.id,
                   }}
                 >
                   <div class="font-mono text-[10px] opacity-70">
@@ -537,14 +545,14 @@ export default function WorkflowsView(props: Props): JSX.Element {
       {/* Main three-pane */}
       <div class="flex-1 flex min-h-0">
         {/* Templates sidebar */}
-        <aside class="w-56 border-r border-slate-800 overflow-y-auto">
-          <div class="px-3 py-2 text-xs uppercase tracking-wide text-slate-500">
+        <aside class="w-56 border-r border-border-subtle overflow-y-auto">
+          <div class="px-3 py-2 text-xs uppercase tracking-wide text-fg-3">
             Templates
           </div>
           <Show
             when={templates().length > 0}
             fallback={
-              <div class="px-3 py-4 text-sm text-slate-500">
+              <div class="px-3 py-4 text-sm text-fg-3">
                 No workflows declared.
               </div>
             }
@@ -555,20 +563,20 @@ export default function WorkflowsView(props: Props): JSX.Element {
                   type="button"
                   onClick={() => selectTemplate(tpl)}
                   classList={{
-                    "w-full text-left px-3 py-2 border-l-2 hover:bg-slate-800/50":
+                    "w-full text-left px-3 py-2 border-l-2 hover:bg-bg-2/50":
                       true,
-                    "border-sky-500 bg-slate-800/60":
+                    "border-accent bg-bg-2":
                       selectedTemplateId() === tpl.id,
                     "border-transparent": selectedTemplateId() !== tpl.id,
                   }}
                 >
-                  <div class="text-sm font-medium text-slate-100">{tpl.id}</div>
+                  <div class="text-sm font-medium text-fg-0">{tpl.id}</div>
                   <Show when={tpl.description}>
-                    <div class="text-xs text-slate-400 mt-0.5 line-clamp-2">
+                    <div class="text-xs text-fg-2 mt-0.5 line-clamp-2">
                       {tpl.description}
                     </div>
                   </Show>
-                  <div class="text-[10px] text-slate-500 mt-1">
+                  <div class="text-[10px] text-fg-3 mt-1">
                     {tpl.steps.length} step
                     {tpl.steps.length === 1 ? "" : "s"} ·{" "}
                     {tpl.steps.map((s) => s.kind).join(" → ")}
@@ -580,14 +588,14 @@ export default function WorkflowsView(props: Props): JSX.Element {
         </aside>
 
         {/* Property form */}
-        <section class="w-80 border-r border-slate-800 overflow-y-auto">
-          <div class="px-3 py-2 text-xs uppercase tracking-wide text-slate-500">
+        <section class="w-80 border-r border-border-subtle overflow-y-auto">
+          <div class="px-3 py-2 text-xs uppercase tracking-wide text-fg-3">
             Run
           </div>
           <Show
             when={selectedTemplate()}
             fallback={
-              <div class="px-3 py-4 text-sm text-slate-500">
+              <div class="px-3 py-4 text-sm text-fg-3">
                 Select a template to start a run.
               </div>
             }
@@ -595,12 +603,12 @@ export default function WorkflowsView(props: Props): JSX.Element {
             {(tpl) => (
               <form class="px-3 pb-4 space-y-3" onSubmit={submitForm}>
                 <Show when={tpl().description}>
-                  <p class="text-sm text-slate-300">{tpl().description}</p>
+                  <p class="text-sm text-fg-1">{tpl().description}</p>
                 </Show>
                 <Show
                   when={tpl().properties.length > 0}
                   fallback={
-                    <div class="text-xs text-slate-500">
+                    <div class="text-xs text-fg-3">
                       No user-visible properties.
                     </div>
                   }
@@ -608,12 +616,12 @@ export default function WorkflowsView(props: Props): JSX.Element {
                   <For each={tpl().properties}>
                     {(prop) => (
                       <label class="block text-xs">
-                        <span class="block mb-1 text-slate-300">
+                        <span class="block mb-1 text-fg-1">
                           {prop.label ?? prop.id}
                           <Show when={prop.required}>
-                            <span class="text-red-400 ml-1">*</span>
+                            <span class="text-danger-fg ml-1">*</span>
                           </Show>
-                          <span class="ml-2 text-slate-600 font-mono">
+                          <span class="ml-2 text-fg-3 font-mono">
                             {prop.kind.kind}
                           </span>
                         </span>
@@ -623,14 +631,14 @@ export default function WorkflowsView(props: Props): JSX.Element {
                   </For>
                 </Show>
                 <Show when={formError()}>
-                  <div class="text-xs text-red-300 border border-red-900 bg-red-950/40 px-2 py-1 rounded">
+                  <div class="text-xs text-danger-fg border border-danger bg-danger-bg px-2 py-1 rounded">
                     {formError()}
                   </div>
                 </Show>
                 <button
                   type="submit"
                   disabled={submitting()}
-                  class="w-full rounded border border-emerald-700 bg-emerald-900/40 hover:bg-emerald-800 disabled:opacity-50 px-3 py-1.5 text-sm"
+                  class="w-full rounded border border-success bg-success-bg hover:bg-success disabled:opacity-50 px-3 py-1.5 text-sm"
                 >
                   {submitting() ? "Starting…" : "Run"}
                 </button>
@@ -647,7 +655,7 @@ export default function WorkflowsView(props: Props): JSX.Element {
               <Show
                 when={selectedTemplate()}
                 fallback={
-                  <div class="px-4 py-6 text-sm text-slate-500">
+                  <div class="px-4 py-6 text-sm text-fg-3">
                     Pick a workflow to preview its flow, or select a
                     running / failed instance to inspect progress.
                   </div>
@@ -655,7 +663,7 @@ export default function WorkflowsView(props: Props): JSX.Element {
               >
                 {(tpl) => (
                   <div class="p-4 space-y-3">
-                    <div class="text-xs uppercase tracking-wide text-slate-500">
+                    <div class="text-xs uppercase tracking-wide text-fg-3">
                       Flow preview · {tpl().id}
                     </div>
                     <WorkflowDiagram steps={tpl().steps} />
@@ -694,7 +702,7 @@ function renderField(
       return (
         <input
           type="text"
-          class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+          class="w-full rounded border border-border bg-bg-0 px-2 py-1 text-sm"
           value={(current() as string) ?? ""}
           onInput={(e) => set(e.currentTarget.value)}
         />
@@ -705,7 +713,7 @@ function renderField(
           type="number"
           min={prop.kind.min}
           max={prop.kind.max}
-          class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+          class="w-full rounded border border-border bg-bg-0 px-2 py-1 text-sm"
           value={(current() as string) ?? ""}
           onInput={(e) => set(e.currentTarget.value)}
         />
@@ -713,7 +721,7 @@ function renderField(
     case "select":
       return (
         <select
-          class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+          class="w-full rounded border border-border bg-bg-0 px-2 py-1 text-sm"
           value={(current() as string) ?? ""}
           onChange={(e) => set(e.currentTarget.value)}
         >
@@ -801,25 +809,25 @@ function WorkflowDiagram(props: {
   };
 
   const fillFor: Record<WorkflowStepStatus, string> = {
-    pending: "#0f172a",
-    running: "#082f49",
-    succeeded: "#022c22",
-    failed: "#450a0a",
-    retrying: "#451a03",
+    pending: "var(--bg-1)",
+    running: "var(--accent-bg)",
+    succeeded: "var(--success-bg)",
+    failed: "var(--danger-bg)",
+    retrying: "var(--warning-bg)",
   };
   const strokeFor: Record<WorkflowStepStatus, string> = {
-    pending: "#475569",
-    running: "#0ea5e9",
-    succeeded: "#10b981",
-    failed: "#ef4444",
-    retrying: "#f59e0b",
+    pending: "var(--border)",
+    running: "var(--accent)",
+    succeeded: "var(--success)",
+    failed: "var(--danger)",
+    retrying: "var(--warning)",
   };
   const glyphFillFor: Record<WorkflowStepStatus, string> = {
-    pending: "#475569",
-    running: "#38bdf8",
-    succeeded: "#34d399",
-    failed: "#f87171",
-    retrying: "#fbbf24",
+    pending: "var(--fg-3)",
+    running: "var(--accent-fg)",
+    succeeded: "var(--success-fg)",
+    failed: "var(--danger-fg)",
+    retrying: "var(--warning-fg)",
   };
 
   return (
@@ -838,7 +846,7 @@ function WorkflowDiagram(props: {
           markerHeight="6"
           orient="auto-start-reverse"
         >
-          <path d="M0,0 L10,5 L0,10 z" fill="#475569" />
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--fg-2)" />
         </marker>
         <marker
           id="wf-arrow-back"
@@ -849,7 +857,7 @@ function WorkflowDiagram(props: {
           markerHeight="6"
           orient="auto-start-reverse"
         >
-          <path d="M0,0 L10,5 L0,10 z" fill="#f59e0b" />
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--warning)" />
         </marker>
       </defs>
 
@@ -865,7 +873,7 @@ function WorkflowDiagram(props: {
               y1={y1}
               x2={x}
               y2={y2 - 2}
-              stroke="#475569"
+              stroke="var(--fg-2)"
               stroke-width="1.5"
               marker-end="url(#wf-arrow-fwd)"
             />
@@ -887,7 +895,7 @@ function WorkflowDiagram(props: {
             <path
               d={d}
               fill="none"
-              stroke="#f59e0b"
+              stroke="var(--warning)"
               stroke-width="1.5"
               stroke-dasharray="4 3"
               marker-end="url(#wf-arrow-back)"
@@ -922,8 +930,8 @@ function WorkflowDiagram(props: {
               <text
                 x={boxX + 12}
                 y={y + 22}
-                fill="#e2e8f0"
-                font-family="ui-monospace, monospace"
+                fill="var(--fg-0)"
+                font-family="var(--font-mono)"
                 font-size="12"
                 font-weight="600"
               >
@@ -932,8 +940,8 @@ function WorkflowDiagram(props: {
               <text
                 x={boxX + 12}
                 y={y + 38}
-                fill="#94a3b8"
-                font-family="ui-monospace, monospace"
+                fill="var(--fg-2)"
+                font-family="var(--font-mono)"
                 font-size="10"
               >
                 [{s.kind}]
@@ -943,8 +951,8 @@ function WorkflowDiagram(props: {
                   x={boxX + BOX_W - 10}
                   y={y + 22}
                   text-anchor="end"
-                  fill="#fbbf24"
-                  font-family="ui-monospace, monospace"
+                  fill="var(--warning-fg)"
+                  font-family="var(--font-mono)"
                   font-size="10"
                 >
                   ×{prog!.retry_count}
@@ -996,7 +1004,7 @@ function InstanceDetail(props: {
         >
           {STATUS_LABEL[props.instance.status]}
         </span>
-        <div class="font-mono text-sm text-slate-200">
+        <div class="font-mono text-sm text-fg-0">
           #{props.instance.id} · {props.instance.workflow_id}
         </div>
         <div class="flex-1" />
@@ -1004,7 +1012,7 @@ function InstanceDetail(props: {
           type="button"
           onClick={props.onDismiss}
           disabled={props.instance.status !== "failed"}
-          class="rounded border border-slate-700 bg-slate-800 px-3 py-1 text-xs hover:bg-slate-700 disabled:opacity-40"
+          class="rounded border border-border bg-bg-2 px-3 py-1 text-xs hover:bg-bg-3 disabled:opacity-40"
           title={
             props.instance.status === "failed"
               ? "Dismiss this failed instance"
@@ -1016,20 +1024,20 @@ function InstanceDetail(props: {
       </div>
 
       <Show when={props.instance.failure_reason}>
-        <div class="border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-200">
+        <div class="border border-danger bg-danger-bg px-3 py-2 text-sm text-danger-fg">
           <div class="font-medium mb-1">Failure reason</div>
           <div class="whitespace-pre-wrap">{props.instance.failure_reason}</div>
         </div>
       </Show>
 
       <div>
-        <div class="text-xs uppercase tracking-wide text-slate-500 mb-1">
+        <div class="text-xs uppercase tracking-wide text-fg-3 mb-1">
           Flow
         </div>
         <Show
           when={props.template}
           fallback={
-            <div class="text-xs text-slate-600">
+            <div class="text-xs text-fg-3">
               Template metadata unavailable; using instance steps only.
             </div>
           }
@@ -1049,12 +1057,12 @@ function InstanceDetail(props: {
             >
               {(step) => (
                 <li>
-                  <span class="text-slate-500">{step.id}</span>{" "}
+                  <span class="text-fg-3">{step.id}</span>{" "}
                   <span
                     classList={{
-                      "text-red-300": step.status === "failed",
-                      "text-amber-300": step.status === "retrying",
-                      "text-slate-400":
+                      "text-danger-fg": step.status === "failed",
+                      "text-warning-fg": step.status === "retrying",
+                      "text-fg-2":
                         step.status !== "failed" &&
                         step.status !== "retrying",
                     }}
@@ -1070,15 +1078,15 @@ function InstanceDetail(props: {
 
       <Show when={props.instance.vars.length > 0}>
         <div>
-          <div class="text-xs uppercase tracking-wide text-slate-500 mb-1">
+          <div class="text-xs uppercase tracking-wide text-fg-3 mb-1">
             Variables
           </div>
           <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-sm font-mono">
             <For each={props.instance.vars}>
               {(v) => (
                 <>
-                  <dt class="text-slate-400">{v.name}</dt>
-                  <dd class="text-slate-100 truncate">{v.display}</dd>
+                  <dt class="text-fg-2">{v.name}</dt>
+                  <dd class="text-fg-0 truncate">{v.display}</dd>
                 </>
               )}
             </For>
@@ -1088,20 +1096,20 @@ function InstanceDetail(props: {
 
       <div>
         <div class="flex items-center justify-between mb-1">
-          <span class="text-xs uppercase tracking-wide text-slate-500">
+          <span class="text-xs uppercase tracking-wide text-fg-3">
             Output
           </span>
-          <span class="text-[10px] text-slate-600">
+          <span class="text-[10px] text-fg-3">
             {props.instance.tail_output.length} / {TAIL_CAP} lines
           </span>
         </div>
         <pre
           ref={tailEl}
-          class="bg-slate-950 border border-slate-800 rounded p-2 text-xs h-64 overflow-auto whitespace-pre-wrap font-mono text-slate-200"
+          class="bg-bg-0 border border-border-subtle rounded p-2 text-xs h-64 overflow-auto whitespace-pre-wrap font-mono text-fg-0"
         >
           <Show
             when={props.instance.tail_output.length > 0}
-            fallback={<span class="text-slate-600">(no output yet)</span>}
+            fallback={<span class="text-fg-3">(no output yet)</span>}
           >
             {props.instance.tail_output.join("\n")}
           </Show>

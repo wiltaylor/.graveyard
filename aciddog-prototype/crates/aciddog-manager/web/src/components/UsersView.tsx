@@ -9,21 +9,11 @@ import {
 import { api } from "../api";
 import { authApi } from "../auth";
 import type { UserSummary } from "../types";
+import { Badge, Button, Card, Empty, Input, Toast } from "./ui";
 
 interface Props {
   currentUsername: string;
 }
-
-const inputCls =
-  "w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm focus:outline-none focus:border-slate-500";
-const labelCls = "block text-xs uppercase text-slate-400 mb-1 tracking-wider";
-const sectionCls =
-  "rounded border border-slate-800 bg-slate-900/40 p-4 space-y-3";
-const sectionHeader = "text-sm font-semibold text-slate-200";
-const errorCls =
-  "rounded bg-red-900/40 border border-red-800 px-2 py-1 text-sm text-red-200";
-const successCls =
-  "rounded bg-emerald-900/40 border border-emerald-800 px-2 py-1 text-sm text-emerald-200";
 
 function formatLastLogin(value: string | null): string {
   if (!value) return "never";
@@ -38,13 +28,11 @@ export default function UsersView(props: Props): JSX.Element {
     { initialValue: [] },
   );
 
-  // Add-user form state
   const [newUsername, setNewUsername] = createSignal("");
   const [newPassword, setNewPassword] = createSignal("");
   const [addError, setAddError] = createSignal<string | null>(null);
   const [adding, setAdding] = createSignal(false);
 
-  // Per-row state
   const [rowError, setRowError] = createSignal<{
     id: string;
     message: string;
@@ -53,7 +41,6 @@ export default function UsersView(props: Props): JSX.Element {
   const [resetPasswordValue, setResetPasswordValue] = createSignal("");
   const [busyId, setBusyId] = createSignal<string | null>(null);
 
-  // Change-my-password state
   const [currentPw, setCurrentPw] = createSignal("");
   const [newPw, setNewPw] = createSignal("");
   const [confirmPw, setConfirmPw] = createSignal("");
@@ -81,6 +68,7 @@ export default function UsersView(props: Props): JSX.Element {
   };
 
   const deleteUser = async (u: UserSummary) => {
+    if (!window.confirm(`Delete user "${u.username}"?`)) return;
     setRowError(null);
     setBusyId(u.id);
     try {
@@ -146,97 +134,99 @@ export default function UsersView(props: Props): JSX.Element {
   const canDelete = (u: UserSummary) => !isSelf(u) && userCount() > 1;
 
   return (
-    <div class="h-full overflow-y-auto p-6">
-      <div class="max-w-3xl space-y-6">
-        <header>
-          <h2 class="text-lg font-semibold text-slate-100">Web UI users</h2>
-          <p class="text-xs text-slate-400 mt-1">
-            Accounts that can sign in to this manager portal.
-          </p>
-        </header>
+    <div style={{ "max-width": "780px", display: "flex", "flex-direction": "column", gap: "20px" }}>
+      <header>
+        <h2
+          style={{
+            "font-size": "22px",
+            "font-weight": "600",
+            color: "var(--fg-0)",
+            "letter-spacing": "-0.01em",
+            margin: "0",
+          }}
+        >
+          Web UI users
+        </h2>
+        <p style={{ color: "var(--fg-2)", "font-size": "13px", margin: "6px 0 0" }}>
+          Accounts that can sign in to this manager portal.
+        </p>
+      </header>
 
-        <section class={sectionCls}>
-          <h3 class={sectionHeader}>Add user</h3>
-          <form onSubmit={addUser} class="space-y-3">
-            <div class="grid grid-cols-2 gap-3">
-              <div>
-                <label class={labelCls}>Username</label>
-                <input
-                  class={inputCls}
-                  required
-                  value={newUsername()}
-                  onInput={(e) => setNewUsername(e.currentTarget.value)}
-                  placeholder="alice"
-                  autocomplete="off"
-                />
-              </div>
-              <div>
-                <label class={labelCls}>Password</label>
-                <input
-                  class={inputCls}
-                  required
-                  type="password"
-                  value={newPassword()}
-                  onInput={(e) => setNewPassword(e.currentTarget.value)}
-                  placeholder="•••••••"
-                  autocomplete="new-password"
-                />
-              </div>
-            </div>
-            <Show when={addError()}>
-              <div class={errorCls}>{addError()}</div>
-            </Show>
-            <button
-              type="submit"
-              disabled={adding()}
-              class="rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 px-3 py-1.5 text-sm font-medium"
-            >
+      <Card title="Add user">
+        <form onSubmit={addUser} style={{ display: "flex", "flex-direction": "column", gap: "12px" }}>
+          <div style={{ display: "grid", "grid-template-columns": "1fr 1fr", gap: "12px" }}>
+            <Input
+              label="Username"
+              required
+              value={newUsername()}
+              onInput={(e) => setNewUsername(e.currentTarget.value)}
+              placeholder="alice"
+              autocomplete="off"
+            />
+            <Input
+              label="Password"
+              required
+              type="password"
+              value={newPassword()}
+              onInput={(e) => setNewPassword(e.currentTarget.value)}
+              placeholder="•••••••"
+              autocomplete="new-password"
+            />
+          </div>
+          <Show when={addError()}>
+            <Toast tone="danger">{addError()}</Toast>
+          </Show>
+          <div>
+            <Button type="submit" variant="primary" icon="plus" disabled={adding()}>
               {adding() ? "Adding…" : "Add user"}
-            </button>
-          </form>
-        </section>
+            </Button>
+          </div>
+        </form>
+      </Card>
 
-        <section class={sectionCls}>
-          <h3 class={sectionHeader}>Existing users</h3>
+      <Card title="Existing users" padded={false}>
+        <Show
+          when={!users.loading}
+          fallback={
+            <div style={{ padding: "16px", "font-size": "13px", color: "var(--fg-2)" }}>
+              Loading…
+            </div>
+          }
+        >
           <Show
-            when={!users.loading}
-            fallback={<div class="text-sm text-slate-500">Loading…</div>}
+            when={userCount() > 0}
+            fallback={
+              <div style={{ padding: "20px" }}>
+                <Empty>No users yet — add one above.</Empty>
+              </div>
+            }
           >
-            <Show
-              when={userCount() > 0}
-              fallback={
-                <div class="text-sm text-slate-500 italic">
-                  No users yet — add one above.
-                </div>
-              }
-            >
-              <table class="w-full text-sm">
-                <thead>
-                  <tr class="text-left text-xs uppercase text-slate-400 tracking-wider border-b border-slate-800">
-                    <th class="py-2 pr-2">Username</th>
-                    <th class="py-2 pr-2">Last login</th>
-                    <th class="py-2 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <For each={users() ?? []}>
-                    {(u) => (
-                      <>
-                        <tr class="border-b border-slate-800/50">
-                          <td class="py-2 pr-2 text-slate-100">
-                            {u.username}
-                            <Show when={isSelf(u)}>
-                              <span class="ml-2 text-xs text-sky-400">
-                                (you)
-                              </span>
-                            </Show>
-                          </td>
-                          <td class="py-2 pr-2 text-slate-400">
-                            {formatLastLogin(u.last_login)}
-                          </td>
-                          <td class="py-2 text-right space-x-2">
-                            <button
-                              type="button"
+            <table class="ftable">
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Last login</th>
+                  <th style={{ "text-align": "right" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <For each={users() ?? []}>
+                  {(u) => (
+                    <>
+                      <tr>
+                        <td>
+                          {u.username}
+                          <Show when={isSelf(u)}>
+                            {" "}
+                            <Badge tone="accent">you</Badge>
+                          </Show>
+                        </td>
+                        <td class="col-mono">{formatLastLogin(u.last_login)}</td>
+                        <td style={{ "text-align": "right" }}>
+                          <span style={{ display: "inline-flex", gap: "6px" }}>
+                            <Button
+                              size="sm"
+                              variant="secondary"
                               onClick={() => {
                                 setRowError(null);
                                 setResettingId(
@@ -244,131 +234,117 @@ export default function UsersView(props: Props): JSX.Element {
                                 );
                                 setResetPasswordValue("");
                               }}
-                              class="rounded border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800"
                             >
-                              {resettingId() === u.id
-                                ? "Cancel"
-                                : "Reset password"}
-                            </button>
+                              {resettingId() === u.id ? "Cancel" : "Reset password"}
+                            </Button>
                             <Show when={canDelete(u)}>
-                              <button
-                                type="button"
+                              <Button
+                                size="sm"
+                                variant="danger"
                                 disabled={busyId() === u.id}
                                 onClick={() => deleteUser(u)}
-                                class="rounded border border-red-800 bg-red-900/40 px-2 py-1 text-xs text-red-200 hover:bg-red-900/60 disabled:opacity-50"
                               >
                                 Delete
-                              </button>
+                              </Button>
                             </Show>
+                          </span>
+                        </td>
+                      </tr>
+                      <Show when={resettingId() === u.id}>
+                        <tr style={{ background: "var(--bg-2)" }}>
+                          <td colspan={3} style={{ padding: "14px" }}>
+                            <form
+                              onSubmit={(e) => submitReset(u, e)}
+                              style={{
+                                display: "flex",
+                                "align-items": "flex-end",
+                                gap: "8px",
+                              }}
+                            >
+                              <div style={{ flex: "1" }}>
+                                <Input
+                                  label={`New password for ${u.username}`}
+                                  required
+                                  type="password"
+                                  value={resetPasswordValue()}
+                                  onInput={(e) =>
+                                    setResetPasswordValue(e.currentTarget.value)
+                                  }
+                                  autocomplete="new-password"
+                                />
+                              </div>
+                              <Button
+                                type="submit"
+                                variant="primary"
+                                disabled={busyId() === u.id}
+                              >
+                                {busyId() === u.id ? "Saving…" : "Set password"}
+                              </Button>
+                            </form>
                           </td>
                         </tr>
-                        <Show when={resettingId() === u.id}>
-                          <tr class="border-b border-slate-800/50 bg-slate-900/40">
-                            <td colspan={3} class="py-3 px-2">
-                              <form
-                                onSubmit={(e) => submitReset(u, e)}
-                                class="flex items-end gap-2"
-                              >
-                                <div class="flex-1">
-                                  <label class={labelCls}>
-                                    New password for {u.username}
-                                  </label>
-                                  <input
-                                    class={inputCls}
-                                    required
-                                    type="password"
-                                    value={resetPasswordValue()}
-                                    onInput={(e) =>
-                                      setResetPasswordValue(
-                                        e.currentTarget.value,
-                                      )
-                                    }
-                                    autocomplete="new-password"
-                                  />
-                                </div>
-                                <button
-                                  type="submit"
-                                  disabled={busyId() === u.id}
-                                  class="rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 px-3 py-1.5 text-sm font-medium"
-                                >
-                                  {busyId() === u.id
-                                    ? "Saving…"
-                                    : "Set password"}
-                                </button>
-                              </form>
-                            </td>
-                          </tr>
-                        </Show>
-                        <Show when={rowError()?.id === u.id}>
-                          <tr>
-                            <td colspan={3} class="py-2 px-2">
-                              <div class={errorCls}>{rowError()?.message}</div>
-                            </td>
-                          </tr>
-                        </Show>
-                      </>
-                    )}
-                  </For>
-                </tbody>
-              </table>
-            </Show>
+                      </Show>
+                      <Show when={rowError()?.id === u.id}>
+                        <tr>
+                          <td colspan={3} style={{ padding: "8px 14px" }}>
+                            <Toast tone="danger">{rowError()?.message}</Toast>
+                          </td>
+                        </tr>
+                      </Show>
+                    </>
+                  )}
+                </For>
+              </tbody>
+            </table>
           </Show>
-        </section>
+        </Show>
+      </Card>
 
-        <section class={sectionCls}>
-          <h3 class={sectionHeader}>Change my password</h3>
-          <form onSubmit={submitChangePassword} class="space-y-3">
-            <div>
-              <label class={labelCls}>Current password</label>
-              <input
-                class={inputCls}
-                required
-                type="password"
-                value={currentPw()}
-                onInput={(e) => setCurrentPw(e.currentTarget.value)}
-                autocomplete="current-password"
-              />
-            </div>
-            <div class="grid grid-cols-2 gap-3">
-              <div>
-                <label class={labelCls}>New password</label>
-                <input
-                  class={inputCls}
-                  required
-                  type="password"
-                  value={newPw()}
-                  onInput={(e) => setNewPw(e.currentTarget.value)}
-                  autocomplete="new-password"
-                />
-              </div>
-              <div>
-                <label class={labelCls}>Confirm new password</label>
-                <input
-                  class={inputCls}
-                  required
-                  type="password"
-                  value={confirmPw()}
-                  onInput={(e) => setConfirmPw(e.currentTarget.value)}
-                  autocomplete="new-password"
-                />
-              </div>
-            </div>
-            <Show when={changeError()}>
-              <div class={errorCls}>{changeError()}</div>
-            </Show>
-            <Show when={changeSuccess()}>
-              <div class={successCls}>Password updated.</div>
-            </Show>
-            <button
-              type="submit"
-              disabled={changing()}
-              class="rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 px-3 py-1.5 text-sm font-medium"
-            >
+      <Card title="Change my password">
+        <form
+          onSubmit={submitChangePassword}
+          style={{ display: "flex", "flex-direction": "column", gap: "12px" }}
+        >
+          <Input
+            label="Current password"
+            required
+            type="password"
+            value={currentPw()}
+            onInput={(e) => setCurrentPw(e.currentTarget.value)}
+            autocomplete="current-password"
+          />
+          <div style={{ display: "grid", "grid-template-columns": "1fr 1fr", gap: "12px" }}>
+            <Input
+              label="New password"
+              required
+              type="password"
+              value={newPw()}
+              onInput={(e) => setNewPw(e.currentTarget.value)}
+              autocomplete="new-password"
+            />
+            <Input
+              label="Confirm new password"
+              required
+              type="password"
+              value={confirmPw()}
+              onInput={(e) => setConfirmPw(e.currentTarget.value)}
+              autocomplete="new-password"
+            />
+          </div>
+          <Show when={changeError()}>
+            <Toast tone="danger">{changeError()}</Toast>
+          </Show>
+          <Show when={changeSuccess()}>
+            <Toast tone="success">Password updated.</Toast>
+          </Show>
+          <div>
+            <Button type="submit" variant="primary" disabled={changing()}>
               {changing() ? "Updating…" : "Update password"}
-            </button>
-          </form>
-        </section>
-      </div>
+            </Button>
+          </div>
+        </form>
+      </Card>
     </div>
   );
 }
+

@@ -19,6 +19,7 @@ import type {
   WireHit,
   WireLink,
 } from "../types";
+import { Badge, Button, Toast } from "./ui";
 
 interface Props {
   instanceId: string;
@@ -58,43 +59,41 @@ export default function MemoryView(props: Props): JSX.Element {
 
   return (
     <div class="h-full flex flex-col">
-      <header class="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/40">
-        <div class="flex items-center gap-2">
-          <h2 class="text-lg font-semibold">Memory</h2>
+      <header class="flex items-center justify-between px-6 py-3 border-b border-border-subtle bg-bg-1">
+        <div class="flex items-center gap-3">
+          <h2 class="text-base font-semibold text-fg-0">Memory</h2>
           <Show when={selectedBank()}>
             {(bank) => (
               <>
-                <span class="text-slate-500">·</span>
-                <span class="font-mono">{bank()}</span>
+                <span class="text-fg-3">·</span>
+                <span class="font-mono text-fg-0">{bank()}</span>
               </>
             )}
           </Show>
+          <Show when={loading()}>
+            <Badge tone="neutral" dot>loading</Badge>
+          </Show>
         </div>
         <div class="flex items-center gap-2">
-          <Show when={loading()}>
-            <span class="text-xs text-slate-400">loading…</span>
-          </Show>
           <Show when={selectedBank()}>
-            <button
-              type="button"
+            <Button
+              size="sm"
+              variant="ghost"
+              icon="arrow-right"
               onClick={() => setSelectedBank(null)}
-              class="text-xs text-slate-400 hover:text-slate-100"
             >
-              ← back to banks
-            </button>
+              Banks
+            </Button>
           </Show>
-          <button
-            onClick={loadBanks}
-            class="text-xs text-slate-400 hover:text-slate-100"
-          >
-            refresh
-          </button>
+          <Button size="sm" variant="ghost" icon="refresh" onClick={loadBanks}>
+            Refresh
+          </Button>
         </div>
       </header>
 
       <Show when={error()}>
-        <div class="mx-4 mt-2 rounded border border-red-800 bg-red-900/40 px-2 py-1 text-sm text-red-200">
-          {error()}
+        <div class="mx-6 mt-3">
+          <Toast tone="danger">{error()}</Toast>
         </div>
       </Show>
 
@@ -131,7 +130,7 @@ function BankList(props: {
       <Show
         when={props.banks.length > 0}
         fallback={
-          <div class="text-sm text-slate-500 italic">
+          <div class="text-sm text-fg-3 italic">
             No memory banks declared on this instance.
           </div>
         }
@@ -142,19 +141,19 @@ function BankList(props: {
               <button
                 type="button"
                 onClick={() => props.onSelect(b.id)}
-                class="text-left rounded border border-slate-800 bg-slate-900/60 hover:border-slate-600 p-3 space-y-1"
+                class="text-left rounded border border-border-subtle bg-bg-1 hover:border-border-strong p-3 space-y-1"
               >
                 <div class="flex items-center justify-between">
                   <span class="font-semibold">{b.id}</span>
-                  <span class="text-xs text-slate-400">
+                  <span class="text-xs text-fg-2">
                     {b.entry_count} entr{b.entry_count === 1 ? "y" : "ies"}
                   </span>
                 </div>
-                <p class="text-sm text-slate-300 whitespace-pre-wrap">
+                <p class="text-sm text-fg-1 whitespace-pre-wrap">
                   {b.description}
                 </p>
                 <Show when={b.embed_model}>
-                  <p class="text-xs text-slate-500 font-mono">
+                  <p class="text-xs text-fg-3 font-mono">
                     {b.embed_model}
                   </p>
                 </Show>
@@ -177,9 +176,9 @@ function BankDetail(props: {
   return (
     <div class="flex-1 flex flex-col overflow-hidden">
       <Show when={props.description}>
-        <p class="mx-4 mt-2 text-xs text-slate-400">{props.description}</p>
+        <p class="mx-4 mt-2 text-xs text-fg-2">{props.description}</p>
       </Show>
-      <nav class="flex items-center gap-1 px-4 pt-2 border-b border-slate-800">
+      <nav class="flex items-center gap-1 px-4 pt-2 border-b border-border-subtle">
         <TabBtn
           label="Search"
           active={sub() === "search"}
@@ -218,8 +217,8 @@ function TabBtn(props: {
       onClick={props.onClick}
       class="px-3 py-1.5 text-sm border-b-2 -mb-px"
       classList={{
-        "border-sky-500 text-slate-100": props.active,
-        "border-transparent text-slate-400 hover:text-slate-200": !props.active,
+        "border-accent text-fg-0": props.active,
+        "border-transparent text-fg-2 hover:text-fg-0": !props.active,
       }}
     >
       {props.label}
@@ -288,7 +287,7 @@ function SearchView(props: {
           e.preventDefault();
           void runSearch();
         }}
-        class="px-4 py-3 space-y-2 border-b border-slate-800 bg-slate-900/30"
+        class="px-4 py-3 space-y-2 border-b border-border-subtle bg-bg-1/30"
       >
         <div class="flex items-center gap-2">
           <input
@@ -296,19 +295,19 @@ function SearchView(props: {
             placeholder="Semantic query (natural language) — empty = list newest"
             value={q()}
             onInput={(e) => setQ(e.currentTarget.value)}
-            class="flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+            class="flex-1 rounded border border-border bg-bg-0 px-2 py-1 text-sm"
           />
           <button
             type="submit"
             disabled={searching()}
-            class="rounded border border-sky-700 bg-sky-900/40 hover:bg-sky-800 disabled:opacity-50 px-3 py-1 text-sm"
+            class="rounded border border-accent bg-accent-bg hover:bg-accent disabled:opacity-50 px-3 py-1 text-sm"
           >
             {searching() ? "Searching…" : "Search"}
           </button>
           <button
             type="button"
             onClick={() => setShowAdd(true)}
-            class="rounded border border-emerald-700 bg-emerald-900/40 hover:bg-emerald-800 px-3 py-1 text-sm"
+            class="rounded border border-success bg-success-bg hover:bg-success px-3 py-1 text-sm"
           >
             + new entry
           </button>
@@ -319,27 +318,27 @@ function SearchView(props: {
             placeholder="Title contains…"
             value={titleContains()}
             onInput={(e) => setTitleContains(e.currentTarget.value)}
-            class="rounded border border-slate-700 bg-slate-950 px-2 py-1"
+            class="rounded border border-border bg-bg-0 px-2 py-1"
           />
           <input
             type="text"
             placeholder="Include tags (comma-separated)"
             value={includeTags()}
             onInput={(e) => setIncludeTags(e.currentTarget.value)}
-            class="rounded border border-slate-700 bg-slate-950 px-2 py-1"
+            class="rounded border border-border bg-bg-0 px-2 py-1"
           />
           <input
             type="text"
             placeholder="Exclude tags (comma-separated)"
             value={excludeTags()}
             onInput={(e) => setExcludeTags(e.currentTarget.value)}
-            class="rounded border border-slate-700 bg-slate-950 px-2 py-1"
+            class="rounded border border-border bg-bg-0 px-2 py-1"
           />
         </div>
       </form>
 
       <Show when={error()}>
-        <div class="mx-4 mt-2 rounded border border-red-800 bg-red-900/40 px-2 py-1 text-sm text-red-200">
+        <div class="mx-4 mt-2 rounded border border-danger bg-danger-bg px-2 py-1 text-sm text-danger-fg">
           {error()}
         </div>
       </Show>
@@ -348,7 +347,7 @@ function SearchView(props: {
         <Show
           when={hits().length > 0}
           fallback={
-            <div class="text-sm text-slate-500 italic">
+            <div class="text-sm text-fg-3 italic">
               {searching() ? "" : "(no matches)"}
             </div>
           }
@@ -403,13 +402,13 @@ function EntryCard(props: { hit: WireHit; onOpen: () => void }): JSX.Element {
     <button
       type="button"
       onClick={props.onOpen}
-      class="w-full text-left rounded border border-slate-800 bg-slate-900/60 hover:border-slate-600 p-3 space-y-1"
+      class="w-full text-left rounded border border-border-subtle bg-bg-1 hover:border-border-strong p-3 space-y-1"
     >
       <div class="flex items-center justify-between gap-2">
         <span class="font-medium truncate">
           {props.hit.title || "(untitled)"}
         </span>
-        <span class="text-xs text-slate-500 font-mono shrink-0">
+        <span class="text-xs text-fg-3 font-mono shrink-0">
           {props.hit.id.slice(0, 8)}
           <Show when={typeof props.hit.distance === "number"}>
             {" "}
@@ -417,14 +416,14 @@ function EntryCard(props: { hit: WireHit; onOpen: () => void }): JSX.Element {
           </Show>
         </span>
       </div>
-      <p class="text-sm whitespace-pre-wrap line-clamp-3 text-slate-300">
+      <p class="text-sm whitespace-pre-wrap line-clamp-3 text-fg-1">
         {props.hit.body}
       </p>
       <Show when={props.hit.tags.length > 0}>
         <div class="flex flex-wrap gap-1">
           <For each={props.hit.tags}>
             {(t) => (
-              <span class="rounded bg-slate-800 px-1.5 py-0.5 text-xs font-mono">
+              <span class="rounded bg-bg-2 px-1.5 py-0.5 text-xs font-mono">
                 {t}
               </span>
             )}
@@ -617,7 +616,7 @@ function EntryModal(props: {
       onClick={props.onClose}
     >
       <div
-        class="my-10 w-full max-w-2xl rounded border border-slate-700 bg-slate-900 p-4 shadow-xl"
+        class="my-10 w-full max-w-2xl rounded border border-border bg-bg-1 p-4 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <header class="flex items-center justify-between mb-3">
@@ -625,50 +624,50 @@ function EntryModal(props: {
           <button
             type="button"
             onClick={props.onClose}
-            class="text-slate-400 hover:text-slate-100"
+            class="text-fg-2 hover:text-fg-0"
           >
             ✕
           </button>
         </header>
         <form onSubmit={save} class="space-y-3 text-sm">
           <label class="block">
-            <span class="text-xs text-slate-400">Title (optional)</span>
+            <span class="text-xs text-fg-2">Title (optional)</span>
             <input
               type="text"
               value={title()}
               onInput={(e) => setTitle(e.currentTarget.value)}
-              class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1"
+              class="mt-1 w-full rounded border border-border bg-bg-0 px-2 py-1"
             />
           </label>
           <label class="block">
-            <span class="text-xs text-slate-400">Body</span>
+            <span class="text-xs text-fg-2">Body</span>
             <textarea
               rows={6}
               required
               value={body()}
               onInput={(e) => setBody(e.currentTarget.value)}
-              class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 font-mono text-sm"
+              class="mt-1 w-full rounded border border-border bg-bg-0 px-2 py-1 font-mono text-sm"
             />
           </label>
           <label class="block">
-            <span class="text-xs text-slate-400">
+            <span class="text-xs text-fg-2">
               Tags (comma-separated)
             </span>
             <input
               type="text"
               value={tagsStr()}
               onInput={(e) => setTagsStr(e.currentTarget.value)}
-              class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1"
+              class="mt-1 w-full rounded border border-border bg-bg-0 px-2 py-1"
             />
           </label>
 
           <Show when={props.mode === "edit"}>
-            <section class="border-t border-slate-800 pt-3 space-y-2">
-              <h3 class="text-xs uppercase tracking-wider text-slate-400">
+            <section class="border-t border-border-subtle pt-3 space-y-2">
+              <h3 class="text-xs uppercase tracking-wider text-fg-2">
                 Links
               </h3>
               <Show when={linksLoading()}>
-                <div class="text-xs text-slate-500 italic">
+                <div class="text-xs text-fg-3 italic">
                   loading links…
                 </div>
               </Show>
@@ -676,7 +675,7 @@ function EntryModal(props: {
                 when={!linksLoading() && links().length > 0}
                 fallback={
                   <Show when={!linksLoading()}>
-                    <div class="text-xs text-slate-500 italic">
+                    <div class="text-xs text-fg-3 italic">
                       No links yet.
                     </div>
                   </Show>
@@ -685,16 +684,16 @@ function EntryModal(props: {
                 <ul class="space-y-1">
                   <For each={links()}>
                     {(l) => (
-                      <li class="flex items-center justify-between rounded border border-slate-800 bg-slate-950/50 px-2 py-1 text-xs">
+                      <li class="flex items-center justify-between rounded border border-border-subtle bg-bg-0/50 px-2 py-1 text-xs">
                         <div>
-                          <span class="font-mono text-slate-500 mr-1">
+                          <span class="font-mono text-fg-3 mr-1">
                             {l.direction === "out" ? "→" : "←"}
                           </span>
                           <span class="font-medium">
                             {l.peer_title || l.peer_id.slice(0, 8)}
                           </span>
                           <Show when={l.kind}>
-                            <span class="ml-2 text-slate-400">
+                            <span class="ml-2 text-fg-2">
                               [{l.kind}]
                             </span>
                           </Show>
@@ -702,7 +701,7 @@ function EntryModal(props: {
                         <button
                           type="button"
                           onClick={() => removeLink(l.peer_id, l.direction)}
-                          class="text-red-300 hover:text-red-100"
+                          class="text-danger-fg hover:text-danger-fg"
                         >
                           unlink
                         </button>
@@ -715,7 +714,7 @@ function EntryModal(props: {
                 <select
                   value={linkTarget()}
                   onInput={(e) => setLinkTarget(e.currentTarget.value)}
-                  class="flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                  class="flex-1 rounded border border-border bg-bg-0 px-2 py-1 text-xs"
                 >
                   <option value="">(select entry to link to…)</option>
                   <For each={linkCandidates()}>
@@ -731,13 +730,13 @@ function EntryModal(props: {
                   placeholder="kind (optional)"
                   value={linkKind()}
                   onInput={(e) => setLinkKind(e.currentTarget.value)}
-                  class="w-32 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                  class="w-32 rounded border border-border bg-bg-0 px-2 py-1 text-xs"
                 />
                 <button
                   type="button"
                   onClick={addLink}
                   disabled={!linkTarget()}
-                  class="rounded border border-slate-700 hover:bg-slate-800 disabled:opacity-50 px-2 py-1 text-xs"
+                  class="rounded border border-border hover:bg-bg-2 disabled:opacity-50 px-2 py-1 text-xs"
                 >
                   + link
                 </button>
@@ -745,7 +744,7 @@ function EntryModal(props: {
             </section>
           </Show>
 
-          <div class="flex items-center justify-between border-t border-slate-800 pt-3">
+          <div class="flex items-center justify-between border-t border-border-subtle pt-3">
             <Show
               when={props.mode === "edit"}
               fallback={<span />}
@@ -754,7 +753,7 @@ function EntryModal(props: {
                 type="button"
                 onClick={removeEntry}
                 disabled={saving()}
-                class="text-sm text-red-300 hover:text-red-100 disabled:opacity-50"
+                class="text-sm text-danger-fg hover:text-danger-fg disabled:opacity-50"
               >
                 Delete entry
               </button>
@@ -763,14 +762,14 @@ function EntryModal(props: {
               <button
                 type="button"
                 onClick={props.onClose}
-                class="text-sm text-slate-400 hover:text-slate-100"
+                class="text-sm text-fg-2 hover:text-fg-0"
               >
                 cancel
               </button>
               <button
                 type="submit"
                 disabled={saving() || body().trim() === ""}
-                class="rounded border border-emerald-700 bg-emerald-900/40 hover:bg-emerald-800 disabled:opacity-50 px-3 py-1 text-sm"
+                class="rounded border border-success bg-success-bg hover:bg-success disabled:opacity-50 px-3 py-1 text-sm"
               >
                 {saving()
                   ? "Saving…"
@@ -852,6 +851,14 @@ function GraphView(props: {
       })),
     ];
     if (cy) cy.destroy();
+    const cssVar = (name: string): string =>
+      getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const accent = cssVar("--accent") || "#38bdf8";
+    const warning = cssVar("--warning") || "#facc15";
+    const fg0 = cssVar("--fg-0") || "#e2e8f0";
+    const fg2 = cssVar("--fg-2") || "#94a3b8";
+    const bg0 = cssVar("--bg-0") || "#020617";
+    const border = cssVar("--border-strong") || "#475569";
     cy = cytoscape({
       container: containerRef,
       elements,
@@ -859,13 +866,13 @@ function GraphView(props: {
         {
           selector: "node",
           style: {
-            "background-color": "#38bdf8",
+            "background-color": accent,
             label: "data(label)",
-            color: "#e2e8f0",
+            color: fg0,
             "font-size": 10,
             "text-valign": "bottom",
             "text-margin-y": 6,
-            "text-outline-color": "#020617",
+            "text-outline-color": bg0,
             "text-outline-width": 2,
             width: 18,
             height: 18,
@@ -874,23 +881,23 @@ function GraphView(props: {
         {
           selector: "node:selected",
           style: {
-            "background-color": "#facc15",
+            "background-color": warning,
             "border-width": 2,
-            "border-color": "#f59e0b",
+            "border-color": warning,
           },
         },
         {
           selector: "edge",
           style: {
             width: 1.5,
-            "line-color": "#475569",
-            "target-arrow-color": "#475569",
+            "line-color": border,
+            "target-arrow-color": border,
             "target-arrow-shape": "triangle",
             "curve-style": "bezier",
             label: "data(label)",
-            color: "#94a3b8",
+            color: fg2,
             "font-size": 8,
-            "text-background-color": "#020617",
+            "text-background-color": bg0,
             "text-background-opacity": 0.7,
             "text-background-padding": "1",
           },
@@ -925,8 +932,8 @@ function GraphView(props: {
 
   return (
     <div class="h-full flex flex-col">
-      <div class="px-4 py-2 flex items-center justify-between border-b border-slate-800 bg-slate-900/30 text-xs">
-        <div class="flex items-center gap-3 text-slate-400">
+      <div class="px-4 py-2 flex items-center justify-between border-b border-border-subtle bg-bg-1/30 text-xs">
+        <div class="flex items-center gap-3 text-fg-2">
           <Show when={loading()}>
             <span>loading…</span>
           </Show>
@@ -942,14 +949,14 @@ function GraphView(props: {
         </div>
         <button
           onClick={load}
-          class="text-slate-400 hover:text-slate-100"
+          class="text-fg-2 hover:text-fg-0"
         >
           refresh
         </button>
       </div>
 
       <Show when={error()}>
-        <div class="mx-4 mt-2 rounded border border-red-800 bg-red-900/40 px-2 py-1 text-sm text-red-200">
+        <div class="mx-4 mt-2 rounded border border-danger bg-danger-bg px-2 py-1 text-sm text-danger-fg">
           {error()}
         </div>
       </Show>
@@ -957,12 +964,12 @@ function GraphView(props: {
       <div class="flex-1 relative">
         <div
           ref={(el) => (containerRef = el)}
-          class="absolute inset-0 bg-slate-950"
+          class="absolute inset-0 bg-bg-0"
         />
         <Show when={selected()}>
           {(s) => (
-            <div class="absolute top-3 right-3 w-72 rounded border border-slate-700 bg-slate-900/95 p-3 text-sm shadow-xl">
-              <div class="text-xs text-slate-500 font-mono mb-1">
+            <div class="absolute top-3 right-3 w-72 rounded border border-border bg-bg-1/95 p-3 text-sm shadow-xl">
+              <div class="text-xs text-fg-3 font-mono mb-1">
                 {s().id.slice(0, 8)}
               </div>
               <div class="font-semibold mb-1">
@@ -972,7 +979,7 @@ function GraphView(props: {
                 <div class="flex flex-wrap gap-1">
                   <For each={s().tags}>
                     {(t) => (
-                      <span class="rounded bg-slate-800 px-1.5 py-0.5 text-xs font-mono">
+                      <span class="rounded bg-bg-2 px-1.5 py-0.5 text-xs font-mono">
                         {t}
                       </span>
                     )}

@@ -1,7 +1,5 @@
 //! Cron tab — list of the instance's cron jobs + Add/Edit modal +
-//! live SSE updates. The manager exposes a one-shot list endpoint and
-//! a cron-events SSE feed; we fetch once on open and keep local state
-//! in sync with each `WireCronEvent` the server pushes.
+//! live SSE updates.
 
 import {
   For,
@@ -23,6 +21,17 @@ import type {
   WireCronSchedule,
   WireCronTz,
 } from "../types";
+import {
+  Badge,
+  Button,
+  Checkbox,
+  Empty,
+  Input,
+  Modal,
+  Select,
+  Textarea,
+  Toast,
+} from "./ui";
 
 interface Props {
   instanceId: string;
@@ -85,9 +94,7 @@ function emptyForm(): FormValues {
 }
 
 function formatSchedule(s: WireCronSchedule, tz: WireCronTz): string {
-  if (s.kind === "recurring") {
-    return `every \`${s.expression}\``;
-  }
+  if (s.kind === "recurring") return `every ${s.expression}`;
   return `at ${s.run_at_local} (${tz})`;
 }
 
@@ -130,8 +137,6 @@ export default function CronView(props: Props): JSX.Element {
   const [formError, setFormError] = createSignal<string | null>(null);
   const [submitting, setSubmitting] = createSignal(false);
 
-  // Tick to refresh relative next_run labels once per minute without
-  // re-sorting or mutating the underlying job list.
   const [now, setNow] = createSignal(Date.now());
   const tickHandle = window.setInterval(() => setNow(Date.now()), 30_000);
   onCleanup(() => window.clearInterval(tickHandle));
@@ -156,7 +161,7 @@ export default function CronView(props: Props): JSX.Element {
 
   const applyEvent = (ev: WireCronEvent) => {
     switch (ev.kind) {
-      case "created": {
+      case "created":
         setJobs((xs) => {
           if (xs.some((j) => j.id === ev.job.id)) {
             return xs.map((j) => (j.id === ev.job.id ? ev.job : j));
@@ -164,23 +169,14 @@ export default function CronView(props: Props): JSX.Element {
           return [...xs, ev.job];
         });
         break;
-      }
-      case "updated": {
-        setJobs((xs) =>
-          xs.map((j) => (j.id === ev.job.id ? ev.job : j)),
-        );
+      case "updated":
+        setJobs((xs) => xs.map((j) => (j.id === ev.job.id ? ev.job : j)));
         break;
-      }
-      case "removed": {
+      case "removed":
         setJobs((xs) => xs.filter((j) => j.id !== ev.id));
         break;
-      }
-      case "fired": {
-        // Server emits a follow-up `updated` (recurring) or `removed`
-        // (one-off) right after a `fired` — the `fired` frame itself
-        // is purely informational. Skip it.
+      case "fired":
         break;
-      }
     }
   };
 
@@ -198,7 +194,7 @@ export default function CronView(props: Props): JSX.Element {
         const parsed = JSON.parse(m.data) as WireCronEvent;
         applyEvent(parsed);
       } catch {
-        // Skip malformed frames.
+        // ignore malformed
       }
     };
     es.addEventListener("lagged", () => {
@@ -290,16 +286,14 @@ export default function CronView(props: Props): JSX.Element {
       const resp = await api.patchCron(props.instanceId, job.id, {
         enabled: !job.enabled,
       });
-      if (!resp.ok) {
-        setError(resp.error ?? "toggle failed");
-      }
+      if (!resp.ok) setError(resp.error ?? "toggle failed");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
   const remove = async (job: WireCronJob) => {
-    if (!window.confirm(`Delete cron job for \`${job.target_agent}\`?`)) return;
+    if (!window.confirm(`Delete cron job for "${job.target_agent}"?`)) return;
     try {
       const resp = await api.deleteCron(props.instanceId, job.id);
       if (!resp.ok) setError(resp.error ?? "delete failed");
@@ -308,141 +302,173 @@ export default function CronView(props: Props): JSX.Element {
     }
   };
 
-  const streamBadge = () => {
+  const streamBadgeNode = (): JSX.Element => {
     const status = streamStatus();
-    const style = {
-      connecting: "border-amber-700 bg-amber-900/40 text-amber-200",
-      live: "border-emerald-700 bg-emerald-900/40 text-emerald-200",
-      lagged: "border-amber-700 bg-amber-900/40 text-amber-200",
-      closed: "border-red-700 bg-red-900/40 text-red-200",
-    }[status];
-    const label = {
-      connecting: "connecting",
-      live: "live",
-      lagged: "lagged",
-      closed: "offline",
-    }[status];
+    const tone =
+      status === "live"
+        ? "success"
+        : status === "closed"
+          ? "danger"
+          : "warning";
+    const label =
+      status === "connecting"
+        ? "connecting"
+        : status === "live"
+          ? "live"
+          : status === "lagged"
+            ? "lagged"
+            : "offline";
     return (
-      <span
-        class={`rounded border px-2 py-0.5 text-xs ${style}`}
-      >
+      <Badge tone={tone} dot>
         {label}
-      </span>
+      </Badge>
     );
   };
 
   return (
-    <div class="flex flex-col h-full overflow-hidden">
-      <header class="flex items-center gap-3 border-b border-slate-800 bg-slate-900/40 px-4 py-2">
-        <h2 class="text-sm font-semibold">Cron</h2>
-        {streamBadge()}
-        <span class="text-xs text-slate-500">
+    <div
+      style={{
+        display: "flex",
+        "flex-direction": "column",
+        height: "100%",
+        overflow: "hidden",
+      }}
+    >
+      <header
+        style={{
+          display: "flex",
+          "align-items": "center",
+          gap: "12px",
+          "border-bottom": "1px solid var(--border-subtle)",
+          background: "var(--bg-1)",
+          padding: "10px 24px",
+        }}
+      >
+        <h2
+          style={{
+            "font-size": "14px",
+            "font-weight": "600",
+            color: "var(--fg-0)",
+            margin: "0",
+          }}
+        >
+          Cron
+        </h2>
+        {streamBadgeNode()}
+        <span style={{ color: "var(--fg-2)", "font-size": "12px" }}>
           {jobs().length} job{jobs().length === 1 ? "" : "s"}
         </span>
-        <div class="flex-1" />
-        <button
-          type="button"
+        <div style={{ flex: "1" }} />
+        <Button
+          size="sm"
+          variant="secondary"
+          icon="refresh"
           onClick={() => void loadJobs(props.instanceId)}
-          class="rounded border border-slate-700 bg-slate-900 hover:bg-slate-800 px-3 py-1 text-sm"
         >
           Refresh
-        </button>
-        <button
-          type="button"
-          onClick={openCreate}
-          class="rounded border border-emerald-700 bg-emerald-900/40 hover:bg-emerald-800 px-3 py-1 text-sm"
-        >
-          + New cron job
-        </button>
+        </Button>
+        <Button size="sm" variant="primary" icon="plus" onClick={openCreate}>
+          New cron job
+        </Button>
       </header>
 
       <Show when={error()}>
         {(msg) => (
-          <div class="m-3 rounded border border-red-700 bg-red-900/40 px-3 py-2 text-sm text-red-200">
-            {msg()}
+          <div style={{ padding: "12px 24px" }}>
+            <Toast tone="danger">{msg()}</Toast>
           </div>
         )}
       </Show>
 
-      <div class="flex-1 overflow-auto">
+      <div style={{ flex: "1", overflow: "auto", padding: "0" }}>
         <Show
           when={jobs().length > 0}
           fallback={
-            <div class="p-6 text-sm text-slate-500">
-              {loading()
-                ? "Loading cron jobs…"
-                : "No cron jobs yet. Click + New cron job to schedule one."}
+            <div style={{ padding: "24px" }}>
+              <Empty>
+                {loading()
+                  ? "Loading cron jobs…"
+                  : "No cron jobs yet. Click New cron job to schedule one."}
+              </Empty>
             </div>
           }
         >
-          <table class="w-full text-sm">
-            <thead class="text-xs uppercase text-slate-500 border-b border-slate-800">
+          <table class="ftable">
+            <thead>
               <tr>
-                <th class="text-left px-3 py-2 w-8"></th>
-                <th class="text-left px-3 py-2">Target</th>
-                <th class="text-left px-3 py-2">Kind</th>
-                <th class="text-left px-3 py-2">Schedule</th>
-                <th class="text-left px-3 py-2">Next run</th>
-                <th class="text-left px-3 py-2">Payload</th>
-                <th class="text-right px-3 py-2">Actions</th>
+                <th style={{ width: "32px" }} />
+                <th>Target</th>
+                <th>Kind</th>
+                <th>Schedule</th>
+                <th>Next run</th>
+                <th>Payload</th>
+                <th style={{ "text-align": "right" }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               <For each={jobs()}>
                 {(job) => {
-                  // Capture `now()` so the relative label refreshes
-                  // when the interval tick bumps the signal.
                   const nextInfo = () => {
                     void now();
                     return formatNextRun(job.next_run);
                   };
                   return (
-                    <tr class="border-b border-slate-900 hover:bg-slate-900/40">
-                      <td class="px-3 py-2">
+                    <tr>
+                      <td>
                         <button
                           type="button"
                           onClick={() => void toggleEnabled(job)}
                           title={job.enabled ? "Disable" : "Enable"}
-                          class={
-                            job.enabled
-                              ? "text-emerald-400 hover:text-emerald-200"
-                              : "text-slate-500 hover:text-slate-300"
-                          }
+                          style={{
+                            background: "transparent",
+                            border: "0",
+                            cursor: "pointer",
+                            color: job.enabled ? "var(--success)" : "var(--fg-3)",
+                            "font-size": "14px",
+                            padding: "0",
+                          }}
                         >
                           {job.enabled ? "●" : "○"}
                         </button>
                       </td>
-                      <td class="px-3 py-2 font-mono">{job.target_agent}</td>
-                      <td class="px-3 py-2 text-slate-400">
-                        {payloadKindLabel(job.payload)}
+                      <td class="col-mono">{job.target_agent}</td>
+                      <td>
+                        <Badge tone="neutral">{payloadKindLabel(job.payload)}</Badge>
                       </td>
-                      <td class="px-3 py-2 font-mono text-slate-300">
+                      <td class="col-mono">
                         {formatSchedule(job.schedule, job.timezone)}
                       </td>
+                      <td title={nextInfo().abs}>{nextInfo().rel}</td>
                       <td
-                        class="px-3 py-2 text-slate-300"
-                        title={nextInfo().abs}
+                        style={{
+                          color: "var(--fg-2)",
+                          "max-width": "300px",
+                          overflow: "hidden",
+                          "text-overflow": "ellipsis",
+                          "white-space": "nowrap",
+                          "font-family": "var(--font-mono)",
+                          "font-size": "12px",
+                        }}
                       >
-                        {nextInfo().rel}
-                      </td>
-                      <td class="px-3 py-2 text-slate-400 truncate max-w-xs">
                         {formatPayload(job.payload).slice(0, 80)}
                       </td>
-                      <td class="px-3 py-2 text-right whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={() => openEdit(job)}
-                          class="rounded border border-slate-700 bg-slate-900 hover:bg-slate-800 px-2 py-0.5 text-xs"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void remove(job)}
-                          class="ml-2 rounded border border-red-800 bg-red-900/40 hover:bg-red-800 px-2 py-0.5 text-xs"
-                        >
-                          Delete
-                        </button>
+                      <td style={{ "text-align": "right", "white-space": "nowrap" }}>
+                        <span style={{ display: "inline-flex", gap: "6px" }}>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => openEdit(job)}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            onClick={() => void remove(job)}
+                          >
+                            Delete
+                          </Button>
+                        </span>
                       </td>
                     </tr>
                   );
@@ -485,214 +511,144 @@ function CronFormModal(props: FormProps): JSX.Element {
   const update = (patch: Partial<FormValues>) =>
     props.onChange({ ...props.form, ...patch });
 
+  const submit = (e: Event) => props.onSubmit(e);
+
   return (
-    <div
-      class="fixed inset-0 z-50 bg-black/60 flex items-start justify-center overflow-y-auto"
-      onClick={props.onClose}
-    >
-      <div
-        class="my-10 w-full max-w-xl rounded border border-slate-700 bg-slate-900 p-4 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header class="flex items-center justify-between mb-3">
-          <h2 class="text-base font-semibold">{title}</h2>
-          <button
-            type="button"
-            onClick={props.onClose}
-            class="text-slate-400 hover:text-slate-100"
+    <Modal
+      open={true}
+      onClose={props.onClose}
+      title={title}
+      width={560}
+      footer={
+        <>
+          <Button variant="ghost" onClick={props.onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={props.submitting}
+            onClick={(e) => submit(e as unknown as Event)}
           >
-            ✕
-          </button>
-        </header>
-
-        <form onSubmit={props.onSubmit} class="flex flex-col gap-3">
-          <label class="flex flex-col gap-1 text-sm">
-            <span class="text-slate-400">Target agent</span>
-            <Show
-              when={props.agents && props.agents.length > 0}
-              fallback={
-                <input
-                  type="text"
-                  value={props.form.target}
-                  onInput={(e) =>
-                    update({ target: (e.target as HTMLInputElement).value })
-                  }
-                  class="rounded border border-slate-700 bg-slate-950 px-2 py-1"
-                  placeholder="agent id"
-                />
-              }
-            >
-              <select
-                value={props.form.target}
-                onChange={(e) =>
-                  update({ target: (e.target as HTMLSelectElement).value })
-                }
-                class="rounded border border-slate-700 bg-slate-950 px-2 py-1"
-              >
-                <option value="">(select agent)</option>
-                <For each={props.agents}>
-                  {(a) => <option value={a.id}>{a.id}</option>}
-                </For>
-              </select>
-            </Show>
-          </label>
-
-          <label class="flex flex-col gap-1 text-sm">
-            <span class="text-slate-400">Payload kind</span>
-            <select
-              value={props.form.payloadKind}
-              onChange={(e) =>
-                update({
-                  payloadKind: (e.target as HTMLSelectElement)
-                    .value as PayloadKind,
-                })
-              }
-              class="rounded border border-slate-700 bg-slate-950 px-2 py-1"
-            >
-              <option value="message">message (wrapped as &lt;Message&gt;)</option>
-              <option value="command">command (slash command)</option>
-            </select>
-          </label>
-
-          <label class="flex flex-col gap-1 text-sm">
-            <span class="text-slate-400">
-              {props.form.payloadKind === "command"
-                ? "Slash command (must start with /)"
-                : "Message body"}
-            </span>
-            <textarea
-              value={props.form.payloadBody}
-              onInput={(e) =>
-                update({
-                  payloadBody: (e.target as HTMLTextAreaElement).value,
-                })
-              }
-              rows={props.form.payloadKind === "command" ? 1 : 4}
-              class="rounded border border-slate-700 bg-slate-950 px-2 py-1 font-mono"
+            {props.submitting ? "Saving…" : "Save"}
+          </Button>
+        </>
+      }
+    >
+      <form
+        onSubmit={submit}
+        style={{ display: "flex", "flex-direction": "column", gap: "12px" }}
+      >
+        <Show
+          when={props.agents && props.agents.length > 0}
+          fallback={
+            <Input
+              label="Target agent"
+              value={props.form.target}
+              onInput={(e) => update({ target: e.currentTarget.value })}
+              placeholder="agent id"
             />
-          </label>
+          }
+        >
+          <Select
+            label="Target agent"
+            value={props.form.target}
+            onChange={(v) => update({ target: v })}
+            options={(props.agents ?? []).map((a) => ({
+              value: a.id,
+              label: a.id,
+            }))}
+            placeholder="(select agent)"
+          />
+        </Show>
 
-          <div class="grid grid-cols-2 gap-3">
-            <label class="flex flex-col gap-1 text-sm">
-              <span class="text-slate-400">Schedule kind</span>
-              <select
-                value={props.form.scheduleKind}
-                onChange={(e) => {
-                  const next = (e.target as HTMLSelectElement)
-                    .value as ScheduleKind;
-                  const patch: Partial<FormValues> = { scheduleKind: next };
-                  // Catchup only makes sense for one-off.
-                  if (next === "recurring") patch.catchupOnStartup = false;
-                  update(patch);
-                }}
-                class="rounded border border-slate-700 bg-slate-950 px-2 py-1"
-              >
-                <option value="recurring">recurring</option>
-                <option value="oneoff">one-off</option>
-              </select>
-            </label>
-            <label class="flex flex-col gap-1 text-sm">
-              <span class="text-slate-400">Timezone</span>
-              <select
-                value={props.form.tz}
-                onChange={(e) =>
-                  update({
-                    tz: (e.target as HTMLSelectElement).value as WireCronTz,
-                  })
-                }
-                class="rounded border border-slate-700 bg-slate-950 px-2 py-1"
-              >
-                <option value="local">local</option>
-                <option value="utc">utc</option>
-              </select>
-            </label>
-          </div>
+        <Select
+          label="Payload kind"
+          value={props.form.payloadKind}
+          onChange={(v) => update({ payloadKind: v as PayloadKind })}
+          options={[
+            { value: "message", label: "message" },
+            { value: "command", label: "command (slash command)" },
+          ]}
+        />
 
-          <label class="flex flex-col gap-1 text-sm">
-            <span class="text-slate-400">
-              {props.form.scheduleKind === "oneoff"
-                ? "Wall-clock (YYYY-MM-DDTHH:MM[:SS])"
-                : "Cron expression (5-field: `min hour dom mon dow`)"}
-            </span>
-            <input
-              type="text"
-              value={props.form.scheduleText}
-              onInput={(e) =>
-                update({
-                  scheduleText: (e.target as HTMLInputElement).value,
-                })
-              }
-              placeholder={
-                props.form.scheduleKind === "oneoff"
-                  ? "2026-05-01T09:00"
-                  : "*/5 * * * *"
-              }
-              class="rounded border border-slate-700 bg-slate-950 px-2 py-1 font-mono"
-            />
-          </label>
+        <Textarea
+          label={
+            props.form.payloadKind === "command"
+              ? "Slash command (must start with /)"
+              : "Message body"
+          }
+          value={props.form.payloadBody}
+          onInput={(e) => update({ payloadBody: e.currentTarget.value })}
+          rows={props.form.payloadKind === "command" ? 1 : 4}
+          mono
+        />
 
-          <div class="flex flex-wrap gap-4 text-sm">
-            <label class="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={props.form.enabled}
-                onChange={(e) =>
-                  update({ enabled: (e.target as HTMLInputElement).checked })
-                }
-              />
-              <span>Enabled</span>
-            </label>
-            <label
-              class="flex items-center gap-2"
-              classList={{
-                "opacity-40": props.form.scheduleKind !== "oneoff",
-              }}
-              title={
-                props.form.scheduleKind !== "oneoff"
-                  ? "Only applies to one-off jobs"
-                  : undefined
-              }
-            >
-              <input
-                type="checkbox"
-                disabled={props.form.scheduleKind !== "oneoff"}
-                checked={props.form.catchupOnStartup}
-                onChange={(e) =>
-                  update({
-                    catchupOnStartup: (e.target as HTMLInputElement).checked,
-                  })
-                }
-              />
-              <span>Catchup on startup</span>
-            </label>
-          </div>
+        <div
+          style={{ display: "grid", "grid-template-columns": "1fr 1fr", gap: "12px" }}
+        >
+          <Select
+            label="Schedule kind"
+            value={props.form.scheduleKind}
+            onChange={(v) => {
+              const next = v as ScheduleKind;
+              const patch: Partial<FormValues> = { scheduleKind: next };
+              if (next === "recurring") patch.catchupOnStartup = false;
+              update(patch);
+            }}
+            options={[
+              { value: "recurring", label: "recurring" },
+              { value: "oneoff", label: "one-off" },
+            ]}
+          />
+          <Select
+            label="Timezone"
+            value={props.form.tz}
+            onChange={(v) => update({ tz: v as WireCronTz })}
+            options={[
+              { value: "local", label: "local" },
+              { value: "utc", label: "utc" },
+            ]}
+          />
+        </div>
 
-          <Show when={props.error}>
-            {(msg) => (
-              <div class="rounded border border-red-700 bg-red-900/40 px-3 py-2 text-sm text-red-200">
-                {msg()}
-              </div>
-            )}
-          </Show>
+        <Input
+          label={
+            props.form.scheduleKind === "oneoff"
+              ? "Wall-clock (YYYY-MM-DDTHH:MM[:SS])"
+              : "Cron expression (5-field)"
+          }
+          value={props.form.scheduleText}
+          onInput={(e) => update({ scheduleText: e.currentTarget.value })}
+          placeholder={
+            props.form.scheduleKind === "oneoff"
+              ? "2026-05-01T09:00"
+              : "*/5 * * * *"
+          }
+        />
 
-          <footer class="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={props.onClose}
-              class="rounded border border-slate-700 bg-slate-900 hover:bg-slate-800 px-3 py-1 text-sm"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={props.submitting}
-              class="rounded border border-emerald-700 bg-emerald-900/40 hover:bg-emerald-800 disabled:opacity-50 px-3 py-1 text-sm"
-            >
-              {props.submitting ? "Saving…" : "Save"}
-            </button>
-          </footer>
-        </form>
-      </div>
-    </div>
+        <div style={{ display: "flex", "flex-wrap": "wrap", gap: "16px" }}>
+          <Checkbox
+            checked={props.form.enabled}
+            onChange={(v) => update({ enabled: v })}
+            label="Enabled"
+          />
+          <Checkbox
+            checked={props.form.catchupOnStartup}
+            disabled={props.form.scheduleKind !== "oneoff"}
+            onChange={(v) => update({ catchupOnStartup: v })}
+            label="Catchup on startup"
+            description={
+              props.form.scheduleKind !== "oneoff"
+                ? "Only applies to one-off jobs"
+                : undefined
+            }
+          />
+        </div>
+
+        <Show when={props.error}>
+          {(msg) => <Toast tone="danger">{msg()}</Toast>}
+        </Show>
+      </form>
+    </Modal>
   );
 }

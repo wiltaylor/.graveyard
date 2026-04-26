@@ -1,6 +1,7 @@
 import { Show, createSignal, type JSX } from "solid-js";
 import { api } from "../api";
 import type { CreateInstanceInput, InstanceSummary, Transport } from "../types";
+import { Button, Input, Select, Toast } from "./ui";
 
 interface Props {
   onCreated: (inst: InstanceSummary) => void;
@@ -52,93 +53,76 @@ export default function AddInstanceForm(props: Props): JSX.Element {
     }
   };
 
-  const inputCls =
-    "w-full rounded bg-slate-800 border border-slate-700 px-2 py-1 text-sm focus:outline-none focus:border-slate-500";
-  const labelCls = "block text-xs uppercase text-slate-400 mb-1 tracking-wider";
-
   return (
-    <form onSubmit={submit} class="space-y-3">
-      <div>
-        <label class={labelCls}>Name</label>
-        <input
-          class={inputCls}
-          required
-          value={name()}
-          onInput={(e) => setName(e.currentTarget.value)}
-          placeholder="my-aciddog"
-        />
-      </div>
+    <form
+      onSubmit={submit}
+      style={{ display: "flex", "flex-direction": "column", gap: "10px" }}
+    >
+      <Input
+        label="Name"
+        required
+        value={name()}
+        onInput={(e) => setName(e.currentTarget.value)}
+        placeholder="my-aciddog"
+      />
 
-      <div>
-        <label class={labelCls}>Transport</label>
-        <select
-          class={inputCls}
-          value={transport()}
-          onChange={(e) => setTransport(e.currentTarget.value as Transport)}
-        >
-          <option value="unix">Unix socket</option>
-          <option value="https">HTTPS</option>
-        </select>
-      </div>
+      <Select<Transport>
+        label="Transport"
+        value={transport()}
+        onChange={(v) => setTransport(v)}
+        options={[
+          { value: "unix", label: "Unix socket" },
+          { value: "https", label: "HTTPS" },
+        ]}
+      />
 
       <Show when={transport() === "unix"}>
-        <div>
-          <label class={labelCls}>Socket path</label>
-          <input
-            class={inputCls}
-            required
-            value={socketPath()}
-            onInput={(e) => setSocketPath(e.currentTarget.value)}
-            placeholder="/tmp/aciddog-remote-demo.sock"
-          />
-        </div>
+        <Input
+          label="Socket path"
+          required
+          value={socketPath()}
+          onInput={(e) => setSocketPath(e.currentTarget.value)}
+          placeholder="/tmp/aciddog-remote-demo.sock"
+        />
       </Show>
 
       <Show when={transport() === "https"}>
-        <div>
-          <label class={labelCls}>URL</label>
-          <input
-            class={inputCls}
-            required
-            value={url()}
-            onInput={(e) => setUrl(e.currentTarget.value)}
-            placeholder="https://host:8443"
-          />
-        </div>
-        <div>
-          <label class={labelCls}>API key</label>
-          <input
-            class={inputCls}
-            type="password"
-            value={apiKey()}
-            onInput={(e) => setApiKey(e.currentTarget.value)}
-            placeholder="optional"
-          />
-        </div>
-        <div>
-          <label class={labelCls}>TLS CA path</label>
-          <input
-            class={inputCls}
-            value={tlsCa()}
-            onInput={(e) => setTlsCa(e.currentTarget.value)}
-            placeholder="optional, e.g. ./ca.pem"
-          />
-        </div>
+        <Input
+          label="URL"
+          required
+          value={url()}
+          onInput={(e) => setUrl(e.currentTarget.value)}
+          placeholder="https://host:8443"
+        />
+        <Input
+          label="API key"
+          type="password"
+          value={apiKey()}
+          onInput={(e) => setApiKey(e.currentTarget.value)}
+          placeholder="optional"
+        />
+        <Input
+          label="TLS CA path"
+          value={tlsCa()}
+          onInput={(e) => setTlsCa(e.currentTarget.value)}
+          placeholder="optional, e.g. ./ca.pem"
+        />
       </Show>
 
       <Show when={error()}>
-        <div class="rounded bg-red-900/40 border border-red-800 px-2 py-1 text-sm text-red-200">
-          {error()}
-        </div>
+        <Toast tone="danger">{error()}</Toast>
       </Show>
 
-      <button
+      <Button
         type="submit"
+        variant="primary"
+        size="md"
+        icon="plus"
         disabled={submitting()}
-        class="w-full rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 px-3 py-1.5 text-sm font-medium"
+        class="w-full"
       >
         {submitting() ? "Adding…" : "Add instance"}
-      </button>
+      </Button>
     </form>
   );
 }

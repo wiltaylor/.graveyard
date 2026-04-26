@@ -11,6 +11,7 @@ import {
 
 import { api } from "../api";
 import type { AgentRow, Task, TaskStatus, TodoStatus } from "../types";
+import { Badge, Button, Toast } from "./ui";
 
 interface Props {
   instanceId: string;
@@ -117,31 +118,31 @@ export default function TasksView(props: Props): JSX.Element {
 
   return (
     <div class="h-full flex flex-col">
-      <header class="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-900/40">
-        <h2 class="text-lg font-semibold">Tasks</h2>
-        <div class="flex items-center gap-2">
+      <header class="flex items-center justify-between px-6 py-3 border-b border-border-subtle bg-bg-1">
+        <div class="flex items-center gap-3">
+          <h2 class="text-base font-semibold text-fg-0">Tasks</h2>
           <Show when={loading()}>
-            <span class="text-xs text-slate-400">loading…</span>
+            <Badge tone="neutral" dot>loading</Badge>
           </Show>
-          <button
-            type="button"
+        </div>
+        <div class="flex items-center gap-2">
+          <Button size="sm" variant="ghost" icon="refresh" onClick={loadTasks}>
+            Refresh
+          </Button>
+          <Button
+            size="sm"
+            variant="primary"
+            icon="plus"
             onClick={() => setShowAddModal(true)}
-            class="rounded border border-emerald-700 bg-emerald-900/40 hover:bg-emerald-800 px-3 py-1 text-sm"
           >
-            + New task
-          </button>
-          <button
-            onClick={loadTasks}
-            class="text-xs text-slate-400 hover:text-slate-100"
-          >
-            refresh
-          </button>
+            New task
+          </Button>
         </div>
       </header>
 
       <Show when={error()}>
-        <div class="mx-4 mt-2 rounded border border-red-800 bg-red-900/40 px-2 py-1 text-sm text-red-200">
-          {error()}
+        <div class="mx-6 mt-3">
+          <Toast tone="danger">{error()}</Toast>
         </div>
       </Show>
 
@@ -206,10 +207,10 @@ function KanbanColumn(props: {
 
   return (
     <section
-      class="flex flex-col rounded border bg-slate-950/40 min-w-[14rem]"
+      class="flex flex-col rounded border bg-bg-0/40 min-w-[14rem]"
       classList={{
-        "border-slate-800": !dragOver(),
-        "border-sky-600 bg-sky-950/30": dragOver(),
+        "border-border-subtle": !dragOver(),
+        "border-accent bg-accent-bg": dragOver(),
       }}
       onDragOver={(e) => {
         e.preventDefault();
@@ -223,11 +224,11 @@ function KanbanColumn(props: {
         if (id) props.onDrop(id);
       }}
     >
-      <header class="px-2 py-1.5 border-b border-slate-800 flex items-center justify-between">
-        <h3 class="text-xs uppercase tracking-wider text-slate-300">
+      <header class="px-2 py-1.5 border-b border-border-subtle flex items-center justify-between">
+        <h3 class="text-xs uppercase tracking-wider text-fg-1">
           {STATUS_LABEL[props.status]}
         </h3>
-        <span class="text-xs text-slate-500">{props.tasks.length}</span>
+        <span class="text-xs text-fg-3">{props.tasks.length}</span>
       </header>
       <div class="flex-1 overflow-y-auto p-2 space-y-2">
         <For each={props.tasks}>
@@ -249,10 +250,10 @@ function TaskCard(props: { task: Task; onClick: () => void }): JSX.Element {
         if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
       }}
       onClick={props.onClick}
-      class="rounded border border-slate-700 bg-slate-900 p-2 text-sm cursor-pointer hover:border-slate-500"
+      class="rounded border border-border bg-bg-1 p-2 text-sm cursor-pointer hover:border-border-strong"
     >
       <div class="font-medium line-clamp-2">{props.task.title}</div>
-      <div class="mt-1 flex items-center justify-between text-xs text-slate-400">
+      <div class="mt-1 flex items-center justify-between text-xs text-fg-2">
         <span>{props.task.assignee ?? "unassigned"}</span>
         <span>
           <Show when={props.task.todos.length > 0}>
@@ -262,7 +263,7 @@ function TaskCard(props: { task: Task; onClick: () => void }): JSX.Element {
             </span>
           </Show>
           <Show when={props.task.blocked_by.length > 0}>
-            <span class="ml-2 text-amber-400">
+            <span class="ml-2 text-warning-fg">
               {props.task.blocked_by.length} blocking
             </span>
           </Show>
@@ -313,30 +314,30 @@ function AddTaskModal(props: {
     <ModalShell onClose={props.onClose} title="New task">
       <form onSubmit={submit} class="space-y-3">
         <label class="block">
-          <span class="text-xs text-slate-400">Title</span>
+          <span class="text-xs text-fg-2">Title</span>
           <input
             type="text"
             required
             value={title()}
             onInput={(e) => setTitle(e.currentTarget.value)}
-            class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+            class="mt-1 w-full rounded border border-border bg-bg-0 px-2 py-1 text-sm"
           />
         </label>
         <label class="block">
-          <span class="text-xs text-slate-400">Description</span>
+          <span class="text-xs text-fg-2">Description</span>
           <textarea
             rows={3}
             value={description()}
             onInput={(e) => setDescription(e.currentTarget.value)}
-            class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+            class="mt-1 w-full rounded border border-border bg-bg-0 px-2 py-1 text-sm"
           />
         </label>
         <label class="block">
-          <span class="text-xs text-slate-400">Assignee</span>
+          <span class="text-xs text-fg-2">Assignee</span>
           <select
             value={assignee()}
             onInput={(e) => setAssignee(e.currentTarget.value)}
-            class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+            class="mt-1 w-full rounded border border-border bg-bg-0 px-2 py-1 text-sm"
           >
             <option value="">(unassigned)</option>
             <For each={assigneeCandidates()}>
@@ -352,14 +353,14 @@ function AddTaskModal(props: {
           <button
             type="button"
             onClick={props.onClose}
-            class="text-sm text-slate-400 hover:text-slate-100"
+            class="text-sm text-fg-2 hover:text-fg-0"
           >
             cancel
           </button>
           <button
             type="submit"
             disabled={submitting() || title().trim() === ""}
-            class="rounded border border-emerald-700 bg-emerald-900/40 hover:bg-emerald-800 disabled:opacity-50 px-3 py-1 text-sm"
+            class="rounded border border-success bg-success-bg hover:bg-success disabled:opacity-50 px-3 py-1 text-sm"
           >
             {submitting() ? "Creating…" : "Create"}
           </button>
@@ -562,7 +563,7 @@ function TaskDetailModal(props: {
       <div class="space-y-4 text-sm">
         <section class="space-y-2">
           <label class="block">
-            <span class="text-xs text-slate-400">Title</span>
+            <span class="text-xs text-fg-2">Title</span>
             <input
               type="text"
               value={title()}
@@ -574,28 +575,28 @@ function TaskDetailModal(props: {
                   (e.currentTarget as HTMLInputElement).blur();
                 }
               }}
-              class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1"
+              class="mt-1 w-full rounded border border-border bg-bg-0 px-2 py-1"
             />
           </label>
           <label class="block">
-            <span class="text-xs text-slate-400">Description</span>
+            <span class="text-xs text-fg-2">Description</span>
             <textarea
               rows={4}
               value={description()}
               onInput={(e) => setDescription(e.currentTarget.value)}
               onBlur={saveDescription}
-              class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1"
+              class="mt-1 w-full rounded border border-border bg-bg-0 px-2 py-1"
             />
           </label>
           <div class="grid grid-cols-2 gap-2">
             <label class="block">
-              <span class="text-xs text-slate-400">Status</span>
+              <span class="text-xs text-fg-2">Status</span>
               <select
                 value={props.task.status}
                 onInput={(e) =>
                   changeStatus(e.currentTarget.value as TaskStatus)
                 }
-                class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1"
+                class="mt-1 w-full rounded border border-border bg-bg-0 px-2 py-1"
               >
                 <For each={STATUS_ORDER}>
                   {(s) => <option value={s}>{STATUS_LABEL[s]}</option>}
@@ -603,11 +604,11 @@ function TaskDetailModal(props: {
               </select>
             </label>
             <label class="block">
-              <span class="text-xs text-slate-400">Assignee</span>
+              <span class="text-xs text-fg-2">Assignee</span>
               <select
                 value={props.task.assignee ?? ""}
                 onInput={(e) => changeAssignee(e.currentTarget.value)}
-                class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1"
+                class="mt-1 w-full rounded border border-border bg-bg-0 px-2 py-1"
               >
                 <option value="">(unassigned)</option>
                 <For each={assigneeCandidates()}>
@@ -620,7 +621,7 @@ function TaskDetailModal(props: {
               </select>
             </label>
           </div>
-          <div class="text-xs text-slate-500">
+          <div class="text-xs text-fg-3">
             created by <span class="font-mono">{props.task.created_by}</span>
             {" · "}
             {new Date(props.task.created_at_secs * 1000).toLocaleString()}
@@ -628,13 +629,13 @@ function TaskDetailModal(props: {
         </section>
 
         <section>
-          <h3 class="text-xs uppercase tracking-wider text-slate-400 mb-1">
+          <h3 class="text-xs uppercase tracking-wider text-fg-2 mb-1">
             Blocked by
           </h3>
           <Show
             when={props.task.blocked_by.length > 0}
             fallback={
-              <div class="text-xs text-slate-500 italic">
+              <div class="text-xs text-fg-3 italic">
                 No dependencies.
               </div>
             }
@@ -644,7 +645,7 @@ function TaskDetailModal(props: {
                 {(depId) => {
                   const dep = taskById(depId);
                   return (
-                    <li class="flex items-center justify-between rounded border border-slate-800 bg-slate-900/60 px-2 py-1">
+                    <li class="flex items-center justify-between rounded border border-border-subtle bg-bg-1 px-2 py-1">
                       <span>
                         <Show
                           when={dep}
@@ -657,7 +658,7 @@ function TaskDetailModal(props: {
                           {(d) => (
                             <>
                               <span class="font-medium">{d().title}</span>
-                              <span class="ml-2 text-xs text-slate-400">
+                              <span class="ml-2 text-xs text-fg-2">
                                 ({STATUS_LABEL[d().status]})
                               </span>
                             </>
@@ -667,7 +668,7 @@ function TaskDetailModal(props: {
                       <button
                         type="button"
                         onClick={() => removeBlockedBy(depId)}
-                        class="text-xs text-red-300 hover:text-red-100"
+                        class="text-xs text-danger-fg hover:text-danger-fg"
                       >
                         remove
                       </button>
@@ -681,7 +682,7 @@ function TaskDetailModal(props: {
             <select
               value={blockedBySelect()}
               onInput={(e) => setBlockedBySelect(e.currentTarget.value)}
-              class="flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+              class="flex-1 rounded border border-border bg-bg-0 px-2 py-1 text-sm"
             >
               <option value="">(select task to block on)</option>
               <For
@@ -702,7 +703,7 @@ function TaskDetailModal(props: {
               type="button"
               onClick={addBlockedBy}
               disabled={!blockedBySelect()}
-              class="rounded border border-slate-700 hover:bg-slate-800 px-2 py-1 text-xs disabled:opacity-50"
+              class="rounded border border-border hover:bg-bg-2 px-2 py-1 text-xs disabled:opacity-50"
             >
               + block
             </button>
@@ -710,7 +711,7 @@ function TaskDetailModal(props: {
         </section>
 
         <section>
-          <h3 class="text-xs uppercase tracking-wider text-slate-400 mb-1">
+          <h3 class="text-xs uppercase tracking-wider text-fg-2 mb-1">
             Todos
           </h3>
           <For each={TODO_ORDER}>
@@ -720,13 +721,13 @@ function TaskDetailModal(props: {
               return (
                 <Show when={groupTodos().length > 0}>
                   <div class="mb-2">
-                    <div class="text-xs text-slate-500 mb-1">
+                    <div class="text-xs text-fg-3 mb-1">
                       {TODO_LABEL[group]} ({groupTodos().length})
                     </div>
                     <ul class="space-y-1">
                       <For each={groupTodos()}>
                         {(todo) => (
-                          <li class="flex items-center justify-between rounded border border-slate-800 bg-slate-900/60 px-2 py-1">
+                          <li class="flex items-center justify-between rounded border border-border-subtle bg-bg-1 px-2 py-1">
                             <button
                               type="button"
                               onClick={() =>
@@ -751,7 +752,7 @@ function TaskDetailModal(props: {
                             <button
                               type="button"
                               onClick={() => removeTodo(todo.id)}
-                              class="text-xs text-red-300 hover:text-red-100 ml-2"
+                              class="text-xs text-danger-fg hover:text-danger-fg ml-2"
                             >
                               remove
                             </button>
@@ -776,13 +777,13 @@ function TaskDetailModal(props: {
                 }
               }}
               placeholder="Add a todo…"
-              class="flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+              class="flex-1 rounded border border-border bg-bg-0 px-2 py-1 text-sm"
             />
             <button
               type="button"
               onClick={addTodo}
               disabled={newTodo().trim() === ""}
-              class="rounded border border-slate-700 hover:bg-slate-800 px-2 py-1 text-xs disabled:opacity-50"
+              class="rounded border border-border hover:bg-bg-2 px-2 py-1 text-xs disabled:opacity-50"
             >
               + todo
             </button>
@@ -790,20 +791,20 @@ function TaskDetailModal(props: {
         </section>
 
         <section>
-          <h3 class="text-xs uppercase tracking-wider text-slate-400 mb-1">
+          <h3 class="text-xs uppercase tracking-wider text-fg-2 mb-1">
             Comments
           </h3>
           <Show
             when={props.task.comments.length > 0}
             fallback={
-              <div class="text-xs text-slate-500 italic">No comments.</div>
+              <div class="text-xs text-fg-3 italic">No comments.</div>
             }
           >
             <ul class="space-y-2">
               <For each={props.task.comments}>
                 {(c) => (
-                  <li class="rounded border border-slate-800 bg-slate-900/60 px-2 py-1">
-                    <div class="flex items-center justify-between text-xs text-slate-400">
+                  <li class="rounded border border-border-subtle bg-bg-1 px-2 py-1">
+                    <div class="flex items-center justify-between text-xs text-fg-2">
                       <span>
                         <span class="font-mono">{c.author}</span>
                         {" · "}
@@ -818,14 +819,14 @@ function TaskDetailModal(props: {
                             setEditingCommentId(c.id);
                             setEditingCommentBody(c.body);
                           }}
-                          class="text-sky-300 hover:text-sky-100"
+                          class="text-accent-fg hover:text-accent-fg"
                         >
                           edit
                         </button>
                         <button
                           type="button"
                           onClick={() => removeComment(c.id)}
-                          class="text-red-300 hover:text-red-100"
+                          class="text-danger-fg hover:text-danger-fg"
                         >
                           remove
                         </button>
@@ -845,7 +846,7 @@ function TaskDetailModal(props: {
                         onInput={(e) =>
                           setEditingCommentBody(e.currentTarget.value)
                         }
-                        class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+                        class="mt-1 w-full rounded border border-border bg-bg-0 px-2 py-1 text-sm"
                       />
                       <div class="flex justify-end gap-2 mt-1">
                         <button
@@ -854,14 +855,14 @@ function TaskDetailModal(props: {
                             setEditingCommentId(null);
                             setEditingCommentBody("");
                           }}
-                          class="text-xs text-slate-400 hover:text-slate-100"
+                          class="text-xs text-fg-2 hover:text-fg-0"
                         >
                           cancel
                         </button>
                         <button
                           type="button"
                           onClick={saveEditedComment}
-                          class="text-xs text-emerald-300 hover:text-emerald-100"
+                          class="text-xs text-success-fg hover:text-success-fg"
                         >
                           save
                         </button>
@@ -884,13 +885,13 @@ function TaskDetailModal(props: {
                 }
               }}
               placeholder="Add a comment…"
-              class="flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
+              class="flex-1 rounded border border-border bg-bg-0 px-2 py-1 text-sm"
             />
             <button
               type="button"
               onClick={addComment}
               disabled={newComment().trim() === ""}
-              class="rounded border border-slate-700 hover:bg-slate-800 px-2 py-1 text-xs disabled:opacity-50"
+              class="rounded border border-border hover:bg-bg-2 px-2 py-1 text-xs disabled:opacity-50"
             >
               + comment
             </button>
@@ -898,25 +899,25 @@ function TaskDetailModal(props: {
         </section>
 
         <section>
-          <h3 class="text-xs uppercase tracking-wider text-slate-400 mb-1">
+          <h3 class="text-xs uppercase tracking-wider text-fg-2 mb-1">
             System notes
           </h3>
           <Show
             when={props.task.notes.length > 0}
             fallback={
-              <div class="text-xs text-slate-500 italic">No notes.</div>
+              <div class="text-xs text-fg-3 italic">No notes.</div>
             }
           >
             <ul class="space-y-1">
               <For each={props.task.notes}>
                 {(n) => (
-                  <li class="rounded bg-slate-900/40 px-2 py-1 text-xs">
-                    <span class="font-mono text-slate-400">{n.author}</span>
+                  <li class="rounded bg-bg-1 px-2 py-1 text-xs">
+                    <span class="font-mono text-fg-2">{n.author}</span>
                     {" · "}
-                    <span class="text-slate-500">
+                    <span class="text-fg-3">
                       {new Date(n.timestamp_secs * 1000).toLocaleString()}
                     </span>
-                    <div class="mt-0.5 text-slate-300">{n.body}</div>
+                    <div class="mt-0.5 text-fg-1">{n.body}</div>
                   </li>
                 )}
               </For>
@@ -924,15 +925,15 @@ function TaskDetailModal(props: {
           </Show>
         </section>
 
-        <div class="flex justify-between border-t border-slate-800 pt-3">
+        <div class="flex justify-between border-t border-border-subtle pt-3">
           <button
             type="button"
             onClick={deleteTask}
-            class="text-sm text-red-300 hover:text-red-100"
+            class="text-sm text-danger-fg hover:text-danger-fg"
           >
             Delete task
           </button>
-          <div class="text-xs text-slate-500">
+          <div class="text-xs text-fg-3">
             <Show when={saving()}>saving…</Show>
           </div>
         </div>
@@ -952,7 +953,7 @@ function ModalShell(props: {
       onClick={props.onClose}
     >
       <div
-        class="my-10 w-full max-w-2xl rounded border border-slate-700 bg-slate-900 p-4 shadow-xl"
+        class="my-10 w-full max-w-2xl rounded border border-border bg-bg-1 p-4 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <header class="flex items-center justify-between mb-3">
@@ -960,7 +961,7 @@ function ModalShell(props: {
           <button
             type="button"
             onClick={props.onClose}
-            class="text-slate-400 hover:text-slate-100"
+            class="text-fg-2 hover:text-fg-0"
           >
             ✕
           </button>

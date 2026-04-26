@@ -13,6 +13,7 @@ import { marked } from "marked";
 
 import { api, chatEventsUrl } from "../api";
 import type { ChatBlockEvent, WireChatBlock } from "../types";
+import { Badge, Button, Textarea, Toast } from "./ui";
 
 interface Props {
   instanceId: string;
@@ -117,34 +118,25 @@ export default function ChatPane(props: Props): JSX.Element {
 
   return (
     <div class="flex flex-col h-[calc(100vh-3.5rem)]">
-      <header class="flex items-center justify-between gap-4 border-b border-slate-800 px-4 py-2 bg-slate-900/60">
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={props.onClose}
-            class="text-sm text-slate-400 hover:text-slate-100"
-            title="Back to instance detail"
-          >
-            ← back
-          </button>
-          <h2 class="text-lg font-semibold">{props.agent}</h2>
+      <header class="flex items-center justify-between gap-4 border-b border-border-subtle px-6 py-3 bg-bg-1">
+        <div class="flex items-center gap-3">
+          <Button size="sm" variant="ghost" icon="arrow-right" onClick={props.onClose}>
+            Back
+          </Button>
+          <h2 class="text-base font-semibold text-fg-0">{props.agent}</h2>
           <StreamStatusBadge
             status={streamStatus()}
             dropped={droppedCount()}
           />
         </div>
-        <button
-          type="button"
-          onClick={loadHistory}
-          class="text-xs text-slate-400 hover:text-slate-100"
-        >
-          refresh
-        </button>
+        <Button size="sm" variant="ghost" icon="refresh" onClick={loadHistory}>
+          Refresh
+        </Button>
       </header>
 
       <Show when={historyError()}>
-        <div class="mx-4 mt-2 rounded border border-red-800 bg-red-900/40 px-2 py-1 text-sm text-red-200">
-          {historyError()}
+        <div class="mx-6 mt-3">
+          <Toast tone="danger">{historyError()}</Toast>
         </div>
       </Show>
 
@@ -152,7 +144,7 @@ export default function ChatPane(props: Props): JSX.Element {
         <Show
           when={blocks().length > 0}
           fallback={
-            <div class="text-sm text-slate-500 italic">
+            <div class="text-sm text-fg-3 italic">
               {historyError() ? "history unavailable." : "(no messages yet)"}
             </div>
           }
@@ -163,34 +155,34 @@ export default function ChatPane(props: Props): JSX.Element {
 
       <form
         onSubmit={submit}
-        class="border-t border-slate-800 p-3 bg-slate-900/60 space-y-2"
+        class="border-t border-border-subtle p-3 bg-bg-1 space-y-2"
       >
         <Show when={sendError()}>
-          <div class="rounded border border-red-800 bg-red-900/40 px-2 py-1 text-sm text-red-200">
-            {sendError()}
-          </div>
+          <Toast tone="danger">{sendError()}</Toast>
         </Show>
-        <div class="flex gap-2">
-          <textarea
-            value={input()}
-            onInput={(e) => setInput(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                (e.currentTarget.form as HTMLFormElement).requestSubmit();
-              }
-            }}
-            placeholder="Send a message as the human operator. Enter to send, Shift+Enter for newline."
-            rows={2}
-            class="flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm resize-y"
-          />
-          <button
+        <div class="flex gap-2 items-end">
+          <div class="flex-1">
+            <Textarea
+              value={input()}
+              onInput={(e) => setInput(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  (e.currentTarget.form as HTMLFormElement).requestSubmit();
+                }
+              }}
+              placeholder="Send a message as the human operator. Enter to send, Shift+Enter for newline."
+              rows={2}
+            />
+          </div>
+          <Button
             type="submit"
+            variant="primary"
+            icon="arrow-right"
             disabled={sending() || input().trim() === ""}
-            class="self-end rounded border border-emerald-700 bg-emerald-900/40 hover:bg-emerald-800 disabled:opacity-50 px-3 py-1 text-sm"
           >
             {sending() ? "Sending…" : "Send"}
-          </button>
+          </Button>
         </div>
       </form>
     </div>
@@ -201,28 +193,22 @@ function StreamStatusBadge(props: {
   status: StreamStatus;
   dropped: number;
 }): JSX.Element {
+  const tone = () =>
+    props.status === "live"
+      ? "success"
+      : props.status === "lagged"
+        ? "warning"
+        : props.status === "closed"
+          ? "danger"
+          : "neutral";
+  const label = () =>
+    props.status === "lagged" && props.dropped > 0
+      ? `lagged · ${props.dropped} dropped`
+      : props.status;
   return (
-    <span
-      class="text-xs rounded px-1.5 py-0.5 border"
-      classList={{
-        "text-slate-400 border-slate-700": props.status === "connecting",
-        "text-emerald-300 border-emerald-800 bg-emerald-900/30":
-          props.status === "live",
-        "text-amber-300 border-amber-800 bg-amber-900/30":
-          props.status === "lagged",
-        "text-red-300 border-red-800 bg-red-900/30":
-          props.status === "closed",
-      }}
-      title={
-        props.status === "lagged" && props.dropped > 0
-          ? `dropped ${props.dropped} event(s); history re-fetched`
-          : undefined
-      }
-    >
-      {props.status === "lagged" && props.dropped > 0
-        ? `lagged · ${props.dropped} dropped`
-        : props.status}
-    </span>
+    <Badge tone={tone()} dot>
+      {label()}
+    </Badge>
   );
 }
 
@@ -376,10 +362,10 @@ function BlockView(props: { block: WireChatBlock }): JSX.Element {
       >
         {(b) => (
           <pre
-            class="rounded bg-slate-900/60 border border-slate-800 px-2 py-1 text-xs whitespace-pre-wrap break-words"
+            class="rounded bg-bg-1 border border-border-subtle px-2 py-1 text-xs whitespace-pre-wrap break-words"
             classList={{
-              "text-slate-300": b().kind === "automaton_stdout",
-              "text-red-300": b().kind === "automaton_stderr",
+              "text-fg-1": b().kind === "automaton_stdout",
+              "text-danger-fg": b().kind === "automaton_stderr",
             }}
           >
             {b().line}
@@ -393,7 +379,7 @@ function BlockView(props: { block: WireChatBlock }): JSX.Element {
 function UserTextBlock(props: { text: string }): JSX.Element {
   return (
     <div class="flex justify-end">
-      <div class="max-w-[80%] rounded-lg bg-emerald-900/50 border border-emerald-800 px-3 py-2 text-sm whitespace-pre-wrap break-words">
+      <div class="max-w-[80%] rounded-lg bg-success-bg border border-success px-3 py-2 text-sm whitespace-pre-wrap break-words">
         {props.text}
       </div>
     </div>
@@ -408,7 +394,7 @@ function AiMarkdownBlock(props: { raw: string }): JSX.Element {
   return (
     <div class="flex justify-start">
       <div
-        class="max-w-[85%] rounded-lg bg-slate-900/80 border border-slate-800 px-3 py-2 text-sm prose prose-invert prose-sm max-w-none"
+        class="max-w-[85%] rounded-lg bg-bg-1 border border-border-subtle px-3 py-2 text-sm prose prose-invert prose-sm max-w-none"
         innerHTML={rendered()}
       />
     </div>
@@ -430,20 +416,20 @@ function ToolCard(props: {
     <div
       class="rounded border text-xs"
       classList={{
-        "border-red-800 bg-red-950/40": props.isError,
-        "border-slate-800 bg-slate-900/60": !props.isError,
+        "border-danger bg-danger-bg": props.isError,
+        "border-border-subtle bg-bg-1": !props.isError,
       }}
     >
       <div class="flex items-center justify-between gap-2 px-2 py-1">
         <div class="font-mono truncate">{props.heading}</div>
         <div class="flex items-center gap-2">
           <Show when={props.pending}>
-            <span class="text-amber-300">pending…</span>
+            <span class="text-warning-fg">pending…</span>
           </Show>
           <Show when={bodyLines().length > 12}>
             <button
               type="button"
-              class="text-slate-400 hover:text-slate-100"
+              class="text-fg-2 hover:text-fg-0"
               onClick={() => setExpanded(!expanded())}
             >
               {expanded() ? "collapse" : "expand"}
@@ -453,7 +439,7 @@ function ToolCard(props: {
       </div>
       <Show when={props.body}>
         <pre
-          class="border-t border-slate-800 px-2 py-1 font-mono whitespace-pre-wrap break-words"
+          class="border-t border-border-subtle px-2 py-1 font-mono whitespace-pre-wrap break-words"
           classList={{
             "text-[0.72rem]": props.bodyClass === "diff",
           }}
@@ -475,11 +461,11 @@ function SystemBlock(props: {
     <div
       class="rounded border px-2 py-1 text-xs"
       classList={{
-        "border-slate-800 bg-slate-900/60 text-slate-400":
+        "border-border-subtle bg-bg-1 text-fg-2":
           props.level === "info",
-        "border-amber-800 bg-amber-900/40 text-amber-200":
+        "border-warning bg-warning-bg text-warning-fg":
           props.level === "warn",
-        "border-red-800 bg-red-900/40 text-red-200":
+        "border-danger bg-danger-bg text-danger-fg":
           props.level === "error",
       }}
     >
@@ -499,11 +485,11 @@ function MailBlock(props: {
     <div
       class="rounded border px-2 py-1 text-sm"
       classList={{
-        "border-red-800 bg-red-950/40": props.isError,
-        "border-sky-800 bg-sky-950/30": !props.isError,
+        "border-danger bg-danger-bg": props.isError,
+        "border-accent bg-accent-bg": !props.isError,
       }}
     >
-      <div class="text-xs text-slate-400 font-mono mb-1">
+      <div class="text-xs text-fg-2 font-mono mb-1">
         mail {arrow()} {props.counterpart}
       </div>
       <div class="whitespace-pre-wrap break-words">{props.body}</div>
@@ -520,12 +506,12 @@ function ChannelBlock(props: {
     <div
       class="rounded border px-2 py-1 text-sm"
       classList={{
-        "border-slate-800 bg-slate-900/30 text-slate-400 italic":
+        "border-border-subtle bg-bg-1/30 text-fg-2 italic":
           props.isWelcome,
         "border-indigo-800 bg-indigo-950/30": !props.isWelcome,
       }}
     >
-      <div class="text-xs text-slate-400 font-mono mb-1">
+      <div class="text-xs text-fg-2 font-mono mb-1">
         #{props.sender}
       </div>
       <div class="whitespace-pre-wrap break-words">{props.body}</div>
@@ -551,22 +537,22 @@ function AgentInfoBlock(props: {
     props.block.context_window && used() > 0;
 
   return (
-    <div class="rounded border border-slate-700 bg-slate-900/80 px-3 py-2 text-xs space-y-1">
-      <div class="font-semibold text-slate-200">{props.block.core}</div>
+    <div class="rounded border border-border bg-bg-1 px-3 py-2 text-xs space-y-1">
+      <div class="font-semibold text-fg-0">{props.block.core}</div>
       <Show when={props.block.tools.length > 0}>
-        <div class="text-slate-400">
+        <div class="text-fg-2">
           tools: {props.block.tools.join(", ")}
         </div>
       </Show>
       <Show when={showUsage()}>
-        <div class="text-slate-400">
+        <div class="text-fg-2">
           context: {used().toLocaleString()} / {" "}
           {props.block.context_window?.toLocaleString()} tokens
         </div>
       </Show>
       <Show when={props.block.prompt}>
-        <details class="text-slate-300">
-          <summary class="cursor-pointer text-slate-400 hover:text-slate-100">
+        <details class="text-fg-1">
+          <summary class="cursor-pointer text-fg-2 hover:text-fg-0">
             show prompt
           </summary>
           <pre class="mt-1 whitespace-pre-wrap break-words text-[0.72rem]">
