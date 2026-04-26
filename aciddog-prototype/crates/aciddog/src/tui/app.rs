@@ -1674,6 +1674,29 @@ impl AgentChat {
         idx
     }
 
+    /// Re-broadcast the block at `pos` to every SSE subscriber, reusing
+    /// the original `seq` (the block's index). Subscribers replace the
+    /// block at that index, which is how in-place mutations like a tool
+    /// result resolving the `pending` flag reach connected clients.
+    pub(super) fn emit_block_at(&self, pos: usize) {
+        let Some(tx) = &self.chat_block_tx else {
+            return;
+        };
+        if tx.receiver_count() == 0 {
+            return;
+        }
+        let Some(block) = self.blocks.get(pos) else {
+            return;
+        };
+        let ev = crate::wire_chat::ChatBlockEvent {
+            agent: self.display_name.clone(),
+            block: crate::wire_chat::WireChatBlock::from(block),
+            ts: chrono::Utc::now().to_rfc3339(),
+            seq: pos as u64,
+        };
+        let _ = tx.send(ev);
+    }
+
     /// Trim the chat back to the opening `AgentInfo` block (if any),
     /// append a `system_info` marker explaining the compaction, and
     /// reset scroll/selection so the user sees the fresh start. Used
@@ -2724,6 +2747,7 @@ impl App {
                     if let Some(block) = chat.blocks.get_mut(pos) {
                         block.apply_tool_result(&content, is_error);
                     }
+                    chat.emit_block_at(pos);
                 } else {
                     // Unknown id — fallback to a generic result block.
                     warn!(%tool_use_id, "orphan tool_result; appending generic block");

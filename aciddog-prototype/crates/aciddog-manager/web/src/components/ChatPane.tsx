@@ -78,7 +78,21 @@ export default function ChatPane(props: Props): JSX.Element {
     es.onmessage = (ev) => {
       try {
         const parsed = JSON.parse(ev.data) as ChatBlockEvent;
-        setBlocks((prev) => [...prev, parsed.block]);
+        // `seq` is the block's zero-based index in the agent chat at
+        // emit time, so a repeat seq is the backend telling us a block
+        // mutated in place (e.g. a tool result clearing `pending`).
+        // Replace at that index when we already have it; otherwise
+        // append. Gaps (`seq > length`) shouldn't happen on an in-order
+        // stream, but if they do, the lagged handler re-syncs history.
+        setBlocks((prev) => {
+          const seq = Number(parsed.seq);
+          if (Number.isFinite(seq) && seq < prev.length) {
+            const next = prev.slice();
+            next[seq] = parsed.block;
+            return next;
+          }
+          return [...prev, parsed.block];
+        });
       } catch {
         // Malformed event — ignore rather than tearing down the stream.
       }
