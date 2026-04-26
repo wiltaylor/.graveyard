@@ -116,9 +116,10 @@ manager-fmt:
 manager-test:
 	cargo test --manifest-path {{MANAGER_MANIFEST}}
 
-# Launch the manager on 127.0.0.1:7000 (builds the frontend first)
+# Launch the manager on 127.0.0.1:7000 with a deterministic test/test admin
 [group('run')]
 run-manager: manager-frontend-build
+	cargo run --manifest-path {{MANAGER_MANIFEST}} -- reset-password --username test --password test
 	cargo run --manifest-path {{MANAGER_MANIFEST}}
 
 # Build everything

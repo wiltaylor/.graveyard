@@ -195,10 +195,7 @@ pub async fn delete(
 ///
 /// Opens an SSE stream against the webservice's `/v1/cron/events`
 /// endpoint and forwards the raw byte stream to the browser.
-pub async fn events(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> AppResult<Response> {
+pub async fn events(State(state): State<AppState>, Path(id): Path<Uuid>) -> AppResult<Response> {
     let row = load_row_for_routes(&state, id).await?;
     let client = Client::from_row(&row)?;
     let (upstream_status, stream) = client.open_cron_events().await?;

@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod auth;
 pub mod channels;
 pub mod chat;
 pub mod cron;
@@ -20,7 +21,12 @@ use tower_http::trace::TraceLayer;
 use crate::state::AppState;
 
 pub fn build_router(state: AppState, static_dir: &Path) -> Router {
-    let api = Router::new()
+    let public_auth = Router::new()
+        .route("/auth/login", post(auth::login))
+        .route("/auth/logout", post(auth::logout))
+        .route("/auth/whoami", get(auth::whoami));
+
+    let protected = Router::new()
         .route("/instances", get(instances::list).post(instances::create))
         .route("/instances/:id", delete(instances::delete))
         .route("/instances/:id/agents", get(agents::list))
@@ -115,7 +121,13 @@ pub fn build_router(state: AppState, static_dir: &Path) -> Router {
             "/instances/:id/cron/:job_id",
             patch(cron::patch).delete(cron::delete),
         )
-        .route("/instances/:id/cron/events", get(cron::events));
+        .route("/instances/:id/cron/events", get(cron::events))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::require_auth,
+        ));
+
+    let api = Router::new().merge(public_auth).merge(protected);
 
     let static_service = ServeDir::new(static_dir).append_index_html_on_directories(true);
 

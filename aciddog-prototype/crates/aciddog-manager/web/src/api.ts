@@ -1,3 +1,4 @@
+import { UnauthorizedError } from "./errors";
 import type {
   AgentListResponse,
   ApiError,
@@ -27,7 +28,10 @@ import type {
   WorkflowTemplatesResponse,
 } from "./types";
 
-async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+export async function request<T>(
+  input: RequestInfo,
+  init?: RequestInit,
+): Promise<T> {
   const res = await fetch(input, {
     ...init,
     headers: {
@@ -35,6 +39,18 @@ async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {}),
     },
   });
+  if (res.status === 401) {
+    // Anything other than the explicit auth probes treats 401 as "session
+    // expired" — drop the SPA back to login without threading callbacks
+    // through every call site.
+    if (typeof window !== "undefined") {
+      const url = typeof input === "string" ? input : input.url;
+      if (!url.endsWith("/api/auth/whoami") && !url.endsWith("/api/auth/login")) {
+        window.dispatchEvent(new CustomEvent("auth:logout"));
+      }
+    }
+    throw new UnauthorizedError();
+  }
   if (res.status === 204) {
     return undefined as T;
   }

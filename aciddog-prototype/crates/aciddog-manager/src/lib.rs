@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod client;
 pub mod config;
 pub mod db;
@@ -5,6 +6,7 @@ pub mod error;
 pub mod ipc;
 pub mod model;
 pub mod routes;
+pub mod seed;
 pub mod state;
 pub mod wire_channel;
 pub mod wire_chat;

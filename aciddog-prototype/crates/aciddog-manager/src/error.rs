@@ -11,6 +11,12 @@ pub enum AppError {
     #[error("validation: {0}")]
     Validation(String),
 
+    #[error("unauthenticated")]
+    Unauthenticated,
+
+    #[error("invalid username or password")]
+    BadCredentials,
+
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
 
@@ -23,6 +29,8 @@ impl IntoResponse for AppError {
         let (status, message) = match &self {
             AppError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
             AppError::Validation(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            AppError::Unauthenticated => (StatusCode::UNAUTHORIZED, self.to_string()),
+            AppError::BadCredentials => (StatusCode::UNAUTHORIZED, self.to_string()),
             AppError::Db(e) => {
                 tracing::error!(error = %e, "database error");
                 (

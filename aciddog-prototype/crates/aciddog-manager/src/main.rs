@@ -1,6 +1,9 @@
 use std::net::SocketAddr;
 
-use aciddog_manager::{config::CliArgs, db, routes, state::AppState};
+use aciddog_manager::auth::AuthConfig;
+use aciddog_manager::config::{CliArgs, Command};
+use aciddog_manager::model::session;
+use aciddog_manager::{db, routes, seed, state::AppState};
 use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::net::TcpListener;
@@ -14,7 +17,25 @@ async fn main() -> Result<()> {
 
     let args = CliArgs::parse();
     let pool = db::connect(&args.db).await?;
-    let state = AppState::new(pool);
+
+    if let Some(cmd) = args.command.clone() {
+        match cmd {
+            Command::ResetPassword { username, password } => {
+                seed::reset_password_command(&pool, &username, password.as_deref()).await?;
+            }
+        }
+        return Ok(());
+    }
+
+    seed::ensure_admin_user(&pool).await?;
+    let _ = session::purge_expired(&pool).await;
+
+    let state = AppState::new(
+        pool,
+        AuthConfig {
+            cookie_secure: args.cookie_secure,
+        },
+    );
     let router = routes::build_router(state, &args.static_dir);
 
     let addr: SocketAddr = args
