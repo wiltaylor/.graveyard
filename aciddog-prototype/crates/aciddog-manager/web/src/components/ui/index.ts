@@ -55,6 +55,9 @@ export { default as Timepicker } from "./Timepicker";
 export { default as Droplist } from "./Droplist";
 export type { DroplistItem } from "./Droplist";
 
+export { default as ChipPicker } from "./ChipPicker";
+export type { ChipOption } from "./ChipPicker";
+
 export { default as Chat } from "./Chat";
 export type {
   ChatMessage,
