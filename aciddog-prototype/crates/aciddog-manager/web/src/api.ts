@@ -21,6 +21,7 @@ import type {
   MarketplaceAvailableSkill,
   MarketplaceProgressEvent,
   MarketplaceSummary,
+  ReadWclResponse,
   ReloadResponse,
   RemoteSkillSummary,
   SearchResponse,
@@ -96,6 +97,15 @@ export const api = {
   reloadTeam: (id: string) =>
     request<ReloadResponse>(`/api/instances/${id}/team/reload`, {
       method: "POST",
+    }),
+
+  readTeamWcl: (id: string) =>
+    request<ReadWclResponse>(`/api/instances/${id}/team/wcl`),
+
+  writeTeamWcl: (id: string, wcl: string) =>
+    request<ReloadResponse>(`/api/instances/${id}/team/wcl`, {
+      method: "POST",
+      body: JSON.stringify({ wcl }),
     }),
 
   // Channels

@@ -585,6 +585,21 @@ pub enum RequestCmd {
     /// Same code path as the TUI `/reload` slash command and the
     /// daemon SIGHUP handler.
     ServerReload,
+    /// Sysadmin: read the raw WCL source the daemon was started with
+    /// (the file at `App::config_path`). Returns
+    /// `{ wcl: String, path: String }` in `Response::data`. The
+    /// manager uses this to bootstrap the team editor with the exact
+    /// on-disk contents (including any comments / formatting).
+    TeamRead,
+    /// Sysadmin: replace the on-disk WCL config with the supplied
+    /// source string and reconcile the running fleet. The daemon
+    /// validates the WCL via `config::parse_config` *before* touching
+    /// disk; if parsing fails the existing file is left intact.
+    /// On success the new file is written via `<path>.tmp` + `rename(2)`
+    /// and `tui::reload` is invoked (same code path as `ServerReload`).
+    TeamWrite {
+        wcl: String,
+    },
     /// Sysadmin: list every skill directory under `.aciddog/skills/`.
     /// Distinct from the agent-scoped `SkillList`, which only returns
     /// the caller's allowlist. Returns

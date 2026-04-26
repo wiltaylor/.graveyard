@@ -972,6 +972,8 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         RequestCmd::ServerShutdown => ChatBlock::from_tool_use("aciddog server shutdown", input),
         RequestCmd::ServerExit => ChatBlock::from_tool_use("aciddog server exit", input),
         RequestCmd::ServerReload => ChatBlock::from_tool_use("aciddog server reload", input),
+        RequestCmd::TeamRead => ChatBlock::from_tool_use("aciddog team read", input),
+        RequestCmd::TeamWrite { .. } => ChatBlock::from_tool_use("aciddog team write", input),
         RequestCmd::SkillsList => ChatBlock::from_tool_use("aciddog skills list", input),
         RequestCmd::SkillRead { name } => {
             ChatBlock::from_tool_use(&format!("aciddog skills read --id {name}"), input)
@@ -3322,6 +3324,12 @@ impl App {
             }
             RequestCmd::ServerReload => {
                 self.handle_admin_server_reload(idx, reply);
+            }
+            RequestCmd::TeamRead => {
+                self.handle_admin_team_read(idx, reply);
+            }
+            RequestCmd::TeamWrite { wcl } => {
+                self.handle_admin_team_write(idx, wcl, reply);
             }
             RequestCmd::SkillsList => {
                 self.handle_admin_skills_list(idx, reply);
@@ -7578,6 +7586,100 @@ impl App {
             }
             Err(e) => {
                 warn!(error = %e, "reload failed");
+                let _ = reply.send(Response::err(e));
+            }
+        }
+    }
+
+    fn handle_admin_team_read(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_sysadmin(sender_idx) {
+            let _ = reply.send(Response::err("not a sysadmin"));
+            return;
+        }
+        if self.config_path.as_os_str().is_empty() {
+            let _ = reply.send(Response::err(
+                "daemon was started without a config path; cannot read WCL",
+            ));
+            return;
+        }
+        let wcl = match std::fs::read_to_string(&self.config_path) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = reply.send(Response::err(format!(
+                    "reading config `{}`: {e}",
+                    self.config_path.display()
+                )));
+                return;
+            }
+        };
+        let payload = serde_json::json!({
+            "wcl": wcl,
+            "path": self.config_path.display().to_string(),
+        });
+        let _ = reply.send(Response::ok_data(payload));
+    }
+
+    fn handle_admin_team_write(
+        &mut self,
+        sender_idx: usize,
+        wcl: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_sysadmin(sender_idx) {
+            let _ = reply.send(Response::err("not a sysadmin"));
+            return;
+        }
+        if self.config_path.as_os_str().is_empty() {
+            let _ = reply.send(Response::err(
+                "daemon was started without a config path; cannot write WCL",
+            ));
+            return;
+        }
+        info!("team write requested by supervisor");
+        // Validate before touching disk so a bad payload can never
+        // replace a good config file.
+        if let Err(e) = crate::config::parse_config(&wcl, &self.config_path) {
+            let _ = reply.send(Response::err(format!("invalid WCL: {e}")));
+            return;
+        }
+        // Atomic write: write to <path>.tmp then rename(2). On Unix
+        // this guarantees the config file is either fully old or fully
+        // new — no half-written state visible to the next reload.
+        let target = self.config_path.clone();
+        let tmp = match target.extension() {
+            Some(ext) => {
+                let mut s = ext.to_os_string();
+                s.push(".tmp");
+                target.with_extension(s)
+            }
+            None => target.with_extension("tmp"),
+        };
+        if let Err(e) = std::fs::write(&tmp, &wcl) {
+            let _ = reply.send(Response::err(format!(
+                "writing temp config `{}`: {e}",
+                tmp.display()
+            )));
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp, &target) {
+            // Best-effort cleanup; ignore failure.
+            let _ = std::fs::remove_file(&tmp);
+            let _ = reply.send(Response::err(format!(
+                "renaming temp config into place at `{}`: {e}",
+                target.display()
+            )));
+            return;
+        }
+        match self.reload() {
+            Ok(summary) => {
+                let _ = reply.send(Response::ok(summary));
+            }
+            Err(e) => {
+                warn!(error = %e, "reload after team write failed");
                 let _ = reply.send(Response::err(e));
             }
         }

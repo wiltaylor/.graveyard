@@ -2,6 +2,7 @@ import { For, Show, createEffect, createSignal, type JSX } from "solid-js";
 
 import { api } from "../api";
 import type { WireAiCore, WireTeamInfo } from "../types";
+import TeamEditor from "./team/TeamEditor";
 import {
   Badge,
   Button,
@@ -27,6 +28,7 @@ export default function TeamView(props: Props): JSX.Element {
   const [removing, setRemoving] = createSignal(false);
   const [removeError, setRemoveError] = createSignal<string | null>(null);
   const [reloading, setReloading] = createSignal(false);
+  const [editing, setEditing] = createSignal(false);
   const [reloadToast, setReloadToast] = createSignal<{
     tone: "success" | "danger";
     text: string;
@@ -100,6 +102,20 @@ export default function TeamView(props: Props): JSX.Element {
   });
 
   return (
+    <Show
+      when={!editing()}
+      fallback={
+        <TeamEditor
+          instanceId={props.instanceId}
+          instanceName={props.instanceName}
+          onClose={() => {
+            setEditing(false);
+            // Refresh the read-only snapshot in case the editor saved.
+            void load();
+          }}
+        />
+      }
+    >
     <div
       style={{
         height: "100%",
@@ -155,6 +171,14 @@ export default function TeamView(props: Props): JSX.Element {
             disabled={reloading()}
           >
             {reloading() ? "Reloading…" : "Reload config"}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            icon="settings"
+            onClick={() => setEditing(true)}
+          >
+            Edit team
           </Button>
           <Button
             variant="danger"
@@ -333,6 +357,7 @@ export default function TeamView(props: Props): JSX.Element {
         </div>
       </Modal>
     </div>
+    </Show>
   );
 }
 

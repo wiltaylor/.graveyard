@@ -141,6 +141,17 @@ pub enum RequestCmd {
     /// fleet. Response message carries the reload summary on success.
     /// Requires `sysadmin = true` on the manager-portal automaton.
     ServerReload,
+    /// Sysadmin: read the raw WCL source from the daemon's config path.
+    /// Response carries `{ wcl, path }` in `data`. Requires
+    /// `sysadmin = true` on the manager-portal automaton.
+    TeamRead,
+    /// Sysadmin: replace the on-disk WCL config with the supplied source
+    /// and reconcile the running fleet. The daemon validates the WCL
+    /// before touching disk; the response carries the reload summary on
+    /// success. Requires `sysadmin = true` on the manager-portal automaton.
+    TeamWrite {
+        wcl: String,
+    },
     // ---- Memory ----------------------------------------------------
     MemoryBanks,
     MemorySearchJson {

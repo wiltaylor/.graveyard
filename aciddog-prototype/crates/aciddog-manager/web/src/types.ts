@@ -331,6 +331,15 @@ export interface ReloadResponse {
   error?: string;
 }
 
+export interface ReadWclResponse {
+  ok: boolean;
+  /// Raw WCL source from the daemon's config file.
+  wcl?: string;
+  /// Path on the daemon host (display only — informational).
+  path?: string;
+  error?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Channels
 // ---------------------------------------------------------------------------
