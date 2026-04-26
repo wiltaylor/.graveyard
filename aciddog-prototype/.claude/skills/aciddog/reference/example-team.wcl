@@ -1,0 +1,255 @@
+// Annotated team WCL — copy-paste starter for a new aciddog team.
+// Every block is included with comments explaining each field. Trim
+// what you don't need; the only mandatory blocks are `team` (exactly
+// one) and at least one `ai_core` referenced by the team or its agents.
+//
+// For a more complete worked example see /home/wil/dev/aciddog/demo/aciddog.wcl.
+
+import <aciddog.wcl>
+
+// ─── AI cores ──────────────────────────────────────────────────────
+// Pick one or more. Agents/workers reference them by id via `ai_core`.
+
+// Local `claude` CLI. No API key — uses whatever `claude` is logged into.
+ai_core default_core {
+  type = :claudeCode
+  systemPrompt = <<EOT
+    You are a code agent operating in a terminal.
+  EOT
+  // model = "claude-opus-4-7"   // optional `--model` override
+  default_tools = ["Bash", "Read", "Edit", "Grep", "Glob"]
+}
+
+// Anthropic Messages API. Works against api.anthropic.com or compatible
+// endpoints (e.g. Z.ai). Put the key in `.env`.
+// ai_core anthropic_zai {
+//   type = :anthropicApi
+//   usage_provider = :zai
+//   apiUrl = "https://api.z.ai/api/anthropic"
+//   apiKeyEnv = "ZAI_API_KEY"
+//   model = "glm-5.1"
+//   default_tools = ["Bash", "Read", "Write", "Edit", "Grep", "Glob"]
+// }
+
+// OpenAI-compatible chat-completions. Works against OpenAI, OpenRouter,
+// Ollama. apiUrl must be the **v1 base** (`/chat/completions` is appended).
+// ai_core openrouter {
+//   type = :openAiApi
+//   usage_provider = :openrouter
+//   apiUrl = "https://openrouter.ai/api/v1"
+//   apiKeyEnv = "OPENROUTER_API_KEY"
+//   model = "openai/gpt-5.4"
+//   default_tools = ["Read"]
+// }
+
+// ChatGPT subscription via OAuth. Run `aciddog auth login chatgpt --name personal` first.
+// ai_core chatgpt {
+//   type = :openAiChatgpt
+//   usage_provider = :chatgpt_oauth
+//   credential = "personal"
+//   model = "gpt-5.4"
+//   reasoningEffort = "medium"  // low | medium | high  (NOT minimal)
+//   default_tools = ["Read"]
+// }
+
+// GitHub Copilot CLI. Requires `copilot` on PATH.
+// ai_core copilot {
+//   type = :copilotCli
+//   usage_provider = :github_copilot
+//   model = "claude-haiku-4.5"
+//   default_tools = ["Read"]
+// }
+
+// Google Gemini CLI. Requires `gemini` on PATH.
+// ai_core gemini {
+//   type = :geminiCli
+//   model = "auto-gemini-3"
+//   default_tools = ["Read"]
+// }
+
+// Google Jules remote worker. WORKER-ONLY — never use on an `agent`.
+// ai_core jules_remote {
+//   type = :jules
+//   apiKeyEnv = "JULES_API_KEY"
+//   defaultBranch = "main"
+//   pollIntervalSeconds = 10
+//   requirePlanApproval = true
+//   automationMode = "AUTO_CREATE_PR"   // or AUTOMATION_MODE_UNSPECIFIED
+// }
+
+// ─── Team (exactly one) ────────────────────────────────────────────
+
+team default {
+  description = "Replace me with a description of this team."
+  default_ai_core = "default_core"      // optional; fallback for agents/workers without their own ai_core
+  // replace_thinking_messages = false  // false (default) merges with built-ins; true replaces
+}
+
+// ─── Memory banks ──────────────────────────────────────────────────
+
+memory_bank project_context {
+  description = "Durable facts about the project."
+  // embed_model = "BGE-small-en-v1.5"  // optional fastembed override
+}
+
+// ─── Compaction policies ───────────────────────────────────────────
+
+compaction harness_compact { strategy = :harness }   // claudeCode-only
+compaction drop_compact    { strategy = :drop }
+
+compaction last_word {
+  strategy = :promptAndDrop
+  prompt   = "In ≤3 sentences summarise the session. Plain prose."
+}
+
+compaction running_notes {
+  strategy = :summarise
+  prompt   = "Produce a markdown digest of the session."
+  // ai_core = "default_core"  // optional override; defaults to the agent's own
+}
+
+// ─── Agents ────────────────────────────────────────────────────────
+
+agent planner {
+  role = "coordinator"
+  role_description = <<EOT
+    You are the team coordinator. Decompose user requests and delegate.
+  EOT
+  // model = "claude-opus-4-7"        // optional per-agent model override
+  instructions = "Break the user request into steps and delegate."
+  // can_message = ["coder"]          // omit = unrestricted; [] = none
+  can_create_workers = ["researcher"] // omit = none allowed
+  can_run_workflows  = ["smoke"]      // omit = none allowed
+  tools = ["Read", "Edit", "Grep", "Glob"]
+  // ai_core = "default_core"         // omit ⇒ inherits team default_ai_core
+  memory_banks = ["project_context"]
+  // skills = ["code-review"]         // disk-resident under .aciddog/skills/<name>/
+  compaction = "harness_compact"
+  supervisor = true
+  sysadmin   = true                   // implies supervisor=true
+  on_reload  = :ignore                // :ignore (default) | :compact | :reset
+}
+
+agent coder {
+  role = "implementer"
+  instructions = "Implement code changes requested by the planner."
+  // model = "claude-sonnet-4-6"
+  can_create_workers = ["researcher"]
+  tools = ["Bash", "Read", "Write", "Edit", "Grep", "Glob"]
+  memory_banks = ["project_context"]
+  compaction = "last_word"
+  on_reload  = :compact
+}
+
+// ─── Workers (templates) ───────────────────────────────────────────
+
+worker researcher {
+  role = "investigator"
+  role_description = "Answer one specific question raised by your parent."
+  instructions = "Investigate the question and report back."
+  can_create_workers = ["fetcher"]
+  tools = ["Read", "Bash", "Grep", "Glob"]
+  memory_banks = ["project_context"]
+}
+
+worker fetcher {
+  role = "fetcher"
+  instructions = "Retrieve a specific file/log verbatim."
+  tools = ["Read", "Bash"]
+}
+
+// ─── Channels ──────────────────────────────────────────────────────
+
+channel planning {
+  description = "Engineering coordination."
+  welcome     = "Cosmetic — never injected into agent context."
+  members     = ["planner", "coder"]   // agents only; workers/automatons rejected
+}
+
+// ─── Automatons (script-backed pseudo-agents) ──────────────────────
+
+automaton echo_bot {
+  role        = "echo bot"
+  role_description = "Demo automaton that echoes inbound events."
+  // type     = :script   // default; omit
+  command     = "python3"
+  args        = [
+    "-c",
+    "import json,sys\nev=json.load(sys.stdin)\nprint(ev['body'])",
+  ]
+  can_message = ["planner"]
+  // cwd, env, timeout_seconds — all optional
+}
+
+// Webservice automaton (HTTPS variant) — uncomment after generating certs
+// and adding ACIDDOG_API_KEY to your env. EITHER bind+tls_*+api_key_env OR
+// socket_path, never both.
+// automaton api_server {
+//   type        = :webservice
+//   role        = "remote control plane"
+//   bind        = "0.0.0.0:8443"
+//   tls_cert    = "./tls/cert.pem"
+//   tls_key     = "./tls/key.pem"
+//   api_key_env = "ACIDDOG_API_KEY"
+//   can_message = ["planner", "coder"]
+//   sysadmin    = true               // lets the manager portal trigger /reload
+// }
+
+// Webservice automaton (Unix-socket variant) — trust boundary is fs perms.
+// automaton local_api {
+//   type        = :webservice
+//   role        = "local control plane"
+//   socket_path = "/run/aciddog/api.sock"
+//   can_message = ["planner"]
+// }
+
+// Remote bridge — proxies one identity on a remote aciddog as a local
+// fleet member. EITHER url+api_key_env OR socket_path, never both.
+// automaton remote_peer {
+//   type              = :remote
+//   role              = "bridge to remote aciddog"
+//   socket_path       = "/run/aciddog-remote/api.sock"
+//   remote_target     = "bridge"
+//   deliver_to        = "planner"
+//   proxy_socket_path = "/tmp/aciddog-remote.sock"
+//   can_message       = ["planner"]
+// }
+
+// ─── Webhooks (mounted on a :webservice automaton) ─────────────────
+
+// webhook github_push {
+//   mount           = "api_server"
+//   path            = "/hooks/github/push"
+//   deliver_to      = "coder"
+//   auth_kind       = :hmac_header
+//   auth_header     = "X-Hub-Signature-256"
+//   auth_secret_env = "GITHUB_WEBHOOK_SECRET"
+//   // auth_algo    = :sha256        // default
+//   // max_body_bytes = 1048576      // 1 MiB default
+// }
+
+// ─── Workflows ─────────────────────────────────────────────────────
+
+workflow smoke {
+  description = "Smoke-test the workflow engine."
+  max_retries = 2
+
+  property branch      { kind = :text default = "main" }
+  property suites      { kind = :multiSelect options = ["unit","integ"] default = ["unit"] }
+  property environment { kind = :select options = ["dev","staging","prod"] default = "dev" }
+  property last_check  { kind = :hidden default = "ok" }
+
+  step echo { kind = :command command = "echo branch=$$branch$$ env=$$environment$$" }
+  step gate { kind = :check variable = "last_check" op = :equals value = "ok" target = "echo" }
+  step done { kind = :command command = "echo passed" }
+}
+
+// ─── Thinking-indicator pool (cosmetic) ────────────────────────────
+
+thinking_messages {
+  messages = [
+    "chasing squirrels in the repo",
+    "kicking the tyres",
+    "preparing a devastating comeback",
+  ]
+}
