@@ -29,6 +29,18 @@ pub struct CliArgs {
     )]
     pub static_dir: PathBuf,
 
+    /// Filesystem location for the skills catalog and marketplace clones.
+    /// Created on demand the first time a skill is uploaded or a
+    /// marketplace is added. Colocated with `--db` by default so the
+    /// SQLite file and the blobs it indexes back up as one unit.
+    #[arg(
+        long,
+        env = "ACIDDOG_MANAGER_DATA",
+        default_value = "./aciddog-manager-data",
+        global = true
+    )]
+    pub data_dir: PathBuf,
+
     /// Add `Secure` to the session cookie. Off by default because the
     /// portal binds to 127.0.0.1; turn on when fronted by TLS so
     /// browsers refuse to send the cookie over plain HTTP.

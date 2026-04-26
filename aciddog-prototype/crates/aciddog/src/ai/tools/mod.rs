@@ -15,6 +15,7 @@ pub mod docs;
 pub mod edit;
 pub mod glob;
 pub mod grep;
+pub mod manager_skill_request;
 pub mod read;
 pub mod web_fetch;
 pub mod workflow_get;
@@ -79,8 +80,16 @@ impl ToolOutput {
 
 /// Set of tool names the native registry knows how to construct. Used
 /// by config validation to reject unknown names at parse time.
-pub const BUILT_IN_TOOL_NAMES: &[&str] =
-    &["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch"];
+pub const BUILT_IN_TOOL_NAMES: &[&str] = &[
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep",
+    "WebFetch",
+    "ManagerSkillRequest",
+];
 
 /// Name-keyed registry of `Arc<dyn Tool>`. Built once at core
 /// construction from the allowed-tools list and cloned cheaply into
@@ -226,6 +235,9 @@ fn construct_with(name: &str, cfg: &RegistryConfig) -> Option<Arc<dyn Tool>> {
         "Glob" => Some(Arc::new(glob::GlobTool)),
         "Grep" => Some(Arc::new(grep::GrepTool)),
         "WebFetch" => Some(Arc::new(web_fetch::WebFetchTool::default())),
+        "ManagerSkillRequest" => Some(Arc::new(
+            manager_skill_request::ManagerSkillRequestTool::default(),
+        )),
         _ => None,
     }
 }

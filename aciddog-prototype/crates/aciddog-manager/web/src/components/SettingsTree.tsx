@@ -2,7 +2,7 @@ import { createSignal, type JSX } from "solid-js";
 import { Tree } from "./ui";
 import type { TreeNode } from "./ui";
 
-export type SettingsNodeId = "users";
+export type SettingsNodeId = "users" | "skills";
 
 interface Props {
   selected: SettingsNodeId | null;
@@ -14,7 +14,10 @@ const NODES: TreeNode[] = [
     id: "web-ui",
     label: "Web UI",
     icon: "settings",
-    children: [{ id: "users", label: "Users", icon: "users" }],
+    children: [
+      { id: "users", label: "Users", icon: "users" },
+      { id: "skills", label: "Skills", icon: "box" },
+    ],
   },
 ];
 
@@ -29,7 +32,7 @@ export default function SettingsTree(props: Props): JSX.Element {
   };
 
   const handleSelect = (id: string) => {
-    if (id === "users") props.onSelect("users");
+    if (id === "users" || id === "skills") props.onSelect(id);
   };
 
   return (

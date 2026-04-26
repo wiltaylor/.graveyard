@@ -7,6 +7,7 @@ pub mod health;
 pub mod inbox;
 pub mod instances;
 pub mod memory;
+pub mod skills;
 pub mod tasks;
 pub mod team;
 pub mod users;
@@ -134,7 +135,41 @@ pub fn build_router(state: AppState, static_dir: &Path) -> Router {
             crate::auth::require_auth,
         ));
 
-    let api = Router::new().merge(public_auth).merge(protected);
+    // Skills + marketplaces accept either a session cookie or an
+    // instance api_key bearer token, so agent automation on a daemon
+    // can hit the same endpoints the web UI uses. See plan §"Agent
+    // automation".
+    let skills = Router::new()
+        .route("/skills", get(skills::list))
+        .route("/skills/upload", post(skills::upload))
+        .route("/skills/import", post(skills::import))
+        .route("/skills/instances/:id", get(skills::list_on_instance))
+        .route("/skills/:id", delete(skills::delete))
+        .route("/skills/:id/push", post(skills::push))
+        .route("/skills/:id/update", post(skills::update_skill))
+        .route(
+            "/marketplaces",
+            get(skills::list_market).post(skills::add_market),
+        )
+        .route(
+            "/marketplaces/:id",
+            delete(skills::delete_market),
+        )
+        .route("/marketplaces/:id/update", post(skills::update_market))
+        .route("/marketplaces/:id/skills", get(skills::list_market_skills))
+        .route(
+            "/marketplaces/:id/skills/:name/install",
+            post(skills::install_market_skill),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::require_user_or_instance,
+        ));
+
+    let api = Router::new()
+        .merge(public_auth)
+        .merge(protected)
+        .merge(skills);
 
     let static_service = ServeDir::new(static_dir).append_index_html_on_directories(true);
 

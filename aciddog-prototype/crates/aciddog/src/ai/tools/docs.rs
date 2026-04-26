@@ -17,6 +17,7 @@ pub fn built_in_tool_doc(name: &str) -> &'static str {
         "Glob" => "fast file-pattern matching (e.g. `**/*.rs`). Use to discover files by name.",
         "WebFetch" => "fetch a URL and return processed text content.",
         "WebSearch" => "search the web and return result snippets.",
+        "ManagerSkillRequest" => "perform skills-management actions on the aciddog manager portal (list/push/import skills, update marketplaces).",
         _ => "enabled",
     }
 }

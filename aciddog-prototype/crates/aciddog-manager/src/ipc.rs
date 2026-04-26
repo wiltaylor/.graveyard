@@ -269,6 +269,35 @@ pub enum RequestCmd {
     CronRemove {
         id: Uuid,
     },
+    // ---- Skills ----------------------------------------------------
+    /// Sysadmin: list every skill directory under the daemon's
+    /// `.aciddog/skills/`. Distinct from the agent-scoped `SkillList`
+    /// which returns the caller's allowlist. Response carries
+    /// `Vec<SkillSummaryWire>` in `IpcResponse::data`.
+    SkillsList,
+    /// Sysadmin: read every file in a skill directory. Response carries
+    /// a `SkillContentsWire { name, files }` in `IpcResponse::data`.
+    SkillRead {
+        name: String,
+    },
+    /// Sysadmin: atomically replace the named skill with the supplied
+    /// files. Empty `files` is rejected by the daemon.
+    SkillWrite {
+        name: String,
+        files: Vec<SkillFile>,
+    },
+    /// Sysadmin: delete a skill directory. Idempotent.
+    SkillRemove {
+        name: String,
+    },
+}
+
+/// One file inside a skill directory. Matches
+/// `aciddog::agent_ipc::SkillFile` byte-for-byte.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillFile {
+    pub rel_path: String,
+    pub contents_b64: String,
 }
 
 /// Which slice of a target agent's chat log to return from

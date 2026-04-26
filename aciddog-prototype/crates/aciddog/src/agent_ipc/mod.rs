@@ -585,6 +585,41 @@ pub enum RequestCmd {
     /// Same code path as the TUI `/reload` slash command and the
     /// daemon SIGHUP handler.
     ServerReload,
+    /// Sysadmin: list every skill directory under `.aciddog/skills/`.
+    /// Distinct from the agent-scoped `SkillList`, which only returns
+    /// the caller's allowlist. Returns
+    /// `Vec<wire_skills::WireSkillSummary>` in `Response::data`.
+    SkillsList,
+    /// Sysadmin: read every file in a skill directory. Returns a
+    /// `WireSkillContents { name, files }` in `Response::data` where
+    /// each file carries `rel_path` plus base64-encoded `contents_b64`.
+    SkillRead {
+        name: String,
+    },
+    /// Sysadmin: atomically replace the named skill directory with the
+    /// supplied files. Files are written into a sibling temp dir and
+    /// `rename(2)`d into place. Caller's responsibility to include
+    /// `SKILL.md`. Empty `files` is rejected.
+    SkillWrite {
+        name: String,
+        files: Vec<SkillFile>,
+    },
+    /// Sysadmin: delete a skill directory under `.aciddog/skills/`.
+    /// Idempotent — succeeds with `ok: true` even if the skill doesn't
+    /// exist.
+    SkillRemove {
+        name: String,
+    },
+}
+
+/// One file inside a skill directory. `rel_path` is interpreted relative
+/// to the skill root (`.aciddog/skills/<name>/`); validated to disallow
+/// `..`, leading `/`, and NUL bytes. `contents_b64` is the file body
+/// encoded as standard base64.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillFile {
+    pub rel_path: String,
+    pub contents_b64: String,
 }
 
 /// Which slice of a target agent's chat log to return from

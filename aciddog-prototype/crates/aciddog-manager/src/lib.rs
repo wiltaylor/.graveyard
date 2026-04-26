@@ -7,6 +7,7 @@ pub mod ipc;
 pub mod model;
 pub mod routes;
 pub mod seed;
+pub mod skills;
 pub mod state;
 pub mod wire_channel;
 pub mod wire_chat;

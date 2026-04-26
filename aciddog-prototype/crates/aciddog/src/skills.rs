@@ -13,7 +13,11 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use base64::Engine;
 use thiserror::Error;
+
+use crate::agent_ipc::SkillFile;
+use crate::wire_skills::{WireSkillContents, WireSkillFile, WireSkillSummary};
 
 /// Relative path to the skills directory used by all callers. Kept
 /// cwd-relative to mirror `.aciddog/tasks.json` and `.aciddog/memory/`.
@@ -149,6 +153,144 @@ fn truncate(s: &str) -> String {
     }
     let cut: String = t.chars().take(MAX).collect();
     format!("{cut}…")
+}
+
+/// Walk `<root>/<skill>/SKILL.md` for every entry under `root`, returning
+/// one summary per directory. Skips hidden / staging entries (`.tmp-…`).
+/// Missing root → empty list (a daemon with no skills configured is
+/// valid, not an error).
+pub fn read_skills_dir(root: &Path) -> io::Result<Vec<WireSkillSummary>> {
+    let mut out = Vec::new();
+    let entries = match std::fs::read_dir(root) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if !file_type.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        if !is_valid_skill_name(&name) {
+            continue;
+        }
+        let description = read_skill_description(root, &name).unwrap_or_default();
+        out.push(WireSkillSummary { name, description });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// Read every regular file under a skill directory (recursively),
+/// base64-encoding contents. Symlinks and non-regular entries are
+/// skipped — we don't want a writeback to materialise them on a target
+/// host.
+pub fn read_skill_files(dir: &Path) -> io::Result<Vec<WireSkillFile>> {
+    let mut out = Vec::new();
+    walk_skill_files(dir, dir, &mut out)?;
+    out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    Ok(out)
+}
+
+fn walk_skill_files(root: &Path, dir: &Path, out: &mut Vec<WireSkillFile>) -> io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let path = entry.path();
+        if file_type.is_dir() {
+            walk_skill_files(root, &path, out)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let bytes = std::fs::read(&path)?;
+        let rel = path
+            .strip_prefix(root)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        out.push(WireSkillFile {
+            rel_path: rel_str,
+            contents_b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        });
+    }
+    Ok(())
+}
+
+/// Reject `..`, leading `/`, NUL bytes, empty path, and paths whose
+/// canonical form would escape the skill root. Component-based check —
+/// no string heuristics.
+pub fn validate_skill_rel_path(rel: &str) -> Result<(), &'static str> {
+    if rel.is_empty() {
+        return Err("empty path");
+    }
+    if rel.contains('\0') {
+        return Err("contains NUL byte");
+    }
+    let path = Path::new(rel);
+    if path.is_absolute() {
+        return Err("absolute path");
+    }
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(_) => {}
+            _ => return Err("must be a relative path with no `..` or `.` components"),
+        }
+    }
+    Ok(())
+}
+
+/// Stage the given files into a sibling temp dir, then `rename(2)` over
+/// `<root>/<name>/`. The destination is fully replaced — any prior
+/// contents are removed first.
+///
+/// Caller must have validated `name` with `is_valid_skill_name` and
+/// every `rel_path` with `validate_skill_rel_path`.
+pub fn write_skill_atomic(name: &str, files: &[SkillFile]) -> io::Result<()> {
+    let root = skills_root();
+    std::fs::create_dir_all(&root)?;
+
+    let staging = root.join(format!(".tmp-{name}-{}", std::process::id()));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)?;
+    }
+    std::fs::create_dir_all(&staging)?;
+
+    for f in files {
+        let dst = staging.join(&f.rel_path);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&f.contents_b64)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("base64: {e}")))?;
+        std::fs::write(&dst, bytes)?;
+    }
+
+    let dest = root.join(name);
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest)?;
+    }
+    std::fs::rename(&staging, &dest)
+}
+
+/// Decode a wire `WireSkillContents` payload back into the
+/// `SkillFile` shape `write_skill_atomic` expects. Useful for the
+/// import path on the manager.
+pub fn skill_files_from_contents(contents: WireSkillContents) -> Vec<SkillFile> {
+    contents
+        .files
+        .into_iter()
+        .map(|f| SkillFile {
+            rel_path: f.rel_path,
+            contents_b64: f.contents_b64,
+        })
+        .collect()
 }
 
 #[cfg(test)]

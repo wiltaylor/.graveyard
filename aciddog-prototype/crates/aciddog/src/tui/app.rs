@@ -972,6 +972,16 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         RequestCmd::ServerShutdown => ChatBlock::from_tool_use("aciddog server shutdown", input),
         RequestCmd::ServerExit => ChatBlock::from_tool_use("aciddog server exit", input),
         RequestCmd::ServerReload => ChatBlock::from_tool_use("aciddog server reload", input),
+        RequestCmd::SkillsList => ChatBlock::from_tool_use("aciddog skills list", input),
+        RequestCmd::SkillRead { name } => {
+            ChatBlock::from_tool_use(&format!("aciddog skills read --id {name}"), input)
+        }
+        RequestCmd::SkillWrite { name, .. } => {
+            ChatBlock::from_tool_use(&format!("aciddog skills write --id {name}"), input)
+        }
+        RequestCmd::SkillRemove { name } => {
+            ChatBlock::from_tool_use(&format!("aciddog skills remove --id {name}"), input)
+        }
     }
 }
 
@@ -3312,6 +3322,18 @@ impl App {
             }
             RequestCmd::ServerReload => {
                 self.handle_admin_server_reload(idx, reply);
+            }
+            RequestCmd::SkillsList => {
+                self.handle_admin_skills_list(idx, reply);
+            }
+            RequestCmd::SkillRead { name } => {
+                self.handle_admin_skill_read(idx, name, reply);
+            }
+            RequestCmd::SkillWrite { name, files } => {
+                self.handle_admin_skill_write(idx, name, files, reply);
+            }
+            RequestCmd::SkillRemove { name } => {
+                self.handle_admin_skill_remove(idx, name, reply);
             }
         }
     }
@@ -7557,6 +7579,141 @@ impl App {
             Err(e) => {
                 warn!(error = %e, "reload failed");
                 let _ = reply.send(Response::err(e));
+            }
+        }
+    }
+
+    fn handle_admin_skills_list(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_sysadmin(sender_idx) {
+            let _ = reply.send(Response::err("not a sysadmin"));
+            return;
+        }
+        let root = crate::skills::skills_root();
+        let summaries = match crate::skills::read_skills_dir(&root) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = reply.send(Response::err(format!("listing skills: {e}")));
+                return;
+            }
+        };
+        match serde_json::to_value(&summaries) {
+            Ok(v) => {
+                let _ = reply.send(Response::ok_data(v));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(format!("encoding skills: {e}")));
+            }
+        }
+    }
+
+    fn handle_admin_skill_read(
+        &mut self,
+        sender_idx: usize,
+        name: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_sysadmin(sender_idx) {
+            let _ = reply.send(Response::err("not a sysadmin"));
+            return;
+        }
+        if !crate::skills::is_valid_skill_name(&name) {
+            let _ = reply.send(Response::err(format!("invalid skill name `{name}`")));
+            return;
+        }
+        let root = crate::skills::skills_root();
+        let dir = root.join(&name);
+        if !dir.is_dir() {
+            let _ = reply.send(Response::err(format!("skill `{name}` not found")));
+            return;
+        }
+        let files = match crate::skills::read_skill_files(&dir) {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = reply.send(Response::err(format!("reading `{name}`: {e}")));
+                return;
+            }
+        };
+        let payload = serde_json::json!({
+            "name": name,
+            "files": files,
+        });
+        let _ = reply.send(Response::ok_data(payload));
+    }
+
+    fn handle_admin_skill_write(
+        &mut self,
+        sender_idx: usize,
+        name: String,
+        files: Vec<agent_ipc::SkillFile>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_sysadmin(sender_idx) {
+            let _ = reply.send(Response::err("not a sysadmin"));
+            return;
+        }
+        if !crate::skills::is_valid_skill_name(&name) {
+            let _ = reply.send(Response::err(format!("invalid skill name `{name}`")));
+            return;
+        }
+        if files.is_empty() {
+            let _ = reply.send(Response::err("no files supplied"));
+            return;
+        }
+        if !files.iter().any(|f| f.rel_path == "SKILL.md") {
+            let _ = reply.send(Response::err("missing SKILL.md"));
+            return;
+        }
+        for f in &files {
+            if let Err(e) = crate::skills::validate_skill_rel_path(&f.rel_path) {
+                let _ = reply.send(Response::err(format!(
+                    "invalid path `{}`: {e}",
+                    f.rel_path
+                )));
+                return;
+            }
+        }
+        match crate::skills::write_skill_atomic(&name, &files) {
+            Ok(()) => {
+                info!(skill = %name, files = files.len(), "skill installed via supervisor RPC");
+                let _ = reply.send(Response::ok(format!("wrote `{name}`")));
+            }
+            Err(e) => {
+                warn!(skill = %name, error = %e, "skill write failed");
+                let _ = reply.send(Response::err(format!("writing `{name}`: {e}")));
+            }
+        }
+    }
+
+    fn handle_admin_skill_remove(
+        &mut self,
+        sender_idx: usize,
+        name: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_sysadmin(sender_idx) {
+            let _ = reply.send(Response::err("not a sysadmin"));
+            return;
+        }
+        if !crate::skills::is_valid_skill_name(&name) {
+            let _ = reply.send(Response::err(format!("invalid skill name `{name}`")));
+            return;
+        }
+        let dir = crate::skills::skills_root().join(&name);
+        if !dir.exists() {
+            let _ = reply.send(Response::ok(format!("`{name}` already absent")));
+            return;
+        }
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {
+                info!(skill = %name, "skill removed via supervisor RPC");
+                let _ = reply.send(Response::ok(format!("removed `{name}`")));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(format!("removing `{name}`: {e}")));
             }
         }
     }

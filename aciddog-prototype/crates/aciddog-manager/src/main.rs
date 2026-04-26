@@ -35,6 +35,7 @@ async fn main() -> Result<()> {
         AuthConfig {
             cookie_secure: args.cookie_secure,
         },
+        args.data_dir.clone(),
     );
     let router = routes::build_router(state, &args.static_dir);
 

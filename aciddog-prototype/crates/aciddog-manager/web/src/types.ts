@@ -641,3 +641,72 @@ export interface CreateUserRequest {
   username: string;
   password: string;
 }
+
+// ---------------------------------------------------------------------------
+// Skills catalog
+// ---------------------------------------------------------------------------
+
+export type SkillSourceKind = "uploaded" | "imported" | "marketplace";
+
+export interface SkillPushSummary {
+  instance_id: string;
+  instance_name: string;
+  pushed_at: string;
+  up_to_date: boolean;
+}
+
+export interface SkillSummary {
+  id: string;
+  name: string;
+  source_kind: SkillSourceKind;
+  source_ref?: string;
+  description: string;
+  version?: string;
+  content_hash: string;
+  update_available?: boolean;
+  last_pushed_to: SkillPushSummary[];
+}
+
+export interface SkillsListResponse {
+  skills: SkillSummary[];
+}
+
+export interface SkillPushResult {
+  instance_id: string;
+  ok: boolean;
+  message?: string;
+  error?: string;
+}
+
+export interface MarketplaceSummary {
+  id: string;
+  git_url: string;
+  ref_spec?: string;
+  last_synced_at?: string;
+  last_synced_sha?: string;
+  /** Total skills the marketplace exposes. */
+  skill_count: number;
+  /** Subset of `skill_count` that have been installed into the catalog. */
+  installed_skill_count: number;
+}
+
+export interface MarketplaceAvailableSkill {
+  name: string;
+  plugin: string;
+  description: string;
+  version?: string;
+  upstream_hash: string;
+  installed: boolean;
+  /** Only present when `installed` is true. */
+  up_to_date?: boolean;
+}
+
+export type MarketplaceProgressEvent =
+  | { event: "progress"; message: string }
+  | { event: "done"; summary: MarketplaceSummary }
+  | { event: "error"; error: string };
+
+export interface RemoteSkillSummary {
+  name: string;
+  description: string;
+}

@@ -18,9 +18,15 @@ import type {
   MemoryMutationResponse,
   MutationResponse,
   PatchCronRequest,
+  MarketplaceAvailableSkill,
+  MarketplaceProgressEvent,
+  MarketplaceSummary,
   ReloadResponse,
+  RemoteSkillSummary,
   SearchResponse,
   SendResponse,
+  SkillPushResult,
+  SkillsListResponse,
   TaskListResponse,
   TaskStatus,
   TeamInfoResponse,
@@ -354,7 +360,165 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ password }),
     }),
+
+  // Skills catalog
+  listSkills: () =>
+    request<SkillsListResponse>("/api/skills").then((r) => r.skills),
+  uploadSkill: async (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch("/api/skills/upload", {
+      method: "POST",
+      body: form,
+    });
+    if (res.status === 401) {
+      throw new UnauthorizedError();
+    }
+    const text = await res.text();
+    const body = text ? (JSON.parse(text) as unknown) : null;
+    if (!res.ok) {
+      const err = (body as ApiError | null)?.error ?? `HTTP ${res.status}`;
+      throw new Error(err);
+    }
+    return body as { id: string };
+  },
+  deleteSkill: (id: string) =>
+    request<void>(`/api/skills/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  pushSkill: (id: string, instanceIds: string[]) =>
+    request<{ results: SkillPushResult[] }>(
+      `/api/skills/${encodeURIComponent(id)}/push`,
+      {
+        method: "POST",
+        body: JSON.stringify({ instance_ids: instanceIds }),
+      },
+    ),
+  importSkillFromInstance: (instanceId: string, skillName: string) =>
+    request<{ id: string }>(`/api/skills/import`, {
+      method: "POST",
+      body: JSON.stringify({ instance_id: instanceId, skill_name: skillName }),
+    }),
+  updateSkill: (id: string) =>
+    request<void>(`/api/skills/${encodeURIComponent(id)}/update`, {
+      method: "POST",
+    }),
+  listSkillsOnInstance: (instanceId: string) =>
+    request<{ skills: RemoteSkillSummary[] }>(
+      `/api/skills/instances/${instanceId}`,
+    ).then((r) => r.skills),
+
+  listMarketplaces: () =>
+    request<{ marketplaces: MarketplaceSummary[] }>("/api/marketplaces").then(
+      (r) => r.marketplaces,
+    ),
+  /**
+   * Streaming variant: the manager returns NDJSON progress events while
+   * the clone + plugin resolution run, so the modal can show staged
+   * status instead of looking frozen during a long git clone.
+   */
+  addMarketplaceStream: (
+    input: { gitUrl: string; ref?: string; name?: string },
+    onEvent: (ev: MarketplaceProgressEvent) => void,
+  ) =>
+    streamMarketplaceOp("/api/marketplaces", "POST", onEvent, {
+      git_url: input.gitUrl,
+      ref: input.ref,
+      name: input.name,
+    }),
+  updateMarketplaceStream: (
+    id: string,
+    onEvent: (ev: MarketplaceProgressEvent) => void,
+  ) =>
+    streamMarketplaceOp(
+      `/api/marketplaces/${encodeURIComponent(id)}/update`,
+      "POST",
+      onEvent,
+    ),
+  deleteMarketplace: (id: string) =>
+    request<void>(`/api/marketplaces/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  listMarketplaceSkills: (id: string) =>
+    request<{ skills: MarketplaceAvailableSkill[] }>(
+      `/api/marketplaces/${encodeURIComponent(id)}/skills`,
+    ).then((r) => r.skills),
+  installMarketplaceSkill: (id: string, name: string) =>
+    request<{ id: string }>(
+      `/api/marketplaces/${encodeURIComponent(id)}/skills/${encodeURIComponent(
+        name,
+      )}/install`,
+      { method: "POST" },
+    ),
 };
+
+/**
+ * Read an NDJSON-streaming response from a marketplace endpoint and
+ * deliver each event to `onEvent`. Resolves with the final
+ * `MarketplaceSummary` on success or rejects with the error text from
+ * the terminal `error` event (whichever comes first).
+ *
+ * Falls back gracefully when the server returns a non-streaming JSON
+ * payload (e.g. an error from auth middleware that fires before
+ * streaming kicks in).
+ */
+async function streamMarketplaceOp(
+  path: string,
+  method: "POST",
+  onEvent: (ev: MarketplaceProgressEvent) => void,
+  body?: unknown,
+): Promise<MarketplaceSummary> {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { "content-type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401) {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("auth:logout"));
+    }
+    throw new UnauthorizedError();
+  }
+  if (!res.ok && res.headers.get("content-type")?.includes("application/json")) {
+    const txt = await res.text();
+    const parsed = txt ? (JSON.parse(txt) as { error?: string }) : null;
+    throw new Error(parsed?.error ?? `HTTP ${res.status}`);
+  }
+  if (!res.body) {
+    throw new Error("server returned no body");
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let summary: MarketplaceSummary | null = null;
+  let errorMessage: string | null = null;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { done, value } = await reader.read();
+    if (value) {
+      buffer += decoder.decode(value, { stream: true });
+      let idx = buffer.indexOf("\n");
+      while (idx >= 0) {
+        const raw = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        idx = buffer.indexOf("\n");
+        if (!raw) continue;
+        try {
+          const ev = JSON.parse(raw) as MarketplaceProgressEvent;
+          onEvent(ev);
+          if (ev.event === "done") summary = ev.summary;
+          else if (ev.event === "error") errorMessage = ev.error;
+        } catch {
+          // Malformed line — skip; continue reading.
+        }
+      }
+    }
+    if (done) break;
+  }
+  if (errorMessage !== null) throw new Error(errorMessage);
+  if (summary) return summary;
+  throw new Error("stream ended without `done` event");
+}
 
 export function instanceEventsUrl(id: string): string {
   return `/api/instances/${id}/events`;

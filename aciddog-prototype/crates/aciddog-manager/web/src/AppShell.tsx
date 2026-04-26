@@ -16,11 +16,19 @@ import MemoryView from "./components/MemoryView";
 import SettingsTree, {
   type SettingsNodeId,
 } from "./components/SettingsTree";
+import SkillsView from "./components/skills/SkillsView";
 import TasksView from "./components/TasksView";
 import TeamView from "./components/TeamView";
 import UsersView from "./components/UsersView";
 import WorkflowsView from "./components/WorkflowsView";
-import { Button, Empty, Tabs, ToastHost } from "./components/ui";
+import {
+  Button,
+  Empty,
+  Icon,
+  Modal,
+  Tabs,
+  ToastHost,
+} from "./components/ui";
 import type { TabItem } from "./components/ui";
 import { api } from "./api";
 import { authApi } from "./auth";
@@ -67,6 +75,7 @@ export default function AppShell(props: Props): JSX.Element {
   const [settingsSelection, setSettingsSelection] =
     createSignal<SettingsNodeId | null>(null);
   const [activeTab, setActiveTab] = createSignal<TabId>("team");
+  const [showAddInstance, setShowAddInstance] = createSignal(false);
 
   const selectInstance = (id: string | null) => {
     if (id !== null) setSettingsSelection(null);
@@ -134,6 +143,7 @@ export default function AppShell(props: Props): JSX.Element {
   const handleCreated = async (inst: InstanceSummary) => {
     await refetchInstances();
     setSelectedId(inst.id);
+    setShowAddInstance(false);
   };
 
   const handleDeleted = async () => {
@@ -212,7 +222,26 @@ export default function AppShell(props: Props): JSX.Element {
       </header>
 
       <aside class="fsidebar" style={{ overflow: "auto" }}>
-        <div class="fsidebar-section">Instances</div>
+        <div
+          class="fsidebar-section"
+          style={{
+            display: "flex",
+            "align-items": "center",
+            "justify-content": "space-between",
+            padding: "14px 6px 6px 10px",
+          }}
+        >
+          <span>Instances</span>
+          <button
+            type="button"
+            onClick={() => setShowAddInstance(true)}
+            aria-label="Add instance"
+            title="Add instance"
+            class="ftopbar-icon-btn"
+          >
+            <Icon name="plus" size={14} />
+          </button>
+        </div>
         <Show
           when={!instances.loading}
           fallback={
@@ -259,12 +288,16 @@ export default function AppShell(props: Props): JSX.Element {
           selected={settingsSelection()}
           onSelect={selectSettings}
         />
-
-        <div class="fsidebar-section">Add instance</div>
-        <div style={{ padding: "0 8px" }}>
-          <AddInstanceForm onCreated={handleCreated} />
-        </div>
       </aside>
+
+      <Modal
+        open={showAddInstance()}
+        onClose={() => setShowAddInstance(false)}
+        title="Add instance"
+        width={480}
+      >
+        <AddInstanceForm onCreated={handleCreated} />
+      </Modal>
 
       <main
         class="app-main"
@@ -279,6 +312,11 @@ export default function AppShell(props: Props): JSX.Element {
         <Show when={settingsSelection() === "users"}>
           <div style={{ flex: "1", overflow: "auto", padding: "20px 24px" }}>
             <UsersView currentUsername={props.username} />
+          </div>
+        </Show>
+        <Show when={settingsSelection() === "skills"}>
+          <div style={{ flex: "1", overflow: "auto", padding: "20px 24px" }}>
+            <SkillsView />
           </div>
         </Show>
         <Show
@@ -324,7 +362,11 @@ export default function AppShell(props: Props): JSX.Element {
                 }}
               >
                 <Show when={activeTab() === "team"}>
-                  <TeamView instanceId={inst().id} />
+                  <TeamView
+                    instanceId={inst().id}
+                    instanceName={inst().name}
+                    onRemoved={handleDeleted}
+                  />
                 </Show>
 
                 <Show when={activeTab() === "agents"}>
