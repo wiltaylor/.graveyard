@@ -1,0 +1,683 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  /* ─────────────────────────────────────────────────────────────────────
+     TERMINAL VIEW
+     A scrollable terminal-style log surface with:
+       • auto-follow (sticks to bottom while new lines stream in)
+       • scroll-up-to-pause (shows a "follow" pill when user has scrolled up)
+       • optional command input (echoed back, simulated handler)
+       • selectable text, ANSI-ish color tokens, mono everywhere
+       • per-pane state (so the dark + light panes are independent)
+     Rows are rendered as plain spans so copy/paste preserves formatting.
+     ───────────────────────────────────────────────────────────────────── */
+
+  .term {
+    display: flex; flex-direction: column;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    height: 460px;
+    width: 100%;
+    max-width: 640px;
+    font-family: var(--font-mono);
+  }
+  .term-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .term-title {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--font-sans); font-size: 13px; font-weight: 600;
+    color: var(--fg-0);
+    flex: 1; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .term-title .dot {
+    width: 6px; height: 6px; border-radius: 999px;
+    background: var(--success);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--success) 25%, transparent);
+  }
+  .term-meta {
+    font-size: 11px; color: var(--fg-2);
+    flex-shrink: 0;
+  }
+
+  .term-body-wrap {
+    flex: 1; min-height: 0;
+    position: relative;
+    background: var(--bg-1);
+  }
+  .term-body {
+    position: absolute; inset: 0;
+    overflow-y: auto;
+    padding: 10px 14px 12px;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--fg-0);
+    /* tabular numerals for timestamps */
+    font-variant-numeric: tabular-nums;
+  }
+  .term-body::-webkit-scrollbar { width: 8px; }
+  .term-body::-webkit-scrollbar-thumb {
+    background: var(--border); border-radius: 999px;
+  }
+  .term-body::-webkit-scrollbar-track { background: transparent; }
+
+  /* Lines */
+  .tl {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    column-gap: 10px;
+    align-items: baseline;
+    padding: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .tl + .tl { margin-top: 2px; }
+  .tl-time { color: var(--fg-3); font-size: 11.5px; }
+  .tl-tag {
+    font-size: 10px; font-weight: 600;
+    letter-spacing: .04em; text-transform: uppercase;
+    padding: 0 5px; border-radius: 3px; line-height: 16px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-subtle);
+    color: var(--fg-2);
+    align-self: center;
+  }
+  .tl-msg { color: var(--fg-0); }
+
+  .tl[data-level="info"]    .tl-tag { color: var(--info-fg);
+    background: color-mix(in oklab, var(--info)    10%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--info)    25%, var(--border-subtle)); }
+  .tl[data-level="success"] .tl-tag { color: var(--success-fg);
+    background: color-mix(in oklab, var(--success) 10%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--success) 25%, var(--border-subtle)); }
+  .tl[data-level="warn"]    .tl-tag { color: var(--warning-fg);
+    background: color-mix(in oklab, var(--warning) 10%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--warning) 25%, var(--border-subtle)); }
+  .tl[data-level="error"]   .tl-tag { color: var(--danger-fg);
+    background: color-mix(in oklab, var(--danger)  10%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--danger)  25%, var(--border-subtle)); }
+  .tl[data-level="debug"]   .tl-tag { color: var(--fg-2); }
+
+  .tl[data-level="error"]   .tl-msg { color: var(--danger-fg); }
+  .tl[data-level="warn"]    .tl-msg { color: var(--warning-fg); }
+  .tl[data-level="success"] .tl-msg { color: var(--success-fg); }
+  .tl[data-level="debug"]   .tl-msg { color: var(--fg-2); }
+
+  /* "Plain" lines (e.g. command echoes, banners) — no time/tag columns */
+  .tl-plain {
+    display: block;
+    color: var(--fg-1);
+    white-space: pre-wrap;
+  }
+  .tl-plain.banner { color: var(--accent-fg); }
+  .tl-plain.dim    { color: var(--fg-3); }
+
+  /* User-entered command echo */
+  .tl-cmd {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: 8px;
+    align-items: baseline;
+    padding-top: 4px;
+  }
+  .tl-cmd .tl-prompt { color: var(--accent-fg); }
+  .tl-cmd .tl-cmd-text { color: var(--fg-0); }
+
+  /* Inline ansi-ish color helpers, used in spans */
+  .tl-msg .c-blue   { color: var(--info-fg); }
+  .tl-msg .c-green  { color: var(--success-fg); }
+  .tl-msg .c-amber  { color: var(--warning-fg); }
+  .tl-msg .c-red    { color: var(--danger-fg); }
+  .tl-msg .c-dim    { color: var(--fg-2); }
+  .tl-msg .c-bold   { font-weight: 600; color: var(--fg-0); }
+
+  /* "Follow" pill shown when user has scrolled away from the tail */
+  .term-follow {
+    position: absolute;
+    right: 16px; bottom: 12px;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 10px 5px 8px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--accent-contrast);
+    font-family: var(--font-sans); font-size: 12px; font-weight: 500;
+    border: 0;
+    cursor: pointer;
+    opacity: 0; transform: translateY(4px);
+    pointer-events: none;
+    transition: opacity 160ms cubic-bezier(.2,0,0,1),
+                transform 160ms cubic-bezier(.2,0,0,1);
+  }
+  .term-follow svg { width: 13px; height: 13px; }
+  .term-follow.show {
+    opacity: 1; transform: translateY(0);
+    pointer-events: auto;
+  }
+  .term-follow:hover { background: var(--accent-hover); }
+
+  /* Status / control bar above the input */
+  .term-status {
+    display: flex; align-items: center; gap: 10px;
+    padding: 5px 12px;
+    background: var(--bg-2);
+    border-top: 1px solid var(--border-subtle);
+    font-size: 11px; color: var(--fg-2);
+  }
+  .term-status .live {
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .term-status .live .pulse {
+    width: 6px; height: 6px; border-radius: 999px;
+    background: var(--success);
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--success) 50%, transparent);
+    animation: pulseDot 1.6s ease-out infinite;
+  }
+  .term-status[data-paused="true"] .live .pulse {
+    background: var(--warning);
+    animation: none;
+  }
+  @keyframes pulseDot {
+    0%   { box-shadow: 0 0 0 0 color-mix(in oklab, var(--success) 50%, transparent); }
+    70%  { box-shadow: 0 0 0 6px color-mix(in oklab, var(--success) 0%, transparent); }
+    100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--success) 0%, transparent); }
+  }
+  .term-status .grow { flex: 1; }
+  .term-status button {
+    border: 0; background: transparent;
+    font: inherit; font-family: var(--font-mono); font-size: 11px;
+    color: var(--fg-2);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+  .term-status button:hover { background: var(--bg-3); color: var(--fg-0); }
+  .term-status .sep { color: var(--fg-3); }
+
+  /* Command input */
+  .term-input {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    column-gap: 8px;
+    padding: 6px 10px 8px;
+    background: var(--bg-1);
+    border-top: 1px solid var(--border-subtle);
+  }
+  .term-input .prompt {
+    font-family: var(--font-mono); font-size: 12.5px;
+    color: var(--accent-fg);
+    user-select: none;
+  }
+  .term-input input {
+    width: 100%;
+    background: transparent;
+    border: 0; outline: none;
+    font-family: var(--font-mono); font-size: 12.5px;
+    color: var(--fg-0);
+    padding: 4px 0;
+  }
+  .term-input input::placeholder { color: var(--fg-3); }
+  .term-input .hint {
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3);
+    white-space: nowrap;
+  }
+
+  /* Layout for the showcase: two terminals — read-only + interactive */
+  .term-stack { display: flex; flex-direction: column; gap: 16px; }
+  .term-section-label {
+    font-size: 10px; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase;
+    color: var(--fg-2);
+    margin-bottom: 6px;
+  }
+</style>
+</head>
+<body>
+<template id="card-content">
+<div class="term-stack">
+  <div>
+    <div class="term-section-label">Read-only · streaming logs</div>
+    <div class="term" data-term data-input="false" data-stream="true" data-rate="900">
+      <div class="term-head">
+        <span class="term-title"><span class="dot"></span> payments-api · stdout</span>
+        <span class="term-meta">us-east-1 · v2.4.1</span>
+      </div>
+      <div class="term-body-wrap">
+        <div class="term-body" data-term-body></div>
+        <button type="button" class="term-follow" data-term-follow>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+          Follow
+        </button>
+      </div>
+      <div class="term-status" data-term-status>
+        <span class="live"><span class="pulse"></span><span data-term-live-text>live</span></span>
+        <span class="sep">·</span>
+        <span data-term-line-count>0 lines</span>
+        <span class="grow"></span>
+        <button type="button" data-term-pause>pause</button>
+        <span class="sep">·</span>
+        <button type="button" data-term-clear>clear</button>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="term-section-label">Interactive · with command input</div>
+    <div class="term" data-term data-input="true" data-stream="false">
+      <div class="term-head">
+        <span class="term-title"><span class="dot"></span> forge / shell</span>
+        <span class="term-meta">~/projects/payments-api</span>
+      </div>
+      <div class="term-body-wrap">
+        <div class="term-body" data-term-body></div>
+        <button type="button" class="term-follow" data-term-follow>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+          Follow
+        </button>
+      </div>
+      <div class="term-status" data-term-status>
+        <span class="live"><span class="pulse"></span><span data-term-live-text>ready</span></span>
+        <span class="sep">·</span>
+        <span data-term-line-count>0 lines</span>
+        <span class="grow"></span>
+        <button type="button" data-term-clear>clear</button>
+      </div>
+      <form class="term-input" data-term-form>
+        <span class="prompt">▸</span>
+        <input type="text" data-term-input placeholder="type a command — try 'help'" autocomplete="off" spellcheck="false" />
+        <span class="hint">↑/↓ history · ↵ run</span>
+      </form>
+    </div>
+  </div>
+</div>
+</template>
+<script src="_split.js"></script>
+<script>
+(function () {
+  /* ──────────────────────── DOM helper ──────────────────────────────── */
+  function el(tag, attrs, ...children) {
+    const node = document.createElement(tag);
+    if (attrs) for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'class') node.className = v;
+      else if (k === 'html') node.innerHTML = v;
+      else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+      else if (v === true) node.setAttribute(k, '');
+      else if (v === false || v == null) {} else node.setAttribute(k, v);
+    }
+    for (const c of children) {
+      if (c == null || c === false) continue;
+      node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    }
+    return node;
+  }
+  function pad2(n) { return String(n).padStart(2, '0'); }
+  function fmtTime(d) { return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()); }
+
+  /* ──────────────────────── Streaming log content ───────────────────── */
+  /* A pool of plausible stdout lines for the streaming demo.  Picks one
+     at random and stamps the current time on it. */
+  const STREAM_POOL = [
+    { lvl: 'info',    msg: 'GET /healthz <span class="c-dim">→</span> <span class="c-green">200</span> 2 ms' },
+    { lvl: 'info',    msg: 'POST /v1/checkout <span class="c-dim">→</span> <span class="c-green">200</span> 184 ms <span class="c-dim">user=u_8221</span>' },
+    { lvl: 'info',    msg: 'POST /v1/checkout <span class="c-dim">→</span> <span class="c-green">200</span> 312 ms <span class="c-dim">user=u_4011</span>' },
+    { lvl: 'debug',   msg: 'cache hit <span class="c-dim">key=cust:u_4011 ttl=58s</span>' },
+    { lvl: 'info',    msg: 'POST /v1/refunds <span class="c-dim">→</span> <span class="c-green">201</span> 92 ms' },
+    { lvl: 'debug',   msg: 'stripe.charges.create <span class="c-dim">latency=804 ms</span>' },
+    { lvl: 'warn',    msg: 'retry budget low <span class="c-dim">used=2/2 endpoint=POST /v1/checkout</span>' },
+    { lvl: 'warn',    msg: 'p95 over threshold <span class="c-dim">checkout 1.42s &gt; 600ms</span>' },
+    { lvl: 'info',    msg: 'GET /v1/customers/<span class="c-blue">u_3198</span> <span class="c-dim">→</span> <span class="c-green">200</span> 18 ms' },
+    { lvl: 'error',   msg: 'upstream timeout <span class="c-dim">stripe-gateway</span> after <span class="c-bold">5000 ms</span>' },
+    { lvl: 'success', msg: 'job <span class="c-bold">webhook-replay</span> finished · 412 / 412 ok' },
+    { lvl: 'info',    msg: 'GET /metrics <span class="c-dim">→</span> <span class="c-green">200</span> 4 ms' },
+    { lvl: 'debug',   msg: 'gc pause <span class="c-dim">12ms heap=420MB</span>' },
+    { lvl: 'info',    msg: 'POST /v1/charges <span class="c-dim">→</span> <span class="c-green">200</span> 121 ms' },
+    { lvl: 'info',    msg: 'POST /v1/charges <span class="c-dim">→</span> <span class="c-amber">429</span> 8 ms <span class="c-dim">rate-limited</span>' },
+    { lvl: 'error',   msg: 'POST /v1/charges <span class="c-dim">→</span> <span class="c-red">500</span> 4810 ms <span class="c-dim">trace=c8f2…</span>' },
+    { lvl: 'info',    msg: 'rebalanced consumer group <span class="c-dim">payments.events</span>' },
+    { lvl: 'success', msg: 'lease renewed <span class="c-dim">leader=pod-7c4f</span>' },
+  ];
+
+  function pickStream() {
+    return STREAM_POOL[Math.floor(Math.random() * STREAM_POOL.length)];
+  }
+
+  /* ──────────────────────── Initial backlog ─────────────────────────── */
+  function readonlyBacklog() {
+    const t0 = new Date(); t0.setSeconds(t0.getSeconds() - 30);
+    const lines = [
+      { kind: 'plain', class: 'banner', text: '◆ payments-api — streaming stdout (us-east-1)' },
+      { kind: 'plain', class: 'dim',    text: 'attached at ' + new Date().toLocaleString() },
+      { kind: 'plain', text: '' },
+    ];
+    // seed a few historical log lines
+    for (let i = 0; i < 8; i++) {
+      const p = pickStream();
+      const t = new Date(t0); t.setSeconds(t.getSeconds() + i * 3);
+      lines.push({ kind: 'log', time: fmtTime(t), level: p.lvl, msg: p.msg });
+    }
+    return lines;
+  }
+
+  function interactiveBacklog() {
+    return [
+      { kind: 'plain', class: 'banner', text: 'forge shell · v0.4.2' },
+      { kind: 'plain', class: 'dim',    text: 'connected to payments-api · type "help" for commands' },
+      { kind: 'plain', text: '' },
+    ];
+  }
+
+  /* ──────────────────────── Build line elements ─────────────────────── */
+  function buildLine(line) {
+    if (line.kind === 'plain') {
+      return el('div', { class: 'tl-plain ' + (line.class || '') }, line.text || ' ');
+    }
+    if (line.kind === 'cmd') {
+      return el('div', { class: 'tl-cmd' },
+        el('span', { class: 'tl-prompt' }, line.prompt || '▸'),
+        el('span', { class: 'tl-cmd-text', html: escapeHtml(line.text) }),
+      );
+    }
+    // 'log'
+    const row = el('div', { class: 'tl', 'data-level': line.level || 'info' },
+      el('span', { class: 'tl-time' }, line.time),
+      el('span', { class: 'tl-tag' }, (line.level || 'info').toUpperCase().slice(0, 4)),
+      el('span', { class: 'tl-msg', html: line.msg || '' }),
+    );
+    return row;
+  }
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  /* ──────────────────────── Bind one terminal ───────────────────────── */
+  function bindTerm(root) {
+    const body          = root.querySelector('[data-term-body]');
+    const followBtn     = root.querySelector('[data-term-follow]');
+    const status        = root.querySelector('[data-term-status]');
+    const lineCountEl   = root.querySelector('[data-term-line-count]');
+    const liveTextEl    = root.querySelector('[data-term-live-text]');
+    const pauseBtn      = root.querySelector('[data-term-pause]');
+    const clearBtn      = root.querySelector('[data-term-clear]');
+    const form          = root.querySelector('[data-term-form]');
+    const input         = root.querySelector('[data-term-input]');
+
+    const isInteractive = root.getAttribute('data-input') === 'true';
+    const isStreaming   = root.getAttribute('data-stream') === 'true';
+    const rate          = parseInt(root.getAttribute('data-rate') || '900', 10);
+
+    let following  = true;   // auto-scroll to bottom?
+    let paused     = false;  // user paused the stream
+    let lineCount  = 0;
+    let history    = [];
+    let historyIdx = -1;
+    let typingDraft = '';
+
+    /* Initial content */
+    const seed = isInteractive ? interactiveBacklog() : readonlyBacklog();
+    seed.forEach(append);
+    // Force scroll to bottom on first paint
+    requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; updateFollowState(); });
+
+    function append(line) {
+      const node = buildLine(line);
+      body.appendChild(node);
+      if (line.kind === 'log' || line.kind === 'cmd') lineCount++;
+      lineCountEl.textContent = lineCount.toLocaleString() + ' line' + (lineCount === 1 ? '' : 's');
+      // Cap to ~500 nodes so the DOM doesn't grow forever
+      while (body.childElementCount > 500) body.firstElementChild.remove();
+      if (following) {
+        // Use rAF so scroll happens after layout
+        requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
+      }
+    }
+
+    /* Follow / scroll behaviour */
+    function isAtBottom() {
+      return body.scrollHeight - body.clientHeight - body.scrollTop < 8;
+    }
+    function updateFollowState() {
+      if (isAtBottom()) {
+        following = true;
+        followBtn.classList.remove('show');
+      } else {
+        following = false;
+        followBtn.classList.add('show');
+      }
+    }
+    body.addEventListener('scroll', updateFollowState);
+    followBtn.addEventListener('click', () => {
+      body.scrollTop = body.scrollHeight;
+      following = true;
+      followBtn.classList.remove('show');
+    });
+
+    /* Status controls */
+    if (pauseBtn) {
+      pauseBtn.addEventListener('click', () => {
+        paused = !paused;
+        pauseBtn.textContent = paused ? 'resume' : 'pause';
+        status.setAttribute('data-paused', paused ? 'true' : 'false');
+        if (liveTextEl) liveTextEl.textContent = paused ? 'paused' : 'live';
+      });
+    }
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        body.innerHTML = '';
+        lineCount = 0;
+        lineCountEl.textContent = '0 lines';
+        if (isInteractive) interactiveBacklog().forEach(append);
+        following = true;
+        followBtn.classList.remove('show');
+      });
+    }
+
+    /* Streaming */
+    if (isStreaming) {
+      const tick = () => {
+        if (!paused) {
+          const p = pickStream();
+          append({ kind: 'log', time: fmtTime(new Date()), level: p.lvl, msg: p.msg });
+        }
+        // jitter the rate ±40 % so it feels real
+        const next = rate * (0.6 + Math.random() * 0.8);
+        setTimeout(tick, next);
+      };
+      setTimeout(tick, rate);
+    }
+
+    /* Interactive command handling */
+    if (isInteractive && form && input) {
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const raw = input.value;
+        const cmd = raw.trim();
+        if (!cmd) return;
+        // echo
+        append({ kind: 'cmd', prompt: '▸', text: raw });
+        history.push(raw);
+        if (history.length > 100) history.shift();
+        historyIdx = -1;
+        typingDraft = '';
+        input.value = '';
+        // run
+        runCommand(cmd, append);
+      });
+
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowUp') {
+          if (history.length === 0) return;
+          e.preventDefault();
+          if (historyIdx === -1) typingDraft = input.value;
+          historyIdx = historyIdx === -1
+            ? history.length - 1
+            : Math.max(0, historyIdx - 1);
+          input.value = history[historyIdx];
+          // move cursor to end
+          requestAnimationFrame(() => input.setSelectionRange(input.value.length, input.value.length));
+        } else if (e.key === 'ArrowDown') {
+          if (historyIdx === -1) return;
+          e.preventDefault();
+          historyIdx++;
+          if (historyIdx >= history.length) {
+            historyIdx = -1;
+            input.value = typingDraft;
+          } else {
+            input.value = history[historyIdx];
+          }
+        } else if (e.key === 'l' && (e.ctrlKey || e.metaKey)) {
+          // Ctrl/Cmd+L: clear (familiar shell behaviour)
+          e.preventDefault();
+          clearBtn && clearBtn.click();
+        }
+      });
+
+      // Click anywhere in the body to focus the input — feels terminal-y
+      body.addEventListener('click', (e) => {
+        if (window.getSelection && window.getSelection().toString()) return;
+        input.focus();
+      });
+    }
+  }
+
+  /* ──────────────────────── Demo command set ────────────────────────── */
+  /* Each handler can push 0+ lines synchronously and/or return a Promise
+     that pushes lines async to simulate work.  Keep this contained — the
+     point is to demo the surface, not to be a real shell. */
+  function runCommand(cmd, append) {
+    const argv = cmd.split(/\s+/);
+    const head = argv[0].toLowerCase();
+    const rest = argv.slice(1);
+    const t = () => fmtTime(new Date());
+
+    switch (head) {
+      case 'help': {
+        append({ kind: 'plain', class: 'dim', text: 'available commands:' });
+        const cmds = [
+          ['help',         'this list'],
+          ['ls',           'list files in cwd'],
+          ['ps',           'show running services'],
+          ['logs <svc>',   'tail logs for a service (try: logs payments-api)'],
+          ['deploy <svc>', 'simulate a deploy'],
+          ['ping <host>',  'simulate a ping'],
+          ['echo <text>',  'echo back'],
+          ['date',         'current time'],
+          ['clear',        'clear the screen (also ⌘L)'],
+        ];
+        cmds.forEach(([c, desc]) => {
+          append({ kind: 'plain', text: '  ' + c.padEnd(16, ' ') + desc });
+        });
+        return;
+      }
+
+      case 'ls': {
+        append({ kind: 'plain', text: 'src/  config/  test/  README.md  package.json  Dockerfile' });
+        return;
+      }
+
+      case 'ps': {
+        append({ kind: 'plain', class: 'dim', text: 'NAME           STATUS   REPLICAS   CPU    MEM' });
+        append({ kind: 'plain', text: 'payments-api   running  3/3        18 %   412 MB' });
+        append({ kind: 'plain', text: 'webhooks       running  2/2        4 %    128 MB' });
+        append({ kind: 'plain', text: 'edge-router    running  4/4        7 %    96 MB' });
+        return;
+      }
+
+      case 'date': {
+        append({ kind: 'plain', text: new Date().toString() });
+        return;
+      }
+
+      case 'echo': {
+        append({ kind: 'plain', text: rest.join(' ') });
+        return;
+      }
+
+      case 'clear': {
+        // The clear button does the seed-restore properly — find and click it.
+        // (The handler runs in the per-pane scope, so root is whoever owns this
+        //  command. We don't have it directly; closest container wins.)
+        const term = document.activeElement && document.activeElement.closest('[data-term]');
+        const btn = term && term.querySelector('[data-term-clear]');
+        if (btn) btn.click();
+        return;
+      }
+
+      case 'ping': {
+        const host = rest[0] || 'localhost';
+        append({ kind: 'plain', class: 'dim', text: 'PING ' + host + ' (127.0.0.1) 56 data bytes' });
+        let i = 0;
+        const id = setInterval(() => {
+          i++;
+          const ms = (12 + Math.random() * 18).toFixed(1);
+          append({ kind: 'plain', text: '64 bytes from ' + host + ': icmp_seq=' + i + ' time=' + ms + ' ms' });
+          if (i >= 4) {
+            clearInterval(id);
+            append({ kind: 'plain', class: 'dim', text: '--- ' + host + ' ping statistics ---' });
+            append({ kind: 'plain', text: '4 packets transmitted, 4 received, 0% packet loss' });
+          }
+        }, 320);
+        return;
+      }
+
+      case 'logs': {
+        const svc = rest[0] || 'payments-api';
+        append({ kind: 'plain', class: 'dim', text: 'tailing ' + svc + ' (5 lines)…' });
+        let i = 0;
+        const id = setInterval(() => {
+          i++;
+          const p = STREAM_POOL[Math.floor(Math.random() * STREAM_POOL.length)];
+          append({ kind: 'log', time: fmtTime(new Date()), level: p.lvl, msg: p.msg });
+          if (i >= 5) {
+            clearInterval(id);
+            append({ kind: 'plain', class: 'dim', text: '— end of tail —' });
+          }
+        }, 280);
+        return;
+      }
+
+      case 'deploy': {
+        const svc = rest[0] || 'payments-api';
+        const steps = [
+          { d: 200, line: { kind: 'plain', text: 'preparing build for ' + svc + '…' } },
+          { d: 600, line: { kind: 'plain', text: '  ▸ docker build .  → sha256:4f2a91c (12.4 MB)' } },
+          { d: 500, line: { kind: 'plain', text: '  ▸ pushing to registry  → done' } },
+          { d: 700, line: { kind: 'log', time: t(), level: 'info', msg: 'rolling out ' + svc + ' <span class="c-dim">replicas=3</span>' } },
+          { d: 600, line: { kind: 'log', time: t(), level: 'info', msg: 'pod 1/3 ready · pod 2/3 ready · pod 3/3 ready' } },
+          { d: 400, line: { kind: 'log', time: t(), level: 'success', msg: 'deploy complete · ' + svc + ' <span class="c-dim">v2.4.2 · 14 s</span>' } },
+        ];
+        let acc = 0;
+        steps.forEach((s) => {
+          acc += s.d;
+          setTimeout(() => append(s.line), acc);
+        });
+        return;
+      }
+
+      default: {
+        append({ kind: 'plain', class: 'dim', text: head + ': command not found · try "help"' });
+      }
+    }
+  }
+
+  function init() {
+    document.querySelectorAll('[data-term]').forEach(bindTerm);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    setTimeout(init, 0);
+  }
+})();
+</script>
+</body>
+</html>

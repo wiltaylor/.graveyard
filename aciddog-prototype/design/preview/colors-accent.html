@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  .accent-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .accent-cell {
+    height: 88px; border-radius: var(--r-md);
+    border: 1px solid var(--border);
+    display: flex; flex-direction: column; justify-content: space-between;
+    padding: 8px 10px;
+  }
+  .accent-cell .name { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
+  .accent-cell .val  { font-family: var(--font-mono); font-size: 10px; opacity: 0.85; }
+  .accent-press-cell { background: oklch(0.45 0.18 250); color: #fff; border-color: transparent; }
+  .accent-base-cell  { background: oklch(0.55 0.17 250); color: #fff; border-color: transparent; }
+  .accent-hover-cell { background: oklch(0.66 0.17 250); color: #fff; border-color: transparent; }
+  .accent-tint-cell  { background: var(--accent-bg); color: var(--accent-fg); }
+  .accent-fg-cell    { background: var(--bg-1); color: var(--accent-fg); }
+</style></head>
+<body>
+<template id="card-content">
+<div class="accent-row">
+  <div class="accent-cell accent-press-cell">
+    <span class="name">press</span>
+    <span class="val">L 0.45</span>
+  </div>
+  <div class="accent-cell accent-base-cell">
+    <span class="name">accent</span>
+    <span class="val">L 0.55</span>
+  </div>
+  <div class="accent-cell accent-hover-cell">
+    <span class="name">hover</span>
+    <span class="val">L 0.66</span>
+  </div>
+  <div class="accent-cell accent-tint-cell">
+    <span class="name">tint · bg</span>
+    <span class="val">10 % α</span>
+  </div>
+  <div class="accent-cell accent-fg-cell">
+    <span class="name">on bg · fg</span>
+    <span class="val">L 0.42</span>
+  </div>
+</div>
+<div class="row" style="margin-top:10px;gap:10px;align-items:center">
+  <button style="height:32px;padding:0 14px;background:var(--accent);color:var(--accent-contrast);border:0;border-radius:4px;font:inherit;font-size:13px;font-weight:500">Deploy</button>
+  <button style="height:32px;padding:0 14px;background:var(--accent-hover);color:var(--accent-contrast);border:0;border-radius:4px;font:inherit;font-size:13px;font-weight:500">Hover</button>
+  <button style="height:32px;padding:0 14px;background:var(--accent-press);color:var(--accent-contrast);border:0;border-radius:4px;font:inherit;font-size:13px;font-weight:500">Press</button>
+  <span style="background:var(--accent-bg);color:var(--accent-fg);font-size:12px;padding:3px 8px;border-radius:4px;font-weight:500">v2.4.1 · accent-bg</span>
+</div></template>
+<script src="_split.js"></script>
+</body>
+</html>

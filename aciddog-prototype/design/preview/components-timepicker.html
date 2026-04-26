@@ -1,0 +1,155 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  .grouplabel {
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--fg-2); font-weight: 600; font-family: var(--font-mono);
+    margin-bottom: 8px;
+  }
+
+  /* ── digit input — HH : MM ──────────────────────────────────────── */
+  .tp-clock {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: var(--bg-1); border: 1px solid var(--border);
+    border-radius: 4px; padding: 6px 10px;
+    font-family: var(--font-mono); font-size: 22px;
+    color: var(--fg-0);
+    user-select: none;
+    width: fit-content;
+  }
+  .tp-clock .seg {
+    display: inline-flex; flex-direction: column; align-items: center;
+    padding: 0 4px; border-radius: 3px;
+    cursor: pointer;
+    line-height: 1.05;
+  }
+  .tp-clock .seg.active { background: var(--accent-bg); color: var(--accent-fg); }
+  .tp-clock .seg .arrow {
+    font-size: 9px; opacity: 0.45;
+  }
+  .tp-clock .colon { color: var(--fg-2); }
+  .tp-clock .ampm {
+    margin-left: 8px;
+    display: inline-flex; flex-direction: column; gap: 1px;
+    font-size: 10px; font-family: var(--font-mono);
+    background: var(--bg-2); border: 1px solid var(--border-subtle);
+    border-radius: 3px; overflow: hidden;
+  }
+  .tp-clock .ampm span {
+    padding: 1px 6px; cursor: pointer; color: var(--fg-2);
+  }
+  .tp-clock .ampm span.on { background: var(--bg-0); color: var(--fg-0); }
+
+  /* ── preset chips ───────────────────────────────────────────────── */
+  .presets { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .preset {
+    height: 24px; padding: 0 8px;
+    background: var(--bg-1); border: 1px solid var(--border);
+    border-radius: 3px;
+    font-family: var(--font-mono); font-size: 11px; color: var(--fg-1);
+    cursor: pointer;
+    display: inline-flex; align-items: center;
+  }
+  .preset:hover { border-color: var(--border-strong); color: var(--fg-0); }
+  .preset.on { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-fg); }
+
+  /* ── DOW selector ───────────────────────────────────────────────── */
+  .dow {
+    display: inline-flex; gap: 4px;
+    background: var(--bg-2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 3px;
+  }
+  .dow button {
+    width: 30px; height: 28px;
+    background: transparent; border: 0; border-radius: 3px;
+    color: var(--fg-2); font-family: var(--font-mono); font-size: 11px;
+    font-weight: 500; cursor: pointer;
+    transition: background 80ms ease-out, color 80ms ease-out;
+  }
+  .dow button:hover { color: var(--fg-0); }
+  .dow button.on {
+    background: var(--accent);
+    color: var(--accent-contrast);
+  }
+  .dow button.weekend { color: var(--fg-3); }
+
+  /* ── output expression ──────────────────────────────────────────── */
+  .cron {
+    margin-top: 14px;
+    padding: 10px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--fg-1);
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  }
+  .cron .expr { color: var(--fg-0); font-weight: 500; }
+  .cron .label {
+    font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--fg-3); margin-right: 8px;
+  }
+  .cron .nat {
+    color: var(--fg-2); font-family: var(--font-sans); font-size: 12px;
+    text-align: right;
+  }
+</style>
+</head>
+<body>
+<template id="card-content">
+<div style="display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:flex-start">
+  <div>
+    <div class="grouplabel">Time of day</div>
+    <div class="tp-clock">
+      <span class="seg active">
+        <span class="arrow">▲</span>
+        <span>09</span>
+        <span class="arrow">▼</span>
+      </span>
+      <span class="colon">:</span>
+      <span class="seg">
+        <span class="arrow">▲</span>
+        <span>30</span>
+        <span class="arrow">▼</span>
+      </span>
+      <span class="ampm">
+        <span class="on">AM</span>
+        <span>PM</span>
+      </span>
+    </div>
+    <div class="presets">
+      <span class="preset">00:00</span>
+      <span class="preset">06:00</span>
+      <span class="preset on">09:30</span>
+      <span class="preset">12:00</span>
+      <span class="preset">17:00</span>
+      <span class="preset">23:59</span>
+    </div>
+  </div>
+
+  <div>
+    <div class="grouplabel">Repeat on</div>
+    <div class="dow">
+      <button class="on">Mo</button>
+      <button class="on">Tu</button>
+      <button class="on">We</button>
+      <button class="on">Th</button>
+      <button class="on">Fr</button>
+      <button class="weekend">Sa</button>
+      <button class="weekend">Su</button>
+    </div>
+
+    <div class="cron">
+      <div>
+        <span class="label">cron</span>
+        <span class="expr">30 9 * * 1-5</span>
+      </div>
+      <div class="nat">Weekdays at 9:30 AM · UTC</div>
+    </div>
+  </div>
+</div>
+</template>
+<script src="_split.js"></script>
+</body>
+</html>

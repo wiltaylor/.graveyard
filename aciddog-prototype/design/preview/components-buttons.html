@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css"></head>
+<body>
+<template id="card-content">
+<style>
+  .btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:4px;font:inherit;font-size:13px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:background var(--dur-1) var(--ease-out)}
+  .btn-primary{background:var(--accent);color:var(--accent-contrast)}
+  .btn-primary:hover{background:var(--accent-hover)}
+  .btn-secondary{background:var(--bg-1);color:var(--fg-0);border-color:var(--border)}
+  .btn-secondary:hover{background:var(--bg-2);border-color:var(--border-strong)}
+  .btn-ghost{background:transparent;color:var(--fg-1)}
+  .btn-ghost:hover{background:var(--bg-2);color:var(--fg-0)}
+  .btn-danger{background:var(--danger);color:#fff}
+  .btn-danger:hover{filter:brightness(1.08)}
+  .btn-sm{height:28px;padding:0 10px;font-size:12px}
+  .btn-lg{height:40px;padding:0 16px;font-size:14px}
+</style>
+<div class="row" style="gap:8px;flex-wrap:wrap">
+  <button class="btn btn-primary">Deploy</button>
+  <button class="btn btn-secondary">Cancel</button>
+  <button class="btn btn-ghost">Skip</button>
+  <button class="btn btn-danger">Delete</button>
+  <button class="btn btn-secondary" disabled style="opacity:.4;cursor:not-allowed">Disabled</button>
+</div>
+<div class="row" style="margin-top:10px;gap:8px;align-items:center">
+  <button class="btn btn-primary btn-sm">sm 28</button>
+  <button class="btn btn-primary">md 32</button>
+  <button class="btn btn-primary btn-lg">lg 40</button>
+  <span class="tok" style="margin-left:6px">primary · secondary · ghost · danger</span>
+</div></template>
+<script src="_split.js"></script>
+</body>
+</html>

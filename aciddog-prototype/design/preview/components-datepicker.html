@@ -1,0 +1,191 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  /* ── input that opens calendar ───────────────────────────────────── */
+  .dp-field { display: flex; flex-direction: column; gap: 4px; max-width: 220px; }
+  .dp-field label {
+    font-size: 12px; color: var(--fg-1); font-weight: 500;
+  }
+  .dp-input {
+    height: 32px; padding: 0 10px;
+    display: flex; align-items: center; gap: 8px;
+    background: var(--bg-1); border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--fg-0); font-family: var(--font-mono); font-size: 13px;
+    cursor: pointer;
+  }
+  .dp-input:hover { border-color: var(--border-strong); }
+  .dp-input.open { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+  .dp-input .icon {
+    width: 14px; height: 14px; opacity: 0.7;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+
+  /* ── calendar ────────────────────────────────────────────────────── */
+  .cal {
+    width: 252px;
+    padding: 12px;
+    background: var(--bg-4);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+  }
+  .cal-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .cal-month {
+    font-size: 13px; font-weight: 600; color: var(--fg-0);
+  }
+  .cal-nav {
+    display: inline-flex; gap: 2px;
+  }
+  .cal-nav button {
+    width: 24px; height: 24px;
+    background: transparent; border: 1px solid transparent; border-radius: 3px;
+    color: var(--fg-1); cursor: pointer; font: inherit; font-size: 14px;
+    line-height: 1; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .cal-nav button:hover { background: var(--bg-2); border-color: var(--border-subtle); color: var(--fg-0); }
+
+  .cal-grid {
+    display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;
+  }
+  .cal-dow {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-3); text-align: center; padding: 4px 0;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .cal-day {
+    aspect-ratio: 1;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; color: var(--fg-1); cursor: pointer;
+    border-radius: 3px; font-variant-numeric: tabular-nums;
+    border: 1px solid transparent;
+    transition: background 80ms ease-out, color 80ms ease-out, border-color 80ms ease-out;
+  }
+  .cal-day:hover { background: var(--bg-2); color: var(--fg-0); }
+  .cal-day.muted { color: var(--fg-3); }
+  .cal-day.today { border-color: var(--border-strong); color: var(--fg-0); }
+  .cal-day.in-range { background: var(--accent-bg); border-radius: 0; color: var(--accent-fg); }
+  .cal-day.range-start { background: var(--accent); color: var(--accent-contrast); border-radius: 3px 0 0 3px; }
+  .cal-day.range-end   { background: var(--accent); color: var(--accent-contrast); border-radius: 0 3px 3px 0; }
+  .cal-day.selected {
+    background: var(--accent); color: var(--accent-contrast);
+  }
+  .cal-day.disabled { color: var(--fg-3); opacity: 0.4; cursor: not-allowed; }
+  .cal-day.disabled:hover { background: transparent; }
+
+  .cal-foot {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 8px;
+    font-family: var(--font-mono); font-size: 11px; color: var(--fg-2);
+  }
+  .cal-foot button {
+    background: transparent; border: 0; color: var(--accent-fg);
+    font: inherit; cursor: pointer; padding: 0;
+  }
+  .cal-foot button:hover { text-decoration: underline; }
+
+  .grouplabel {
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--fg-2); font-weight: 600; font-family: var(--font-mono);
+    margin-bottom: 8px;
+  }
+</style>
+</head>
+<body>
+<template id="card-content">
+<div style="display:grid;grid-template-columns:auto auto auto;gap:24px;align-items:flex-start">
+  <div>
+    <div class="grouplabel">Single date</div>
+    <div class="dp-field">
+      <label>Effective from</label>
+      <div class="dp-input open">
+        <span class="icon">▦</span>
+        <span>2025-04-12</span>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="grouplabel">Calendar</div>
+    <div class="cal">
+      <div class="cal-head">
+        <span class="cal-month">April 2025</span>
+        <span class="cal-nav">
+          <button>‹</button>
+          <button>›</button>
+        </span>
+      </div>
+      <div class="cal-grid">
+        <span class="cal-dow">Mo</span><span class="cal-dow">Tu</span><span class="cal-dow">We</span>
+        <span class="cal-dow">Th</span><span class="cal-dow">Fr</span><span class="cal-dow">Sa</span><span class="cal-dow">Su</span>
+
+        <span class="cal-day muted">31</span>
+        <span class="cal-day">1</span><span class="cal-day">2</span><span class="cal-day">3</span>
+        <span class="cal-day">4</span><span class="cal-day">5</span><span class="cal-day">6</span>
+
+        <span class="cal-day">7</span><span class="cal-day">8</span><span class="cal-day today">9</span>
+        <span class="cal-day">10</span><span class="cal-day">11</span><span class="cal-day selected">12</span><span class="cal-day">13</span>
+
+        <span class="cal-day">14</span><span class="cal-day">15</span><span class="cal-day">16</span>
+        <span class="cal-day">17</span><span class="cal-day">18</span><span class="cal-day">19</span><span class="cal-day">20</span>
+
+        <span class="cal-day">21</span><span class="cal-day">22</span><span class="cal-day">23</span>
+        <span class="cal-day">24</span><span class="cal-day">25</span><span class="cal-day disabled">26</span><span class="cal-day disabled">27</span>
+
+        <span class="cal-day">28</span><span class="cal-day">29</span><span class="cal-day">30</span>
+        <span class="cal-day muted">1</span><span class="cal-day muted">2</span><span class="cal-day muted">3</span><span class="cal-day muted">4</span>
+      </div>
+      <div class="cal-foot">
+        <span>UTC · weekends disabled</span>
+        <button>Today</button>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="grouplabel">Range</div>
+    <div class="cal">
+      <div class="cal-head">
+        <span class="cal-month">April 2025</span>
+        <span class="cal-nav">
+          <button>‹</button>
+          <button>›</button>
+        </span>
+      </div>
+      <div class="cal-grid">
+        <span class="cal-dow">Mo</span><span class="cal-dow">Tu</span><span class="cal-dow">We</span>
+        <span class="cal-dow">Th</span><span class="cal-dow">Fr</span><span class="cal-dow">Sa</span><span class="cal-dow">Su</span>
+
+        <span class="cal-day muted">31</span>
+        <span class="cal-day">1</span><span class="cal-day">2</span><span class="cal-day">3</span>
+        <span class="cal-day">4</span><span class="cal-day">5</span><span class="cal-day">6</span>
+
+        <span class="cal-day">7</span><span class="cal-day range-start">8</span><span class="cal-day in-range">9</span>
+        <span class="cal-day in-range">10</span><span class="cal-day in-range">11</span><span class="cal-day in-range">12</span><span class="cal-day in-range">13</span>
+
+        <span class="cal-day in-range">14</span><span class="cal-day range-end">15</span><span class="cal-day">16</span>
+        <span class="cal-day">17</span><span class="cal-day">18</span><span class="cal-day">19</span><span class="cal-day">20</span>
+
+        <span class="cal-day">21</span><span class="cal-day">22</span><span class="cal-day">23</span>
+        <span class="cal-day">24</span><span class="cal-day">25</span><span class="cal-day">26</span><span class="cal-day">27</span>
+
+        <span class="cal-day">28</span><span class="cal-day">29</span><span class="cal-day">30</span>
+        <span class="cal-day muted">1</span><span class="cal-day muted">2</span><span class="cal-day muted">3</span><span class="cal-day muted">4</span>
+      </div>
+      <div class="cal-foot">
+        <span>Apr 8 → Apr 15 · 8 days</span>
+        <button>Clear</button>
+      </div>
+    </div>
+  </div>
+</div>
+</template>
+<script src="_split.js"></script>
+</body>
+</html>

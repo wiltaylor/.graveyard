@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css"></head>
+<body>
+<template id="card-content">
+<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+  <div class="col">
+    <div class="swatch" style="background:var(--success-bg);color:var(--success-fg);border-color:var(--success-bg)"><span class="label" style="background:transparent;color:var(--success-fg);border:0">success</span></div>
+    <div class="swatch" style="background:var(--success);color:#fff"><span class="label" style="background:rgb(0 0 0 / .25);color:#fff;border:0">solid</span></div>
+  </div>
+  <div class="col">
+    <div class="swatch" style="background:var(--warning-bg);color:var(--warning-fg);border-color:var(--warning-bg)"><span class="label" style="background:transparent;color:var(--warning-fg);border:0">warning</span></div>
+    <div class="swatch" style="background:var(--warning);color:#231a07"><span class="label" style="background:rgb(0 0 0 / .15);color:#231a07;border:0">solid</span></div>
+  </div>
+  <div class="col">
+    <div class="swatch" style="background:var(--danger-bg);color:var(--danger-fg);border-color:var(--danger-bg)"><span class="label" style="background:transparent;color:var(--danger-fg);border:0">danger</span></div>
+    <div class="swatch" style="background:var(--danger);color:#fff"><span class="label" style="background:rgb(0 0 0 / .25);color:#fff;border:0">solid</span></div>
+  </div>
+  <div class="col">
+    <div class="swatch" style="background:var(--info-bg);color:var(--info-fg);border-color:var(--info-bg)"><span class="label" style="background:transparent;color:var(--info-fg);border:0">info</span></div>
+    <div class="swatch" style="background:var(--info);color:#fff"><span class="label" style="background:rgb(0 0 0 / .25);color:#fff;border:0">solid</span></div>
+  </div>
+</div></template>
+<script src="_split.js"></script>
+</body>
+</html>

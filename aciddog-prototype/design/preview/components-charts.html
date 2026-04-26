@@ -1,0 +1,1250 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  /* ─────────────────────────────────────────────────────────────────────
+     CHARTS & GAUGES
+     A small composable set built on inline SVG (no deps) for live dashboard
+     surfaces. Tiles share a Series sim so values move continuously and the
+     dark/light split reads identically. All visuals derive from the existing
+     semantic tokens — accent / success / warning / danger.
+     ───────────────────────────────────────────────────────────────────── */
+
+  .ch-stack {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  .ch-section-label {
+    font-size: 10px; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase;
+    color: var(--fg-2);
+    margin-bottom: 8px;
+  }
+
+  /* ── KPI ROW ───────────────────────────────────────────────────────── */
+  .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+
+  .tile {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: 12px 14px;
+    display: flex; flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  /* KPI head: just the label. The delta moves down beside the value
+     so the label gets the full tile width. */
+  .tile-head {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
+  .tile-label {
+    flex: 1; min-width: 0;
+    font-size: 10px; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase;
+    color: var(--fg-2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tile-meta {
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    min-width: 0;
+  }
+  /* Value row: number on the left, delta pinned right.
+     The delta stays compact (arrow + signed percentage). */
+  .tile-value {
+    display: flex; align-items: baseline; gap: 6px;
+    font-size: 22px; font-weight: 600; line-height: 1.1;
+    color: var(--fg-0);
+    font-variant-numeric: tabular-nums;
+    min-width: 0;
+  }
+  .tile-value .num { white-space: nowrap; }
+  .tile-value .unit {
+    font-size: 12px; font-weight: 500; color: var(--fg-2);
+  }
+  .tile-value .tile-delta { margin-left: auto; }
+  .tile-delta {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+    color: var(--fg-2);
+    flex-shrink: 0;
+  }
+  .tile-delta.up    { color: var(--success-fg); }
+  .tile-delta.down  { color: var(--danger-fg); }
+  .tile-delta.flat  { color: var(--fg-3); }
+  .tile-delta svg { width: 11px; height: 11px; }
+
+  .spark {
+    margin-top: 2px;
+    height: 36px;
+    width: 100%;
+    display: block;
+  }
+  .spark .spark-line {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .spark .spark-area {
+    fill: color-mix(in oklab, var(--accent) 18%, transparent);
+    stroke: none;
+  }
+  .spark.positive .spark-line { stroke: var(--success-fg); }
+  .spark.positive .spark-area { fill: color-mix(in oklab, var(--success) 18%, transparent); }
+  .spark.danger   .spark-line { stroke: var(--danger-fg); }
+  .spark.danger   .spark-area { fill: color-mix(in oklab, var(--danger) 18%, transparent); }
+  .spark.warning  .spark-line { stroke: var(--warning-fg); }
+  .spark.warning  .spark-area { fill: color-mix(in oklab, var(--warning) 18%, transparent); }
+
+  /* ── BIG CHART CARDS ───────────────────────────────────────────────── */
+  .chart-row { display: grid; grid-template-columns: 1.6fr 1fr; gap: 8px; }
+  .chart-row.thirds { grid-template-columns: 1fr 1fr 1fr; }
+
+  .card {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .card-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .card-title {
+    font-size: 13px; font-weight: 600;
+    color: var(--fg-0);
+    flex: 1; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .card-meta {
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3);
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .card-body { padding: 12px 14px 14px; }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 6px 10px;
+    font-size: 11px; color: var(--fg-2);
+  }
+  .legend .li {
+    display: inline-flex; align-items: center; gap: 6px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .legend .li > * { white-space: nowrap; }
+  .legend .sw {
+    width: 8px; height: 8px; border-radius: 2px;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+  .legend .v {
+    font-family: var(--font-mono); color: var(--fg-1);
+  }
+
+  /* SVG axis text */
+  .axis text {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    fill: var(--fg-3);
+  }
+  .axis line, .axis path { stroke: var(--border-subtle); shape-rendering: crispEdges; }
+  .gridline { stroke: var(--border-subtle); shape-rendering: crispEdges; }
+  .threshold {
+    stroke: var(--warning-fg);
+    stroke-dasharray: 3 3;
+    stroke-width: 1;
+    opacity: .7;
+  }
+
+  /* Hover crosshair */
+  .crosshair {
+    stroke: var(--border-strong);
+    stroke-width: 1;
+    stroke-dasharray: 2 3;
+    pointer-events: none;
+  }
+  .focus-dot {
+    stroke: var(--bg-1);
+    stroke-width: 1.5;
+  }
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: var(--bg-4);
+    color: var(--fg-0);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-sm);
+    padding: 8px 10px;
+    font-size: 11.5px;
+    font-family: var(--font-mono);
+    min-width: 140px;
+    transform: translate(-50%, -110%);
+    transition: opacity 80ms cubic-bezier(.2,0,0,1);
+    opacity: 0;
+    z-index: 2;
+  }
+  .tooltip.show { opacity: 1; }
+  .tooltip .tt-time { color: var(--fg-3); font-size: 10px; margin-bottom: 4px; }
+  .tooltip .tt-row {
+    display: grid; grid-template-columns: 8px 1fr auto;
+    align-items: center; gap: 8px;
+    padding: 1px 0;
+  }
+  .tooltip .tt-row .sw { width: 8px; height: 8px; border-radius: 2px; }
+  .tooltip .tt-row .lbl { color: var(--fg-1); }
+  .tooltip .tt-row .val { color: var(--fg-0); font-variant-numeric: tabular-nums; }
+
+  /* ── GAUGES ───────────────────────────────────────────────────────── */
+  .gauge-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+
+  /* Radial */
+  .radial { display: flex; align-items: center; justify-content: center; padding: 4px 0 8px; }
+  .radial svg { display: block; width: 100%; max-width: 200px; height: auto; }
+  .radial .g-track { fill: none; stroke: var(--bg-3); stroke-width: 12; stroke-linecap: round; }
+  .radial .g-bar   { fill: none; stroke: var(--accent); stroke-width: 12; stroke-linecap: round;
+                     transition: stroke-dashoffset 600ms cubic-bezier(.2,0,0,1),
+                                 stroke 200ms cubic-bezier(.2,0,0,1); }
+  .radial .g-tick  { stroke: var(--fg-3); stroke-width: 1; }
+  .radial .g-num {
+    font-family: var(--font-sans); font-size: 26px; font-weight: 600;
+    fill: var(--fg-0); font-variant-numeric: tabular-nums;
+    text-anchor: middle; dominant-baseline: central;
+  }
+  .radial .g-unit {
+    font-family: var(--font-mono); font-size: 11px; fill: var(--fg-2);
+    text-anchor: middle; dominant-baseline: central;
+  }
+  .gauge-foot {
+    display: flex; justify-content: space-between;
+    padding: 0 14px 12px;
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3);
+  }
+  .gauge-foot .ok   { color: var(--success-fg); }
+  .gauge-foot .warn { color: var(--warning-fg); }
+  .gauge-foot .err  { color: var(--danger-fg); }
+
+  /* Linear bullet — host applies the outer padding; each row contributes
+     its own bottom spacing so consecutive bullets read as a list. */
+  .bullet { padding: 8px 14px 12px; display: flex; flex-direction: column; gap: 12px; }
+  .bullet .b-item { display: flex; flex-direction: column; gap: 4px; }
+  .bullet .b-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    column-gap: 10px;
+  }
+  .bullet .b-label {
+    font-size: 12px; color: var(--fg-1);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .bullet .b-val   { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-0); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .bullet svg { display: block; width: 100%; height: 14px; overflow: visible; }
+  .bullet .b-track { fill: var(--bg-3); }
+  .bullet .b-bar   { fill: var(--accent); transition: width 320ms cubic-bezier(.2,0,0,1), fill 200ms cubic-bezier(.2,0,0,1); }
+  .bullet .b-tick  { stroke: var(--fg-2); stroke-width: 1; }
+  .bullet .b-zone-warn { fill: color-mix(in oklab, var(--warning) 14%, transparent); }
+  .bullet .b-zone-err  { fill: color-mix(in oklab, var(--danger)  14%, transparent); }
+
+  /* Donut composition */
+  .donut-wrap {
+    display: grid; grid-template-columns: 1fr 1fr;
+    align-items: center; gap: 8px; padding: 4px 14px 12px;
+  }
+  .donut svg { display: block; width: 100%; max-width: 140px; }
+  .donut .d-bg { fill: var(--bg-3); }
+  .donut .d-num {
+    font-family: var(--font-sans); font-size: 18px; font-weight: 600;
+    fill: var(--fg-0); text-anchor: middle; dominant-baseline: central;
+    font-variant-numeric: tabular-nums;
+  }
+  .donut .d-sub {
+    font-family: var(--font-mono); font-size: 10px; fill: var(--fg-3);
+    text-anchor: middle; dominant-baseline: central;
+  }
+  .donut-legend { display: flex; flex-direction: column; gap: 4px; }
+  .donut-legend .li {
+    display: grid; grid-template-columns: 10px 1fr auto;
+    align-items: center; gap: 8px;
+    font-size: 11.5px; color: var(--fg-1);
+  }
+  .donut-legend .sw { width: 10px; height: 10px; border-radius: 2px; }
+  .donut-legend .v {
+    font-family: var(--font-mono); color: var(--fg-0); font-variant-numeric: tabular-nums;
+  }
+
+  /* Bar chart */
+  .bar-svg .bar-bg   { fill: var(--bg-2); }
+  .bar-svg .bar-fill { fill: var(--accent); transition: width 240ms cubic-bezier(.2,0,0,1); }
+  .bar-svg .bar-label {
+    font-family: var(--font-sans); font-size: 11px; fill: var(--fg-1);
+  }
+  .bar-svg .bar-value {
+    font-family: var(--font-mono); font-size: 11px; fill: var(--fg-0);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Status pill on tile heads */
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 0 6px; height: 16px;
+    border-radius: var(--r-sm);
+    font-family: var(--font-mono); font-size: 10px;
+    background: var(--bg-2); border: 1px solid var(--border-subtle);
+    color: var(--fg-1);
+  }
+  .pill .dot {
+    width: 5px; height: 5px; border-radius: 999px;
+    background: var(--success);
+  }
+  .pill.warn { color: var(--warning-fg);
+    background: color-mix(in oklab, var(--warning) 10%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--warning) 25%, var(--border-subtle)); }
+  .pill.warn .dot { background: var(--warning); }
+  .pill.err { color: var(--danger-fg);
+    background: color-mix(in oklab, var(--danger)  10%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--danger)  25%, var(--border-subtle)); }
+  .pill.err  .dot { background: var(--danger); }
+
+  /* Series colour assignment for multi-line legends */
+  .ser-1 { color: var(--accent-fg); }
+  .ser-2 { color: var(--success-fg); }
+  .ser-3 { color: var(--warning-fg); }
+  .ser-4 { color: var(--danger-fg); }
+</style>
+</head>
+<body>
+<template id="card-content">
+<div class="ch-stack">
+
+  <!-- KPI tiles ─────────────────────────────────────────────────────── -->
+  <div>
+    <div class="ch-section-label">KPIs · live, with sparklines</div>
+    <div class="kpi-row" data-kpi-row>
+      <!-- tiles inserted by JS -->
+    </div>
+  </div>
+
+  <!-- Gauges ────────────────────────────────────────────────────────── -->
+  <div>
+    <div class="ch-section-label">Gauges · radial · linear · donut</div>
+    <div class="gauge-row">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">CPU utilization</span>
+          <span class="pill" data-cpu-pill><span class="dot"></span><span data-cpu-pill-text>healthy</span></span>
+        </div>
+        <div class="radial" data-radial-cpu></div>
+        <div class="gauge-foot">
+          <span><span class="ok">●</span> 0–60</span>
+          <span><span class="warn">●</span> 60–80</span>
+          <span><span class="err">●</span> 80–100</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Service health</span>
+          <span class="card-meta">linear</span>
+        </div>
+        <div class="bullet" data-bullets></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Memory</span>
+          <span class="card-meta">8 GB</span>
+        </div>
+        <div class="donut-wrap">
+          <div class="donut" data-donut></div>
+          <div class="donut-legend" data-donut-legend></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Time-series row ───────────────────────────────────────────────── -->
+  <div>
+    <div class="ch-section-label">Time-series · area · multi-line</div>
+    <div class="chart-row">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Request throughput</span>
+          <span class="card-meta">last 60 s · 1 s buckets</span>
+        </div>
+        <div class="card-body">
+          <div data-area-chart style="position:relative">
+            <!-- svg + tooltip injected -->
+          </div>
+          <div class="legend" data-area-legend style="margin-top:8px"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Latency by route</span>
+          <span class="card-meta">p95 · ms</span>
+        </div>
+        <div class="card-body">
+          <div data-line-chart style="position:relative"></div>
+          <div class="legend" data-line-legend style="margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bar row ───────────────────────────────────────────────────────── -->
+  <div>
+    <div class="ch-section-label">Categorical · horizontal bars</div>
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Requests by endpoint · last minute</span>
+        <span class="card-meta" data-bars-total>—</span>
+      </div>
+      <div class="card-body">
+        <svg class="bar-svg" data-bars viewBox="0 0 600 220" preserveAspectRatio="none" style="width:100%;height:220px"></svg>
+      </div>
+    </div>
+  </div>
+
+</div>
+</template>
+<script src="_split.js"></script>
+<script>
+(function () {
+  /* ────────────────────────────────────────────────────────────────────
+     COLOR LOOKUP
+     We need numeric series colors for SVG strokes/fills. CSS oklch tokens
+     can't easily be sampled, so we resolve them at runtime by reading the
+     pane's computed style.
+     ──────────────────────────────────────────────────────────────────── */
+  const COLOR_KEYS = {
+    accent: '--accent-fg',
+    accentBase: '--accent',
+    success: '--success-fg',
+    warning: '--warning-fg',
+    danger: '--danger-fg',
+    info: '--info-fg',
+    fg2: '--fg-2',
+    fg3: '--fg-3',
+    bg1: '--bg-1',
+    border: '--border',
+    borderSubtle: '--border-subtle',
+  };
+  function resolveColors(pane) {
+    const cs = getComputedStyle(pane);
+    const out = {};
+    for (const [k, v] of Object.entries(COLOR_KEYS)) {
+      out[k] = cs.getPropertyValue(v).trim();
+    }
+    return out;
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     DOM helpers (HTML + SVG)
+     ──────────────────────────────────────────────────────────────────── */
+  const NS = 'http://www.w3.org/2000/svg';
+  function el(tag, attrs, ...children) {
+    const node = document.createElement(tag);
+    apply(node, attrs);
+    for (const c of children) if (c != null) node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    return node;
+  }
+  function svg(tag, attrs, ...children) {
+    const node = document.createElementNS(NS, tag);
+    apply(node, attrs);
+    for (const c of children) if (c != null) node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    return node;
+  }
+  function apply(node, attrs) {
+    if (!attrs) return;
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'class') node.setAttribute('class', v);
+      else if (k === 'html') node.innerHTML = v;
+      else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
+      else if (v === true) node.setAttribute(k, '');
+      else if (v === false || v == null) {} else node.setAttribute(k, v);
+    }
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     SERIES SIM
+     A bounded random-walk that lets each metric "breathe" around a target
+     — feels live without being unreadable. Seed determines per-pane phase
+     so dark and light don't render identical traces.
+     ──────────────────────────────────────────────────────────────────── */
+  function makeSim(opts) {
+    let v = opts.start ?? opts.target ?? 50;
+    const target = opts.target ?? 50;
+    const min = opts.min ?? 0;
+    const max = opts.max ?? 100;
+    const drift = opts.drift ?? 0.06;
+    const wobble = opts.wobble ?? 0.2;
+    return () => {
+      const pull = (target - v) * drift;
+      const noise = (Math.random() - 0.5) * 2 * wobble * (max - min);
+      v = Math.max(min, Math.min(max, v + pull + noise));
+      return v;
+    };
+  }
+
+  function fmtNum(n, unit) {
+    if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + 'M' + (unit ? ' ' + unit : '');
+    if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + 'k' + (unit ? ' ' + unit : '');
+    if (unit) return Math.round(n) + ' ' + unit;
+    return Math.round(n).toString();
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     SPARKLINE
+     ──────────────────────────────────────────────────────────────────── */
+  function buildSpark(opts) {
+    const w = 220, h = 36;
+    const node = svg('svg', {
+      class: 'spark ' + (opts.tone || ''),
+      viewBox: `0 0 ${w} ${h}`,
+      preserveAspectRatio: 'none',
+    });
+    const area = svg('path', { class: 'spark-area' });
+    const line = svg('path', { class: 'spark-line', 'vector-effect': 'non-scaling-stroke' });
+    node.appendChild(area); node.appendChild(line);
+
+    function update(values) {
+      if (!values.length) return;
+      const min = Math.min(...values, opts.min ?? Math.min(...values));
+      const max = Math.max(...values, opts.max ?? Math.max(...values));
+      const span = (max - min) || 1;
+      const dx = w / (values.length - 1 || 1);
+      const points = values.map((v, i) => {
+        const x = i * dx;
+        const y = h - ((v - min) / span) * (h - 4) - 2;
+        return [x, y];
+      });
+      const d = points.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+      line.setAttribute('d', d);
+      area.setAttribute('d', d + ` L ${w} ${h} L 0 ${h} Z`);
+    }
+    return { node, update };
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     KPI TILE
+     ──────────────────────────────────────────────────────────────────── */
+  function buildKpi(spec) {
+    const node = el('div', { class: 'tile' });
+    // head row: label only — the delta moves down beside the value
+    const head = el('div', { class: 'tile-head' });
+    head.appendChild(el('span', { class: 'tile-label' }, spec.label));
+    node.appendChild(head);
+    if (spec.meta) node.appendChild(el('div', { class: 'tile-meta' }, spec.meta));
+
+    // value row: number + unit on the left, delta pinned right
+    const value = el('div', { class: 'tile-value' });
+    const num = el('span', { class: 'num' }); value.appendChild(num);
+    if (spec.unit) value.appendChild(el('span', { class: 'unit' }, spec.unit));
+    const delta = el('span', { class: 'tile-delta flat' });
+    delta.appendChild(svgArrow('flat'));
+    const deltaText = el('span', null, '0%');
+    delta.appendChild(deltaText);
+    value.appendChild(delta);
+    node.appendChild(value);
+    const spark = buildSpark({ tone: spec.tone });
+    node.appendChild(spark.node);
+
+    let history = [];
+    function push(v) {
+      history.push(v);
+      if (history.length > 60) history.shift();
+      num.textContent = fmtNum(v, '');
+      spark.update(history);
+      // Delta over last ~10 samples
+      if (history.length >= 6) {
+        const a = history[Math.max(0, history.length - 10)];
+        const b = history[history.length - 1];
+        const pct = a === 0 ? 0 : ((b - a) / Math.abs(a)) * 100;
+        const cls = Math.abs(pct) < 0.4 ? 'flat' : (pct > 0 ? 'up' : 'down');
+        delta.className = 'tile-delta ' + cls;
+        delta.replaceChild(svgArrow(cls), delta.firstChild);
+        // Compact format: drop decimal for >|10|%; clamp display range.
+        const abs = Math.abs(pct);
+        const fixed = abs >= 10 ? abs.toFixed(0) : abs.toFixed(1);
+        deltaText.textContent = (cls === 'flat' ? '0' : (pct > 0 ? '+' : '−') + fixed) + '%';
+      }
+    }
+    return { node, push };
+  }
+
+  function svgArrow(kind) {
+    if (kind === 'flat') {
+      return svgFromString('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>');
+    }
+    if (kind === 'up') {
+      return svgFromString('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>');
+    }
+    return svgFromString('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>');
+  }
+  function svgFromString(s) {
+    const t = document.createElement('template');
+    t.innerHTML = s.trim();
+    return t.content.firstChild;
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     RADIAL GAUGE
+     270° arc (-225 → +45). Color shifts at 60 / 80 thresholds.
+     ──────────────────────────────────────────────────────────────────── */
+  function buildRadial(host, colors, opts) {
+    const size = 200, cx = 100, cy = 100, r = 76;
+    const startA = Math.PI * (1.25);     // 225°
+    const endA   = Math.PI * (-0.25);    // -45° going clockwise
+    const sweep  = endA - startA;        // negative; arc length 270°
+    function arcPath(t) {
+      // t in 0..1
+      const a = startA + sweep * t;
+      const x0 = cx + r * Math.cos(startA);
+      const y0 = cy + r * Math.sin(startA);
+      const x1 = cx + r * Math.cos(a);
+      const y1 = cy + r * Math.sin(a);
+      const large = Math.abs(sweep * t) > Math.PI ? 1 : 0;
+      const sweepFlag = sweep < 0 ? 0 : 1;
+      return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${large} ${sweepFlag} ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+    }
+
+    const root = svg('svg', { viewBox: `0 0 ${size} ${size}` });
+    root.appendChild(svg('path', { class: 'g-track', d: arcPath(1) }));
+    const bar = svg('path', { class: 'g-bar', d: arcPath(0) });
+    root.appendChild(bar);
+
+    // ticks at 0, 60, 80, 100
+    [0, 0.6, 0.8, 1].forEach(t => {
+      const a = startA + sweep * t;
+      const x1 = cx + (r - 12) * Math.cos(a);
+      const y1 = cy + (r - 12) * Math.sin(a);
+      const x2 = cx + (r + 4)  * Math.cos(a);
+      const y2 = cy + (r + 4)  * Math.sin(a);
+      root.appendChild(svg('line', { class: 'g-tick', x1, y1, x2, y2 }));
+    });
+
+    const numText = svg('text', { class: 'g-num', x: cx, y: cy - 4 }, '—');
+    const unitText = svg('text', { class: 'g-unit', x: cx, y: cy + 22 }, opts.unit || '');
+    root.appendChild(numText); root.appendChild(unitText);
+    host.appendChild(root);
+
+    function update(v) {
+      const t = Math.max(0, Math.min(1, v / (opts.max || 100)));
+      bar.setAttribute('d', arcPath(t));
+      let stroke = colors.accent;
+      if (t > 0.8) stroke = colors.danger;
+      else if (t > 0.6) stroke = colors.warning;
+      bar.style.stroke = stroke;
+      numText.textContent = Math.round(v).toString();
+      // pill update via callback
+      if (opts.onChange) opts.onChange(v, t);
+    }
+    return { update };
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     LINEAR BULLET (mini progress bar with zones)
+     ──────────────────────────────────────────────────────────────────── */
+  function buildBullet(host, colors, spec) {
+    const wrap = el('div', { class: 'b-item' });
+    const row = el('div', { class: 'b-row' },
+      el('span', { class: 'b-label' }, spec.label),
+      el('span', { class: 'b-val' }, '—'),
+    );
+    wrap.appendChild(row);
+
+    const w = 280, h = 14;
+    const root = svg('svg', { viewBox: `0 0 ${w} ${h}`, preserveAspectRatio: 'none' });
+    // zones: warn 60–80, err 80–100
+    root.appendChild(svg('rect', { class: 'b-track', x: 0, y: h/2 - 4, width: w, height: 8, rx: 3 }));
+    root.appendChild(svg('rect', { class: 'b-zone-warn', x: w * 0.6, y: h/2 - 4, width: w * 0.2, height: 8 }));
+    root.appendChild(svg('rect', { class: 'b-zone-err',  x: w * 0.8, y: h/2 - 4, width: w * 0.2, height: 8, rx: 0 }));
+    const bar = svg('rect', { class: 'b-bar', x: 0, y: h/2 - 4, width: 0, height: 8, rx: 3 });
+    root.appendChild(bar);
+    // target tick (e.g. SLO)
+    if (spec.target != null) {
+      const x = (spec.target / (spec.max || 100)) * w;
+      root.appendChild(svg('line', { class: 'b-tick', x1: x, y1: 0, x2: x, y2: h }));
+    }
+    wrap.appendChild(root);
+    host.appendChild(wrap);
+
+    const valEl = row.children[1];
+    function update(v) {
+      const max = spec.max || 100;
+      const t = Math.max(0, Math.min(1, v / max));
+      bar.setAttribute('width', (t * w).toFixed(1));
+      let fill = colors.accent;
+      if (t > 0.8) fill = colors.danger;
+      else if (t > 0.6) fill = colors.warning;
+      bar.style.fill = fill;
+      valEl.textContent = (spec.fmt ? spec.fmt(v) : Math.round(v) + (spec.unit ? ' ' + spec.unit : ''));
+    }
+    return { update };
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     DONUT (composition)
+     ──────────────────────────────────────────────────────────────────── */
+  function buildDonut(host, legendHost, colors, segments, total) {
+    const size = 140, r = 56, cx = size / 2, cy = size / 2;
+    const root = svg('svg', { viewBox: `0 0 ${size} ${size}` });
+    root.appendChild(svg('circle', { class: 'd-bg', cx, cy, r: r + 6 }));
+    root.appendChild(svg('circle', { cx, cy, r, fill: 'transparent', stroke: colors.bg1 || '#0B0D10', 'stroke-width': 12 }));
+
+    const palette = [colors.accent, colors.success, colors.warning, colors.info, colors.danger];
+
+    let used = segments.reduce((s, x) => s + x.value, 0);
+    let usedPct = total ? (used / total) * 100 : 0;
+
+    let offset = 0;
+    const C = 2 * Math.PI * r;
+    const arcs = [];
+    segments.forEach((s, i) => {
+      const len = (s.value / total) * C;
+      const a = svg('circle', {
+        cx, cy, r,
+        fill: 'transparent',
+        stroke: palette[i % palette.length],
+        'stroke-width': 12,
+        'stroke-dasharray': len.toFixed(2) + ' ' + (C - len).toFixed(2),
+        'stroke-dashoffset': (-offset).toFixed(2),
+        transform: `rotate(-90 ${cx} ${cy})`,
+      });
+      root.appendChild(a);
+      arcs.push(a);
+      offset += len;
+    });
+
+    root.appendChild(svg('text', { class: 'd-num', x: cx, y: cy - 6 }, Math.round(usedPct) + '%'));
+    root.appendChild(svg('text', { class: 'd-sub', x: cx, y: cy + 14 }, 'used'));
+    host.appendChild(root);
+
+    legendHost.innerHTML = '';
+    segments.forEach((s, i) => {
+      legendHost.appendChild(el('div', { class: 'li' },
+        el('span', { class: 'sw', style: 'background:' + palette[i % palette.length] }),
+        el('span', null, s.label),
+        el('span', { class: 'v' }, s.fmt ? s.fmt(s.value) : (s.value + ' ' + (s.unit || ''))),
+      ));
+    });
+    legendHost.appendChild(el('div', { class: 'li' },
+      el('span', { class: 'sw', style: 'background:transparent;border:1px solid ' + (colors.border || '#262C36') }),
+      el('span', null, 'free'),
+      el('span', { class: 'v' }, ((total - used) / 1024).toFixed(1) + ' GB'),
+    ));
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     AREA CHART (single or stacked)
+     ──────────────────────────────────────────────────────────────────── */
+  function buildAreaChart(host, legendHost, colors, opts) {
+    const W = 600, H = 200;
+    const M = { l: 38, r: 12, t: 10, b: 22 };
+    const innerW = W - M.l - M.r, innerH = H - M.t - M.b;
+    const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, style: 'width:100%;height:200px;display:block' });
+    host.appendChild(root);
+
+    // gridlines
+    const grid = svg('g', { class: 'grid' });
+    for (let i = 0; i <= 4; i++) {
+      const y = M.t + (innerH / 4) * i;
+      grid.appendChild(svg('line', { class: 'gridline', x1: M.l, x2: W - M.r, y1: y, y2: y }));
+    }
+    root.appendChild(grid);
+
+    // axis text
+    const axis = svg('g', { class: 'axis' });
+    root.appendChild(axis);
+
+    const palette = [colors.accent, colors.success, colors.warning, colors.info];
+    const series = opts.series.map((s, i) => ({ ...s, color: palette[i % palette.length] }));
+
+    // Stacked paths (bottom-up)
+    const layers = series.map((s, i) => {
+      const area = svg('path', {
+        fill: s.color,
+        'fill-opacity': '0.18',
+        stroke: 'none',
+      });
+      const line = svg('path', {
+        fill: 'none',
+        stroke: s.color,
+        'stroke-width': '1.5',
+        'stroke-linejoin': 'round',
+        'stroke-linecap': 'round',
+      });
+      root.appendChild(area);
+      root.appendChild(line);
+      return { area, line };
+    });
+
+    // Crosshair + focus dots + tooltip
+    const crosshair = svg('line', { class: 'crosshair', x1: 0, y1: M.t, x2: 0, y2: M.t + innerH, opacity: 0 });
+    root.appendChild(crosshair);
+    const focusDots = series.map(s => svg('circle', { class: 'focus-dot', r: 3, fill: s.color, opacity: 0 }));
+    focusDots.forEach(d => root.appendChild(d));
+
+    const tooltip = el('div', { class: 'tooltip' });
+    host.appendChild(tooltip);
+
+    // Hit-area rect for mouse capture
+    const hit = svg('rect', { x: M.l, y: M.t, width: innerW, height: innerH, fill: 'transparent' });
+    root.appendChild(hit);
+
+    function buildLegend(latest) {
+      legendHost.innerHTML = '';
+      series.forEach((s, i) => {
+        legendHost.appendChild(el('span', { class: 'li' },
+          el('span', { class: 'sw', style: 'background:' + s.color }),
+          el('span', null, s.label),
+          el('span', { class: 'v' }, fmtNum(latest[i] || 0, s.unit)),
+        ));
+      });
+    }
+
+    let lastValues = []; // [series][time]
+    let xScale = i => M.l + (innerW * i) / Math.max(1, (lastValues[0] || []).length - 1);
+    let yMax = 0;
+
+    function update(seriesValues) {
+      lastValues = seriesValues;
+      // stacked sums
+      const len = seriesValues[0].length;
+      const stacked = [];
+      for (let i = 0; i < len; i++) {
+        let acc = 0; const col = [];
+        for (let s = 0; s < seriesValues.length; s++) {
+          acc += seriesValues[s][i];
+          col.push(acc);
+        }
+        stacked.push(col);
+      }
+      yMax = Math.max(...stacked.flat()) * 1.1 || 1;
+      const yScale = v => M.t + innerH - (v / yMax) * innerH;
+      xScale = i => M.l + (innerW * i) / Math.max(1, len - 1);
+
+      // y axis labels (5)
+      axis.innerHTML = '';
+      for (let i = 0; i <= 4; i++) {
+        const y = M.t + (innerH / 4) * i;
+        const v = yMax * (1 - i / 4);
+        axis.appendChild(svg('text', { x: M.l - 6, y: y + 3, 'text-anchor': 'end' }, fmtNum(v, '')));
+      }
+      // x-axis: just label "now" + "−60s"
+      axis.appendChild(svg('text', { x: M.l, y: H - 6 }, '−60 s'));
+      axis.appendChild(svg('text', { x: W - M.r, y: H - 6, 'text-anchor': 'end' }, 'now'));
+
+      // paths
+      for (let s = 0; s < series.length; s++) {
+        const upper = stacked.map((col, i) => [xScale(i), yScale(col[s])]);
+        const lower = s === 0
+          ? upper.map(([x, _]) => [x, yScale(0)]).reverse()
+          : stacked.map((col, i) => [xScale(i), yScale(col[s - 1])]).reverse();
+        const dArea = upper.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ')
+          + ' ' + lower.map(p => 'L' + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ') + ' Z';
+        const dLine = upper.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+        layers[s].area.setAttribute('d', dArea);
+        layers[s].line.setAttribute('d', dLine);
+      }
+
+      const latest = seriesValues.map(arr => arr[arr.length - 1]);
+      buildLegend(latest);
+    }
+
+    // Tooltip / crosshair interactions
+    function show(e) {
+      if (!lastValues.length) return;
+      const rect = root.getBoundingClientRect();
+      const sx = (e.clientX - rect.left) * (W / rect.width);
+      const len = lastValues[0].length;
+      const i = Math.max(0, Math.min(len - 1, Math.round((sx - M.l) / innerW * (len - 1))));
+      const cx = xScale(i);
+      crosshair.setAttribute('x1', cx); crosshair.setAttribute('x2', cx);
+      crosshair.setAttribute('opacity', 1);
+
+      // place focus dots on stacked tops
+      let acc = 0;
+      for (let s = 0; s < series.length; s++) {
+        acc += lastValues[s][i];
+        const yScale = v => M.t + innerH - (v / (yMax || 1)) * innerH;
+        focusDots[s].setAttribute('cx', cx);
+        focusDots[s].setAttribute('cy', yScale(acc));
+        focusDots[s].setAttribute('opacity', 1);
+      }
+
+      // tooltip
+      tooltip.innerHTML = '';
+      tooltip.appendChild(el('div', { class: 'tt-time' }, '−' + (len - 1 - i) + ' s'));
+      series.forEach((s, idx) => {
+        tooltip.appendChild(el('div', { class: 'tt-row' },
+          el('span', { class: 'sw', style: 'background:' + s.color }),
+          el('span', { class: 'lbl' }, s.label),
+          el('span', { class: 'val' }, fmtNum(lastValues[idx][i], s.unit)),
+        ));
+      });
+      // position relative to host
+      const hostRect = host.getBoundingClientRect();
+      const px = ((cx / W) * rect.width) + (rect.left - hostRect.left);
+      const py = (M.t / H) * rect.height + (rect.top - hostRect.top);
+      tooltip.style.left = px + 'px';
+      tooltip.style.top  = py + 'px';
+      tooltip.classList.add('show');
+    }
+    function hide() {
+      crosshair.setAttribute('opacity', 0);
+      focusDots.forEach(d => d.setAttribute('opacity', 0));
+      tooltip.classList.remove('show');
+    }
+    hit.addEventListener('mousemove', show);
+    hit.addEventListener('mouseleave', hide);
+
+    return { update };
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     LINE CHART (multi-series, NOT stacked)
+     ──────────────────────────────────────────────────────────────────── */
+  function buildLineChart(host, legendHost, colors, opts) {
+    const W = 600, H = 200;
+    const M = { l: 38, r: 12, t: 10, b: 22 };
+    const innerW = W - M.l - M.r, innerH = H - M.t - M.b;
+    const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, style: 'width:100%;height:200px;display:block' });
+    host.appendChild(root);
+
+    const grid = svg('g', { class: 'grid' });
+    for (let i = 0; i <= 4; i++) {
+      const y = M.t + (innerH / 4) * i;
+      grid.appendChild(svg('line', { class: 'gridline', x1: M.l, x2: W - M.r, y1: y, y2: y }));
+    }
+    root.appendChild(grid);
+
+    // threshold line (SLO)
+    const threshold = svg('line', { class: 'threshold', x1: M.l, x2: W - M.r });
+    root.appendChild(threshold);
+
+    const axis = svg('g', { class: 'axis' });
+    root.appendChild(axis);
+
+    const palette = [colors.accent, colors.success, colors.warning, colors.danger];
+    const series = opts.series.map((s, i) => ({ ...s, color: palette[i % palette.length] }));
+    const lines = series.map(s => svg('path', {
+      fill: 'none', stroke: s.color,
+      'stroke-width': '1.5',
+      'stroke-linejoin': 'round',
+      'stroke-linecap': 'round',
+    }));
+    lines.forEach(l => root.appendChild(l));
+
+    const crosshair = svg('line', { class: 'crosshair', y1: M.t, y2: M.t + innerH, opacity: 0 });
+    root.appendChild(crosshair);
+    const focusDots = series.map(s => svg('circle', { class: 'focus-dot', r: 3, fill: s.color, opacity: 0 }));
+    focusDots.forEach(d => root.appendChild(d));
+    const hit = svg('rect', { x: M.l, y: M.t, width: innerW, height: innerH, fill: 'transparent' });
+    root.appendChild(hit);
+
+    const tooltip = el('div', { class: 'tooltip' });
+    host.appendChild(tooltip);
+
+    let lastValues = [];
+    let yMax = 1;
+    let xScale = i => M.l + (innerW * i) / Math.max(1, (lastValues[0] || []).length - 1);
+
+    function buildLegend(latest) {
+      legendHost.innerHTML = '';
+      series.forEach((s, i) => {
+        legendHost.appendChild(el('span', { class: 'li' },
+          el('span', { class: 'sw', style: 'background:' + s.color }),
+          el('span', null, s.label),
+          el('span', { class: 'v' }, fmtNum(latest[i] || 0, s.unit)),
+        ));
+      });
+      if (opts.threshold != null) {
+        legendHost.appendChild(el('span', { class: 'li', style: 'color:' + colors.warning },
+          el('span', { class: 'sw', style: 'background:transparent;border:1px dashed ' + colors.warning }),
+          el('span', null, 'SLO ' + opts.threshold + (opts.unit ? ' ' + opts.unit : '')),
+        ));
+      }
+    }
+
+    function update(seriesValues) {
+      lastValues = seriesValues;
+      const len = seriesValues[0].length;
+      const max = Math.max(opts.minMax || 0, ...seriesValues.flat()) * 1.1 || 1;
+      yMax = max;
+      xScale = i => M.l + (innerW * i) / Math.max(1, len - 1);
+      const yScale = v => M.t + innerH - (v / yMax) * innerH;
+
+      axis.innerHTML = '';
+      for (let i = 0; i <= 4; i++) {
+        const y = M.t + (innerH / 4) * i;
+        const v = yMax * (1 - i / 4);
+        axis.appendChild(svg('text', { x: M.l - 6, y: y + 3, 'text-anchor': 'end' }, fmtNum(v, '')));
+      }
+      axis.appendChild(svg('text', { x: M.l, y: H - 6 }, '−60 s'));
+      axis.appendChild(svg('text', { x: W - M.r, y: H - 6, 'text-anchor': 'end' }, 'now'));
+
+      seriesValues.forEach((arr, idx) => {
+        const d = arr.map((v, i) => (i ? 'L' : 'M') + xScale(i).toFixed(1) + ' ' + yScale(v).toFixed(1)).join(' ');
+        lines[idx].setAttribute('d', d);
+      });
+
+      if (opts.threshold != null) {
+        const ty = yScale(opts.threshold);
+        threshold.setAttribute('y1', ty); threshold.setAttribute('y2', ty);
+        threshold.setAttribute('opacity', 1);
+      } else {
+        threshold.setAttribute('opacity', 0);
+      }
+
+      buildLegend(seriesValues.map(a => a[a.length - 1]));
+    }
+
+    function show(e) {
+      if (!lastValues.length) return;
+      const rect = root.getBoundingClientRect();
+      const sx = (e.clientX - rect.left) * (W / rect.width);
+      const len = lastValues[0].length;
+      const i = Math.max(0, Math.min(len - 1, Math.round((sx - M.l) / innerW * (len - 1))));
+      const cx = xScale(i);
+      crosshair.setAttribute('x1', cx); crosshair.setAttribute('x2', cx);
+      crosshair.setAttribute('opacity', 1);
+      const yScale = v => M.t + innerH - (v / (yMax || 1)) * innerH;
+      lastValues.forEach((arr, s) => {
+        focusDots[s].setAttribute('cx', cx);
+        focusDots[s].setAttribute('cy', yScale(arr[i]));
+        focusDots[s].setAttribute('opacity', 1);
+      });
+      tooltip.innerHTML = '';
+      tooltip.appendChild(el('div', { class: 'tt-time' }, '−' + (len - 1 - i) + ' s'));
+      series.forEach((s, idx) => {
+        tooltip.appendChild(el('div', { class: 'tt-row' },
+          el('span', { class: 'sw', style: 'background:' + s.color }),
+          el('span', { class: 'lbl' }, s.label),
+          el('span', { class: 'val' }, fmtNum(lastValues[idx][i], s.unit)),
+        ));
+      });
+      const hostRect = host.getBoundingClientRect();
+      const px = ((cx / W) * rect.width) + (rect.left - hostRect.left);
+      tooltip.style.left = px + 'px';
+      tooltip.style.top  = (rect.top - hostRect.top + 4) + 'px';
+      tooltip.classList.add('show');
+    }
+    function hide() {
+      crosshair.setAttribute('opacity', 0);
+      focusDots.forEach(d => d.setAttribute('opacity', 0));
+      tooltip.classList.remove('show');
+    }
+    hit.addEventListener('mousemove', show);
+    hit.addEventListener('mouseleave', hide);
+
+    return { update };
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     HORIZONTAL BAR CHART
+     ──────────────────────────────────────────────────────────────────── */
+  function buildBarChart(host, totalEl, colors, items) {
+    const W = 600, rowH = 30, padTop = 10, leftW = 180;
+    const H = padTop * 2 + rowH * items.length;
+    host.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    host.style.height = H + 'px';
+    host.innerHTML = '';
+
+    const max = Math.max(...items.map(i => i.value));
+    const usableW = W - leftW - 60;
+    const palette = [colors.accent, colors.success, colors.warning, colors.danger, colors.info];
+
+    items.forEach((it, idx) => {
+      const y = padTop + idx * rowH;
+      // label
+      host.appendChild(svg('text', { class: 'bar-label', x: 0, y: y + rowH / 2 + 4 }, it.label));
+      // bg track
+      host.appendChild(svg('rect', { class: 'bar-bg', x: leftW, y: y + 8, width: usableW, height: rowH - 16, rx: 3 }));
+      // fill
+      const w = (it.value / max) * usableW;
+      const color = it.color ? colors[it.color] || palette[idx % palette.length] : palette[idx % palette.length];
+      host.appendChild(svg('rect', {
+        class: 'bar-fill', x: leftW, y: y + 8, width: w, height: rowH - 16, rx: 3,
+        style: 'fill:' + color,
+      }));
+      // value
+      host.appendChild(svg('text', { class: 'bar-value', x: W - 4, y: y + rowH / 2 + 4, 'text-anchor': 'end' },
+        fmtNum(it.value, it.unit || '')));
+    });
+
+    if (totalEl) {
+      const sum = items.reduce((s, x) => s + x.value, 0);
+      totalEl.textContent = fmtNum(sum, 'rps total');
+    }
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     PER-PANE BIND
+     ──────────────────────────────────────────────────────────────────── */
+  function bindPane(pane) {
+    const colors = resolveColors(pane);
+
+    // ── KPI tiles ───────────────────────────────────────────────────
+    const kpiRow = pane.querySelector('[data-kpi-row]');
+    const kpis = [
+      { id: 'rps',   label: 'Requests · rps',   meta: 'last 60 s',  unit: '',    sim: makeSim({ start: 1840, target: 1820, min: 1200, max: 2400, drift: 0.04, wobble: 0.04 }), tone: '' },
+      { id: 'p95',   label: 'p95 latency',      meta: 'all routes', unit: 'ms',  sim: makeSim({ start: 220,  target: 240,  min: 120,  max: 600,  drift: 0.05, wobble: 0.06 }), tone: 'warning' },
+      { id: 'err',   label: 'Error rate',       meta: '5xx · %',    unit: '%',   sim: makeSim({ start: 0.6,  target: 0.6,  min: 0,    max: 5,    drift: 0.04, wobble: 0.04 }), tone: 'danger' },
+      { id: 'sat',   label: 'Saturation',       meta: 'queue depth',unit: '',    sim: makeSim({ start: 12,   target: 14,   min: 0,    max: 80,   drift: 0.04, wobble: 0.05 }), tone: 'positive' },
+    ];
+    const kpiInst = kpis.map(k => {
+      const inst = buildKpi({ label: k.label, meta: k.meta, unit: k.unit, tone: k.tone });
+      kpiRow.appendChild(inst.node);
+      return inst;
+    });
+
+    // ── Radial CPU ──────────────────────────────────────────────────
+    const radHost = pane.querySelector('[data-radial-cpu]');
+    const cpuPill = pane.querySelector('[data-cpu-pill]');
+    const cpuPillText = pane.querySelector('[data-cpu-pill-text]');
+    const radial = buildRadial(radHost, colors, {
+      max: 100, unit: '% used',
+      onChange: (v, t) => {
+        let cls = '', text = 'healthy';
+        if (t > 0.8) { cls = 'err'; text = 'critical'; }
+        else if (t > 0.6) { cls = 'warn'; text = 'elevated'; }
+        cpuPill.className = 'pill ' + cls;
+        cpuPillText.textContent = text;
+      },
+    });
+    const cpuSim = makeSim({ start: 42, target: 48, min: 12, max: 95, drift: 0.04, wobble: 0.06 });
+
+    // ── Bullets ─────────────────────────────────────────────────────
+    const bulletsHost = pane.querySelector('[data-bullets]');
+    const bullets = [
+      { label: 'payments-api · CPU',    target: 70, max: 100, unit: '%', sim: makeSim({ start: 38, target: 45, min: 20, max: 95, drift: 0.05, wobble: 0.07 }) },
+      { label: 'payments-api · MEM',    target: 80, max: 100, unit: '%', sim: makeSim({ start: 64, target: 66, min: 30, max: 92, drift: 0.04, wobble: 0.05 }) },
+      { label: 'webhooks · queue',      target: 60, max: 100, unit: '%', sim: makeSim({ start: 22, target: 30, min: 5,  max: 100, drift: 0.05, wobble: 0.08 }) },
+    ];
+    const bulletInst = bullets.map(b => buildBullet(bulletsHost, colors, b));
+
+    // ── Donut: memory composition (static once) ─────────────────────
+    const donutHost = pane.querySelector('[data-donut]');
+    const donutLegend = pane.querySelector('[data-donut-legend]');
+    // Values in MB; total = 8 GB
+    const TOTAL_MB = 8 * 1024;
+    const memSegments = [
+      { label: 'application', value: 3120, fmt: v => (v / 1024).toFixed(1) + ' GB' },
+      { label: 'cache',       value: 1840, fmt: v => (v / 1024).toFixed(1) + ' GB' },
+      { label: 'buffers',     value:  720, fmt: v => (v / 1024).toFixed(0) + ' MB' },
+      { label: 'system',      value:  560, fmt: v => (v / 1024).toFixed(0) + ' MB' },
+    ];
+    buildDonut(donutHost, donutLegend, colors, memSegments, TOTAL_MB);
+
+    // ── Area chart: throughput (success / errors stacked) ───────────
+    const areaHost   = pane.querySelector('[data-area-chart]');
+    const areaLegend = pane.querySelector('[data-area-legend]');
+    const area = buildAreaChart(areaHost, areaLegend, colors, {
+      series: [
+        { label: '2xx', unit: 'rps' },
+        { label: '4xx', unit: 'rps' },
+        { label: '5xx', unit: 'rps' },
+      ],
+    });
+    const areaSims = [
+      makeSim({ start: 1700, target: 1720, min: 1100, max: 2300, drift: 0.04, wobble: 0.05 }), // 2xx
+      makeSim({ start:  90,  target:  95,  min: 30,   max: 200,  drift: 0.05, wobble: 0.08 }), // 4xx
+      makeSim({ start:  18,  target:  22,  min: 0,    max: 80,   drift: 0.05, wobble: 0.10 }), // 5xx
+    ];
+    const areaHistory = [Array(60).fill(0), Array(60).fill(0), Array(60).fill(0)];
+    // seed with starting values
+    for (let s = 0; s < 3; s++) {
+      for (let i = 0; i < 60; i++) areaHistory[s][i] = areaSims[s]();
+    }
+    area.update(areaHistory);
+
+    // ── Line chart: p95 latency by route ────────────────────────────
+    const lineHost = pane.querySelector('[data-line-chart]');
+    const lineLegend = pane.querySelector('[data-line-legend]');
+    const line = buildLineChart(lineHost, lineLegend, colors, {
+      threshold: 600,
+      unit: 'ms',
+      minMax: 700,
+      series: [
+        { label: '/checkout',   unit: 'ms' },
+        { label: '/customers',  unit: 'ms' },
+        { label: '/refunds',    unit: 'ms' },
+      ],
+    });
+    const lineSims = [
+      makeSim({ start: 320, target: 340, min: 80, max: 800, drift: 0.05, wobble: 0.10 }),
+      makeSim({ start: 140, target: 150, min: 40, max: 300, drift: 0.05, wobble: 0.08 }),
+      makeSim({ start: 200, target: 210, min: 60, max: 400, drift: 0.05, wobble: 0.08 }),
+    ];
+    const lineHistory = [Array(60).fill(0), Array(60).fill(0), Array(60).fill(0)];
+    for (let s = 0; s < 3; s++) {
+      for (let i = 0; i < 60; i++) lineHistory[s][i] = lineSims[s]();
+    }
+    line.update(lineHistory);
+
+    // ── Bar chart: requests by endpoint (static-ish, light shuffle) ─
+    const barsHost = pane.querySelector('[data-bars]');
+    const barsTotal = pane.querySelector('[data-bars-total]');
+    function rollBars() {
+      const items = [
+        { label: 'POST /v1/checkout',  value: 920 + Math.round(Math.random() * 80), unit: 'rps' },
+        { label: 'GET  /v1/customers', value: 410 + Math.round(Math.random() * 40), unit: 'rps' },
+        { label: 'POST /v1/charges',   value: 220 + Math.round(Math.random() * 60), unit: 'rps' },
+        { label: 'POST /v1/refunds',   value:  80 + Math.round(Math.random() * 20), unit: 'rps' },
+        { label: 'GET  /healthz',      value: 1200 + Math.round(Math.random() * 100), unit: 'rps', color: 'fg2' },
+      ];
+      buildBarChart(barsHost, barsTotal, colors, items);
+    }
+    rollBars();
+
+    // ── KPI initial seed (so sparklines aren't flat) ───────────────
+    kpis.forEach((k, idx) => {
+      for (let i = 0; i < 30; i++) kpiInst[idx].push(k.sim());
+    });
+
+    // ── Tick everything live ───────────────────────────────────────
+    setInterval(() => {
+      // KPIs
+      kpis.forEach((k, idx) => kpiInst[idx].push(k.sim()));
+      // Radial
+      radial.update(cpuSim());
+      // Bullets
+      bullets.forEach((b, idx) => bulletInst[idx].update(b.sim()));
+      // Area
+      for (let s = 0; s < 3; s++) {
+        areaHistory[s].push(areaSims[s]());
+        if (areaHistory[s].length > 60) areaHistory[s].shift();
+      }
+      area.update(areaHistory);
+      // Line
+      for (let s = 0; s < 3; s++) {
+        lineHistory[s].push(lineSims[s]());
+        if (lineHistory[s].length > 60) lineHistory[s].shift();
+      }
+      line.update(lineHistory);
+    }, 1000);
+
+    setInterval(rollBars, 4000);
+  }
+
+  function init() {
+    document.querySelectorAll('.pane').forEach(bindPane);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    setTimeout(init, 0);
+  }
+})();
+</script>
+</body>
+</html>

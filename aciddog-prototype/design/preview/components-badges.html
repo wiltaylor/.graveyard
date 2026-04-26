@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css"></head>
+<body>
+<template id="card-content">
+<style>
+  .badge{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:4px;font-size:11px;font-weight:500;font-family:var(--font-sans)}
+  .dot{width:6px;height:6px;border-radius:999px;display:inline-block}
+</style>
+<div class="row" style="gap:8px;flex-wrap:wrap">
+  <span class="badge" style="background:var(--success-bg);color:var(--success-fg)"><span class="dot" style="background:var(--success)"></span>Healthy</span>
+  <span class="badge" style="background:var(--warning-bg);color:var(--warning-fg)"><span class="dot" style="background:var(--warning)"></span>Degraded</span>
+  <span class="badge" style="background:var(--danger-bg);color:var(--danger-fg)"><span class="dot" style="background:var(--danger)"></span>Down</span>
+  <span class="badge" style="background:var(--info-bg);color:var(--info-fg)"><span class="dot" style="background:var(--info)"></span>Pending</span>
+  <span class="badge" style="background:var(--bg-2);color:var(--fg-1);border:1px solid var(--border)">Draft</span>
+  <span class="badge" style="background:var(--accent-bg);color:var(--accent-fg)">v2.4.1</span>
+</div>
+<div class="row" style="margin-top:14px;gap:14px;color:var(--fg-1);font-size:13px">
+  <span><span class="dot" style="background:var(--success)"></span> &nbsp;api.forge.io · 200 OK</span>
+  <span><span class="dot" style="background:var(--warning)"></span> &nbsp;workers · slow</span>
+  <span><span class="dot" style="background:var(--danger)"></span> &nbsp;db-replica-2</span>
+</div></template>
+<script src="_split.js"></script>
+</body>
+</html>

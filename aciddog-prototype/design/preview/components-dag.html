@@ -1,0 +1,968 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  /* ─────────────────────────────────────────────────────────────────────
+     DAG / NODE GRAPH
+     A control for visualizing pipelines, build graphs, dependency trees,
+     workflow runs — anything with directed-acyclic relationships and
+     per-node state. Supports: lifecycle states, click-to-select with
+     ancestry highlight, side panel for the selected node, add / remove,
+     retry, pan, zoom-fit. Layout is layered top→bottom (longest-path).
+     ───────────────────────────────────────────────────────────────────── */
+
+  .dag-card {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: auto 1fr;
+  }
+  .dag-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg-1);
+  }
+  .dag-title {
+    font-size: 13px; font-weight: 600;
+    color: var(--fg-0);
+    margin-right: 6px;
+  }
+  .dag-meta {
+    font-family: var(--font-mono); font-size: 10.5px;
+    color: var(--fg-3);
+    margin-right: auto;
+  }
+  .dag-tools { display: flex; gap: 4px; }
+  .tbtn {
+    height: 24px; min-width: 24px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-2);
+    color: var(--fg-1);
+    border-radius: var(--r-sm);
+    font-family: var(--font-sans); font-size: 11.5px; font-weight: 500;
+    display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+    cursor: pointer;
+    transition: background 120ms cubic-bezier(.2,0,0,1), border-color 120ms cubic-bezier(.2,0,0,1), color 120ms cubic-bezier(.2,0,0,1);
+  }
+  .tbtn:hover  { background: var(--bg-3); border-color: var(--border-strong); }
+  .tbtn:active { background: var(--bg-4); }
+  .tbtn:disabled {
+    opacity: .4; cursor: not-allowed;
+  }
+  .tbtn svg { width: 13px; height: 13px; }
+  .tbtn.primary {
+    background: var(--accent); border-color: var(--accent);
+    color: var(--accent-contrast);
+  }
+  .tbtn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  .tbtn.danger {
+    color: var(--danger-fg);
+  }
+  .tbtn.danger:hover {
+    background: color-mix(in oklab, var(--danger) 12%, var(--bg-2));
+    border-color: color-mix(in oklab, var(--danger) 35%, var(--border));
+  }
+  .tbtn.icon { padding: 0; width: 24px; }
+
+  .dag-body {
+    display: grid;
+    grid-template-columns: 1fr 220px;
+    min-height: 0;
+  }
+  .dag-canvas {
+    position: relative;
+    overflow: hidden;
+    background:
+      radial-gradient(circle at 1px 1px, var(--border-subtle) 1px, transparent 1px) 0 0 / 16px 16px,
+      var(--bg-2);
+    height: 380px;
+    cursor: grab;
+    user-select: none;
+  }
+  .dag-canvas.dragging { cursor: grabbing; }
+  .dag-canvas svg.dag-svg {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    overflow: visible;
+  }
+  .dag-canvas .layer {
+    transform-origin: 0 0;
+  }
+
+  /* Hint when canvas is empty */
+  .dag-empty {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--fg-3); font-size: 12px; font-family: var(--font-mono);
+    pointer-events: none;
+  }
+
+  /* Edges */
+  .edge {
+    fill: none;
+    stroke: var(--border);
+    stroke-width: 1.5;
+    transition: stroke 120ms cubic-bezier(.2,0,0,1), opacity 120ms cubic-bezier(.2,0,0,1);
+  }
+  .edge.downstream-failed { stroke: var(--danger); stroke-dasharray: 4 3; }
+  .edge.related { stroke: var(--accent); stroke-width: 2; }
+  .edge.unrelated { opacity: .25; }
+  .edge-arrow { fill: var(--border); transition: fill 120ms cubic-bezier(.2,0,0,1); }
+  .edge.downstream-failed + .edge-arrow,
+  .edge-arrow.downstream-failed { fill: var(--danger); }
+  .edge-arrow.related { fill: var(--accent); }
+  .edge-arrow.unrelated { opacity: .25; }
+
+  /* Nodes — cards with header + body, mirroring components-card.html.
+     Header carries the title and status pill; body carries the kind +
+     primary metric. The status stripe runs along the top edge of the
+     header instead of the left side so the card silhouette reads as a
+     proper card, not a list row. */
+  .node {
+    position: absolute;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    width: 168px;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    transition:
+      background 120ms cubic-bezier(.2,0,0,1),
+      border-color 120ms cubic-bezier(.2,0,0,1),
+      box-shadow 120ms cubic-bezier(.2,0,0,1),
+      opacity 120ms cubic-bezier(.2,0,0,1),
+      transform 240ms cubic-bezier(.2,0,0,1),
+      left 320ms cubic-bezier(.2,0,0,1),
+      top  320ms cubic-bezier(.2,0,0,1);
+  }
+  .node::before {
+    /* status accent: thin stripe along the top edge */
+    content: "";
+    position: absolute; left: 0; right: 0; top: 0;
+    height: 3px;
+    background: var(--fg-3);
+    transition: background 120ms cubic-bezier(.2,0,0,1);
+  }
+
+  /* Header: title + status pill, like components-card.html */
+  .node-header {
+    display: flex; align-items: center; gap: 6px;
+    padding: 9px 10px 8px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg-1);
+  }
+  .node-title {
+    flex: 1; min-width: 0;
+    font-size: 12.5px; font-weight: 600;
+    color: var(--fg-0);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .node-pill {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px;
+    border-radius: var(--r-sm);
+    background: var(--bg-2);
+    border: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+  }
+  .node-pill .status-icon { width: 10px; height: 10px; }
+
+  /* Body: kind eyebrow + primary metric, matching the card preview */
+  .node-body {
+    padding: 7px 10px 9px;
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 8px;
+  }
+  .node-kind {
+    font-family: var(--font-mono); font-size: 9.5px;
+    text-transform: uppercase; letter-spacing: .08em;
+    color: var(--fg-3);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .node-metric {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--fg-1);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .node:hover {
+    border-color: var(--border-strong);
+  }
+  .node:hover .node-header {
+    background: var(--bg-2);
+  }
+  .node.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .node.selected .node-header {
+    background: var(--accent-bg);
+  }
+  .node.unrelated {
+    opacity: .35;
+  }
+  .node.related {
+    border-color: var(--accent);
+  }
+
+  /* Status accent stripe + pill tinting per state */
+  .node[data-state="pending"]::before { background: var(--fg-3); }
+  .node[data-state="running"]::before { background: var(--info); }
+  .node[data-state="success"]::before { background: var(--success); }
+  .node[data-state="failed"]::before  { background: var(--danger); }
+  .node[data-state="skipped"]::before { background: var(--fg-3); opacity: .5; }
+  .node[data-state="blocked"]::before { background: var(--warning); }
+
+  .node[data-state="running"] .node-pill {
+    background: color-mix(in oklab, var(--info) 14%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--info) 35%, var(--border-subtle));
+  }
+  .node[data-state="success"] .node-pill {
+    background: color-mix(in oklab, var(--success) 14%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--success) 35%, var(--border-subtle));
+  }
+  .node[data-state="failed"] .node-pill {
+    background: color-mix(in oklab, var(--danger) 14%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--danger) 35%, var(--border-subtle));
+  }
+  .node[data-state="blocked"] .node-pill {
+    background: color-mix(in oklab, var(--warning) 14%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--warning) 35%, var(--border-subtle));
+  }
+
+  .node[data-state="failed"] {
+    background: color-mix(in oklab, var(--danger) 4%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--danger) 30%, var(--border));
+  }
+  .node[data-state="failed"] .node-header {
+    background: color-mix(in oklab, var(--danger) 8%, var(--bg-1));
+  }
+  .node[data-state="failed"].selected {
+    border-color: var(--danger);
+    box-shadow: 0 0 0 1px var(--danger);
+  }
+  .node[data-state="skipped"] .node-title,
+  .node[data-state="skipped"] .node-metric,
+  .node[data-state="skipped"] .node-kind {
+    color: var(--fg-3);
+  }
+  .node[data-state="skipped"] .node-title { text-decoration: line-through; }
+  .node[data-state="running"] .node-pill .status-icon {
+    animation: dag-spin 1.4s linear infinite;
+  }
+  @keyframes dag-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* Status icon coloring per state — applied to <svg class="status-icon"> */
+  .node[data-state="pending"] .status-icon { color: var(--fg-2); }
+  .node[data-state="running"] .status-icon { color: var(--info-fg); }
+  .node[data-state="success"] .status-icon { color: var(--success-fg); }
+  .node[data-state="failed"]  .status-icon { color: var(--danger-fg); }
+  .node[data-state="skipped"] .status-icon { color: var(--fg-3); }
+  .node[data-state="blocked"] .status-icon { color: var(--warning-fg); }
+
+  /* Add-node "ghost" preview */
+  .node.ghost {
+    opacity: .6;
+    border-style: dashed;
+    pointer-events: none;
+  }
+  .node.entering {
+    animation: dag-pop 240ms cubic-bezier(.2,0,0,1);
+  }
+  @keyframes dag-pop {
+    from { transform: scale(0.6); opacity: 0; }
+    to   { transform: scale(1);   opacity: 1; }
+  }
+
+  /* Side panel */
+  .dag-aside {
+    border-left: 1px solid var(--border-subtle);
+    background: var(--bg-1);
+    padding: 12px 14px;
+    display: flex; flex-direction: column; gap: 12px;
+    overflow: auto;
+  }
+  .aside-empty {
+    color: var(--fg-3); font-size: 12px;
+    text-align: center; margin-top: 30px;
+    padding: 10px;
+    line-height: 1.5;
+  }
+  .aside-section {
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .aside-eyebrow {
+    font-size: 10px; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase;
+    color: var(--fg-3);
+  }
+  .aside-name {
+    font-size: 14px; font-weight: 600; color: var(--fg-0);
+    word-break: break-word;
+  }
+  .state-pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 0 7px; height: 18px;
+    border-radius: var(--r-sm);
+    font-family: var(--font-mono); font-size: 10.5px;
+    text-transform: capitalize;
+    background: var(--bg-2); border: 1px solid var(--border-subtle);
+    color: var(--fg-1);
+    width: fit-content;
+  }
+  .state-pill .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--fg-3); }
+  .state-pill[data-state="running"] { color: var(--info-fg);
+    background: color-mix(in oklab, var(--info) 12%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--info) 30%, var(--border-subtle)); }
+  .state-pill[data-state="running"] .dot { background: var(--info); animation: dag-blink 1s ease-in-out infinite; }
+  @keyframes dag-blink {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: .35; }
+  }
+  .state-pill[data-state="success"] { color: var(--success-fg);
+    background: color-mix(in oklab, var(--success) 10%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--success) 30%, var(--border-subtle)); }
+  .state-pill[data-state="success"] .dot { background: var(--success); }
+  .state-pill[data-state="failed"]  { color: var(--danger-fg);
+    background: color-mix(in oklab, var(--danger) 10%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--danger) 30%, var(--border-subtle)); }
+  .state-pill[data-state="failed"] .dot  { background: var(--danger); }
+  .state-pill[data-state="blocked"] { color: var(--warning-fg);
+    background: color-mix(in oklab, var(--warning) 12%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--warning) 30%, var(--border-subtle)); }
+  .state-pill[data-state="blocked"] .dot { background: var(--warning); }
+  .state-pill[data-state="skipped"] { color: var(--fg-3); }
+
+  .meta-row {
+    display: grid; grid-template-columns: 70px 1fr;
+    column-gap: 8px; row-gap: 4px;
+    font-size: 11.5px;
+  }
+  .meta-row dt { color: var(--fg-3); font-family: var(--font-mono); font-size: 10.5px; }
+  .meta-row dd { margin: 0; color: var(--fg-1); font-family: var(--font-mono); font-size: 11px; word-break: break-word; }
+
+  .neighbor-list {
+    display: flex; flex-wrap: wrap; gap: 4px;
+  }
+  .neighbor-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 7px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    font-size: 11px; color: var(--fg-1);
+    cursor: pointer;
+    transition: border-color 120ms cubic-bezier(.2,0,0,1), background 120ms cubic-bezier(.2,0,0,1);
+  }
+  .neighbor-chip:hover {
+    border-color: var(--border-strong);
+    background: var(--bg-3);
+  }
+  .neighbor-chip .ndot {
+    width: 6px; height: 6px; border-radius: 999px; background: var(--fg-3);
+  }
+  .neighbor-chip[data-state="success"] .ndot { background: var(--success); }
+  .neighbor-chip[data-state="running"] .ndot { background: var(--info); }
+  .neighbor-chip[data-state="failed"]  .ndot { background: var(--danger); }
+  .neighbor-chip[data-state="blocked"] .ndot { background: var(--warning); }
+
+  .aside-actions {
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .aside-actions .tbtn { width: 100%; justify-content: flex-start; }
+
+  /* Legend strip below toolbar */
+  .dag-legend {
+    display: flex; gap: 12px;
+    padding: 6px 12px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border-subtle);
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-2);
+  }
+  .dag-legend .li { display: inline-flex; align-items: center; gap: 5px; }
+  .dag-legend .ldot { width: 7px; height: 7px; border-radius: 2px; }
+  .dag-legend .ldot.s-pending { background: var(--fg-3); }
+  .dag-legend .ldot.s-running { background: var(--info); }
+  .dag-legend .ldot.s-success { background: var(--success); }
+  .dag-legend .ldot.s-failed  { background: var(--danger); }
+  .dag-legend .ldot.s-skipped { background: var(--fg-3); opacity: .5; }
+  .dag-legend .ldot.s-blocked { background: var(--warning); }
+
+  /* Zoom indicator */
+  .zoom-tag {
+    position: absolute; bottom: 8px; left: 8px;
+    background: color-mix(in oklab, var(--bg-0) 80%, transparent);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    padding: 1px 7px;
+    font-family: var(--font-mono); font-size: 10px; color: var(--fg-2);
+    pointer-events: none;
+    backdrop-filter: blur(4px);
+  }
+</style>
+</head>
+<body>
+<template id="card-content">
+<div class="dag-card">
+  <div class="dag-head">
+    <span class="dag-title">Pipeline · build #4823</span>
+    <span class="dag-meta" data-meta>—</span>
+    <div class="dag-tools">
+      <button class="tbtn" data-action="add" title="Add child node">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Add
+      </button>
+      <button class="tbtn danger" data-action="remove" title="Remove selected" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Remove
+      </button>
+      <button class="tbtn" data-action="retry" title="Retry failed" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><polyline points="21 3 21 8 16 8"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><polyline points="3 21 3 16 8 16"/></svg>
+        Retry
+      </button>
+      <span style="width: 6px"></span>
+      <button class="tbtn icon" data-action="zoom-out" title="Zoom out">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+      <button class="tbtn icon" data-action="zoom-fit" title="Fit to view">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V5a1 1 0 0 1 1-1h4"/><path d="M20 9V5a1 1 0 0 0-1-1h-4"/><path d="M4 15v4a1 1 0 0 0 1 1h4"/><path d="M20 15v4a1 1 0 0 1-1 1h-4"/></svg>
+      </button>
+      <button class="tbtn icon" data-action="zoom-in" title="Zoom in">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="dag-legend">
+    <span class="li"><span class="ldot s-success"></span>success</span>
+    <span class="li"><span class="ldot s-running"></span>running</span>
+    <span class="li"><span class="ldot s-pending"></span>pending</span>
+    <span class="li"><span class="ldot s-failed"></span>failed</span>
+    <span class="li"><span class="ldot s-blocked"></span>blocked</span>
+    <span class="li"><span class="ldot s-skipped"></span>skipped</span>
+  </div>
+  <div class="dag-body">
+    <div class="dag-canvas" data-canvas>
+      <svg class="dag-svg" data-svg>
+        <defs>
+          <marker id="dag-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" class="edge-arrow"/>
+          </marker>
+          <marker id="dag-arrow-rel" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" class="edge-arrow related"/>
+          </marker>
+          <marker id="dag-arrow-fail" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" class="edge-arrow downstream-failed"/>
+          </marker>
+        </defs>
+        <g class="layer" data-edges></g>
+      </svg>
+      <div class="layer" data-nodes></div>
+      <div class="zoom-tag" data-zoom>100%</div>
+    </div>
+    <aside class="dag-aside" data-aside>
+      <div class="aside-empty">Select a node to inspect.<br/>Click a node, or use <strong>Add</strong> to extend the graph.</div>
+    </aside>
+  </div>
+</div>
+</template>
+<script src="_split.js"></script>
+<script>
+(function () {
+  /* ────────────────────────────────────────────────────────────────────
+     STATUS ICONS
+     Resolved as SVG strings so they can be injected per-node and recolor
+     via currentColor.
+     ──────────────────────────────────────────────────────────────────── */
+  const ICONS = {
+    pending: '<svg class="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/></svg>',
+    running: '<svg class="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 3 a9 9 0 0 1 0 18" /></svg>',
+    success: '<svg class="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+    failed:  '<svg class="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>',
+    skipped: '<svg class="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 5 20 12 13 19"/><polyline points="5 5 12 12 5 19"/></svg>',
+    blocked: '<svg class="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
+  };
+
+  function el(tag, attrs, ...kids) {
+    const n = document.createElement(tag);
+    if (attrs) for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'class') n.className = v;
+      else if (k === 'html') n.innerHTML = v;
+      else if (k.startsWith('on') && typeof v === 'function') n.addEventListener(k.slice(2), v);
+      else if (v === true) n.setAttribute(k, '');
+      else if (v === false || v == null) {} else n.setAttribute(k, v);
+    }
+    for (const c of kids) if (c != null) n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    return n;
+  }
+  const NS = 'http://www.w3.org/2000/svg';
+  function svgEl(tag, attrs) {
+    const n = document.createElementNS(NS, tag);
+    if (attrs) for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    return n;
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     LAYOUT
+     Layered top-down: layer = longest-path from any root. Within a layer,
+     order nodes by the average index of their parents (barycenter), once.
+     Result is stable enough for our use case (small DAGs).
+     ──────────────────────────────────────────────────────────────────── */
+  function layout(graph) {
+    const { nodes, edges } = graph;
+    const idx = new Map(nodes.map(n => [n.id, n]));
+    const parents = new Map(nodes.map(n => [n.id, []]));
+    const children = new Map(nodes.map(n => [n.id, []]));
+    edges.forEach(e => { children.get(e.from).push(e.to); parents.get(e.to).push(e.from); });
+
+    // longest-path layer
+    const layer = new Map();
+    function depth(id, seen = new Set()) {
+      if (layer.has(id)) return layer.get(id);
+      if (seen.has(id)) return 0; // cycle guard
+      seen.add(id);
+      const ps = parents.get(id);
+      let d = 0;
+      for (const p of ps) d = Math.max(d, depth(p, seen) + 1);
+      layer.set(id, d);
+      return d;
+    }
+    nodes.forEach(n => depth(n.id));
+
+    // group by layer
+    const byLayer = new Map();
+    nodes.forEach(n => {
+      const l = layer.get(n.id);
+      if (!byLayer.has(l)) byLayer.set(l, []);
+      byLayer.get(l).push(n);
+    });
+
+    // initial within-layer order: keep insertion order
+    const sortedLayers = [...byLayer.keys()].sort((a, b) => a - b);
+    const order = new Map(); // id -> index within layer
+    sortedLayers.forEach(l => byLayer.get(l).forEach((n, i) => order.set(n.id, i)));
+
+    // 2 sweeps of barycenter on the children level
+    for (let pass = 0; pass < 2; pass++) {
+      for (const l of sortedLayers) {
+        const arr = byLayer.get(l);
+        if (l === 0) continue;
+        arr.sort((a, b) => {
+          const ap = parents.get(a.id).map(id => order.get(id) ?? 0);
+          const bp = parents.get(b.id).map(id => order.get(id) ?? 0);
+          const am = ap.length ? ap.reduce((s, x) => s + x, 0) / ap.length : 0;
+          const bm = bp.length ? bp.reduce((s, x) => s + x, 0) / bp.length : 0;
+          return am - bm;
+        });
+        arr.forEach((n, i) => order.set(n.id, i));
+      }
+    }
+
+    // assign x,y. Each layer is centered horizontally.
+    const NODE_W = 168, NODE_H = 64;
+    const COL_GAP = 28, ROW_GAP = 60;
+    const positions = new Map();
+    let maxRowW = 0;
+    for (const l of sortedLayers) {
+      const arr = byLayer.get(l).slice().sort((a, b) => order.get(a.id) - order.get(b.id));
+      const rowW = arr.length * NODE_W + (arr.length - 1) * COL_GAP;
+      maxRowW = Math.max(maxRowW, rowW);
+    }
+    for (const l of sortedLayers) {
+      const arr = byLayer.get(l).slice().sort((a, b) => order.get(a.id) - order.get(b.id));
+      const rowW = arr.length * NODE_W + (arr.length - 1) * COL_GAP;
+      const startX = (maxRowW - rowW) / 2;
+      arr.forEach((n, i) => {
+        positions.set(n.id, {
+          x: startX + i * (NODE_W + COL_GAP),
+          y: l * (NODE_H + ROW_GAP),
+        });
+      });
+    }
+    return { positions, layer, parents, children, NODE_W, NODE_H, totalW: maxRowW, totalH: (sortedLayers.length - 1) * (NODE_H + ROW_GAP) + NODE_H };
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     DAG INSTANCE
+     ──────────────────────────────────────────────────────────────────── */
+  function makeDag(pane, suffix) {
+    /* The arrow markers live in <defs> inside the SVG. With two panes
+       cloned from the same template, IDs collide; rewrite them per-pane. */
+    pane.querySelectorAll('marker').forEach(m => {
+      const old = m.getAttribute('id');
+      m.setAttribute('id', old + suffix);
+    });
+
+    const canvas = pane.querySelector('[data-canvas]');
+    const svg    = pane.querySelector('[data-svg]');
+    const edgesG = pane.querySelector('[data-edges]');
+    const nodesG = pane.querySelector('[data-nodes]');
+    const aside  = pane.querySelector('[data-aside]');
+    const metaEl = pane.querySelector('[data-meta]');
+    const zoomTag = pane.querySelector('[data-zoom]');
+    const tools  = pane.querySelectorAll('.tbtn[data-action]');
+
+    /* Seed graph: a small CI/CD pipeline showing all states. The "deploy"
+       node is failed so reviewers can see the failure cascade. */
+    const state = {
+      nodes: [
+        { id: 'src',     label: 'source',          state: 'success', kind: 'fetch',    duration: '0.4 s' },
+        { id: 'lint',    label: 'lint',            state: 'success', kind: 'check',    duration: '12 s' },
+        { id: 'unit',    label: 'unit · jest',     state: 'success', kind: 'test',     duration: '38 s' },
+        { id: 'build',   label: 'build · vite',    state: 'success', kind: 'build',    duration: '52 s' },
+        { id: 'image',   label: 'docker · push',   state: 'running', kind: 'package',  duration: '— ' },
+        { id: 'e2e',     label: 'e2e · playwright',state: 'failed',  kind: 'test',     duration: '4 m 12 s' },
+        { id: 'staging', label: 'deploy · staging',state: 'blocked', kind: 'deploy',   duration: '—' },
+        { id: 'prod',    label: 'deploy · prod',   state: 'pending', kind: 'deploy',   duration: '—' },
+      ],
+      edges: [
+        { from: 'src', to: 'lint' },
+        { from: 'src', to: 'unit' },
+        { from: 'src', to: 'build' },
+        { from: 'lint', to: 'image' },
+        { from: 'unit', to: 'image' },
+        { from: 'build', to: 'image' },
+        { from: 'image', to: 'e2e' },
+        { from: 'image', to: 'staging' },
+        { from: 'e2e',   to: 'staging' },
+        { from: 'staging', to: 'prod' },
+      ],
+      selected: null,
+      zoom: 1,
+      pan: { x: 0, y: 0 },
+      counter: 100,
+    };
+
+    /* ── Rendering ─────────────────────────────────────────────────── */
+    let lastLayout = null;
+    function render() {
+      const lo = layout(state);
+      lastLayout = lo;
+      const { positions, parents, children, NODE_W, NODE_H, totalW, totalH } = lo;
+
+      // Determine highlight set based on selection
+      const sel = state.selected;
+      const ancestors = new Set();
+      const descendants = new Set();
+      if (sel) {
+        const goUp = (id) => {
+          for (const p of parents.get(id) || []) {
+            if (!ancestors.has(p)) { ancestors.add(p); goUp(p); }
+          }
+        };
+        const goDown = (id) => {
+          for (const c of children.get(id) || []) {
+            if (!descendants.has(c)) { descendants.add(c); goDown(c); }
+          }
+        };
+        goUp(sel); goDown(sel);
+      }
+      const related = sel ? new Set([sel, ...ancestors, ...descendants]) : null;
+
+      // Determine which nodes are downstream of any failed node
+      const downstreamOfFailed = new Set();
+      state.nodes.filter(n => n.state === 'failed').forEach(n => {
+        const stack = [...(children.get(n.id) || [])];
+        while (stack.length) {
+          const id = stack.pop();
+          if (downstreamOfFailed.has(id)) continue;
+          downstreamOfFailed.add(id);
+          for (const c of children.get(id) || []) stack.push(c);
+        }
+      });
+
+      // Render nodes (diff-y: keep DOM nodes between renders so transitions land)
+      const existing = new Map();
+      nodesG.querySelectorAll('.node').forEach(n => existing.set(n.dataset.id, n));
+
+      const seen = new Set();
+      for (const n of state.nodes) {
+        seen.add(n.id);
+        const pos = positions.get(n.id);
+        let dom = existing.get(n.id);
+        const isNew = !dom;
+        if (!dom) {
+          dom = el('div', { class: 'node entering', 'data-id': n.id });
+          dom.addEventListener('click', e => { e.stopPropagation(); selectNode(n.id); });
+          nodesG.appendChild(dom);
+          // strip the "entering" class once anim finishes
+          setTimeout(() => dom.classList.remove('entering'), 260);
+        }
+        dom.dataset.state = n.state;
+        dom.style.width = NODE_W + 'px';
+        dom.style.left  = pos.x + 'px';
+        dom.style.top   = pos.y + 'px';
+        // Build card-style content: header (title + status pill) + body (kind + metric)
+        const metricTxt = n.state === 'failed' ? `failed · ${n.duration}` :
+                          n.state === 'running' ? `· ${n.duration}` :
+                          n.state === 'blocked' ? `blocked` :
+                          n.state === 'skipped' ? `skipped` :
+                          n.state === 'pending' ? `—` :
+                          n.duration;
+        dom.innerHTML = '';
+        const header = el('div', { class: 'node-header' });
+        header.appendChild(el('div', { class: 'node-title' }, n.label));
+        const pill = el('div', { class: 'node-pill' });
+        pill.innerHTML = ICONS[n.state] || ICONS.pending;
+        header.appendChild(pill);
+        dom.appendChild(header);
+        const body = el('div', { class: 'node-body' });
+        body.appendChild(el('div', { class: 'node-kind' }, n.kind || 'task'));
+        body.appendChild(el('div', { class: 'node-metric' }, metricTxt));
+        dom.appendChild(body);
+        // selection / relation classes
+        dom.classList.toggle('selected', n.id === sel);
+        dom.classList.remove('related', 'unrelated');
+        if (related && n.id !== sel) {
+          if (related.has(n.id)) dom.classList.add('related');
+          else dom.classList.add('unrelated');
+        }
+      }
+      // remove stale
+      for (const [id, dom] of existing) {
+        if (!seen.has(id)) dom.remove();
+      }
+
+      // Render edges
+      edgesG.innerHTML = '';
+      for (const e of state.edges) {
+        const a = positions.get(e.from), b = positions.get(e.to);
+        if (!a || !b) continue;
+        const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H;
+        const x2 = b.x + NODE_W / 2, y2 = b.y;
+        const cy = (y1 + y2) / 2;
+        const d = `M ${x1} ${y1} C ${x1} ${cy}, ${x2} ${cy}, ${x2} ${y2}`;
+        const path = svgEl('path', { d, class: 'edge' });
+        let arrowId = 'dag-arrow';
+        if (related) {
+          if (related.has(e.from) && related.has(e.to)) {
+            path.classList.add('related');
+            arrowId = 'dag-arrow-rel';
+          } else {
+            path.classList.add('unrelated');
+          }
+        }
+        if (downstreamOfFailed.has(e.to) || state.nodes.find(x => x.id === e.from)?.state === 'failed') {
+          path.classList.add('downstream-failed');
+          if (arrowId === 'dag-arrow') arrowId = 'dag-arrow-fail';
+        }
+        path.setAttribute('marker-end', `url(#${arrowId}${suffix})`);
+        edgesG.appendChild(path);
+      }
+
+      // size SVG to graph bounds
+      const padding = 40;
+      svg.style.minWidth  = (totalW + padding * 2) + 'px';
+      svg.style.minHeight = (totalH + padding * 2) + 'px';
+
+      // apply pan + zoom to both layers (svg group + nodes container)
+      const tf = `translate(${state.pan.x + padding}px, ${state.pan.y + padding}px) scale(${state.zoom})`;
+      edgesG.setAttribute('transform', `translate(${state.pan.x + padding}, ${state.pan.y + padding}) scale(${state.zoom})`);
+      nodesG.style.transform = tf;
+      zoomTag.textContent = Math.round(state.zoom * 100) + '%';
+
+      // update meta + toolbar enable state
+      updateMeta();
+      const selNode = state.nodes.find(n => n.id === sel);
+      pane.querySelector('[data-action="remove"]').disabled = !selNode;
+      pane.querySelector('[data-action="retry"]').disabled  = !(selNode && selNode.state === 'failed');
+
+      // side panel
+      renderAside(selNode, ancestors, descendants);
+    }
+
+    function updateMeta() {
+      const counts = state.nodes.reduce((m, n) => (m[n.state] = (m[n.state] || 0) + 1, m), {});
+      const order = ['success', 'running', 'failed', 'blocked', 'pending', 'skipped'];
+      const parts = [`${state.nodes.length} nodes · ${state.edges.length} edges`];
+      const summary = order.filter(k => counts[k]).map(k => `${counts[k]} ${k}`).join(' · ');
+      if (summary) parts.push(summary);
+      metaEl.textContent = parts.join(' · ');
+    }
+
+    function renderAside(node, ancestors, descendants) {
+      aside.innerHTML = '';
+      if (!node) {
+        aside.appendChild(el('div', { class: 'aside-empty', html:
+          'Select a node to inspect.<br/>Click a node, or use <strong>Add</strong> to extend the graph.' }));
+        return;
+      }
+      // Header
+      const head = el('div', { class: 'aside-section' });
+      head.appendChild(el('div', { class: 'aside-eyebrow' }, 'node'));
+      head.appendChild(el('div', { class: 'aside-name' }, node.label));
+      const pill = el('span', { class: 'state-pill', 'data-state': node.state });
+      pill.appendChild(el('span', { class: 'dot' }));
+      pill.appendChild(el('span', null, node.state));
+      head.appendChild(pill);
+      aside.appendChild(head);
+
+      // Meta
+      const meta = el('dl', { class: 'meta-row' });
+      const rows = [
+        ['id',       node.id],
+        ['kind',     node.kind || '—'],
+        ['duration', node.duration || '—'],
+        ['parents',  String((lastLayout.parents.get(node.id) || []).length)],
+        ['children', String((lastLayout.children.get(node.id) || []).length)],
+      ];
+      for (const [k, v] of rows) {
+        meta.appendChild(el('dt', null, k));
+        meta.appendChild(el('dd', null, v));
+      }
+      aside.appendChild(meta);
+
+      // Neighbors (clickable chips)
+      const upstream = (lastLayout.parents.get(node.id) || []).map(id => state.nodes.find(n => n.id === id));
+      const downstream = (lastLayout.children.get(node.id) || []).map(id => state.nodes.find(n => n.id === id));
+      function chips(label, list) {
+        if (!list.length) return;
+        const sec = el('div', { class: 'aside-section' });
+        sec.appendChild(el('div', { class: 'aside-eyebrow' }, label));
+        const wrap = el('div', { class: 'neighbor-list' });
+        list.forEach(n => {
+          const c = el('span', { class: 'neighbor-chip', 'data-state': n.state, onclick: () => selectNode(n.id) });
+          c.appendChild(el('span', { class: 'ndot' }));
+          c.appendChild(el('span', null, n.label));
+          wrap.appendChild(c);
+        });
+        sec.appendChild(wrap);
+        aside.appendChild(sec);
+      }
+      chips('upstream',   upstream);
+      chips('downstream', downstream);
+
+      // Actions
+      const actions = el('div', { class: 'aside-actions' });
+      const cycleStates = ['pending', 'running', 'success', 'failed', 'blocked', 'skipped'];
+      const cycleBtn = el('button', { class: 'tbtn', onclick: () => {
+        const i = cycleStates.indexOf(node.state);
+        node.state = cycleStates[(i + 1) % cycleStates.length];
+        render();
+      }}, 'Cycle state →');
+      actions.appendChild(cycleBtn);
+      if (node.state === 'failed') {
+        const retry = el('button', { class: 'tbtn primary', onclick: () => { node.state = 'running'; render(); }}, 'Retry');
+        actions.appendChild(retry);
+      }
+      const addChild = el('button', { class: 'tbtn', onclick: () => addNode(node.id) }, '+ Add child');
+      actions.appendChild(addChild);
+      const remove = el('button', { class: 'tbtn danger', onclick: () => removeNode(node.id) }, 'Remove node');
+      actions.appendChild(remove);
+      aside.appendChild(actions);
+    }
+
+    /* ── Selection ─────────────────────────────────────────────────── */
+    function selectNode(id) {
+      state.selected = state.selected === id ? null : id;
+      render();
+    }
+
+    /* ── Add / remove ──────────────────────────────────────────────── */
+    const ADD_NAMES = ['scan', 'sign', 'tag', 'verify', 'analyze', 'notify', 'archive', 'rollback'];
+    function nextId() { return 'n' + (state.counter++); }
+    function addNode(parentId) {
+      const id = nextId();
+      const name = ADD_NAMES[Math.floor(Math.random() * ADD_NAMES.length)];
+      state.nodes.push({ id, label: name, state: 'pending', kind: 'task', duration: '—' });
+      if (parentId) state.edges.push({ from: parentId, to: id });
+      state.selected = id;
+      render();
+    }
+    function removeNode(id) {
+      const node = state.nodes.find(n => n.id === id); if (!node) return;
+      // remove its incoming/outgoing edges. We don't try to reconnect parents
+      // to children — that's a policy choice; a "splice" toggle could be
+      // added later, but blunt-remove matches most pipeline tools.
+      state.edges = state.edges.filter(e => e.from !== id && e.to !== id);
+      state.nodes = state.nodes.filter(n => n.id !== id);
+      if (state.selected === id) state.selected = null;
+      render();
+    }
+
+    /* ── Toolbar wiring ────────────────────────────────────────────── */
+    tools.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const a = btn.dataset.action;
+        if (a === 'add') {
+          addNode(state.selected); // attach as child of selection (or root if none)
+        } else if (a === 'remove' && state.selected) {
+          removeNode(state.selected);
+        } else if (a === 'retry' && state.selected) {
+          const n = state.nodes.find(x => x.id === state.selected);
+          if (n && n.state === 'failed') { n.state = 'running'; render(); }
+        } else if (a === 'zoom-in')  { state.zoom = Math.min(2, +(state.zoom + 0.1).toFixed(2)); render(); }
+        else if (a === 'zoom-out')   { state.zoom = Math.max(0.4, +(state.zoom - 0.1).toFixed(2)); render(); }
+        else if (a === 'zoom-fit')   { fitView(); }
+      });
+    });
+
+    /* ── Pan + zoom ────────────────────────────────────────────────── */
+    let dragging = null;
+    canvas.addEventListener('mousedown', e => {
+      if (e.target.closest('.node, .tbtn')) return;
+      dragging = { x: e.clientX, y: e.clientY, panX: state.pan.x, panY: state.pan.y };
+      canvas.classList.add('dragging');
+    });
+    window.addEventListener('mousemove', e => {
+      if (!dragging) return;
+      state.pan.x = dragging.panX + (e.clientX - dragging.x);
+      state.pan.y = dragging.panY + (e.clientY - dragging.y);
+      render();
+    });
+    window.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = null;
+      canvas.classList.remove('dragging');
+    });
+    // click on empty canvas clears selection
+    canvas.addEventListener('click', e => {
+      if (e.target.closest('.node, .tbtn, .neighbor-chip')) return;
+      if (state.selected) { state.selected = null; render(); }
+    });
+    // wheel zoom (with ctrl/meta to avoid hijacking page scroll)
+    canvas.addEventListener('wheel', e => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.08 : 0.08;
+      state.zoom = Math.max(0.4, Math.min(2, +(state.zoom + delta).toFixed(2)));
+      render();
+    }, { passive: false });
+
+    function fitView() {
+      if (!lastLayout) return;
+      const cw = canvas.clientWidth - 80, ch = canvas.clientHeight - 80;
+      const sx = cw / lastLayout.totalW;
+      const sy = ch / lastLayout.totalH;
+      state.zoom = Math.max(0.4, Math.min(1.4, Math.min(sx, sy)));
+      state.pan = { x: 0, y: 0 };
+      render();
+    }
+
+    render();
+    // first paint after layout sizes resolve, so fit gets right canvas dims
+    requestAnimationFrame(fitView);
+  }
+
+  function init() {
+    const panes = document.querySelectorAll('.pane');
+    panes.forEach((p, i) => makeDag(p, '-p' + i));
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    setTimeout(init, 0);
+  }
+})();
+</script>
+</body>
+</html>

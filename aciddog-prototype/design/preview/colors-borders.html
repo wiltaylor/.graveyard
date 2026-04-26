@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css"></head>
+<body>
+<template id="card-content">
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+  <div class="swatch" style="background:var(--bg-2);border-color:var(--border-subtle)"><span class="label">border-subtle</span></div>
+  <div class="swatch" style="background:var(--bg-1);border-color:var(--border)"><span class="label">border</span></div>
+  <div class="swatch" style="background:var(--bg-1);border-color:var(--border-strong);border-width:1px"><span class="label">border-strong</span></div>
+</div>
+<div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap">
+  <span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-2)">examples →</span>
+  <button style="height:28px;padding:0 12px;background:var(--bg-1);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--fg-0);font-family:inherit;font-size:13px">Default</button>
+  <button style="height:28px;padding:0 12px;background:var(--bg-1);border:1px solid var(--border-strong);border-radius:var(--r-sm);color:var(--fg-0);font-family:inherit;font-size:13px">Hover</button>
+  <span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-2);border-bottom:1px solid var(--border-subtle);padding:6px 0">divider · subtle</span>
+</div></template>
+<script src="_split.js"></script>
+</body>
+</html>

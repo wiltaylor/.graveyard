@@ -1,0 +1,830 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  /* ─────────────────────────────────────────────────────────────────────
+     CHAT
+     ───────────────────────────────────────────────────────────────────── */
+  .chat {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    height: 560px;
+  }
+  .chat-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .chat-head .title {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-weight: 600; font-size: 13px; color: var(--fg-0);
+    min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .chat-head .meta { flex-shrink: 0; }
+  .chat-head .title .dot {
+    width: 6px; height: 6px; border-radius: 999px;
+    background: var(--success);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--success) 25%, transparent);
+  }
+  .chat-head .meta {
+    font-family: var(--font-mono); font-size: 11px; color: var(--fg-2);
+  }
+
+  .chat-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px;
+    display: flex; flex-direction: column; gap: 4px;
+    scroll-behavior: smooth;
+  }
+  .chat-body::-webkit-scrollbar { width: 8px; }
+  .chat-body::-webkit-scrollbar-thumb {
+    background: var(--border); border-radius: 999px;
+  }
+  .chat-body::-webkit-scrollbar-track { background: transparent; }
+
+  /* ── Message row ──────────────────────────────────────────────────── */
+  .msg {
+    display: grid;
+    grid-template-columns: 28px 1fr;
+    gap: 10px;
+    padding: 8px 6px;
+    border-radius: var(--r-md);
+  }
+  .msg.self { background: color-mix(in oklab, var(--accent) 6%, transparent); }
+  .msg + .msg { margin-top: 2px; }
+
+  .avatar {
+    width: 28px; height: 28px;
+    border-radius: var(--r-sm);
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+    color: var(--fg-1);
+    flex-shrink: 0;
+  }
+  .avatar.self {
+    background: var(--accent-bg);
+    border-color: color-mix(in oklab, var(--accent) 30%, transparent);
+    color: var(--accent-fg);
+  }
+  .avatar.bot {
+    background: var(--bg-2);
+    color: var(--fg-0);
+  }
+
+  .msg-main { min-width: 0; padding-top: 2px; }
+  .msg-head {
+    display: flex; align-items: baseline; gap: 8px;
+    margin-bottom: 3px;
+    flex-wrap: wrap;
+  }
+  .msg-head .name {
+    font-size: 13px; font-weight: 600; color: var(--fg-0);
+    white-space: nowrap;
+  }
+  .msg-head .name.self { color: var(--accent-fg); }
+  .msg-head .badge {
+    font-family: var(--font-mono); font-size: 9px;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    background: var(--bg-3); color: var(--fg-2);
+    border: 1px solid var(--border-subtle);
+    padding: 0 5px; border-radius: 3px;
+    line-height: 14px;
+  }
+  .msg-head .badge.bot {
+    background: color-mix(in oklab, var(--info) 12%, transparent);
+    color: var(--info-fg);
+    border-color: color-mix(in oklab, var(--info) 30%, transparent);
+  }
+  .msg-head .time {
+    font-family: var(--font-mono); font-size: 11px; color: var(--fg-3);
+    margin-left: auto;
+  }
+  .msg-body {
+    font-size: 13.5px; line-height: 1.55; color: var(--fg-0);
+    white-space: pre-wrap; word-wrap: break-word;
+  }
+  .msg-body code {
+    font-size: 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-subtle);
+    padding: 0 4px; border-radius: 3px;
+  }
+  .msg-body p { color: inherit; margin: 0; }
+  .msg-body p + p { margin-top: 8px; }
+  .msg-body .inline-events { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+
+  /* ── Event block ──────────────────────────────────────────────────── */
+  .evt {
+    --evt-tint: var(--fg-2);
+    --evt-bg:   var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--evt-bg);
+    overflow: hidden;
+  }
+  .evt.standalone {
+    margin: 6px 0;
+  }
+  .evt.info    { --evt-tint: var(--info-fg);    --evt-bg: color-mix(in oklab, var(--info)    7%, var(--bg-1)); border-color: color-mix(in oklab, var(--info)    25%, var(--border)); }
+  .evt.success { --evt-tint: var(--success-fg); --evt-bg: color-mix(in oklab, var(--success) 7%, var(--bg-1)); border-color: color-mix(in oklab, var(--success) 25%, var(--border)); }
+  .evt.warning { --evt-tint: var(--warning-fg); --evt-bg: color-mix(in oklab, var(--warning) 8%, var(--bg-1)); border-color: color-mix(in oklab, var(--warning) 28%, var(--border)); }
+  .evt.danger  { --evt-tint: var(--danger-fg);  --evt-bg: color-mix(in oklab, var(--danger)  8%, var(--bg-1)); border-color: color-mix(in oklab, var(--danger)  28%, var(--border)); }
+
+  .evt-summary {
+    display: grid;
+    grid-template-columns: 16px 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 10px;
+    cursor: default;
+    user-select: none;
+  }
+  .evt[data-expandable="true"] .evt-summary { cursor: pointer; }
+  .evt[data-expandable="true"] .evt-summary:hover {
+    background: color-mix(in oklab, var(--evt-tint) 6%, transparent);
+  }
+  .evt-icon {
+    color: var(--evt-tint);
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px;
+  }
+  .evt-icon svg { width: 16px; height: 16px; }
+  .evt-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .evt-summary-line {
+    font-size: 13px; color: var(--fg-0); font-weight: 500;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .evt-meta {
+    font-family: var(--font-mono); font-size: 10.5px;
+    color: var(--fg-2);
+  }
+  .evt-right {
+    display: inline-flex; align-items: center; gap: 8px;
+    color: var(--fg-2);
+  }
+  .evt-chev {
+    width: 16px; height: 16px;
+    transition: transform 160ms var(--ease-out);
+    color: var(--fg-2);
+  }
+  .evt[data-open="true"] .evt-chev { transform: rotate(90deg); }
+
+  .evt-details {
+    overflow: hidden;
+    border-top: 1px solid color-mix(in oklab, var(--evt-tint) 18%, var(--border-subtle));
+    background: var(--bg-1);
+    display: none;
+  }
+  .evt[data-open="true"] .evt-details { display: block; }
+  .evt-details-inner {
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 10px 12px;
+    font-size: 12.5px; color: var(--fg-1); line-height: 1.55;
+  }
+  .evt-details-inner::-webkit-scrollbar { width: 6px; }
+  .evt-details-inner::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+  .evt-details-inner pre {
+    margin: 0;
+    background: var(--bg-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    padding: 8px 10px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--fg-0);
+  }
+  .evt-details-inner .kv {
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 4px 10px;
+    font-family: var(--font-mono); font-size: 11px;
+  }
+  .evt-details-inner .kv dt { color: var(--fg-2); }
+  .evt-details-inner .kv dd { color: var(--fg-0); margin: 0; }
+
+  .evt-actions {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 8px 10px;
+    border-top: 1px solid var(--border-subtle);
+    background: color-mix(in oklab, var(--evt-tint) 4%, var(--bg-1));
+  }
+  .evt-actions.inline {
+    border-top: 0;
+    padding-top: 0;
+    background: transparent;
+    margin-left: auto;
+  }
+
+  /* ── Buttons ──────────────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 26px; padding: 0 10px;
+    border-radius: var(--r-sm);
+    font: inherit; font-size: 12px; font-weight: 500;
+    border: 1px solid var(--border);
+    background: var(--bg-1);
+    color: var(--fg-0);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background var(--dur-1) var(--ease-out),
+                border-color var(--dur-1) var(--ease-out);
+  }
+  .btn:hover { background: var(--bg-2); border-color: var(--border-strong); }
+  .btn.primary {
+    background: var(--accent); color: var(--accent-contrast);
+    border-color: transparent;
+  }
+  .btn.primary:hover { background: var(--accent-hover); }
+  .btn.danger {
+    color: var(--danger-fg);
+    border-color: color-mix(in oklab, var(--danger) 30%, var(--border));
+  }
+  .btn.danger:hover {
+    background: var(--danger-bg);
+    border-color: var(--danger);
+  }
+  .btn.ghost { background: transparent; border-color: transparent; color: var(--fg-1); }
+  .btn.ghost:hover { background: var(--bg-2); color: var(--fg-0); }
+  .btn svg { width: 12px; height: 12px; }
+
+  /* ── Composer ─────────────────────────────────────────────────────── */
+  .chat-composer {
+    border-top: 1px solid var(--border-subtle);
+    background: var(--bg-2);
+    padding: 10px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .chat-composer-row { display: flex; gap: 8px; align-items: flex-end; }
+  .chat-composer textarea {
+    flex: 1;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    padding: 8px 10px;
+    color: var(--fg-0);
+    font: inherit; font-size: 13px;
+    resize: none; outline: none;
+    min-height: 32px; max-height: 120px;
+  }
+  .chat-composer textarea:focus { border-color: var(--border-strong); }
+  .chat-composer textarea::placeholder { color: var(--fg-3); }
+
+  .icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px;
+    border-radius: var(--r-sm);
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    color: var(--fg-1);
+    cursor: pointer; flex-shrink: 0;
+    transition: background var(--dur-1) var(--ease-out),
+                border-color var(--dur-1) var(--ease-out),
+                color var(--dur-1) var(--ease-out);
+  }
+  .icon-btn:hover { background: var(--bg-3); color: var(--fg-0); border-color: var(--border-strong); }
+  .icon-btn svg { width: 16px; height: 16px; }
+
+  /* attachment chips (preview before send) */
+  .attach-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .attach-row:empty { display: none; }
+  .attach-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 4px 4px 6px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    font-size: 12px; color: var(--fg-0);
+    max-width: 240px;
+  }
+  .attach-chip .ico { color: var(--fg-2); display: inline-flex; }
+  .attach-chip .ico svg { width: 13px; height: 13px; }
+  .attach-chip .name {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--font-mono); font-size: 11.5px;
+  }
+  .attach-chip .size { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3); }
+  .attach-chip .x {
+    border: 0; background: transparent; color: var(--fg-3); cursor: pointer;
+    width: 18px; height: 18px; border-radius: 3px; font: inherit;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .attach-chip .x:hover { background: var(--bg-3); color: var(--fg-0); }
+  .attach-chip .thumb {
+    width: 22px; height: 22px; border-radius: 3px; object-fit: cover;
+    background: var(--bg-3); border: 1px solid var(--border-subtle);
+  }
+
+  /* attachments rendered inside a sent message */
+  .msg-attachments { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .msg-attachment {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 10px 6px 8px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    text-decoration: none; color: var(--fg-0);
+    font-size: 12px; max-width: 280px;
+  }
+  .msg-attachment .ico { color: var(--fg-2); display: inline-flex; }
+  .msg-attachment .ico svg { width: 14px; height: 14px; }
+  .msg-attachment .name { font-family: var(--font-mono); font-size: 11.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msg-attachment .size { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3); margin-left: 2px; }
+  .msg-attachment.image { padding: 0; overflow: hidden; }
+  .msg-attachment.image img {
+    display: block; max-width: 240px; max-height: 160px;
+    background: var(--bg-3);
+  }
+
+  /* ── Day divider ──────────────────────────────────────────────────── */
+  .chat-divider {
+    display: flex; align-items: center; gap: 10px;
+    margin: 10px 4px 4px;
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-3);
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .chat-divider::before, .chat-divider::after {
+    content: ""; flex: 1; height: 1px; background: var(--border-subtle);
+  }
+</style>
+</head>
+<body>
+<template id="card-content">
+<div class="chat" data-chat>
+  <div class="chat-head">
+    <span class="title"><span class="dot"></span> Incident #2847 — payments-api</span>
+    <span class="meta">3 participants · live</span>
+  </div>
+  <div class="chat-body" data-chat-body></div>
+  <form class="chat-composer" data-composer>
+    <div class="attach-row" data-attach-row></div>
+    <input type="file" data-attach-input multiple accept="image/*,.pdf,.txt,.log,.json,.csv,.md,.zip" hidden />
+    <div class="chat-composer-row">
+      <button type="button" class="icon-btn" data-attach-btn title="Attach file or image" aria-label="Attach file">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+      </button>
+      <textarea data-input placeholder="Reply as @you… (⏎ to send)" rows="1"></textarea>
+      <button type="submit" class="btn primary" data-send>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        Send
+      </button>
+    </div>
+  </form>
+</div>
+</template>
+<script src="_split.js"></script>
+<script>
+(function () {
+  /* ───────────────────────── ICON LIBRARY (Lucide) ──────────────────── */
+  const ICONS = {
+    deploy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>',
+    check:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+    alert:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+    error:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8"  x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
+    branch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>',
+    file:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+    log:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>',
+    image:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></svg>',
+    chev:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>',
+    x:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+  };
+
+  function el(tag, attrs, ...children) {
+    const node = document.createElement(tag);
+    if (attrs) for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'class') node.className = v;
+      else if (k === 'html') node.innerHTML = v;
+      else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+      else if (v === true) node.setAttribute(k, '');
+      else if (v === false || v == null) {} else node.setAttribute(k, v);
+    }
+    for (const c of children) {
+      if (c == null || c === false) continue;
+      node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    }
+    return node;
+  }
+
+  /* ─────────────────────────── EVENT BLOCK ──────────────────────────── */
+  /* Spec: { kind?, icon?, summary, meta?, details?, actions?, inline? }
+     - icon:    key from ICONS or raw SVG string
+     - details: HTML string OR DOM node — when present, the row is expandable
+     - actions: [{ label, kind?, onClick? }] — kind: 'primary'|'danger'|'ghost'|undefined
+     - inline:  if true, action row sits compact next to the summary
+  */
+  function buildEvent(spec) {
+    const expandable = !!spec.details;
+    const wrap = el('div', {
+      class: `evt ${spec.kind || ''} ${spec.standalone ? 'standalone' : ''}`.trim(),
+      'data-expandable': expandable ? 'true' : 'false',
+      'data-open': 'false',
+    });
+
+    const iconSvg = ICONS[spec.icon] || spec.icon || ICONS.log;
+
+    const summary = el('div', { class: 'evt-summary' },
+      el('span', { class: 'evt-icon', html: iconSvg }),
+      el('div', { class: 'evt-text' },
+        el('div', { class: 'evt-summary-line' }, spec.summary),
+        spec.meta ? el('div', { class: 'evt-meta' }, spec.meta) : null,
+      ),
+      el('div', { class: 'evt-right' },
+        spec.inline && spec.actions && spec.actions.length
+          ? buildActions(spec.actions, true) : null,
+        expandable ? el('span', { class: 'evt-chev', html: ICONS.chev }) : null,
+      ),
+    );
+    wrap.appendChild(summary);
+
+    if (expandable) {
+      const details = el('div', { class: 'evt-details' });
+      const inner = el('div', { class: 'evt-details-inner' });
+      if (typeof spec.details === 'string') inner.innerHTML = spec.details;
+      else inner.appendChild(spec.details);
+      details.appendChild(inner);
+      wrap.appendChild(details);
+
+      summary.addEventListener('click', () => {
+        const open = wrap.getAttribute('data-open') === 'true';
+        wrap.setAttribute('data-open', open ? 'false' : 'true');
+      });
+    }
+
+    if (!spec.inline && spec.actions && spec.actions.length) {
+      wrap.appendChild(buildActions(spec.actions, false));
+    }
+
+    return wrap;
+  }
+
+  function buildActions(actions, inline) {
+    const row = el('div', { class: `evt-actions ${inline ? 'inline' : ''}`.trim() });
+    actions.forEach(a => {
+      const b = el('button', {
+        type: 'button',
+        class: `btn ${a.kind || ''}`.trim(),
+        onclick: (e) => { e.stopPropagation(); a.onClick && a.onClick(e); },
+      }, a.label);
+      row.appendChild(b);
+    });
+    return row;
+  }
+
+  /* ─────────────────────────────── CHAT ─────────────────────────────── */
+  /* Spec for messages: { user: {name, initials, kind?: 'self'|'bot'|undefined},
+                          time, body (string|HTML node), events?: [eventSpec] } */
+
+  function buildMessage(spec) {
+    const isSelf = spec.user.kind === 'self';
+    const isBot  = spec.user.kind === 'bot';
+    const row = el('div', { class: `msg ${isSelf ? 'self' : ''}`.trim() });
+
+    row.appendChild(el('span', {
+      class: `avatar ${isSelf ? 'self' : ''} ${isBot ? 'bot' : ''}`.trim(),
+    }, spec.user.initials || spec.user.name.slice(0, 2).toUpperCase()));
+
+    const main = el('div', { class: 'msg-main' });
+    const head = el('div', { class: 'msg-head' });
+    head.appendChild(el('span', { class: `name ${isSelf ? 'self' : ''}`.trim() }, spec.user.name));
+    if (isBot)  head.appendChild(el('span', { class: 'badge bot' }, 'agent'));
+    if (isSelf) head.appendChild(el('span', { class: 'badge' }, 'you'));
+    head.appendChild(el('span', { class: 'time' }, spec.time));
+    main.appendChild(head);
+
+    const body = el('div', { class: 'msg-body' });
+    if (typeof spec.body === 'string') {
+      // Treat strings as paragraphs (allow basic <code>)
+      const safe = spec.body
+        .split(/\n{2,}/)
+        .map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
+      body.innerHTML = safe;
+    } else if (spec.body) {
+      body.appendChild(spec.body);
+    }
+    if (spec.attachments && spec.attachments.length) {
+      const att = el('div', { class: 'msg-attachments' });
+      spec.attachments.forEach(a => att.appendChild(buildAttachment(a)));
+      body.appendChild(att);
+    }
+    if (spec.events && spec.events.length) {
+      const inline = el('div', { class: 'inline-events' });
+      spec.events.forEach(ev => inline.appendChild(buildEvent(ev)));
+      body.appendChild(inline);
+    }
+    main.appendChild(body);
+    row.appendChild(main);
+    return row;
+  }
+
+  function buildDivider(label) {
+    return el('div', { class: 'chat-divider' }, label);
+  }
+
+  /* ─────────────────────────── ATTACHMENTS ──────────────────────────── */
+  /* spec: { name, size, type?, url? }  type starts with 'image/' for image preview */
+  function fmtSize(bytes) {
+    if (bytes == null) return '';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+    return (bytes/(1024*1024)).toFixed(1) + ' MB';
+  }
+  function buildAttachment(a) {
+    const isImg = (a.type && a.type.startsWith('image/')) || /\.(png|jpe?g|gif|webp|svg)$/i.test(a.name || '');
+    if (isImg && a.url) {
+      const wrap = el('a', { class: 'msg-attachment image', href: a.url, target: '_blank', rel: 'noreferrer', title: a.name });
+      const img = el('img', { src: a.url, alt: a.name || '' });
+      wrap.appendChild(img);
+      return wrap;
+    }
+    return el('a', { class: 'msg-attachment', href: a.url || '#', target: '_blank', rel: 'noreferrer' },
+      el('span', { class: 'ico', html: isImg ? ICONS.image : ICONS.file }),
+      el('span', { class: 'name' }, a.name || 'file'),
+      a.size != null ? el('span', { class: 'size' }, fmtSize(a.size)) : null,
+    );
+  }
+  function buildAttachChip(a, onRemove) {
+    const isImg = a.type && a.type.startsWith('image/');
+    const chip = el('div', { class: 'attach-chip', title: a.name });
+    if (isImg && a.url) {
+      chip.appendChild(el('img', { class: 'thumb', src: a.url, alt: '' }));
+    } else {
+      chip.appendChild(el('span', { class: 'ico', html: isImg ? ICONS.image : ICONS.file }));
+    }
+    chip.appendChild(el('span', { class: 'name' }, a.name));
+    if (a.size != null) chip.appendChild(el('span', { class: 'size' }, fmtSize(a.size)));
+    chip.appendChild(el('button', { type: 'button', class: 'x', 'aria-label': 'Remove', html: ICONS.x, onclick: onRemove }));
+    return chip;
+  }
+
+  /* ────────────────────────── CHAT INSTANCE ─────────────────────────── */
+  function bindChat(root) {
+    const body  = root.querySelector('[data-chat-body]');
+    const form       = root.querySelector('[data-composer]');
+    const input      = root.querySelector('[data-input]');
+    const attachBtn  = root.querySelector('[data-attach-btn]');
+    const attachInpt = root.querySelector('[data-attach-input]');
+    const attachRow  = root.querySelector('[data-attach-row]');
+    let pending = []; // [{ name, size, type, url }]
+
+    function scrollDown() {
+      requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
+    }
+    function addMessage(spec)  { body.appendChild(buildMessage(spec)); scrollDown(); }
+    function addEvent(spec)    { body.appendChild(buildEvent({ ...spec, standalone: true })); scrollDown(); }
+    function addDivider(label) { body.appendChild(buildDivider(label)); }
+
+    /* ── Demo content ────────────────────────────────────────────────── */
+    addDivider('today · 14:02');
+
+    addMessage({
+      user: { name: 'maya.r', initials: 'MR' },
+      time: '14:02',
+      body: 'p95 on /checkout just spiked again. Same window as the morning blip but bigger. Anyone seeing it from the dashboards?',
+    });
+
+    addMessage({
+      user: { name: 'forge', initials: '◆', kind: 'bot' },
+      time: '14:02',
+      body: 'Picked up the spike. Pulled the relevant traces and cross-referenced against deploys.',
+      events: [
+        {
+          kind: 'warning', icon: 'alert',
+          summary: 'p95 latency on /checkout: 1.42 s (threshold 600 ms)',
+          meta: 'us-east-1 · 14:00 → 14:02 · 412 traces',
+          details: `
+            <div class="kv">
+              <dt>service</dt>      <dd>payments-api</dd>
+              <dt>endpoint</dt>     <dd>POST /checkout</dd>
+              <dt>p50</dt>          <dd>820 ms</dd>
+              <dt>p95</dt>          <dd>1,420 ms</dd>
+              <dt>p99</dt>          <dd>2,310 ms</dd>
+              <dt>error rate</dt>   <dd>0.8 %</dd>
+              <dt>upstream</dt>     <dd>stripe-gateway (94 % of latency)</dd>
+              <dt>last deploy</dt>  <dd>v2.4.1 · 13:54 · payments-api</dd>
+            </div>
+            <p style="margin-top:10px;color:var(--fg-2);font-size:11.5px;font-family:var(--font-mono)">Source: Datadog APM · query="service:payments-api -env:dev"</p>
+          `,
+          actions: [
+            { label: 'Open trace', kind: 'primary' },
+            { label: 'Silence 30 min', kind: 'ghost' },
+          ],
+        },
+        {
+          kind: 'info', icon: 'branch',
+          summary: 'Recent deploy in window: payments-api v2.4.1',
+          meta: '13:54 · 8 min before spike · author: jordan.lee',
+          details: `
+            <pre>commit 4f2a91c (HEAD -&gt; main, origin/main)
+Author: Jordan Lee &lt;jordan@example.com&gt;
+Date:   Tue 14:53
+
+    fix(checkout): retry on transient stripe 5xx (max 2)
+
+  src/payments/checkout.ts | 12 +++++++++---
+  src/payments/retry.ts    | 28 +++++++++++++++++++++++++++++
+  test/checkout.test.ts    |  6 ++++++
+  3 files changed, 43 insertions(+), 3 deletions(-)</pre>
+          `,
+          actions: [
+            { label: 'View diff' },
+            { label: 'Rollback', kind: 'danger' },
+          ],
+        },
+      ],
+    });
+
+    addMessage({
+      user: { name: 'jordan.lee', initials: 'JL' },
+      time: '14:03',
+      body: 'That deploy added a retry loop on stripe 5xx. If stripe is slow we’re probably amplifying it. Snapshot from the dashboard:',
+      attachments: [
+        {
+          name: 'p95-checkout.png',
+          type: 'image/png',
+          size: 184320,
+          url: 'data:image/svg+xml;utf8,' + encodeURIComponent(
+            '<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 240 160\'>' +
+              '<rect width=\'240\' height=\'160\' fill=\'#0B0D10\'/>' +
+              '<g stroke=\'#262C36\' stroke-width=\'1\'>' +
+                '<line x1=\'0\' y1=\'40\'  x2=\'240\' y2=\'40\'/>' +
+                '<line x1=\'0\' y1=\'80\'  x2=\'240\' y2=\'80\'/>' +
+                '<line x1=\'0\' y1=\'120\' x2=\'240\' y2=\'120\'/>' +
+              '</g>' +
+              '<polyline fill=\'none\' stroke=\'#5DA0F0\' stroke-width=\'1.5\' points=\'0,120 30,118 60,115 90,112 120,108 140,90 160,52 180,28 200,32 220,30 240,28\'/>' +
+              '<polyline fill=\'none\' stroke=\'#7C8593\' stroke-width=\'1\' stroke-dasharray=\'3 3\' points=\'0,80 240,80\'/>' +
+              '<text x=\'8\'  y=\'14\' fill=\'#7C8593\' font-family=\'monospace\' font-size=\'9\'>p95 /checkout · last 30m</text>' +
+              '<text x=\'232\' y=\'78\' fill=\'#7C8593\' font-family=\'monospace\' font-size=\'8\' text-anchor=\'end\'>600ms</text>' +
+            '</svg>'
+          ),
+        },
+        {
+          name: 'apm-trace-c8f2.json',
+          type: 'application/json',
+          size: 4096,
+          url: '#',
+        },
+      ],
+    });
+
+    addEvent({
+      kind: 'danger', icon: 'error',
+      summary: 'Stripe API: degraded performance (us-east)',
+      meta: 'reported 13:48 · ongoing',
+      details: `
+        <p>Status from <code>status.stripe.com</code>:</p>
+        <pre>14:02  We are continuing to investigate elevated latency on Charges API.
+13:55  Customers may experience timeouts &gt; 5s on a subset of POSTs.
+13:48  Identified — investigating elevated p95 on /v1/charges in us-east.</pre>
+        <p style="margin-top:10px">Recommendation: shed retry traffic or shorten the retry budget until upstream recovers.</p>
+      `,
+      actions: [
+        { label: 'Acknowledge', kind: 'primary' },
+        { label: 'Open status page' },
+      ],
+    });
+
+    addMessage({
+      user: { name: 'you', initials: 'YO', kind: 'self' },
+      time: '14:04',
+      body: 'Confirmed on Stripe’s side. Let’s drop the retry budget from 2 to 0 until they\'re green again.',
+    });
+
+    addMessage({
+      user: { name: 'forge', initials: '◆', kind: 'bot' },
+      time: '14:04',
+      body: 'Drafted the change. Review before I open the PR.',
+      events: [
+        {
+          kind: 'success', icon: 'file',
+          summary: 'Patch ready · payments-api/src/payments/retry.ts',
+          meta: '+1 −1 · 1 file',
+          details: `
+            <pre>- export const MAX_RETRIES = 2;
++ export const MAX_RETRIES = 0; // tmp: stripe degraded, see incident #2847</pre>
+          `,
+          actions: [
+            { label: 'Open PR', kind: 'primary' },
+            { label: 'Edit' },
+            { label: 'Discard', kind: 'ghost' },
+          ],
+        },
+      ],
+    });
+
+    addEvent({
+      kind: 'info', icon: 'log',
+      summary: 'maya.r joined the channel',
+      meta: '14:04',
+      // no details, no actions — minimal one-line system notice
+    });
+
+    addMessage({
+      user: { name: 'maya.r', initials: 'MR' },
+      time: '14:05',
+      body: 'Approved the patch. Watching p95 — should drop within a deploy cycle.',
+    });
+
+    addEvent({
+      kind: 'success', icon: 'check',
+      summary: 'PR #1284 merged · deploy queued',
+      meta: 'payments-api · ETA 2m',
+      details: `
+        <div class="kv">
+          <dt>pr</dt>        <dd>#1284 — Drop retry budget while stripe is degraded</dd>
+          <dt>author</dt>    <dd>forge-agent</dd>
+          <dt>approver</dt>  <dd>maya.r</dd>
+          <dt>checks</dt>    <dd>5 / 5 passed (1m 48s)</dd>
+          <dt>deploy</dt>    <dd>queued · pos 1 / 1</dd>
+        </div>
+      `,
+      actions: [
+        { label: 'View deploy' },
+      ],
+    });
+
+    /* ── Composer ────────────────────────────────────────────────────── */
+    function autosize() {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+    }
+    function renderAttachRow() {
+      attachRow.innerHTML = '';
+      pending.forEach((a, i) => {
+        attachRow.appendChild(buildAttachChip(a, () => {
+          if (a.url && a.url.startsWith('blob:')) URL.revokeObjectURL(a.url);
+          pending.splice(i, 1);
+          renderAttachRow();
+        }));
+      });
+    }
+    function addFiles(fileList) {
+      [...fileList].forEach(f => {
+        const a = { name: f.name, size: f.size, type: f.type };
+        if (f.type.startsWith('image/')) a.url = URL.createObjectURL(f);
+        pending.push(a);
+      });
+      renderAttachRow();
+    }
+    attachBtn.addEventListener('click', () => attachInpt.click());
+    attachInpt.addEventListener('change', e => {
+      if (e.target.files && e.target.files.length) addFiles(e.target.files);
+      e.target.value = '';
+    });
+    // drag-and-drop onto the chat body
+    body.addEventListener('dragover', e => { e.preventDefault(); });
+    body.addEventListener('drop', e => {
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+        e.preventDefault();
+        addFiles(e.dataTransfer.files);
+      }
+    });
+
+    input.addEventListener('input', autosize);
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+    });
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text && pending.length === 0) return;
+      const now = new Date();
+      const time = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+      addMessage({
+        user: { name: 'you', initials: 'YO', kind: 'self' },
+        time,
+        body: text || '',
+        attachments: pending.length ? pending.slice() : undefined,
+      });
+      pending = [];
+      renderAttachRow();
+      input.value = '';
+      autosize();
+    });
+
+    scrollDown();
+  }
+
+  function init() {
+    document.querySelectorAll('[data-chat]').forEach(bindChat);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    setTimeout(init, 0);
+  }
+})();
+</script>
+</body>
+</html>
