@@ -84,6 +84,12 @@ pub struct Agent {
     /// config is parsed.
     #[serde(default)]
     pub sysadmin: bool,
+    /// What `/reload` does when this agent's effective config changes.
+    /// Default is [`ReloadAction::Ignore`] — the running session keeps
+    /// its current prompt/model/tools until the next `/compact` or
+    /// `/reset`, at which point the new config takes effect naturally.
+    #[serde(default)]
+    pub on_reload: ReloadAction,
 }
 
 /// A template for an ephemeral worker. Unlike `Agent`, a `Worker` is not
@@ -674,6 +680,34 @@ impl CompactionStrategy {
     }
 }
 
+/// What `/reload` does to an agent whose effective config changed. Set
+/// per-agent via `on_reload = :ignore | :compact | :reset`. `Ignore`
+/// (default) keeps the running session intact — the new config is picked
+/// up the next time the agent compacts or resets, since
+/// `teardown_and_rebuild` already re-reads from `App::config`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ReloadAction {
+    /// Leave the running session alone. New config takes effect at the
+    /// next `/compact` or `/reset`.
+    #[default]
+    Ignore,
+    /// Run the agent's configured compaction strategy immediately.
+    Compact,
+    /// Drop the session and re-seed (equivalent to `/reset`).
+    Reset,
+}
+
+impl ReloadAction {
+    pub fn name(&self) -> &'static str {
+        match self {
+            ReloadAction::Ignore => "ignore",
+            ReloadAction::Compact => "compact",
+            ReloadAction::Reset => "reset",
+        }
+    }
+}
+
 /// A named, repeatable procedure with typed properties and sequential
 /// steps. Declared at the fleet level; triggered on demand by a user
 /// (from the TUI) or an agent (via `aciddog workflow run`). Each trigger
@@ -988,6 +1022,9 @@ pub enum ConfigError {
     #[error("compaction `{core}` has unknown strategy `{strategy}`")]
     UnknownCompactionStrategy { core: String, strategy: String },
 
+    #[error("agent `{agent}` has unknown `on_reload` value `{value}` (expected `:ignore`, `:compact`, or `:reset`)")]
+    InvalidReloadAction { agent: String, value: String },
+
     #[error("`{from}` references unknown compaction `{to}` in `compaction`")]
     UnknownCompactionRef { from: String, to: String },
 
@@ -1241,8 +1278,23 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         .blocks_of_type_resolved("agent")
         .iter()
         .map(|b| {
+            let id = require_id(&b.id, &b.kind)?;
+            let on_reload = match optional_symbol(b, "on_reload")? {
+                None => ReloadAction::Ignore,
+                Some(sym) => match sym.as_str() {
+                    "ignore" => ReloadAction::Ignore,
+                    "compact" => ReloadAction::Compact,
+                    "reset" => ReloadAction::Reset,
+                    other => {
+                        return Err(ConfigError::InvalidReloadAction {
+                            agent: id.clone(),
+                            value: other.to_string(),
+                        });
+                    }
+                },
+            };
             Ok(Agent {
-                id: require_id(&b.id, &b.kind)?,
+                id,
                 role: require_string(b, "role")?,
                 role_description: optional_string(b, "role_description"),
                 model: optional_string(b, "model"),
@@ -1257,6 +1309,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 compaction: optional_string(b, "compaction"),
                 supervisor: optional_bool(b, "supervisor")?.unwrap_or(false),
                 sysadmin: optional_bool(b, "sysadmin")?.unwrap_or(false),
+                on_reload,
             })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?
@@ -3043,6 +3096,57 @@ mod tests {
         "#;
         let err = parse_config(src, &dummy_path()).unwrap_err();
         assert!(matches!(err, ConfigError::MissingTeam));
+    }
+
+    #[test]
+    fn on_reload_defaults_to_ignore() {
+        let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
+        assert_eq!(cfg.agents[0].on_reload, ReloadAction::Ignore);
+    }
+
+    #[test]
+    fn on_reload_parses_each_action() {
+        let src = r#"
+            team default { description = "t" }
+            agent ignore_one { role = "a" instructions = "b" on_reload = :ignore }
+            agent compact_one { role = "a" instructions = "b" on_reload = :compact }
+            agent reset_one { role = "a" instructions = "b" on_reload = :reset }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.agents[0].on_reload, ReloadAction::Ignore);
+        assert_eq!(cfg.agents[1].on_reload, ReloadAction::Compact);
+        assert_eq!(cfg.agents[2].on_reload, ReloadAction::Reset);
+    }
+
+    #[test]
+    fn on_reload_rejects_unknown_value() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha { role = "a" instructions = "b" on_reload = :bogus }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        match &err {
+            ConfigError::InvalidReloadAction { agent, value } => {
+                assert_eq!(agent, "alpha");
+                assert_eq!(value, "bogus");
+            }
+            other => panic!("expected InvalidReloadAction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn on_reload_rejects_string_value() {
+        // Symbols only — strings are a type error to encourage the
+        // standard WCL convention.
+        let src = r#"
+            team default { description = "t" }
+            agent alpha { role = "a" instructions = "b" on_reload = "ignore" }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        match &err {
+            ConfigError::BadAttributeType { attr, .. } => assert_eq!(attr, "on_reload"),
+            other => panic!("expected BadAttributeType, got {other:?}"),
+        }
     }
 
     #[test]

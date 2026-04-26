@@ -23,7 +23,7 @@ use crate::tui::boot::{boot_orchestrator, OrchestratorHandles};
 
 /// Run the orchestrator as a daemon until a shutdown signal drains
 /// it, or a second signal forces it out.
-pub async fn run(config: AciddogConfig) -> Result<()> {
+pub async fn run(config: AciddogConfig, config_path: std::path::PathBuf) -> Result<()> {
     info!(
         team = %config.team.id,
         agents = config.agents.len(),
@@ -31,7 +31,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
         "starting daemon",
     );
 
-    let mut handles = boot_orchestrator(config).await?;
+    let mut handles = boot_orchestrator(config, config_path).await?;
     info!("aciddog daemon ready; send SIGTERM for graceful shutdown");
 
     daemon_event_loop(&mut handles).await?;
@@ -42,11 +42,12 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
 
 async fn daemon_event_loop(handles: &mut OrchestratorHandles) -> Result<()> {
     #[cfg(unix)]
-    let (mut sigterm, mut sigint) = {
+    let (mut sigterm, mut sigint, mut sighup) = {
         use tokio::signal::unix::{signal, SignalKind};
         (
             signal(SignalKind::terminate())?,
             signal(SignalKind::interrupt())?,
+            signal(SignalKind::hangup())?,
         )
     };
 
@@ -118,6 +119,13 @@ async fn daemon_event_loop(handles: &mut OrchestratorHandles) -> Result<()> {
                 info!("SIGINT received — graceful shutdown (Ctrl-C again to force)");
                 shutdown_requested = true;
                 handles.app.begin_shutdown(None);
+            }
+            _ = sighup.recv() => {
+                info!("SIGHUP received — reloading WCL config");
+                match handles.app.reload() {
+                    Ok(summary) => info!(%summary, "reload complete"),
+                    Err(e) => warn!(error = %e, "reload failed; old config still active"),
+                }
             }
         }
 

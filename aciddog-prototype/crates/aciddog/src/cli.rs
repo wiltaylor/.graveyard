@@ -796,6 +796,10 @@ pub enum ServerCommand {
     /// Exit immediately without waiting for in-flight turns. Data
     /// loss is possible — prefer `server shutdown`.
     Exit,
+    /// Re-read the WCL config and reconcile the running fleet
+    /// (agents, channels, workflows, automatons + webhooks). Same
+    /// effect as the TUI `/reload` command and daemon SIGHUP.
+    Reload,
 }
 
 #[derive(Debug, Clone, Subcommand)]

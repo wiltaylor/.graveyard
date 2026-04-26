@@ -971,6 +971,7 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         ),
         RequestCmd::ServerShutdown => ChatBlock::from_tool_use("aciddog server shutdown", input),
         RequestCmd::ServerExit => ChatBlock::from_tool_use("aciddog server exit", input),
+        RequestCmd::ServerReload => ChatBlock::from_tool_use("aciddog server reload", input),
     }
 }
 
@@ -2163,6 +2164,11 @@ fn clamp_input_scroll(input: &mut dyn TextInput) {
 
 pub struct App {
     pub config: AciddogConfig,
+    /// Absolute path the live `config` was loaded from. Set by
+    /// [`super::boot::boot_orchestrator`] (or, in unit tests, left at
+    /// the default empty `PathBuf`). Read by `/reload` to re-parse the
+    /// same source after the user edits it.
+    pub config_path: std::path::PathBuf,
     pub selected: usize,
     pub should_quit: bool,
     /// Graceful-shutdown latch. Set by `/shutdown`; once true the app
@@ -2314,6 +2320,90 @@ pub struct App {
 /// OS default of 500ms.
 pub const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(500);
 
+/// Produce the `AgentChat` slot for a configured agent — seeded with
+/// the AgentInfo block, model/window metadata, and display name. Used
+/// by [`App::new`] at boot and by reload's "agent added" path.
+pub(super) fn make_agent_chat(
+    config: &AciddogConfig,
+    agent: &crate::config::Agent,
+) -> AgentChat {
+    let core = config.effective_ai_core(agent.ai_core.as_deref());
+    let tools = config.effective_tools(agent.tools.as_deref(), core);
+    let label = core
+        .map(core_display_label)
+        .unwrap_or_else(|| "claude-code".to_string());
+    let model = config.effective_model(agent.model.as_deref(), core);
+    let context_window = model.and_then(crate::ai::model_context_window);
+    let context_usage_mode = core
+        .map(|c| core_usage_mode(&c.kind))
+        .unwrap_or(ContextUsageMode::Replace);
+    let info = ChatBlock::agent_info(label, tools, agent.instructions.clone(), context_window);
+    AgentChat {
+        blocks: vec![info],
+        sticky_bottom: true,
+        display_name: agent.id.clone(),
+        context_window,
+        context_usage_mode,
+        kind: ChatKind::Agent,
+        ..Default::default()
+    }
+}
+
+/// Produce the `AgentChat` slot for a configured automaton. Same role
+/// as [`make_agent_chat`] but emits the synthetic "automaton (...)"
+/// label and uses the role description for the body since automatons
+/// have no AI core / instructions.
+pub(super) fn make_automaton_chat(automaton: &crate::config::Automaton) -> AgentChat {
+    let label = match &automaton.backend {
+        crate::config::AutomatonBackend::Script { command, args, .. } => {
+            let argv = std::iter::once(command.as_str())
+                .chain(args.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("automaton ({argv})")
+        }
+        crate::config::AutomatonBackend::Webservice { bind, .. } => match bind {
+            crate::config::WebserviceBind::Https { address, .. } => {
+                format!("automaton (webservice https://{address})")
+            }
+            crate::config::WebserviceBind::UnixSocket { path } => {
+                format!("automaton (webservice unix:{})", path.display())
+            }
+        },
+        crate::config::AutomatonBackend::Remote {
+            transport,
+            remote_target,
+            ..
+        } => match transport {
+            crate::config::RemoteTransport::Https { url, .. } => {
+                format!("automaton (remote {url} → {remote_target})")
+            }
+            crate::config::RemoteTransport::UnixSocket { path } => {
+                format!(
+                    "automaton (remote unix:{} → {remote_target})",
+                    path.display()
+                )
+            }
+        },
+    };
+    let info = ChatBlock::agent_info(
+        label,
+        Vec::new(),
+        automaton
+            .role_description
+            .clone()
+            .unwrap_or_else(|| automaton.role.clone()),
+        None,
+    );
+    AgentChat {
+        blocks: vec![info],
+        sticky_bottom: true,
+        display_name: automaton.id.clone(),
+        kind: ChatKind::Automaton,
+        ..Default::default()
+    }
+}
+
 impl App {
     pub fn new(config: AciddogConfig) -> Self {
         let channels: Vec<ChannelState> = config
@@ -2343,29 +2433,7 @@ impl App {
         let mut chats: Vec<AgentChat> = config
             .agents
             .iter()
-            .map(|agent| {
-                let core = config.effective_ai_core(agent.ai_core.as_deref());
-                let tools = config.effective_tools(agent.tools.as_deref(), core);
-                let label = core
-                    .map(core_display_label)
-                    .unwrap_or_else(|| "claude-code".to_string());
-                let model = config.effective_model(agent.model.as_deref(), core);
-                let context_window = model.and_then(crate::ai::model_context_window);
-                let context_usage_mode = core
-                    .map(|c| core_usage_mode(&c.kind))
-                    .unwrap_or(ContextUsageMode::Replace);
-                let info =
-                    ChatBlock::agent_info(label, tools, agent.instructions.clone(), context_window);
-                AgentChat {
-                    blocks: vec![info],
-                    sticky_bottom: true,
-                    display_name: agent.id.clone(),
-                    context_window,
-                    context_usage_mode,
-                    kind: ChatKind::Agent,
-                    ..Default::default()
-                }
-            })
+            .map(|agent| make_agent_chat(&config, agent))
             .collect();
 
         // Automatons are peer fleet members in the agent list. They
@@ -2374,54 +2442,7 @@ impl App {
         // `instructions` slot carries the role description for
         // visibility in the expanded panel.
         for automaton in &config.automatons {
-            let label = match &automaton.backend {
-                crate::config::AutomatonBackend::Script { command, args, .. } => {
-                    let argv = std::iter::once(command.as_str())
-                        .chain(args.iter().map(String::as_str))
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    format!("automaton ({argv})")
-                }
-                crate::config::AutomatonBackend::Webservice { bind, .. } => match bind {
-                    crate::config::WebserviceBind::Https { address, .. } => {
-                        format!("automaton (webservice https://{address})")
-                    }
-                    crate::config::WebserviceBind::UnixSocket { path } => {
-                        format!("automaton (webservice unix:{})", path.display())
-                    }
-                },
-                crate::config::AutomatonBackend::Remote {
-                    transport,
-                    remote_target,
-                    ..
-                } => match transport {
-                    crate::config::RemoteTransport::Https { url, .. } => {
-                        format!("automaton (remote {url} → {remote_target})")
-                    }
-                    crate::config::RemoteTransport::UnixSocket { path } => {
-                        format!(
-                            "automaton (remote unix:{} → {remote_target})",
-                            path.display()
-                        )
-                    }
-                },
-            };
-            let info = ChatBlock::agent_info(
-                label,
-                Vec::new(),
-                automaton
-                    .role_description
-                    .clone()
-                    .unwrap_or_else(|| automaton.role.clone()),
-                None,
-            );
-            chats.push(AgentChat {
-                blocks: vec![info],
-                sticky_bottom: true,
-                display_name: automaton.id.clone(),
-                kind: ChatKind::Automaton,
-                ..Default::default()
-            });
+            chats.push(make_automaton_chat(automaton));
         }
         // Create a single block broadcaster and hand each chat a clone
         // of the sender. Sender clones are cheap (internally an Arc),
@@ -2453,6 +2474,7 @@ impl App {
             broadcast::channel::<crate::cron::CronEvent>(CHAT_BLOCK_BROADCAST_CAPACITY);
         Self {
             config,
+            config_path: std::path::PathBuf::new(),
             selected: 0,
             should_quit: false,
             shutting_down: false,
@@ -3287,6 +3309,9 @@ impl App {
             }
             RequestCmd::ServerExit => {
                 self.handle_admin_server_exit(idx, reply);
+            }
+            RequestCmd::ServerReload => {
+                self.handle_admin_server_reload(idx, reply);
             }
         }
     }
@@ -7502,6 +7527,27 @@ impl App {
         let _ = reply.send(Response::ok("exiting"));
     }
 
+    fn handle_admin_server_reload(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_sysadmin(sender_idx) {
+            let _ = reply.send(Response::err("not a sysadmin"));
+            return;
+        }
+        info!("server reload requested by supervisor");
+        match self.reload() {
+            Ok(summary) => {
+                let _ = reply.send(Response::ok(summary));
+            }
+            Err(e) => {
+                warn!(error = %e, "reload failed");
+                let _ = reply.send(Response::err(e));
+            }
+        }
+    }
+
     /// Apply a parsed slash-command outcome against a specific chat
     /// `idx`. The keystroke path (`submit_input` → `handle_local_input`)
     /// passes `self.selected`; cron passes the target job's `idx`
@@ -7530,6 +7576,16 @@ impl App {
             }
             CommandOutcome::Reset => {
                 self.begin_compaction(idx, true);
+            }
+            CommandOutcome::Reload => {
+                let result = self.reload();
+                if let Some(chat) = self.chats.get_mut(idx) {
+                    let block = match result {
+                        Ok(summary) => ChatBlock::system_info(summary),
+                        Err(e) => ChatBlock::system_error(format!("reload failed: {e}")),
+                    };
+                    chat.push_block(block);
+                }
             }
             CommandOutcome::Stop => {
                 self.stop_turn(idx, "[stopped by /stop]");
@@ -10979,6 +11035,16 @@ impl App {
                     "/compact is a no-op in channels — there is no agent session here to compact",
                 ));
             }
+            CommandOutcome::Reload => {
+                let result = self.reload();
+                if let Some(ch) = self.channels.get_mut(idx) {
+                    let block = match result {
+                        Ok(summary) => ChatBlock::system_info(summary),
+                        Err(e) => ChatBlock::system_error(format!("reload failed: {e}")),
+                    };
+                    ch.blocks.push(block);
+                }
+            }
             CommandOutcome::Stop | CommandOutcome::Sleep | CommandOutcome::Awake => {
                 // These commands target a single agent's run_core
                 // loop. A channel pane has no agent of its own, so
@@ -12727,7 +12793,7 @@ fn is_aciddog_invocation(first: &str, binary: &str) -> bool {
 }
 
 #[tracing::instrument(skip(config))]
-pub async fn run(config: AciddogConfig) -> Result<()> {
+pub async fn run(config: AciddogConfig, config_path: std::path::PathBuf) -> Result<()> {
     info!(team = %config.team.id, agents = config.agents.len(), "starting TUI");
 
     let mut stdout = io::stdout();
@@ -12737,7 +12803,7 @@ pub async fn run(config: AciddogConfig) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut handles = super::boot::boot_orchestrator(config).await?;
+    let mut handles = super::boot::boot_orchestrator(config, config_path).await?;
 
     let result = event_loop(
         &mut terminal,
@@ -13265,7 +13331,7 @@ async fn event_loop<B: ratatui::backend::Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AciddogConfig, Agent, Automaton, Team};
+    use crate::config::{AciddogConfig, Agent, Automaton, ReloadAction, Team};
     use serde_json::json;
 
     #[test]
@@ -13293,6 +13359,7 @@ mod tests {
                 compaction: None,
                 supervisor: false,
                 sysadmin: false,
+                on_reload: ReloadAction::Ignore,
             }],
             workers: vec![],
             automatons: vec![Automaton {
@@ -13368,6 +13435,7 @@ mod tests {
                 compaction: None,
                 supervisor: false,
                 sysadmin: false,
+                on_reload: ReloadAction::Ignore,
             }],
             workers: vec![],
             automatons: vec![],
@@ -13439,6 +13507,7 @@ mod tests {
                 compaction: None,
                 supervisor: false,
                 sysadmin: false,
+                on_reload: ReloadAction::Ignore,
             }],
             workers: vec![],
             automatons: vec![],
@@ -13486,6 +13555,7 @@ mod tests {
                     compaction: None,
                     supervisor: false,
                     sysadmin: false,
+                    on_reload: ReloadAction::Ignore,
                 },
                 Agent {
                     id: "b".into(),
@@ -13503,6 +13573,7 @@ mod tests {
                     compaction: None,
                     supervisor: false,
                     sysadmin: false,
+                    on_reload: ReloadAction::Ignore,
                 },
                 Agent {
                     id: "c".into(),
@@ -13520,6 +13591,7 @@ mod tests {
                     compaction: None,
                     supervisor: false,
                     sysadmin: false,
+                    on_reload: ReloadAction::Ignore,
                 },
             ],
             workers: vec![],
@@ -15470,6 +15542,7 @@ mod tests {
                     compaction: None,
                     supervisor: false,
                     sysadmin: false,
+                    on_reload: ReloadAction::Ignore,
                 },
                 Agent {
                     id: "planner".into(),
@@ -15487,6 +15560,7 @@ mod tests {
                     compaction: None,
                     supervisor: false,
                     sysadmin: false,
+                    on_reload: ReloadAction::Ignore,
                 },
             ],
             workers: vec![

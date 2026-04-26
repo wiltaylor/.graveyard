@@ -193,6 +193,7 @@ mod tests {
                 compaction: None,
                 supervisor: false,
                 sysadmin: false,
+                on_reload: crate::config::ReloadAction::Ignore,
             }],
             workers: vec![],
             automatons: vec![],

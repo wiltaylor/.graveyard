@@ -24,13 +24,13 @@ use uuid::Uuid;
 
 use crate::agent_ipc;
 use crate::ai::{AICore, AIEvent, AciddogCliCtx, ChannelPromptCtx, PromptParts};
-use crate::config::AciddogConfig;
+use crate::config::{AciddogConfig, Agent, Automaton};
 use crate::memory::MemoryRegistry;
 use crate::tasks::TaskStore;
 
 use super::app::{
-    build_core, build_memory_block, build_team_block, run_automaton_core, run_core, uses_tag_ipc,
-    App,
+    build_core, build_memory_block, build_team_block, make_agent_chat, make_automaton_chat,
+    run_automaton_core, run_core, uses_tag_ipc, App,
 };
 use super::blocks::ChatBlock;
 use super::compaction::CompactionEvent;
@@ -64,8 +64,12 @@ pub(crate) struct OrchestratorHandles {
 /// event loop or the daemon event loop. Errors here are treated as
 /// fatal startup failures by the caller — the socket bind or the
 /// first `build_core` call is the most likely failure point.
-pub(crate) async fn boot_orchestrator(config: AciddogConfig) -> Result<OrchestratorHandles> {
+pub(crate) async fn boot_orchestrator(
+    config: AciddogConfig,
+    config_path: std::path::PathBuf,
+) -> Result<OrchestratorHandles> {
     let mut app = App::new(config);
+    app.config_path = config_path;
 
     // Load the disk-backed task store from `.aciddog/tasks.json` in the
     // cwd so tasks survive restarts. On I/O/parse error, warn and fall
@@ -205,156 +209,9 @@ pub(crate) async fn boot_orchestrator(config: AciddogConfig) -> Result<Orchestra
         wf_event_tx,
     ));
 
-    let all_ids: Vec<String> = app.config.all_addressable_ids();
-    for (idx, agent) in app.config.agents.iter().enumerate() {
-        let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
-        let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
-        let (channel_tx, channel_rx) = mpsc::channel::<String>(256);
-        // Capacity 1: a single pending `/stop` is enough to cancel
-        // the current turn; subsequent /stop spam is silently dropped
-        // by `try_send` until the first signal is consumed.
-        let (cancel_tx, cancel_rx) = mpsc::channel::<()>(1);
-        app.chats[idx].user_tx = Some(user_tx);
-        app.chats[idx].agent_tx = Some(agent_tx);
-        app.chats[idx].channel_tx = Some(channel_tx);
-        app.chats[idx].cancel_tx = Some(cancel_tx);
-
-        let ai_core = app
-            .config
-            .effective_ai_core(agent.ai_core.as_deref())
-            .ok_or_else(|| {
-                anyhow!(
-                    "agent `{}` has no ai_core (no override and no team default_ai_core)",
-                    agent.id
-                )
-            })?;
-        let tools = app
-            .config
-            .effective_tools(agent.tools.as_deref(), Some(ai_core));
-        let tag_mode = uses_tag_ipc(&tools, ai_core);
-
-        let session_id = Uuid::new_v4();
-        app.chats[idx].session_id = Some(session_id);
-        app.chats[idx].ai_core_id = Some(ai_core.id.clone());
-        app.agent_ids.insert(session_id, agent.id.clone());
-
-        // Compute the list of other agents this one is allowed to message.
-        // `None` in config means unrestricted (all teammates except self);
-        // `Some(list)` is used verbatim. An empty list disables `send`.
-        let contactable: Vec<&str> = match &agent.can_message {
-            Some(list) => list.iter().map(String::as_str).collect(),
-            None => all_ids
-                .iter()
-                .filter(|id| id.as_str() != agent.id.as_str())
-                .map(String::as_str)
-                .collect(),
-        };
-
-        // Worker templates this agent can spawn. `None` in config means
-        // the agent has no worker-create capability at all.
-        let creatable: Vec<&str> = agent
-            .can_create_workers
-            .as_deref()
-            .map(|list| list.iter().map(String::as_str).collect())
-            .unwrap_or_default();
-
-        let team_block = build_team_block(&app.config, &contactable, &creatable, true);
-        let memory_block = build_memory_block(&app.config, &agent.id);
-        let memory_banks_for_agent: Vec<String> = agent
-            .memory_banks
-            .as_deref()
-            .map(|list| list.to_vec())
-            .unwrap_or_default();
-
-        let skills_for_agent = app.config.skills_for(&agent.id);
-        let channels_for_agent: Vec<ChannelPromptCtx> = app
-            .config
-            .channels_for_agent(&agent.id)
-            .iter()
-            .map(|c| ChannelPromptCtx {
-                id: c.id.clone(),
-                description: c.description.clone(),
-                other_members: c
-                    .members
-                    .iter()
-                    .filter(|m| m.as_str() != agent.id.as_str())
-                    .cloned()
-                    .collect(),
-            })
-            .collect();
-
-        let parts = PromptParts {
-            role: agent.role_description.clone(),
-            team: Some(team_block),
-            memory: memory_block,
-            instructions: agent.instructions.clone(),
-            aciddog_cli: Some(AciddogCliCtx {
-                binary: aciddog_binary_str.clone(),
-                contactable: contactable.iter().map(|s| s.to_string()).collect(),
-                creatable: creatable.iter().map(|s| s.to_string()).collect(),
-                memory_banks: memory_banks_for_agent,
-                skills: skills_for_agent,
-                channels: channels_for_agent,
-                worker: None,
-                supervisor: agent.supervisor,
-                sysadmin: agent.sysadmin,
-            }),
-        };
-
-        let env = vec![
-            (agent_ipc::ENV_AGENT_ID.to_string(), session_id.to_string()),
-            (
-                agent_ipc::ENV_AGENT_SOCKET.to_string(),
-                socket_path_str.clone(),
-            ),
-        ];
-
-        let socket_tx_for_core = if tag_mode {
-            Some(
-                app.socket_events_tx
-                    .clone()
-                    .expect("socket_events_tx set immediately after socket.events_tx() above"),
-            )
-        } else {
-            None
-        };
-
-        // Agents never carry `properties` (those only make sense for
-        // ephemeral workers spawned on demand), so `None` is always
-        // correct here. If an agent's core is a remote-worker variant
-        // that requires properties (Jules), build_core will return an
-        // error — propagate it as a fatal config issue at startup
-        // rather than silently continuing.
-        let core: Box<dyn AICore> = build_core(
-            ai_core,
-            session_id,
-            parts,
-            tools,
-            env,
-            socket_tx_for_core,
-            false,
-            agent.model.as_deref(),
-            None,
-        )
-        .map_err(|e| anyhow!("agent `{}` core build failed: {e}", agent.id))?;
-
-        // Reflect the assembled first-turn prompt in the top AgentInfo
-        // block so the user can expand it and see exactly what the LLM
-        // receives (mirrors what the core will emit on turn 1).
-        let assembled = core.first_turn_prompt();
-        if let Some(ChatBlock::AgentInfo { prompt, .. }) = app.chats[idx].blocks.first_mut() {
-            *prompt = assembled;
-        }
-
-        tokio::spawn(run_core(
-            idx,
-            core,
-            user_rx,
-            agent_rx,
-            channel_rx,
-            cancel_rx,
-            ai_tx.clone(),
-        ));
+    for idx in 0..app.config.agents.len() {
+        let agent = app.config.agents[idx].clone();
+        spawn_agent_core(&mut app, idx, &agent)?;
     }
 
     // Automatons share the agent list but run a lightweight
@@ -365,80 +222,10 @@ pub(crate) async fn boot_orchestrator(config: AciddogConfig) -> Result<Orchestra
     // `app.agent_ids` so the existing IPC / mail / ACL paths treat it
     // as any other addressable fleet member.
     let automaton_offset = app.config.agents.len();
-    for (auto_idx, automaton) in app.config.automatons.iter().enumerate() {
+    for auto_idx in 0..app.config.automatons.len() {
         let idx = automaton_offset + auto_idx;
-        let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
-        let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
-        let (channel_tx, channel_rx) = mpsc::channel::<String>(256);
-        let (cancel_tx, cancel_rx) = mpsc::channel::<()>(1);
-        app.chats[idx].user_tx = Some(user_tx);
-        app.chats[idx].agent_tx = Some(agent_tx);
-        app.chats[idx].channel_tx = Some(channel_tx);
-        app.chats[idx].cancel_tx = Some(cancel_tx);
-
-        let session_id = Uuid::new_v4();
-        app.chats[idx].session_id = Some(session_id);
-        app.agent_ids.insert(session_id, automaton.id.clone());
-
-        match &automaton.backend {
-            crate::config::AutomatonBackend::Script { .. } => {
-                tokio::spawn(run_automaton_core(
-                    idx,
-                    automaton.clone(),
-                    session_id,
-                    socket_path_str.clone(),
-                    user_rx,
-                    agent_rx,
-                    channel_rx,
-                    cancel_rx,
-                    ai_tx.clone(),
-                ));
-            }
-            crate::config::AutomatonBackend::Webservice { .. } => {
-                let webhooks: Vec<crate::config::Webhook> = app
-                    .config
-                    .webhooks
-                    .iter()
-                    .filter(|w| w.mount == automaton.id)
-                    .cloned()
-                    .collect();
-                let events_tx = socket.events_tx();
-                let chat_block_tx = app.chat_block_tx.clone();
-                let channel_message_tx = app.channel_message_tx.clone();
-                let workflow_event_tx = app.workflow_event_tx.clone();
-                let cron_event_tx = app.cron_event_tx.clone();
-                tokio::spawn(crate::webservice::run_webservice_core(
-                    idx,
-                    automaton.clone(),
-                    session_id,
-                    webhooks,
-                    user_rx,
-                    agent_rx,
-                    channel_rx,
-                    cancel_rx,
-                    ai_tx.clone(),
-                    events_tx,
-                    chat_block_tx,
-                    channel_message_tx,
-                    workflow_event_tx,
-                    cron_event_tx,
-                ));
-            }
-            crate::config::AutomatonBackend::Remote { .. } => {
-                let events_tx = socket.events_tx();
-                tokio::spawn(crate::remote_automaton::run_remote_core(
-                    idx,
-                    automaton.clone(),
-                    session_id,
-                    user_rx,
-                    agent_rx,
-                    channel_rx,
-                    cancel_rx,
-                    ai_tx.clone(),
-                    events_tx,
-                ));
-            }
-        }
+        let automaton = app.config.automatons[auto_idx].clone();
+        spawn_automaton_core(&mut app, idx, &automaton);
     }
 
     drop(ai_tx);
@@ -456,4 +243,268 @@ pub(crate) async fn boot_orchestrator(config: AciddogConfig) -> Result<Orchestra
         workflow_event_rx,
         usage_event_rx,
     })
+}
+
+/// Wire IPC channels onto the chat slot at `idx` and spawn the agent's
+/// core task. Called once per agent during boot; reused by `/reload`
+/// when the agent's effective config changes (`ReloadAction::Reset`)
+/// or when a brand-new agent is added (via [`add_agent_chat`]).
+///
+/// Preconditions: `app.chats[idx]` exists (with display_name set),
+/// `app.ai_tx`, `app.aciddog_binary`, `app.socket_path`, and (for
+/// tag-mode cores) `app.socket_events_tx` are populated.
+pub(super) fn spawn_agent_core(app: &mut App, idx: usize, agent: &Agent) -> Result<()> {
+    let ai_tx = app
+        .ai_tx
+        .clone()
+        .ok_or_else(|| anyhow!("ai_tx not initialised"))?;
+
+    let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
+    let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
+    let (channel_tx, channel_rx) = mpsc::channel::<String>(256);
+    // Capacity 1: a single pending `/stop` is enough to cancel the
+    // current turn; subsequent /stop spam is silently dropped by
+    // `try_send` until the first signal is consumed.
+    let (cancel_tx, cancel_rx) = mpsc::channel::<()>(1);
+    app.chats[idx].user_tx = Some(user_tx);
+    app.chats[idx].agent_tx = Some(agent_tx);
+    app.chats[idx].channel_tx = Some(channel_tx);
+    app.chats[idx].cancel_tx = Some(cancel_tx);
+
+    let ai_core = app
+        .config
+        .effective_ai_core(agent.ai_core.as_deref())
+        .ok_or_else(|| {
+            anyhow!(
+                "agent `{}` has no ai_core (no override and no team default_ai_core)",
+                agent.id
+            )
+        })?
+        .clone();
+    let tools = app
+        .config
+        .effective_tools(agent.tools.as_deref(), Some(&ai_core));
+    let tag_mode = uses_tag_ipc(&tools, &ai_core);
+
+    let session_id = Uuid::new_v4();
+    app.chats[idx].session_id = Some(session_id);
+    app.chats[idx].ai_core_id = Some(ai_core.id.clone());
+    app.agent_ids.insert(session_id, agent.id.clone());
+
+    let all_ids: Vec<String> = app.config.all_addressable_ids();
+    let contactable: Vec<&str> = match &agent.can_message {
+        Some(list) => list.iter().map(String::as_str).collect(),
+        None => all_ids
+            .iter()
+            .filter(|id| id.as_str() != agent.id.as_str())
+            .map(String::as_str)
+            .collect(),
+    };
+    let creatable: Vec<&str> = agent
+        .can_create_workers
+        .as_deref()
+        .map(|list| list.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+
+    let team_block = build_team_block(&app.config, &contactable, &creatable, true);
+    let memory_block = build_memory_block(&app.config, &agent.id);
+    let memory_banks_for_agent: Vec<String> = agent
+        .memory_banks
+        .as_deref()
+        .map(|list| list.to_vec())
+        .unwrap_or_default();
+    let skills_for_agent = app.config.skills_for(&agent.id);
+    let channels_for_agent: Vec<ChannelPromptCtx> = app
+        .config
+        .channels_for_agent(&agent.id)
+        .iter()
+        .map(|c| ChannelPromptCtx {
+            id: c.id.clone(),
+            description: c.description.clone(),
+            other_members: c
+                .members
+                .iter()
+                .filter(|m| m.as_str() != agent.id.as_str())
+                .cloned()
+                .collect(),
+        })
+        .collect();
+
+    let parts = PromptParts {
+        role: agent.role_description.clone(),
+        team: Some(team_block),
+        memory: memory_block,
+        instructions: agent.instructions.clone(),
+        aciddog_cli: Some(AciddogCliCtx {
+            binary: app.aciddog_binary.clone(),
+            contactable: contactable.iter().map(|s| s.to_string()).collect(),
+            creatable: creatable.iter().map(|s| s.to_string()).collect(),
+            memory_banks: memory_banks_for_agent,
+            skills: skills_for_agent,
+            channels: channels_for_agent,
+            worker: None,
+            supervisor: agent.supervisor,
+            sysadmin: agent.sysadmin,
+        }),
+    };
+
+    let env = vec![
+        (agent_ipc::ENV_AGENT_ID.to_string(), session_id.to_string()),
+        (
+            agent_ipc::ENV_AGENT_SOCKET.to_string(),
+            app.socket_path.clone(),
+        ),
+    ];
+
+    let socket_tx_for_core = if tag_mode {
+        Some(
+            app.socket_events_tx
+                .clone()
+                .ok_or_else(|| anyhow!("tag-mode core but socket_events_tx not initialised"))?,
+        )
+    } else {
+        None
+    };
+
+    // Agents never carry `properties` (those only make sense for
+    // ephemeral workers spawned on demand), so `None` is always
+    // correct here. If an agent's core is a remote-worker variant
+    // that requires properties (Jules), build_core will return an
+    // error.
+    let core: Box<dyn AICore> = build_core(
+        &ai_core,
+        session_id,
+        parts,
+        tools,
+        env,
+        socket_tx_for_core,
+        false,
+        agent.model.as_deref(),
+        None,
+    )
+    .map_err(|e| anyhow!("agent `{}` core build failed: {e}", agent.id))?;
+
+    // Reflect the assembled first-turn prompt in the top AgentInfo
+    // block so the user can expand it and see exactly what the LLM
+    // receives.
+    let assembled = core.first_turn_prompt();
+    if let Some(ChatBlock::AgentInfo { prompt, .. }) = app.chats[idx].blocks.first_mut() {
+        *prompt = assembled;
+    }
+
+    tokio::spawn(run_core(
+        idx, core, user_rx, agent_rx, channel_rx, cancel_rx, ai_tx,
+    ));
+    Ok(())
+}
+
+/// Wire IPC channels onto the automaton chat slot at `idx` and spawn
+/// the appropriate backend driver task (script-per-event subprocess,
+/// webservice listener, or remote SSE proxy). Reused by `/reload` when
+/// an automaton is added or its config (or webhook list) changes.
+pub(super) fn spawn_automaton_core(app: &mut App, idx: usize, automaton: &Automaton) {
+    let ai_tx = app
+        .ai_tx
+        .clone()
+        .expect("ai_tx must be initialised before spawn_automaton_core");
+    let socket_events_tx = app
+        .socket_events_tx
+        .clone()
+        .expect("socket_events_tx must be initialised before spawn_automaton_core");
+
+    let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
+    let (agent_tx, agent_rx) = mpsc::channel::<String>(256);
+    let (channel_tx, channel_rx) = mpsc::channel::<String>(256);
+    let (cancel_tx, cancel_rx) = mpsc::channel::<()>(1);
+    app.chats[idx].user_tx = Some(user_tx);
+    app.chats[idx].agent_tx = Some(agent_tx);
+    app.chats[idx].channel_tx = Some(channel_tx);
+    app.chats[idx].cancel_tx = Some(cancel_tx);
+
+    let session_id = Uuid::new_v4();
+    app.chats[idx].session_id = Some(session_id);
+    app.agent_ids.insert(session_id, automaton.id.clone());
+
+    match &automaton.backend {
+        crate::config::AutomatonBackend::Script { .. } => {
+            tokio::spawn(run_automaton_core(
+                idx,
+                automaton.clone(),
+                session_id,
+                app.socket_path.clone(),
+                user_rx,
+                agent_rx,
+                channel_rx,
+                cancel_rx,
+                ai_tx,
+            ));
+        }
+        crate::config::AutomatonBackend::Webservice { .. } => {
+            let webhooks: Vec<crate::config::Webhook> = app
+                .config
+                .webhooks
+                .iter()
+                .filter(|w| w.mount == automaton.id)
+                .cloned()
+                .collect();
+            let chat_block_tx = app.chat_block_tx.clone();
+            let channel_message_tx = app.channel_message_tx.clone();
+            let workflow_event_tx = app.workflow_event_tx.clone();
+            let cron_event_tx = app.cron_event_tx.clone();
+            tokio::spawn(crate::webservice::run_webservice_core(
+                idx,
+                automaton.clone(),
+                session_id,
+                webhooks,
+                user_rx,
+                agent_rx,
+                channel_rx,
+                cancel_rx,
+                ai_tx,
+                socket_events_tx,
+                chat_block_tx,
+                channel_message_tx,
+                workflow_event_tx,
+                cron_event_tx,
+            ));
+        }
+        crate::config::AutomatonBackend::Remote { .. } => {
+            tokio::spawn(crate::remote_automaton::run_remote_core(
+                idx,
+                automaton.clone(),
+                session_id,
+                user_rx,
+                agent_rx,
+                channel_rx,
+                cancel_rx,
+                ai_tx,
+                socket_events_tx,
+            ));
+        }
+    }
+}
+
+/// Append a fresh `AgentChat` for `agent`, attach the chat-block
+/// broadcast sender, then spawn its core. Used by `/reload` when an
+/// agent appears in the new config that wasn't in the old one.
+pub(super) fn add_agent_chat(app: &mut App, agent: &Agent) -> Result<usize> {
+    let mut chat = make_agent_chat(&app.config, agent);
+    chat.chat_block_tx = Some(app.chat_block_tx.clone());
+    let idx = app.chats.len();
+    app.chats.push(chat);
+    spawn_agent_core(app, idx, agent)?;
+    Ok(idx)
+}
+
+/// Append a fresh `AgentChat` for `automaton`, attach the chat-block
+/// broadcast sender, then spawn its backend driver. Used by `/reload`
+/// when an automaton appears in the new config that wasn't in the old
+/// one (or replaces a removed-and-respawned slot).
+pub(super) fn add_automaton_chat(app: &mut App, automaton: &Automaton) -> usize {
+    let mut chat = make_automaton_chat(automaton);
+    chat.chat_block_tx = Some(app.chat_block_tx.clone());
+    let idx = app.chats.len();
+    app.chats.push(chat);
+    spawn_automaton_core(app, idx, automaton);
+    idx
 }

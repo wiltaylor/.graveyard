@@ -580,6 +580,11 @@ pub enum RequestCmd {
     /// waiting for in-flight turns. Data loss is possible if a
     /// working agent is mid-response.
     ServerExit,
+    /// Sysadmin: re-read the WCL config and reconcile the running
+    /// fleet. See `tui::reload` for the per-subsystem semantics.
+    /// Same code path as the TUI `/reload` slash command and the
+    /// daemon SIGHUP handler.
+    ServerReload,
 }
 
 /// Which slice of a target agent's chat log to return from

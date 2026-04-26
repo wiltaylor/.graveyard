@@ -243,6 +243,11 @@ agent coder {
   memory_banks = ["project_context"]
   // Ask claude for a handoff note before dropping the session.
   compaction = "last_word"
+  // /reload behaviour for the coder. The default is `:ignore` (running
+  // session keeps its current prompt until the next /compact or
+  // /reset). `:compact` runs the agent's compaction strategy when the
+  // config changes; `:reset` drops and rebuilds immediately.
+  on_reload = :compact
 }
 
 agent tester {

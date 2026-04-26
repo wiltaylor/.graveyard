@@ -44,6 +44,15 @@ schema "agent" {
   // Sysadmins have everything a supervisor does plus `server shutdown`
   // and `server exit`. Implies `supervisor = true` after parse.
   sysadmin: bool @optional @default(false)
+  // What `/reload` does to this agent's running session when its
+  // effective config changes (the agent block itself, the resolved
+  // ai_core, the referenced compaction, memory banks, skills, or
+  // channel membership).
+  // - `:ignore` (default): leave the running session alone. The new
+  //   config is picked up at the next /compact or /reset.
+  // - `:compact`: run the agent's compaction strategy immediately.
+  // - `:reset`: drop and re-seed the session immediately.
+  on_reload: symbol @optional
 }
 
 schema "worker" {

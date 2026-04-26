@@ -15,6 +15,11 @@ pub enum CommandOutcome {
     /// Unconditionally drop the target agent's session and re-seed
     /// with the first-turn preamble.
     Reset,
+    /// Re-read the WCL config and reconcile the running fleet (agents,
+    /// channels, workflows, automatons + webhooks). Per-agent
+    /// `on_reload` controls whether changed agents are left alone,
+    /// compacted, or reset.
+    Reload,
     /// Cancel the target agent's currently running turn (if any),
     /// killing in-flight tool calls. Agent stays online.
     Stop,
@@ -75,6 +80,7 @@ pub fn dispatch(input: &str) -> Option<CommandOutcome> {
         "shutdown" => CommandOutcome::Shutdown,
         "compact" => CommandOutcome::Compact,
         "reset" => CommandOutcome::Reset,
+        "reload" => CommandOutcome::Reload,
         "stop" => CommandOutcome::Stop,
         "sleep" => CommandOutcome::Sleep,
         "awake" | "wake" => CommandOutcome::Awake,
@@ -126,7 +132,7 @@ pub fn dispatch(input: &str) -> Option<CommandOutcome> {
         "auth" => parse_auth(args),
         other => CommandOutcome::Unknown {
             name: other.to_string(),
-            hint: "try /version, /compact, /reset, /stop, /sleep, /awake, /run <wf>, \
+            hint: "try /version, /compact, /reset, /reload, /stop, /sleep, /awake, /run <wf>, \
                    /meeting <id>, /add <agent>, /kick <agent>, /leave, /auth, \
                    /shutdown, or /exit"
                 .to_string(),
@@ -241,6 +247,23 @@ mod tests {
     #[test]
     fn reset_returns_reset_outcome() {
         assert_eq!(dispatch("/reset"), Some(CommandOutcome::Reset));
+    }
+
+    #[test]
+    fn reload_returns_reload_outcome() {
+        assert_eq!(dispatch("/reload"), Some(CommandOutcome::Reload));
+    }
+
+    #[test]
+    fn unknown_command_hint_mentions_reload() {
+        let out = dispatch("/foobar").unwrap();
+        match out {
+            CommandOutcome::Unknown { hint, .. } => assert!(
+                hint.contains("/reload"),
+                "expected hint to mention /reload, got: {hint}"
+            ),
+            other => panic!("expected Unknown, got {other:?}"),
+        }
     }
 
     #[test]

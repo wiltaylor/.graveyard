@@ -211,7 +211,7 @@ async fn run_tui(args: Args) -> Result<()> {
     let config = load_config(&args.config)
         .with_context(|| format!("loading config from {}", args.config.display()))?;
 
-    tui::run(config).await
+    tui::run(config, args.config).await
 }
 
 async fn run_daemon(args: Args) -> Result<()> {
@@ -242,7 +242,7 @@ async fn run_daemon(args: Args) -> Result<()> {
     let config = load_config(&args.config)
         .with_context(|| format!("loading config from {}", args.config.display()))?;
 
-    daemon::run(config).await
+    daemon::run(config, args.config).await
 }
 
 async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCode> {
@@ -652,6 +652,9 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
         AgentCommand::Server {
             cmd: ServerCommand::Exit,
         } => RequestCmd::ServerExit,
+        AgentCommand::Server {
+            cmd: ServerCommand::Reload,
+        } => RequestCmd::ServerReload,
     };
 
     let response = agent_ipc::client::send(&socket_path, &Request { agent_id, cmd })
