@@ -12,4 +12,9 @@ export const authApi = {
       body: JSON.stringify({ username, password }),
     }),
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
+  changeMyPassword: (current_password: string, new_password: string) =>
+    request<void>("/api/auth/password", {
+      method: "POST",
+      body: JSON.stringify({ current_password, new_password }),
+    }),
 };

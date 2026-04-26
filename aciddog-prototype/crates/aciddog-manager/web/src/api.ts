@@ -8,6 +8,7 @@ import type {
   ChatHistoryResponse,
   CreateCronRequest,
   CreateInstanceInput,
+  CreateUserRequest,
   CronListResponse,
   GraphResponse,
   HealthResponse,
@@ -23,6 +24,7 @@ import type {
   TaskStatus,
   TeamInfoResponse,
   TodoStatus,
+  UserSummary,
   WireLinkDirection,
   WorkflowInstancesResponse,
   WorkflowTemplatesResponse,
@@ -330,6 +332,21 @@ export const api = {
   deleteCron: (id: string, jobId: string) =>
     request<MutationResponse>(`/api/instances/${id}/cron/${jobId}`, {
       method: "DELETE",
+    }),
+
+  // Web UI users
+  listUsers: () => request<UserSummary[]>("/api/users"),
+  createUser: (body: CreateUserRequest) =>
+    request<UserSummary>("/api/users", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteUser: (id: string) =>
+    request<void>(`/api/users/${id}`, { method: "DELETE" }),
+  resetUserPassword: (id: string, password: string) =>
+    request<void>(`/api/users/${id}/password`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
     }),
 };
 

@@ -9,6 +9,7 @@ pub mod instances;
 pub mod memory;
 pub mod tasks;
 pub mod team;
+pub mod users;
 pub mod workflows;
 
 use std::path::Path;
@@ -27,6 +28,11 @@ pub fn build_router(state: AppState, static_dir: &Path) -> Router {
         .route("/auth/whoami", get(auth::whoami));
 
     let protected = Router::new()
+        // Web UI users
+        .route("/users", get(users::list).post(users::create))
+        .route("/users/:id", delete(users::delete))
+        .route("/users/:id/password", post(users::reset_password))
+        .route("/auth/password", post(auth::change_my_password))
         .route("/instances", get(instances::list).post(instances::create))
         .route("/instances/:id", delete(instances::delete))
         .route("/instances/:id/agents", get(agents::list))

@@ -3,7 +3,7 @@ use std::time::Duration;
 use axum::extract::{Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{self, AuthUser};
@@ -15,6 +15,12 @@ use crate::state::AppState;
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -79,6 +85,22 @@ pub async fn whoami(State(state): State<AppState>, req: Request) -> AppResult<Js
     Ok(Json(UserResponse {
         username: user.username,
     }))
+}
+
+pub async fn change_my_password(
+    State(state): State<AppState>,
+    Extension(caller): Extension<AuthUser>,
+    Json(input): Json<ChangePasswordRequest>,
+) -> AppResult<StatusCode> {
+    let row = user::find_by_id(&state.pool, &caller.user_id)
+        .await?
+        .ok_or(AppError::Unauthenticated)?;
+    if !user::verify_password(&row.password_hash, &input.current_password) {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        return Err(AppError::BadCredentials);
+    }
+    user::update_password_by_id(&state.pool, &caller.user_id, &input.new_password).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Optional handler-side extractor for routes that want to know which

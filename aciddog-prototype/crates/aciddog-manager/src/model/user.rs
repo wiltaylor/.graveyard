@@ -80,6 +80,27 @@ pub async fn find_by_username(pool: &SqlitePool, username: &str) -> AppResult<Op
     Ok(row)
 }
 
+pub async fn find_by_id(pool: &SqlitePool, id: &str) -> AppResult<Option<UserRow>> {
+    let row: Option<UserRow> = sqlx::query_as(
+        "SELECT id, username, password_hash, created_at, password_updated_at, last_login
+         FROM users WHERE id = ?1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+pub async fn list_summaries(pool: &SqlitePool) -> AppResult<Vec<UserSummary>> {
+    let rows: Vec<UserRow> = sqlx::query_as(
+        "SELECT id, username, password_hash, created_at, password_updated_at, last_login
+         FROM users ORDER BY username",
+    )
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(UserSummary::from_row).collect()
+}
+
 pub async fn insert(
     pool: &SqlitePool,
     username: &str,
@@ -140,6 +161,42 @@ pub async fn update_password(
     .bind(username)
     .execute(pool)
     .await?;
+    if result.rows_affected() == 0 {
+        Err(AppError::NotFound)
+    } else {
+        Ok(())
+    }
+}
+
+pub async fn update_password_by_id(
+    pool: &SqlitePool,
+    id: &str,
+    plain_password: &str,
+) -> AppResult<()> {
+    if plain_password.is_empty() {
+        return Err(AppError::Validation("password is required".into()));
+    }
+    let hash = hash_password(plain_password)?;
+    let now = Utc::now().to_rfc3339();
+    let result =
+        sqlx::query("UPDATE users SET password_hash = ?1, password_updated_at = ?2 WHERE id = ?3")
+            .bind(&hash)
+            .bind(&now)
+            .bind(id)
+            .execute(pool)
+            .await?;
+    if result.rows_affected() == 0 {
+        Err(AppError::NotFound)
+    } else {
+        Ok(())
+    }
+}
+
+pub async fn delete_by_id(pool: &SqlitePool, id: &str) -> AppResult<()> {
+    let result = sqlx::query("DELETE FROM users WHERE id = ?1")
+        .bind(id)
+        .execute(pool)
+        .await?;
     if result.rows_affected() == 0 {
         Err(AppError::NotFound)
     } else {

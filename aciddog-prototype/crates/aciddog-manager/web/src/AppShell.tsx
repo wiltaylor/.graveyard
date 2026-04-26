@@ -7,8 +7,12 @@ import InboxView from "./components/InboxView";
 import InstanceDetail from "./components/InstanceDetail";
 import InstanceTree from "./components/InstanceTree";
 import MemoryView from "./components/MemoryView";
+import SettingsTree, {
+  type SettingsNodeId,
+} from "./components/SettingsTree";
 import TasksView from "./components/TasksView";
 import TeamView from "./components/TeamView";
+import UsersView from "./components/UsersView";
 import WorkflowsView from "./components/WorkflowsView";
 import { api } from "./api";
 import { authApi } from "./auth";
@@ -52,7 +56,21 @@ export default function AppShell(props: Props): JSX.Element {
   const [selectedChannel, setSelectedChannel] = createSignal<string | null>(
     null,
   );
+  const [settingsSelection, setSettingsSelection] =
+    createSignal<SettingsNodeId | null>(null);
   const [activeTab, setActiveTab] = createSignal<TabId>("team");
+
+  const selectInstance = (id: string | null) => {
+    if (id !== null) setSettingsSelection(null);
+    setSelectedId(id);
+  };
+
+  const selectSettings = (id: SettingsNodeId) => {
+    setSelectedId(null);
+    setSelectedAgent(null);
+    setSelectedChannel(null);
+    setSettingsSelection(id);
+  };
   const [agentsByInstance, setAgentsByInstance] = createSignal<
     Record<string, AgentListResponse>
   >({});
@@ -174,15 +192,15 @@ export default function AppShell(props: Props): JSX.Element {
               selectedId={selectedId()}
               selectedAgent={selectedAgent()}
               selectedChannel={selectedChannel()}
-              onSelect={setSelectedId}
+              onSelect={selectInstance}
               onSelectAgent={(instId, agentId) => {
-                setSelectedId(instId);
+                selectInstance(instId);
                 setSelectedAgent(agentId);
                 setSelectedChannel(null);
                 setActiveTab("agents");
               }}
               onSelectChannel={(instId, channelId) => {
-                setSelectedId(instId);
+                selectInstance(instId);
                 setSelectedChannel(channelId);
                 setSelectedAgent(null);
                 setActiveTab("agents");
@@ -197,6 +215,16 @@ export default function AppShell(props: Props): JSX.Element {
           </Show>
         </section>
 
+        <section class="mb-6">
+          <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-2">
+            Settings
+          </h2>
+          <SettingsTree
+            selected={settingsSelection()}
+            onSelect={selectSettings}
+          />
+        </section>
+
         <section>
           <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-2">
             Add instance
@@ -206,12 +234,17 @@ export default function AppShell(props: Props): JSX.Element {
       </aside>
 
       <main class="overflow-hidden flex flex-col">
+        <Show when={settingsSelection() === "users"}>
+          <UsersView currentUsername={props.username} />
+        </Show>
         <Show
-          when={selectedInstance()}
+          when={!settingsSelection() && selectedInstance()}
           fallback={
-            <div class="p-6 text-slate-500">
-              Select an instance from the left, or add a new one.
-            </div>
+            <Show when={!settingsSelection()}>
+              <div class="p-6 text-slate-500">
+                Select an instance from the left, or add a new one.
+              </div>
+            </Show>
           }
         >
           {(inst) => (

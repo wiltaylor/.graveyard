@@ -618,3 +618,18 @@ export interface PatchCronRequest {
   catchup_on_startup?: boolean;
   enabled?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Web UI users
+// ---------------------------------------------------------------------------
+
+export interface UserSummary {
+  id: string;
+  username: string;
+  last_login: string | null;
+}
+
+export interface CreateUserRequest {
+  username: string;
+  password: string;
+}
