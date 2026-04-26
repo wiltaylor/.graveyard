@@ -14,3 +14,4 @@ Cargo.lock
 /crates/aciddog-manager/web/dist/
 /aciddog-manager.db
 /aciddog-manager.db-journal
+/aciddog-manager-data/
