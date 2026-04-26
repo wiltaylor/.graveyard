@@ -2,6 +2,7 @@ import {
   For,
   Show,
   createEffect,
+  createMemo,
   createSignal,
   onCleanup,
   type JSX,
@@ -13,7 +14,15 @@ import type {
   WireChannelInfo,
   WireChannelMessage,
 } from "../types";
-import { Badge, Button, Eyebrow, Textarea, Toast } from "./ui";
+import {
+  Badge,
+  Button,
+  Chat,
+  ChatComposer,
+  Eyebrow,
+  Toast,
+  type ChatItem,
+} from "./ui";
 
 interface Props {
   instanceId: string;
@@ -90,8 +99,7 @@ export default function ChannelView(props: Props): JSX.Element {
     onCleanup(() => es.close());
   });
 
-  const submit = async (e: SubmitEvent) => {
-    e.preventDefault();
+  const submit = async () => {
     const body = input().trim();
     if (!body) return;
     setSending(true);
@@ -114,36 +122,27 @@ export default function ChannelView(props: Props): JSX.Element {
     }
   };
 
+  const items = createMemo<ChatItem[]>(() =>
+    messages().map((m, i) => messageToItem(m, i)),
+  );
+
   return (
     <div class="flex flex-col h-[calc(100vh-6rem)]">
-      <header class="border-b border-border-subtle px-6 py-3 bg-bg-1 space-y-2">
-        <div class="flex items-center justify-between gap-4">
-          <div class="flex items-center gap-3 min-w-0">
-            <Button size="sm" variant="ghost" icon="arrow-right" onClick={props.onClose}>
-              Back
-            </Button>
-            <h2 class="text-base font-semibold text-fg-0 truncate">#{props.channel}</h2>
-            <StreamStatusBadge
-              status={status()}
-              dropped={droppedCount()}
-            />
-          </div>
-          <Button size="sm" variant="ghost" icon="refresh" onClick={loadHistory}>
-            Refresh
-          </Button>
+      <Show when={props.info?.description || (props.info?.members.length ?? 0) > 0}>
+        <div class="border-b border-border-subtle px-6 py-2 bg-bg-1 space-y-2">
+          <Show when={props.info?.description}>
+            {(desc) => <p class="text-xs text-fg-2 m-0">{desc()}</p>}
+          </Show>
+          <Show when={(props.info?.members.length ?? 0) > 0}>
+            <div class="flex items-center flex-wrap gap-1 text-xs">
+              <Eyebrow>Members ({props.info!.members.length})</Eyebrow>
+              <For each={props.info!.members}>
+                {(m) => <Badge tone="neutral">{m}</Badge>}
+              </For>
+            </div>
+          </Show>
         </div>
-        <Show when={props.info?.description}>
-          {(desc) => <p class="text-xs text-fg-2 m-0">{desc()}</p>}
-        </Show>
-        <Show when={props.info && props.info.members.length > 0}>
-          <div class="flex items-center flex-wrap gap-1 text-xs">
-            <Eyebrow>Members ({props.info!.members.length})</Eyebrow>
-            <For each={props.info!.members}>
-              {(m) => <Badge tone="neutral">{m}</Badge>}
-            </For>
-          </div>
-        </Show>
-      </header>
+      </Show>
 
       <Show when={error()}>
         <div class="mx-6 mt-3">
@@ -151,81 +150,79 @@ export default function ChannelView(props: Props): JSX.Element {
         </div>
       </Show>
 
-      <div class="flex-1 overflow-y-auto px-4 py-3 space-y-2">
-        <Show
-          when={messages().length > 0}
-          fallback={
-            <div class="text-sm text-fg-3 italic">
-              {error() ? "channel unavailable." : "(no messages yet)"}
-            </div>
+      <div class="flex-1 min-h-0 p-3">
+        <Chat
+          height="100%"
+          title={
+            <>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="arrow-right"
+                onClick={props.onClose}
+              >
+                Back
+              </Button>
+              <span>#{props.channel}</span>
+            </>
           }
-        >
-          <For each={messages()}>{(m) => <ChannelMessageRow msg={m} />}</For>
-        </Show>
-      </div>
-
-      <form
-        onSubmit={submit}
-        class="border-t border-border-subtle p-3 bg-bg-1 space-y-2"
-      >
-        <Show when={sendError()}>
-          <Toast tone="danger">{sendError()}</Toast>
-        </Show>
-        <div class="flex gap-2 items-end">
-          <div class="flex-1">
-            <Textarea
+          meta={
+            <span class="inline-flex items-center gap-2">
+              <StreamStatusBadge status={status()} dropped={droppedCount()} />
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="refresh"
+                onClick={loadHistory}
+              >
+                Refresh
+              </Button>
+            </span>
+          }
+          messages={items()}
+          emptyMessage={
+            error() ? "channel unavailable." : "(no messages yet)"
+          }
+          footer={
+            <ChatComposer
               value={input()}
-              onInput={(e) => setInput(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  (e.currentTarget.form as HTMLFormElement).requestSubmit();
-                }
-              }}
+              onInput={setInput}
+              onSubmit={submit}
+              sending={sending()}
+              error={sendError()}
               placeholder={`Post to #${props.channel} as the human operator. Enter to send, Shift+Enter for newline.`}
-              rows={2}
             />
-          </div>
-          <Button
-            type="submit"
-            variant="primary"
-            icon="arrow-right"
-            disabled={sending() || input().trim() === ""}
-          >
-            {sending() ? "Sending…" : "Send"}
-          </Button>
-        </div>
-      </form>
+          }
+        />
+      </div>
     </div>
   );
 }
 
-function ChannelMessageRow(props: {
-  msg: WireChannelMessage;
-}): JSX.Element {
-  return (
-    <Show
-      when={!props.msg.is_welcome}
-      fallback={
-        <div class="rounded border border-border-subtle bg-bg-1/30 px-2 py-1 text-xs text-fg-2 italic">
-          {props.msg.body}
-        </div>
-      }
-    >
-      <div
-        class="rounded border px-2 py-1 text-sm"
-        classList={{
-          "border-success bg-success-bg": props.msg.sender === "user",
-          "border-accent bg-accent-bg": props.msg.sender !== "user",
-        }}
-      >
-        <div class="text-xs font-mono text-fg-2 mb-0.5">
-          {props.msg.sender}
-        </div>
-        <div class="whitespace-pre-wrap break-words">{props.msg.body}</div>
-      </div>
-    </Show>
-  );
+function messageToItem(msg: WireChannelMessage, i: number): ChatItem {
+  const id = `m-${i}`;
+  if (msg.is_welcome) {
+    return {
+      kind: "event",
+      id,
+      evt: {
+        kind: "info",
+        icon: "info",
+        summary: msg.body,
+      },
+    };
+  }
+  const isSelf = msg.sender === "user";
+  return {
+    kind: "message",
+    id,
+    self: isSelf,
+    avatarTone: isSelf ? "self" : "bot",
+    avatarText: msg.sender.slice(0, 2).toUpperCase(),
+    authorName: msg.sender,
+    authorBadge: isSelf ? "you" : "agent",
+    body: msg.body,
+  };
 }
 
 function StreamStatusBadge(props: {

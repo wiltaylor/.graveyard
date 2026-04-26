@@ -56,7 +56,22 @@ export { default as Droplist } from "./Droplist";
 export type { DroplistItem } from "./Droplist";
 
 export { default as Chat } from "./Chat";
-export type { ChatMessage } from "./Chat";
+export type {
+  ChatMessage,
+  ChatItem,
+  ChatEventItem,
+  ChatNodeItem,
+} from "./Chat";
+
+export { default as ChatComposer } from "./ChatComposer";
+
+export { default as EventBlock } from "./EventBlock";
+export type {
+  EventBlockProps,
+  EventKind,
+  EventAction,
+  EventActionKind,
+} from "./EventBlock";
 
 export { default as Logs } from "./Logs";
 export type { LogLine, LogLevel } from "./Logs";

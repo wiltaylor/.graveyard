@@ -1,6 +1,9 @@
 import { For, Show, type JSX } from "solid-js";
 
+import EventBlock, { type EventBlockProps } from "./EventBlock";
+
 export interface ChatMessage {
+  kind?: "message";
   id: string;
   authorName: JSX.Element;
   authorBadge?: JSX.Element;
@@ -11,10 +14,24 @@ export interface ChatMessage {
   self?: boolean;
 }
 
+export interface ChatEventItem {
+  kind: "event";
+  id: string;
+  evt: EventBlockProps;
+}
+
+export interface ChatNodeItem {
+  kind: "node";
+  id: string;
+  node: JSX.Element;
+}
+
+export type ChatItem = ChatMessage | ChatEventItem | ChatNodeItem;
+
 interface Props {
   title?: JSX.Element;
   meta?: JSX.Element;
-  messages: ChatMessage[];
+  messages: ChatItem[];
   footer?: JSX.Element;
   emptyMessage?: JSX.Element;
   height?: string;
@@ -51,50 +68,61 @@ export default function Chat(props: Props): JSX.Element {
             </div>
           }
         >
-          <For each={props.messages}>
-            {(m) => (
-              <div class={`msg${m.self ? " self" : ""}`}>
-                <span
-                  class={`avatar${
-                    m.avatarTone === "self"
-                      ? " self"
-                      : m.avatarTone === "bot"
-                        ? " bot"
-                        : ""
-                  }`}
-                >
-                  {m.avatarText ?? "•"}
-                </span>
-                <div class="msg-main">
-                  <div class="msg-head">
-                    <span class={`name${m.self ? " self" : ""}`}>{m.authorName}</span>
-                    <Show when={m.authorBadge}>
-                      <span class={`badge${m.avatarTone === "bot" ? " bot" : ""}`}>
-                        {m.authorBadge}
-                      </span>
-                    </Show>
-                    <Show when={m.time}>
-                      <span class="time">{m.time}</span>
-                    </Show>
-                  </div>
-                  <div class="msg-body">{m.body}</div>
-                </div>
-              </div>
-            )}
-          </For>
+          <For each={props.messages}>{(item) => <ChatItemView item={item} />}</For>
         </Show>
       </div>
-      <Show when={props.footer}>
-        <footer
-          style={{
-            "border-top": "1px solid var(--border-subtle)",
-            padding: "10px 14px",
-            background: "var(--bg-1)",
-          }}
+      <Show when={props.footer}>{props.footer}</Show>
+    </div>
+  );
+}
+
+function ChatItemView(props: { item: ChatItem }): JSX.Element {
+  return (
+    <Show
+      when={props.item.kind === "event"}
+      fallback={
+        <Show
+          when={props.item.kind === "node"}
+          fallback={<MessageRow msg={props.item as ChatMessage} />}
         >
-          {props.footer}
-        </footer>
-      </Show>
+          {(props.item as ChatNodeItem).node}
+        </Show>
+      }
+    >
+      <EventBlock {...(props.item as ChatEventItem).evt} standalone />
+    </Show>
+  );
+}
+
+function MessageRow(props: { msg: ChatMessage }): JSX.Element {
+  const m = props.msg;
+  return (
+    <div class={`msg${m.self ? " self" : ""}`}>
+      <span
+        class={`avatar${
+          m.avatarTone === "self"
+            ? " self"
+            : m.avatarTone === "bot"
+              ? " bot"
+              : ""
+        }`}
+      >
+        {m.avatarText ?? "•"}
+      </span>
+      <div class="msg-main">
+        <div class="msg-head">
+          <span class={`name${m.self ? " self" : ""}`}>{m.authorName}</span>
+          <Show when={m.authorBadge}>
+            <span class={`badge${m.avatarTone === "bot" ? " bot" : ""}`}>
+              {m.authorBadge}
+            </span>
+          </Show>
+          <Show when={m.time}>
+            <span class="time">{m.time}</span>
+          </Show>
+        </div>
+        <div class="msg-body">{m.body}</div>
+      </div>
     </div>
   );
 }

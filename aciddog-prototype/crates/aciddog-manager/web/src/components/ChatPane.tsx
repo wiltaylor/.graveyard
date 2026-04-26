@@ -1,9 +1,7 @@
 import {
-  For,
-  Match,
   Show,
-  Switch,
   createEffect,
+  createMemo,
   createSignal,
   onCleanup,
   type JSX,
@@ -12,8 +10,20 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 
 import { api, chatEventsUrl } from "../api";
-import type { ChatBlockEvent, WireChatBlock } from "../types";
-import { Badge, Button, Textarea, Toast } from "./ui";
+import type { WireChatBlock, ChatBlockEvent } from "../types";
+import {
+  Badge,
+  Button,
+  Chat,
+  ChatComposer,
+  Terminal,
+  Toast,
+  type ChatItem,
+  type EventBlockProps,
+  type EventKind,
+  type IconName,
+  type TerminalLine,
+} from "./ui";
 
 interface Props {
   instanceId: string;
@@ -21,8 +31,8 @@ interface Props {
   onClose: () => void;
 }
 
-/// Stream status surfaced next to the header. Distinct from the "last
-/// error" line because a lagged event is recoverable (the stream keeps
+/// Stream status surfaced in the chat header. Distinct from the "history
+/// load" error because a lagged event is recoverable (the stream keeps
 /// going), while a history fetch error is terminal.
 type StreamStatus = "connecting" | "live" | "lagged" | "closed";
 
@@ -96,8 +106,7 @@ export default function ChatPane(props: Props): JSX.Element {
     onCleanup(() => es.close());
   });
 
-  const submit = async (e: SubmitEvent) => {
-    e.preventDefault();
+  const submit = async () => {
     const body = input().trim();
     if (!body) return;
     setSending(true);
@@ -116,75 +125,63 @@ export default function ChatPane(props: Props): JSX.Element {
     }
   };
 
+  const items = createMemo(() => blocksToChatItems(blocks(), props.agent));
+
   return (
     <div class="flex flex-col h-[calc(100vh-3.5rem)]">
-      <header class="flex items-center justify-between gap-4 border-b border-border-subtle px-6 py-3 bg-bg-1">
-        <div class="flex items-center gap-3">
-          <Button size="sm" variant="ghost" icon="arrow-right" onClick={props.onClose}>
-            Back
-          </Button>
-          <h2 class="text-base font-semibold text-fg-0">{props.agent}</h2>
-          <StreamStatusBadge
-            status={streamStatus()}
-            dropped={droppedCount()}
-          />
-        </div>
-        <Button size="sm" variant="ghost" icon="refresh" onClick={loadHistory}>
-          Refresh
-        </Button>
-      </header>
-
       <Show when={historyError()}>
         <div class="mx-6 mt-3">
           <Toast tone="danger">{historyError()}</Toast>
         </div>
       </Show>
-
-      <div class="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-        <Show
-          when={blocks().length > 0}
-          fallback={
-            <div class="text-sm text-fg-3 italic">
-              {historyError() ? "history unavailable." : "(no messages yet)"}
-            </div>
+      <div class="flex-1 min-h-0 p-3">
+        <Chat
+          height="100%"
+          title={
+            <>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="arrow-right"
+                onClick={props.onClose}
+              >
+                Back
+              </Button>
+              <span>{props.agent}</span>
+            </>
           }
-        >
-          <For each={blocks()}>{(b) => <BlockView block={b} />}</For>
-        </Show>
-      </div>
-
-      <form
-        onSubmit={submit}
-        class="border-t border-border-subtle p-3 bg-bg-1 space-y-2"
-      >
-        <Show when={sendError()}>
-          <Toast tone="danger">{sendError()}</Toast>
-        </Show>
-        <div class="flex gap-2 items-end">
-          <div class="flex-1">
-            <Textarea
+          meta={
+            <span class="inline-flex items-center gap-2">
+              <StreamStatusBadge
+                status={streamStatus()}
+                dropped={droppedCount()}
+              />
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="refresh"
+                onClick={loadHistory}
+              >
+                Refresh
+              </Button>
+            </span>
+          }
+          messages={items()}
+          emptyMessage={
+            historyError() ? "history unavailable." : "(no messages yet)"
+          }
+          footer={
+            <ChatComposer
               value={input()}
-              onInput={(e) => setInput(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  (e.currentTarget.form as HTMLFormElement).requestSubmit();
-                }
-              }}
+              onInput={setInput}
+              onSubmit={submit}
+              sending={sending()}
+              error={sendError()}
               placeholder="Send a message as the human operator. Enter to send, Shift+Enter for newline."
-              rows={2}
             />
-          </div>
-          <Button
-            type="submit"
-            variant="primary"
-            icon="arrow-right"
-            disabled={sending() || input().trim() === ""}
-          >
-            {sending() ? "Sending…" : "Send"}
-          </Button>
-        </div>
-      </form>
+          }
+        />
+      </div>
     </div>
   );
 }
@@ -212,354 +209,248 @@ function StreamStatusBadge(props: {
   );
 }
 
-function BlockView(props: { block: WireChatBlock }): JSX.Element {
-  return (
-    <Switch>
-      <Match when={props.block.kind === "agent_info" && props.block}>
-        {(b) => <AgentInfoBlock block={b()} />}
-      </Match>
-      <Match when={props.block.kind === "user_text" && props.block}>
-        {(b) => <UserTextBlock text={b().text} />}
-      </Match>
-      <Match when={props.block.kind === "ai_markdown" && props.block}>
-        {(b) => <AiMarkdownBlock raw={b().raw} />}
-      </Match>
-      <Match when={props.block.kind === "bash_tool" && props.block}>
-        {(b) => (
-          <ToolCard
-            heading={`$ ${b().command}`}
-            body={b().stdout}
-            isError={b().is_error}
-            pending={b().pending}
-          />
-        )}
-      </Match>
-      <Match
-        when={
-          (props.block.kind === "edit_tool" ||
-            props.block.kind === "write_tool") &&
-          props.block
-        }
-      >
-        {(b) => (
-          <ToolCard
-            heading={`${b().kind === "edit_tool" ? "edit" : "write"} ${b().file_path}`}
-            body={b().diff}
-            isError={b().is_error}
-            pending={b().pending}
-            bodyClass="diff"
-          />
-        )}
-      </Match>
-      <Match when={props.block.kind === "read_tool" && props.block}>
-        {(b) => (
-          <ToolCard
-            heading={`read ${b().file_path}${b().range ? ` [${b().range}]` : ""}`}
-            body=""
-            isError={b().is_error}
-            pending={b().pending}
-          />
-        )}
-      </Match>
-      <Match
-        when={
-          (props.block.kind === "grep_tool" ||
-            props.block.kind === "glob_tool") &&
-          props.block
-        }
-      >
-        {(b) => (
-          <ToolCard
-            heading={`${b().kind === "grep_tool" ? "grep" : "glob"} "${b().pattern}"${b().path ? ` in ${b().path}` : ""}`}
-            body={b().matches}
-            isError={b().is_error}
-            pending={b().pending}
-          />
-        )}
-      </Match>
-      <Match when={props.block.kind === "generic_tool" && props.block}>
-        {(b) => (
-          <ToolCard
-            heading={`${b().name}${b().input_pretty ? ` ${b().input_pretty}` : ""}`}
-            body={b().result_pretty}
-            isError={b().is_error}
-            pending={b().pending}
-          />
-        )}
-      </Match>
-      <Match when={props.block.kind === "system" && props.block}>
-        {(b) => <SystemBlock text={b().text} level={b().level} />}
-      </Match>
-      <Match when={props.block.kind === "mail" && props.block}>
-        {(b) => (
-          <MailBlock
-            direction={b().direction}
-            counterpart={b().counterpart}
-            body={b().body}
-            isError={b().is_error}
-          />
-        )}
-      </Match>
-      <Match when={props.block.kind === "worker_spawn" && props.block}>
-        {(b) => (
-          <ToolCard
-            heading={`worker spawn: ${b().template}${b().worker_id ? ` → ${b().worker_id}` : ""}`}
-            body={b().task}
-            isError={b().is_error}
-            pending={b().pending}
-          />
-        )}
-      </Match>
-      <Match when={props.block.kind === "worker_complete" && props.block}>
-        {(b) => (
-          <ToolCard
-            heading="worker complete"
-            body={b().body}
-            isError={b().is_error}
-            pending={b().pending}
-          />
-        )}
-      </Match>
-      <Match when={props.block.kind === "channel_message" && props.block}>
-        {(b) => (
-          <ChannelBlock
-            sender={b().sender}
-            body={b().body}
-            isWelcome={b().is_welcome}
-          />
-        )}
-      </Match>
-      <Match when={props.block.kind === "remote_patch" && props.block}>
-        {(b) => (
-          <ToolCard
-            heading={`patch: ${b().summary}`}
-            body={b().diff}
-            isError={b().is_error}
-            pending={b().pending}
-            bodyClass="diff"
-          />
-        )}
-      </Match>
-      <Match when={props.block.kind === "task_op" && props.block}>
-        {(b) => (
-          <ToolCard
-            heading={`task ${b().op}: ${b().subject}`}
-            body={
-              (b().body ? `→ ${b().body}\n` : "") +
-              (b().reply ? `← ${b().reply}` : "")
-            }
-            isError={b().is_error}
-            pending={b().pending}
-          />
-        )}
-      </Match>
-      <Match
-        when={
-          (props.block.kind === "automaton_stdout" ||
-            props.block.kind === "automaton_stderr") &&
-          props.block
-        }
-      >
-        {(b) => (
-          <pre
-            class="rounded bg-bg-1 border border-border-subtle px-2 py-1 text-xs whitespace-pre-wrap break-words"
-            classList={{
-              "text-fg-1": b().kind === "automaton_stdout",
-              "text-danger-fg": b().kind === "automaton_stderr",
-            }}
-          >
-            {b().line}
-          </pre>
-        )}
-      </Match>
-    </Switch>
-  );
-}
+// ---------------------------------------------------------------------------
+// Block → ChatItem mapping
+// ---------------------------------------------------------------------------
 
-function UserTextBlock(props: { text: string }): JSX.Element {
-  return (
-    <div class="flex justify-end">
-      <div class="max-w-[80%] rounded-lg bg-success-bg border border-success px-3 py-2 text-sm whitespace-pre-wrap break-words">
-        {props.text}
-      </div>
-    </div>
-  );
-}
+/// Reduce the raw block stream into the `<Chat>`-friendly item list.
+/// Consecutive `automaton_stdout` / `automaton_stderr` blocks are
+/// clustered into a single Terminal-in-EventBlock so the chat doesn't
+/// drown in single-line rows when an automaton is chatty.
+function blocksToChatItems(
+  blocks: WireChatBlock[],
+  agent: string,
+): ChatItem[] {
+  const items: ChatItem[] = [];
+  let autoBuf: { line: string; isErr: boolean }[] = [];
+  let autoStartIdx = -1;
 
-function AiMarkdownBlock(props: { raw: string }): JSX.Element {
-  const rendered = () => {
-    const html = marked.parse(props.raw, { async: false }) as string;
-    return DOMPurify.sanitize(html);
+  const flushAuto = () => {
+    if (autoBuf.length === 0) return;
+    const buf = autoBuf;
+    const lines: TerminalLine[] = buf.map((entry, j) => ({
+      id: `auto-${autoStartIdx}-${j}`,
+      level: entry.isErr ? "error" : "info",
+      message: entry.line,
+    }));
+    items.push({
+      kind: "event",
+      id: `auto-${autoStartIdx}`,
+      evt: {
+        kind: "info",
+        icon: "terminal",
+        summary: `automaton output (${lines.length} ${
+          lines.length === 1 ? "line" : "lines"
+        })`,
+        details: <Terminal lines={lines} follow={false} />,
+      },
+    });
+    autoBuf = [];
+    autoStartIdx = -1;
   };
-  return (
-    <div class="flex justify-start">
-      <div
-        class="max-w-[85%] rounded-lg bg-bg-1 border border-border-subtle px-3 py-2 text-sm prose prose-invert prose-sm max-w-none"
-        innerHTML={rendered()}
-      />
-    </div>
-  );
+
+  blocks.forEach((b, i) => {
+    if (b.kind === "automaton_stdout" || b.kind === "automaton_stderr") {
+      if (autoBuf.length === 0) autoStartIdx = i;
+      autoBuf.push({ line: b.line, isErr: b.kind === "automaton_stderr" });
+      return;
+    }
+    flushAuto();
+    items.push(blockToItem(b, i, agent));
+  });
+  flushAuto();
+  return items;
 }
 
-function ToolCard(props: {
-  heading: string;
-  body: string;
-  isError: boolean;
-  pending: boolean;
-  bodyClass?: "diff";
-}): JSX.Element {
-  const [expanded, setExpanded] = createSignal(false);
-  const bodyLines = () => props.body.split("\n");
-  const showFull = () => expanded() || bodyLines().length <= 12;
-
-  return (
-    <div
-      class="rounded border text-xs"
-      classList={{
-        "border-danger bg-danger-bg": props.isError,
-        "border-border-subtle bg-bg-1": !props.isError,
-      }}
-    >
-      <div class="flex items-center justify-between gap-2 px-2 py-1">
-        <div class="font-mono truncate">{props.heading}</div>
-        <div class="flex items-center gap-2">
-          <Show when={props.pending}>
-            <span class="text-warning-fg">pending…</span>
-          </Show>
-          <Show when={bodyLines().length > 12}>
-            <button
-              type="button"
-              class="text-fg-2 hover:text-fg-0"
-              onClick={() => setExpanded(!expanded())}
-            >
-              {expanded() ? "collapse" : "expand"}
-            </button>
-          </Show>
-        </div>
-      </div>
-      <Show when={props.body}>
-        <pre
-          class="border-t border-border-subtle px-2 py-1 font-mono whitespace-pre-wrap break-words"
-          classList={{
-            "text-[0.72rem]": props.bodyClass === "diff",
-          }}
-        >
-          {showFull()
-            ? props.body
-            : bodyLines().slice(0, 12).join("\n") + "\n…"}
-        </pre>
-      </Show>
-    </div>
-  );
+function blockToItem(b: WireChatBlock, i: number, agent: string): ChatItem {
+  const id = `b-${i}`;
+  switch (b.kind) {
+    case "agent_info": {
+      const used = (b.context_input_tokens ?? 0) + (b.context_output_tokens ?? 0);
+      const usage =
+        b.context_window && used > 0
+          ? `${used.toLocaleString()} / ${b.context_window.toLocaleString()} tokens`
+          : null;
+      return {
+        kind: "event",
+        id,
+        evt: {
+          kind: "info",
+          icon: "cpu",
+          summary: b.core,
+          meta: [
+            b.tools.length > 0 ? `tools: ${b.tools.join(", ")}` : null,
+            usage,
+          ]
+            .filter(Boolean)
+            .join(" · ") || undefined,
+          details: b.prompt ? <pre>{b.prompt}</pre> : undefined,
+        },
+      };
+    }
+    case "user_text":
+      return {
+        kind: "message",
+        id,
+        self: true,
+        avatarTone: "self",
+        avatarText: "YO",
+        authorName: "you",
+        authorBadge: "you",
+        body: b.text,
+      };
+    case "ai_markdown":
+      return {
+        kind: "message",
+        id,
+        avatarTone: "bot",
+        avatarText: agent.slice(0, 2).toUpperCase(),
+        authorName: agent,
+        authorBadge: "agent",
+        body: <MarkdownBody raw={b.raw} />,
+      };
+    case "bash_tool":
+      return makeToolEvent(id, "terminal", `$ ${b.command}`, {
+        body: b.stdout,
+        isError: b.is_error,
+        pending: b.pending,
+      });
+    case "edit_tool":
+    case "write_tool":
+      return makeToolEvent(
+        id,
+        "file-text",
+        `${b.kind === "edit_tool" ? "edit" : "write"} ${b.file_path}`,
+        { body: b.diff, isError: b.is_error, pending: b.pending, diff: true },
+      );
+    case "read_tool":
+      return makeToolEvent(
+        id,
+        "eye",
+        `read ${b.file_path}${b.range ? ` [${b.range}]` : ""}`,
+        { body: "", isError: b.is_error, pending: b.pending },
+      );
+    case "grep_tool":
+    case "glob_tool":
+      return makeToolEvent(
+        id,
+        "search",
+        `${b.kind === "grep_tool" ? "grep" : "glob"} "${b.pattern}"${
+          b.path ? ` in ${b.path}` : ""
+        }`,
+        { body: b.matches, isError: b.is_error, pending: b.pending },
+      );
+    case "generic_tool":
+      return makeToolEvent(
+        id,
+        "box",
+        `${b.name}${b.input_pretty ? ` ${b.input_pretty}` : ""}`,
+        { body: b.result_pretty, isError: b.is_error, pending: b.pending },
+      );
+    case "system": {
+      const kind: EventKind =
+        b.level === "error"
+          ? "danger"
+          : b.level === "warn"
+            ? "warning"
+            : "info";
+      const icon: IconName =
+        b.level === "error"
+          ? "x"
+          : b.level === "warn"
+            ? "alert-triangle"
+            : "info";
+      return {
+        kind: "event",
+        id,
+        evt: { kind, icon, summary: b.text },
+      };
+    }
+    case "mail":
+      return {
+        kind: "event",
+        id,
+        evt: {
+          kind: b.is_error ? "danger" : "info",
+          icon: "bell",
+          summary: `mail ${b.direction === "sent" ? "→" : "←"} ${b.counterpart}`,
+          meta: b.pending ? "pending…" : undefined,
+          details: b.body ? <pre>{b.body}</pre> : undefined,
+        },
+      };
+    case "worker_spawn":
+      return makeToolEvent(
+        id,
+        "users",
+        `worker spawn: ${b.template}${b.worker_id ? ` → ${b.worker_id}` : ""}`,
+        { body: b.task, isError: b.is_error, pending: b.pending },
+      );
+    case "worker_complete":
+      return makeToolEvent(id, "check", "worker complete", {
+        body: b.body,
+        isError: b.is_error,
+        pending: b.pending,
+      });
+    case "channel_message":
+      return {
+        kind: "event",
+        id,
+        evt: {
+          kind: b.is_welcome ? "info" : "info",
+          icon: "users",
+          summary: `#${b.sender}`,
+          details: b.body ? <pre>{b.body}</pre> : undefined,
+        },
+      };
+    case "remote_patch":
+      return makeToolEvent(id, "git-branch", `patch: ${b.summary}`, {
+        body: b.diff,
+        isError: b.is_error,
+        pending: b.pending,
+        diff: true,
+      });
+    case "task_op": {
+      const detailText =
+        (b.body ? `→ ${b.body}\n` : "") + (b.reply ? `← ${b.reply}` : "");
+      return makeToolEvent(id, "check", `task ${b.op}: ${b.subject}`, {
+        body: detailText,
+        isError: b.is_error,
+        pending: b.pending,
+      });
+    }
+    case "automaton_stdout":
+    case "automaton_stderr":
+      // Handled by the cluster reducer, never reaches here.
+      return {
+        kind: "node",
+        id,
+        node: <pre class="text-xs">{b.line}</pre>,
+      };
+  }
 }
 
-function SystemBlock(props: {
-  text: string;
-  level: "info" | "warn" | "error";
-}): JSX.Element {
-  return (
-    <div
-      class="rounded border px-2 py-1 text-xs"
-      classList={{
-        "border-border-subtle bg-bg-1 text-fg-2":
-          props.level === "info",
-        "border-warning bg-warning-bg text-warning-fg":
-          props.level === "warn",
-        "border-danger bg-danger-bg text-danger-fg":
-          props.level === "error",
-      }}
-    >
-      {props.text}
-    </div>
-  );
-}
-
-function MailBlock(props: {
-  direction: "sent" | "received";
-  counterpart: string;
-  body: string;
-  isError: boolean;
-}): JSX.Element {
-  const arrow = () => (props.direction === "sent" ? "→" : "←");
-  return (
-    <div
-      class="rounded border px-2 py-1 text-sm"
-      classList={{
-        "border-danger bg-danger-bg": props.isError,
-        "border-accent bg-accent-bg": !props.isError,
-      }}
-    >
-      <div class="text-xs text-fg-2 font-mono mb-1">
-        mail {arrow()} {props.counterpart}
-      </div>
-      <div class="whitespace-pre-wrap break-words">{props.body}</div>
-    </div>
-  );
-}
-
-function ChannelBlock(props: {
-  sender: string;
-  body: string;
-  isWelcome: boolean;
-}): JSX.Element {
-  return (
-    <div
-      class="rounded border px-2 py-1 text-sm"
-      classList={{
-        "border-border-subtle bg-bg-1/30 text-fg-2 italic":
-          props.isWelcome,
-        "border-indigo-800 bg-indigo-950/30": !props.isWelcome,
-      }}
-    >
-      <div class="text-xs text-fg-2 font-mono mb-1">
-        #{props.sender}
-      </div>
-      <div class="whitespace-pre-wrap break-words">{props.body}</div>
-    </div>
-  );
-}
-
-function AgentInfoBlock(props: {
-  block: {
-    kind: "agent_info";
-    core: string;
-    tools: string[];
-    prompt: string;
-    context_input_tokens?: number;
-    context_output_tokens?: number;
-    context_window?: number;
+function makeToolEvent(
+  id: string,
+  icon: IconName,
+  summary: string,
+  opts: { body: string; isError: boolean; pending: boolean; diff?: boolean },
+): ChatItem {
+  const kind: EventKind = opts.isError
+    ? "danger"
+    : opts.pending
+      ? "warning"
+      : "success";
+  const evt: EventBlockProps = {
+    kind,
+    icon,
+    summary: <span style={{ "font-family": "var(--font-mono)" }}>{summary}</span>,
+    meta: opts.pending ? "pending…" : undefined,
+    details: opts.body ? <pre>{opts.body}</pre> : undefined,
   };
-}): JSX.Element {
-  const used = () =>
-    (props.block.context_input_tokens ?? 0) +
-    (props.block.context_output_tokens ?? 0);
-  const showUsage = () =>
-    props.block.context_window && used() > 0;
+  return { kind: "event", id, evt };
+}
 
-  return (
-    <div class="rounded border border-border bg-bg-1 px-3 py-2 text-xs space-y-1">
-      <div class="font-semibold text-fg-0">{props.block.core}</div>
-      <Show when={props.block.tools.length > 0}>
-        <div class="text-fg-2">
-          tools: {props.block.tools.join(", ")}
-        </div>
-      </Show>
-      <Show when={showUsage()}>
-        <div class="text-fg-2">
-          context: {used().toLocaleString()} / {" "}
-          {props.block.context_window?.toLocaleString()} tokens
-        </div>
-      </Show>
-      <Show when={props.block.prompt}>
-        <details class="text-fg-1">
-          <summary class="cursor-pointer text-fg-2 hover:text-fg-0">
-            show prompt
-          </summary>
-          <pre class="mt-1 whitespace-pre-wrap break-words text-[0.72rem]">
-            {props.block.prompt}
-          </pre>
-        </details>
-      </Show>
-    </div>
-  );
+function MarkdownBody(props: { raw: string }): JSX.Element {
+  const html = () => DOMPurify.sanitize(marked.parse(props.raw, { async: false }) as string);
+  return <div innerHTML={html()} />;
 }
