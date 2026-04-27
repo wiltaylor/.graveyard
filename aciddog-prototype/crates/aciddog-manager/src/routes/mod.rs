@@ -13,16 +13,13 @@ pub mod team;
 pub mod users;
 pub mod workflows;
 
-use std::path::Path;
-
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
-use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
 use crate::state::AppState;
 
-pub fn build_router(state: AppState, static_dir: &Path) -> Router {
+pub fn build_router(state: AppState) -> Router {
     let public_auth = Router::new()
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
@@ -172,11 +169,9 @@ pub fn build_router(state: AppState, static_dir: &Path) -> Router {
         .merge(protected)
         .merge(skills);
 
-    let static_service = ServeDir::new(static_dir).append_index_html_on_directories(true);
-
     Router::new()
         .nest("/api", api)
-        .fallback_service(static_service)
+        .fallback(crate::static_assets::handler)
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }

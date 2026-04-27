@@ -9,6 +9,7 @@ pub mod routes;
 pub mod seed;
 pub mod skills;
 pub mod state;
+pub mod static_assets;
 pub mod wire_channel;
 pub mod wire_chat;
 pub mod wire_cron;

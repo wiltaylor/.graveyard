@@ -45,7 +45,6 @@ The SQLite database auto-migrates on startup. Migrations live under `crates/acid
 |----------------|-------------------------------|----------------------------------------|---------|
 | `--bind`       | `ACIDDOG_MANAGER_BIND`        | `127.0.0.1:7000`                       | Server bind address. |
 | `--db`         | `ACIDDOG_MANAGER_DB`          | `./aciddog-manager.db`                 | SQLite path. |
-| `--static-dir` | `ACIDDOG_MANAGER_STATIC`      | `./crates/aciddog-manager/web/dist`    | Path to built frontend. |
 | `--data-dir`   | `ACIDDOG_MANAGER_DATA`        | `./aciddog-manager-data`               | Skills catalog and marketplace clones. |
 | `--cookie-secure` | `ACIDDOG_MANAGER_COOKIE_SECURE` | off                              | Add `Secure` to session cookie. Turn on when fronted by TLS. |
 

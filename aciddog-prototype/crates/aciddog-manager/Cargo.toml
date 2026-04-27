@@ -24,7 +24,9 @@ http-body-util = "0.1"
 bytes = "1"
 futures = "0.3"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "macros", "migrate", "chrono"] }
-tower-http = { version = "0.5", features = ["fs", "trace"] }
+tower-http = { version = "0.5", features = ["trace"] }
+rust-embed = "8"
+mime_guess = "2"
 argon2 = "0.5"
 rand = { version = "0.8", features = ["std_rng"] }
 base64 = "0.22"

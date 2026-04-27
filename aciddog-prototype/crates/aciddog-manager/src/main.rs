@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
         },
         args.data_dir.clone(),
     );
-    let router = routes::build_router(state, &args.static_dir);
+    let router = routes::build_router(state);
 
     let addr: SocketAddr = args
         .bind
@@ -49,7 +49,6 @@ async fn main() -> Result<()> {
     tracing::info!(
         %addr,
         db = %args.db.display(),
-        static_dir = %args.static_dir.display(),
         "aciddog-manager listening"
     );
     axum::serve(listener, router).await.context("axum::serve")?;

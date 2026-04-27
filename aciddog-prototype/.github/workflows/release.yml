@@ -105,9 +105,19 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
       - uses: taiki-e/install-action@just
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: crates/aciddog-manager/web/package-lock.json
       - uses: Swatinem/rust-cache@f51f967e158417aafa338a1e46ab22095f07aa01
         with:
           key: aciddog-check
+      - name: Build web frontend (required for embed)
+        run: |
+          cd crates/aciddog-manager/web
+          npm ci
+          npm run build
       - run: just app-fmt-check app-lint manager-fmt-check manager-lint
 
   test:
@@ -119,9 +129,19 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: taiki-e/install-action@just
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: crates/aciddog-manager/web/package-lock.json
       - uses: Swatinem/rust-cache@f51f967e158417aafa338a1e46ab22095f07aa01
         with:
           key: aciddog-test
+      - name: Build web frontend (required for embed)
+        run: |
+          cd crates/aciddog-manager/web
+          npm ci
+          npm run build
       - run: just wcl-schema-install
       - run: just app-test manager-test
 
@@ -167,10 +187,9 @@ jobs:
         run: |
           VERSION="${{ needs.version.outputs.version }}"
           STAGE="aciddog-${VERSION}-linux-x64"
-          mkdir -p "dist/${STAGE}/bin" "dist/${STAGE}/share/aciddog-manager" "dist/${STAGE}/share/wcl"
+          mkdir -p "dist/${STAGE}/bin" "dist/${STAGE}/share/wcl"
           cp target/release/aciddog "dist/${STAGE}/bin/aciddog"
           cp crates/aciddog-manager/target/release/aciddog-manager "dist/${STAGE}/bin/aciddog-manager"
-          cp -R crates/aciddog-manager/web/dist "dist/${STAGE}/share/aciddog-manager/web"
           cp wcl/aciddog.wcl "dist/${STAGE}/share/wcl/aciddog.wcl"
           cp README.md "dist/${STAGE}/README.md"
           tar -czf "${STAGE}.tar.gz" -C dist "${STAGE}"

@@ -15,7 +15,7 @@ async fn router() -> axum::Router {
     let pool = db::connect_memory().await.unwrap();
     user::insert(&pool, USERNAME, PASSWORD).await.unwrap();
     let state = AppState::new(pool, AuthConfig::default(), PathBuf::from("."));
-    routes::build_router(state, &PathBuf::from("."))
+    routes::build_router(state)
 }
 
 fn login_request(body: Value) -> Request<Body> {

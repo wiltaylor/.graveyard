@@ -2,41 +2,37 @@
 #
 # Install aciddog and aciddog-manager from a GitHub release.
 #
-# Usage: install.sh [--version <tag>] [--bin-dir <dir>] [--no-wrapper]
+# Usage: install.sh [--version <tag>] [--bin-dir <dir>]
 #
-#   --version    Tag to install (e.g. v0.1.0-alpha). Default: latest pre-release.
-#   --bin-dir    Where to install binaries. Default: $HOME/.local/bin.
-#   --no-wrapper Skip writing the aciddog-manager wrapper script.
+#   --version  Tag to install (e.g. v0.1.0-alpha). Default: latest pre-release.
+#   --bin-dir  Where to install binaries. Default: $HOME/.local/bin.
 #
-# Web assets and the aciddog WCL schema always install under
-# ${XDG_DATA_HOME:-$HOME/.local/share} so the wrapper script's absolute
-# paths stay stable across re-installs.
+# The aciddog-manager binary embeds its web frontend, so no separate web
+# assets or wrapper script are required. The WCL schema is installed under
+# ${XDG_DATA_HOME:-$HOME/.local/share}/wcl/lib/ for `import <aciddog.wcl>`.
 
 set -euo pipefail
 
 REPO="${REPO:-wiltaylor/aciddog}"
 VERSION=""
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
-WRITE_WRAPPER=1
 
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-WEB_DIR="$DATA_HOME/aciddog-manager/web"
 WCL_LIB_DIR="$DATA_HOME/wcl/lib"
 
 die() { echo "error: $*" >&2; exit 1; }
 note() { echo "==> $*"; }
 
 usage() {
-  sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --version)    VERSION="${2:?--version requires a tag}"; shift 2 ;;
-    --bin-dir)    BIN_DIR="${2:?--bin-dir requires a path}"; shift 2 ;;
-    --no-wrapper) WRITE_WRAPPER=0; shift ;;
-    -h|--help)    usage; exit 0 ;;
-    *)            die "unknown argument: $1 (try --help)" ;;
+    --version)  VERSION="${2:?--version requires a tag}"; shift 2 ;;
+    --bin-dir)  BIN_DIR="${2:?--bin-dir requires a path}"; shift 2 ;;
+    -h|--help)  usage; exit 0 ;;
+    *)          die "unknown argument: $1 (try --help)" ;;
   esac
 done
 
@@ -100,29 +96,12 @@ mkdir -p "$BIN_DIR"
 note "Installing aciddog → $BIN_DIR/aciddog"
 install -m 0755 "$STAGE_DIR/bin/aciddog" "$BIN_DIR/aciddog"
 
+note "Installing aciddog-manager → $BIN_DIR/aciddog-manager"
+install -m 0755 "$STAGE_DIR/bin/aciddog-manager" "$BIN_DIR/aciddog-manager"
+
 mkdir -p "$WCL_LIB_DIR"
 install -m 0644 "$STAGE_DIR/share/wcl/aciddog.wcl" "$WCL_LIB_DIR/aciddog.wcl"
 note "Installed WCL schema → $WCL_LIB_DIR/aciddog.wcl"
-
-note "Installing aciddog-manager-bin → $BIN_DIR/aciddog-manager-bin"
-install -m 0755 "$STAGE_DIR/bin/aciddog-manager" "$BIN_DIR/aciddog-manager-bin"
-
-note "Installing web assets → $WEB_DIR"
-rm -rf "$WEB_DIR"
-mkdir -p "$WEB_DIR"
-cp -R "$STAGE_DIR/share/aciddog-manager/web/." "$WEB_DIR/"
-
-if [[ "$WRITE_WRAPPER" == "1" ]]; then
-  WRAPPER="$BIN_DIR/aciddog-manager"
-  note "Writing wrapper → $WRAPPER"
-  cat > "$WRAPPER" <<EOF
-#!/usr/bin/env bash
-exec "$BIN_DIR/aciddog-manager-bin" --static-dir "$WEB_DIR" "\$@"
-EOF
-  chmod 0755 "$WRAPPER"
-else
-  note "Skipping wrapper (set --static-dir $WEB_DIR yourself)"
-fi
 
 echo
 note "Installed aciddog $VERSION"

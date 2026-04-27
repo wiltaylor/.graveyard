@@ -18,7 +18,7 @@ async fn test_router_with_pool() -> (axum::Router, SqlitePool) {
         .await
         .unwrap();
     let state = AppState::new(pool.clone(), AuthConfig::default(), PathBuf::from("."));
-    let router = routes::build_router(state, &PathBuf::from("."));
+    let router = routes::build_router(state);
     (router, pool)
 }
 
@@ -225,9 +225,9 @@ async fn agents_on_unknown_id_returns_404() {
 
 #[tokio::test]
 async fn static_fallback_still_mounted() {
-    // Paths that don't match /api/* fall through to ServeDir. With static_dir=".",
-    // a request for a non-existent file should yield 404 (ServeDir's own 404),
-    // confirming the fallback service is wired and is NOT gated by auth.
+    // Paths that don't match /api/* fall through to the embedded static
+    // handler. A non-existent file should yield 404 from that handler,
+    // confirming the fallback is wired and is NOT gated by auth.
     let app = test_router().await;
     let resp = app
         .oneshot(get("/definitely-not-a-file.html"))

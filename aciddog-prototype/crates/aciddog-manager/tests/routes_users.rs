@@ -16,7 +16,7 @@ const BOB_PW: &str = "bob-password";
 
 async fn router_with_pool(pool: SqlitePool) -> axum::Router {
     let state = AppState::new(pool, AuthConfig::default(), PathBuf::from("."));
-    routes::build_router(state, &PathBuf::from("."))
+    routes::build_router(state)
 }
 
 async fn seeded_pool_with_alice_and_bob() -> SqlitePool {

@@ -21,14 +21,6 @@ pub struct CliArgs {
     )]
     pub db: PathBuf,
 
-    #[arg(
-        long,
-        env = "ACIDDOG_MANAGER_STATIC",
-        default_value = "./crates/aciddog-manager/web/dist",
-        global = true
-    )]
-    pub static_dir: PathBuf,
-
     /// Filesystem location for the skills catalog and marketplace clones.
     /// Created on demand the first time a skill is uploaded or a
     /// marketplace is added. Colocated with `--db` by default so the
