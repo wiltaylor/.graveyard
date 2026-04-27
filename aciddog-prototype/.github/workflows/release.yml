@@ -178,10 +178,10 @@ jobs:
           npm run build
 
       - name: Build aciddog binary
-        run: cargo build --release --locked --manifest-path crates/aciddog/Cargo.toml -p aciddog
+        run: cargo build --release --manifest-path crates/aciddog/Cargo.toml -p aciddog
 
       - name: Build aciddog-manager binary
-        run: cargo build --release --locked --manifest-path crates/aciddog-manager/Cargo.toml
+        run: cargo build --release --manifest-path crates/aciddog-manager/Cargo.toml
 
       - name: Stage release tarball
         run: |
