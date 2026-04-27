@@ -45,6 +45,19 @@ pub enum RootCommand {
     /// to the current working directory. Set `WorkingDirectory=` in
     /// your systemd unit, or `cd` before launching.
     Daemon,
+    /// Scaffold a new aciddog team into PATH (default: current
+    /// directory). Drops in a skeleton `aciddog.wcl` with a single
+    /// supervisor+sysadmin agent and a copy of the bundled `aciddog`
+    /// reference skill at `.aciddog/skills/aciddog/`. Refuses to
+    /// overwrite an existing `aciddog.wcl` unless `--force` is given.
+    Init {
+        /// Target directory. Defaults to the current directory.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Overwrite existing files in the target.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]

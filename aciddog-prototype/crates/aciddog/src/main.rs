@@ -14,6 +14,7 @@ use aciddog::cli::{
 };
 use aciddog::config::load_config;
 use aciddog::daemon;
+use aciddog::init;
 use aciddog::openai_auth;
 use aciddog::tui;
 
@@ -98,6 +99,7 @@ async fn run_root_command(cmd: RootCommand) -> Result<ExitCode> {
         RootCommand::Daemon => {
             unreachable!("RootCommand::Daemon is intercepted by main() before reaching here")
         }
+        RootCommand::Init { path, force } => init::run_init(path, force).await,
     }
 }
 

@@ -5,6 +5,7 @@ pub mod config;
 pub mod cron;
 pub mod daemon;
 pub mod info;
+pub mod init;
 pub mod memory;
 pub mod openai_auth;
 pub mod remote_automaton;
