@@ -279,16 +279,16 @@ async fn run_command_step(
     };
 
     use tokio::io::{AsyncBufReadExt, BufReader};
-    if let Some(stdout) = child.stdout.take() {
+    let stdout_handle = child.stdout.take().map(|stdout| {
         let tx = event_tx.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let _ = tx.send(WorkflowEvent::StepOutput { instance_id, line });
             }
-        });
-    }
-    if let Some(stderr) = child.stderr.take() {
+        })
+    });
+    let stderr_handle = child.stderr.take().map(|stderr| {
         let tx = event_tx.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
@@ -298,8 +298,8 @@ async fn run_command_step(
                     line: format!("stderr: {line}"),
                 });
             }
-        });
-    }
+        })
+    });
 
     let status = match child.wait().await {
         Ok(s) => s,
@@ -309,6 +309,16 @@ async fn run_command_step(
             };
         }
     };
+    // Drain the stdout/stderr readers so every line they captured has
+    // been forwarded to `event_tx` before this step returns. Without
+    // this the test harness (and the TUI tail) can race past output
+    // that was still in-flight when `child.wait()` resolved.
+    if let Some(h) = stdout_handle {
+        let _ = h.await;
+    }
+    if let Some(h) = stderr_handle {
+        let _ = h.await;
+    }
     if status.success() {
         StepAction::Advance
     } else {
