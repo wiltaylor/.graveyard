@@ -157,7 +157,7 @@ pub fn cli_preamble(
             // system-notice tells you you're in the channel but the
             // preamble is already fixed. Documenting the syntax up
             // front means the tool is always there when you need it.
-            let rows: Vec<Row> = std::iter::once(send_row.clone())
+            let rows: Vec<Row> = std::iter::once(send_row)
                 .chain(management_rows.iter().cloned())
                 .collect();
             push_group(
@@ -185,7 +185,7 @@ pub fn cli_preamble(
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            let rows: Vec<Row> = std::iter::once(send_row.clone())
+            let rows: Vec<Row> = std::iter::once(send_row)
                 .chain(management_rows.iter().cloned())
                 .collect();
             push_group(
@@ -653,7 +653,7 @@ pub fn tag_preamble(
             },
         ];
         if channels.is_empty() {
-            let rows: Vec<Row> = std::iter::once(send_row.clone())
+            let rows: Vec<Row> = std::iter::once(send_row)
                 .chain(management_rows.iter().cloned())
                 .collect();
             push_group(
@@ -681,7 +681,7 @@ pub fn tag_preamble(
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            let rows: Vec<Row> = std::iter::once(send_row.clone())
+            let rows: Vec<Row> = std::iter::once(send_row)
                 .chain(management_rows.iter().cloned())
                 .collect();
             push_group(

@@ -47,12 +47,16 @@ async fn spawn_fake_remote() -> FakeRemote {
     let (broadcast_tx, _) = broadcast::channel::<InboundEvent>(32);
     let (chat_block_tx, _) = broadcast::channel(32);
     let (channel_message_tx, _) = broadcast::channel(32);
+    let (workflow_event_tx, _) = broadcast::channel(32);
+    let (cron_event_tx, _) = broadcast::channel(32);
     let state = WebserviceState {
         session_id: Uuid::new_v4(),
         events_tx,
         broadcast_tx: broadcast_tx.clone(),
         chat_block_tx,
         channel_message_tx,
+        workflow_event_tx,
+        cron_event_tx,
         is_supervisor: false,
         api_key: None,
     };
@@ -192,6 +196,7 @@ async fn remote_core_forwards_outbound_user_message() {
             proxy_socket_path: None,
         },
         supervisor: false,
+        sysadmin: false,
     };
 
     let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
@@ -263,6 +268,7 @@ async fn proxy_socket_tunnels_request_cmd() {
             proxy_socket_path: Some(proxy_path.clone()),
         },
         supervisor: false,
+        sysadmin: false,
     };
 
     let (_user_tx, user_rx) = mpsc::unbounded_channel::<String>();

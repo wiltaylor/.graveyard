@@ -95,7 +95,9 @@ pub async fn require_auth(State(state): State<AppState>, mut req: Request, next:
 /// Extract `Authorization: Bearer <token>` from the request, if present.
 fn extract_bearer_token(req: &Request) -> Option<String> {
     let raw = req.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
-    let rest = raw.strip_prefix("Bearer ").or_else(|| raw.strip_prefix("bearer "))?;
+    let rest = raw
+        .strip_prefix("Bearer ")
+        .or_else(|| raw.strip_prefix("bearer "))?;
     let trimmed = rest.trim();
     if trimmed.is_empty() {
         None

@@ -4766,7 +4766,9 @@ fn render_cron_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     let hint = Paragraph::new(Line::from(vec![
         Span::styled(
             " cron  ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             "a add · e edit · d delete · x toggle · esc back",
@@ -4785,7 +4787,9 @@ fn render_cron_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
             )),
             rect,
         );
-        app.layout.cron_hotspots.push((rect, CronHotspot::NewButton));
+        app.layout
+            .cron_hotspots
+            .push((rect, CronHotspot::NewButton));
     }
 
     let list_block = Block::default()
@@ -4983,7 +4987,7 @@ fn render_cron_modals(f: &mut Frame, area: Rect, app: &mut App) {
             let no_label = " [ no · n ] ";
             let yes_w = yes_label.chars().count() as u16;
             let no_w = no_label.chars().count() as u16;
-            if inner.height >= 3 && inner.width >= yes_w + no_w + 1 {
+            if inner.height >= 3 && inner.width > yes_w + no_w {
                 let buttons_y = inner.y + 2;
                 let yes_rect = Rect {
                     x: inner.x,
@@ -5076,12 +5080,9 @@ fn render_cron_modals(f: &mut Frame, area: Rect, app: &mut App) {
                 let value = match field {
                     CronFormField::Target => form.target.clone(),
                     CronFormField::PayloadKind => form.payload_kind.label().to_string(),
-                    CronFormField::PayloadBody => form
-                        .payload_body
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .to_string(),
+                    CronFormField::PayloadBody => {
+                        form.payload_body.lines().next().unwrap_or("").to_string()
+                    }
                     CronFormField::ScheduleKind => form.schedule_kind.label().to_string(),
                     CronFormField::ScheduleText => form.schedule_text.clone(),
                     CronFormField::Timezone => form.timezone.as_str().to_string(),

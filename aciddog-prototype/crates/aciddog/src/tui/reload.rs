@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use crate::config::{self, AciddogConfig, Agent, Automaton, ReloadAction, Webhook};
 
-use super::app::{App, AgentStatus};
+use super::app::{AgentStatus, App};
 use super::blocks::ChatBlock;
 use super::boot::{add_agent_chat, add_automaton_chat, spawn_automaton_core};
 
@@ -108,10 +108,7 @@ impl App {
         //    list while keeping the transcript intact.
         for removed_id in &plan.removed_ids {
             if let Some(idx) = self.find_agent_idx_by_id(removed_id) {
-                self.hibernate_chat_slot(
-                    idx,
-                    &format!("agent `{removed_id}` removed by /reload"),
-                );
+                self.hibernate_chat_slot(idx, &format!("agent `{removed_id}` removed by /reload"));
                 outcome.removed += 1;
             }
         }
@@ -309,9 +306,7 @@ impl App {
 
     fn find_agent_idx_by_id(&self, id: &str) -> Option<usize> {
         self.chats.iter().position(|c| {
-            !c.hibernated
-                && matches!(c.kind, super::app::ChatKind::Agent)
-                && c.display_name == id
+            !c.hibernated && matches!(c.kind, super::app::ChatKind::Agent) && c.display_name == id
         })
     }
 
@@ -525,8 +520,16 @@ fn agent_effectively_changed(
     if old.compaction_for(&old_a.id) != new.compaction_for(&new_a.id) {
         return true;
     }
-    let old_banks: Vec<_> = old.memory_banks_for(&old_a.id).into_iter().cloned().collect();
-    let new_banks: Vec<_> = new.memory_banks_for(&new_a.id).into_iter().cloned().collect();
+    let old_banks: Vec<_> = old
+        .memory_banks_for(&old_a.id)
+        .into_iter()
+        .cloned()
+        .collect();
+    let new_banks: Vec<_> = new
+        .memory_banks_for(&new_a.id)
+        .into_iter()
+        .cloned()
+        .collect();
     if old_banks != new_banks {
         return true;
     }
@@ -562,8 +565,16 @@ fn automaton_or_webhooks_changed(
     if old_a != new_a {
         return true;
     }
-    let old_hooks: Vec<&Webhook> = old.webhooks.iter().filter(|w| w.mount == old_a.id).collect();
-    let new_hooks: Vec<&Webhook> = new.webhooks.iter().filter(|w| w.mount == new_a.id).collect();
+    let old_hooks: Vec<&Webhook> = old
+        .webhooks
+        .iter()
+        .filter(|w| w.mount == old_a.id)
+        .collect();
+    let new_hooks: Vec<&Webhook> = new
+        .webhooks
+        .iter()
+        .filter(|w| w.mount == new_a.id)
+        .collect();
     if old_hooks.len() != new_hooks.len() {
         return true;
     }
@@ -626,8 +637,11 @@ mod tests {
         let plan = AgentReloadPlan::compute(&old, &new);
         assert!(plan.removed_ids.is_empty());
         assert!(plan.added_ids.is_empty());
-        let by_id: std::collections::HashMap<_, _> =
-            plan.changed.iter().map(|c| (c.id.as_str(), c.action)).collect();
+        let by_id: std::collections::HashMap<_, _> = plan
+            .changed
+            .iter()
+            .map(|c| (c.id.as_str(), c.action))
+            .collect();
         assert_eq!(by_id.get("alpha"), Some(&ReloadAction::Compact));
         assert_eq!(by_id.get("bravo"), Some(&ReloadAction::Reset));
     }
@@ -695,4 +709,3 @@ mod tests {
         );
     }
 }
-

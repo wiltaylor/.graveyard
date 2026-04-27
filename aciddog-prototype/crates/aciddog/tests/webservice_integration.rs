@@ -36,12 +36,16 @@ fn fake_state_with(
     let (broadcast_tx, _) = broadcast::channel(16);
     let (chat_block_tx, _) = broadcast::channel(64);
     let (channel_message_tx, _) = broadcast::channel(64);
+    let (workflow_event_tx, _) = broadcast::channel(64);
+    let (cron_event_tx, _) = broadcast::channel(64);
     let state = WebserviceState {
         session_id: Uuid::new_v4(),
         events_tx,
         broadcast_tx,
         chat_block_tx: chat_block_tx.clone(),
         channel_message_tx,
+        workflow_event_tx,
+        cron_event_tx,
         is_supervisor,
         api_key: api_key.map(|s| std::sync::Arc::new(s.to_string())),
     };

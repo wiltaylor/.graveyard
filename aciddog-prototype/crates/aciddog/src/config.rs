@@ -160,10 +160,11 @@ pub struct Worker {
 /// - [`AutomatonBackend::Remote`] — client-side counterpart to
 ///   `Webservice`. The automaton dials a remote aciddog's `/v1/rpc`
 ///   + `/v1/events` endpoints and proxies them as a local fleet
-///   member. Local traffic becomes `send_message(to=remote_target)`
-///   RPCs against the remote; inbound SSE is delivered to a
-///   configured `deliver_to`. An optional `proxy_socket_path`
-///   exposes the full `RequestCmd` surface to local tools.
+///   member. Local traffic becomes `send_message(to=remote_target)` RPCs
+///   against the remote; inbound SSE is delivered to a configured
+///   `deliver_to`. An optional `proxy_socket_path` exposes the full
+///   `RequestCmd` surface to local tools.
+#[allow(clippy::doc_lazy_continuation)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Automaton {
     pub id: String,

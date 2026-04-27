@@ -55,7 +55,12 @@ pub fn validate_rel_path(rel: &str) -> Result<(), &'static str> {
 }
 
 /// Compose the on-disk path for a catalog entry.
-pub fn skill_dir(skills_root: &Path, source_kind: &str, source_ref: Option<&str>, name: &str) -> PathBuf {
+pub fn skill_dir(
+    skills_root: &Path,
+    source_kind: &str,
+    source_ref: Option<&str>,
+    name: &str,
+) -> PathBuf {
     let bucket = match source_ref {
         Some(r) => format!("{source_kind}-{r}"),
         None => source_kind.to_string(),
@@ -160,8 +165,7 @@ pub fn store_skill_dir(
             .map_err(|e| AppError::Validation(format!("invalid path `{}`: {e}", f.rel_path)))?;
         let dst = staging.join(&f.rel_path);
         if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| AppError::Validation(format!("mkdir: {e}")))?;
+            fs::create_dir_all(parent).map_err(|e| AppError::Validation(format!("mkdir: {e}")))?;
         }
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&f.contents_b64)
@@ -170,8 +174,7 @@ pub fn store_skill_dir(
     }
     let dest = bucket.join(name);
     if dest.exists() {
-        fs::remove_dir_all(&dest)
-            .map_err(|e| AppError::Validation(format!("remove old: {e}")))?;
+        fs::remove_dir_all(&dest).map_err(|e| AppError::Validation(format!("remove old: {e}")))?;
     }
     fs::rename(&staging, &dest).map_err(|e| AppError::Validation(format!("rename: {e}")))?;
     Ok(dest)
@@ -342,10 +345,7 @@ pub async fn list_skills(pool: &SqlitePool) -> AppResult<Vec<SkillSummary>> {
                 pushed_at: p.pushed_at,
             })
             .collect();
-        let update_available = row
-            .upstream_hash
-            .as_ref()
-            .map(|u| u != &row.content_hash);
+        let update_available = row.upstream_hash.as_ref().map(|u| u != &row.content_hash);
         out.push(SkillSummary {
             id: row.id,
             name: row.name,
@@ -404,8 +404,7 @@ pub async fn delete_skill(pool: &SqlitePool, skills_root: &Path, id: &str) -> Ap
     let (source_kind, source_ref, name, _hash) = locate_skill(pool, id).await?;
     let dir = skill_dir(skills_root, &source_kind, source_ref.as_deref(), &name);
     if dir.exists() {
-        fs::remove_dir_all(&dir)
-            .map_err(|e| AppError::Validation(format!("remove dir: {e}")))?;
+        fs::remove_dir_all(&dir).map_err(|e| AppError::Validation(format!("remove dir: {e}")))?;
     }
     sqlx::query("DELETE FROM skills WHERE id = ?1")
         .bind(id)
@@ -466,8 +465,7 @@ mod tests {
                 contents_b64: b64("#!/bin/sh\necho hi\n"),
             },
         ];
-        let dest =
-            store_skill_dir(tmp.path(), "uploaded", None, "demo", &files).expect("store");
+        let dest = store_skill_dir(tmp.path(), "uploaded", None, "demo", &files).expect("store");
         assert!(dest.join("SKILL.md").is_file());
         assert!(dest.join("scripts/run.sh").is_file());
 
@@ -491,7 +489,10 @@ mod tests {
 
     fn rand_u64() -> u64 {
         use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64
     }
 
     struct TempDir {

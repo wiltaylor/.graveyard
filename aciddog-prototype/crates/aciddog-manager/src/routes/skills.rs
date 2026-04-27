@@ -343,7 +343,8 @@ where
     Fut: std::future::Future<Output = AppResult<MarketplaceSummary>> + Send + 'static,
 {
     let (progress, rx) = ProgressSink::channel();
-    let (line_tx, line_rx) = tokio::sync::mpsc::unbounded_channel::<Result<Bytes, std::io::Error>>();
+    let (line_tx, line_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Result<Bytes, std::io::Error>>();
     // Forward each progress message as a NDJSON `progress` line.
     let line_tx_progress = line_tx.clone();
     tokio::spawn(async move {
@@ -353,8 +354,7 @@ where
                 "event": "progress",
                 "message": message,
             });
-            let _ = line_tx_progress
-                .send(Ok(serialize_line(&line)));
+            let _ = line_tx_progress.send(Ok(serialize_line(&line)));
         }
     });
     // Run the actual work in the background, then emit a terminal

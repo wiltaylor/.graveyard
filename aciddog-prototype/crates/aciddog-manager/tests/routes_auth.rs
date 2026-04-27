@@ -14,7 +14,7 @@ const PASSWORD: &str = "tester-password";
 async fn router() -> axum::Router {
     let pool = db::connect_memory().await.unwrap();
     user::insert(&pool, USERNAME, PASSWORD).await.unwrap();
-    let state = AppState::new(pool, AuthConfig::default());
+    let state = AppState::new(pool, AuthConfig::default(), PathBuf::from("."));
     routes::build_router(state, &PathBuf::from("."))
 }
 

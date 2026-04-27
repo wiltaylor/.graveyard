@@ -39,17 +39,15 @@ pub enum CronHotspot {
 
 /// Top-level mode of the view. `List` is the default; the other
 /// variants are modal overlays.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum CronMode {
+    #[default]
     List,
     Form(CronForm),
-    ConfirmDelete { job_id: Uuid, display: String },
-}
-
-impl Default for CronMode {
-    fn default() -> Self {
-        CronMode::List
-    }
+    ConfirmDelete {
+        job_id: Uuid,
+        display: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -176,10 +174,7 @@ impl CronFormField {
     }
 
     pub fn is_text(self) -> bool {
-        matches!(
-            self,
-            Self::Target | Self::PayloadBody | Self::ScheduleText
-        )
+        matches!(self, Self::Target | Self::PayloadBody | Self::ScheduleText)
     }
 }
 

@@ -2834,11 +2834,6 @@ mod tests {
         );
     }
 
-    /// Diagnostic: the very prompt that the `expanded_agent_info_block_*`
-    /// test uses. Render only the body-paragraph portion (with the
-    /// same block/wrap settings that `render_agent_info` uses) and
-    /// compare its real row count against `wrapped_rows`.
-
     /// Diagnostic: measure the row count ratatui actually uses for a
     /// Paragraph with `Borders::LEFT` and `Wrap { trim: false }`, and
     /// compare it against `wrapped_rows(prompt, width - 1)` — which is

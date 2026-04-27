@@ -423,7 +423,7 @@ impl MemoryStore {
         lookup.insert("from".into(), DataValue::Str(from.to_string().into()));
         lookup.insert("to".into(), DataValue::Str(to.to_string().into()));
 
-        let existed = self
+        let existed = !self
             .db
             .run_script(
                 "?[found] := *links{from: $from, to: $to}, found = $from",
@@ -432,8 +432,7 @@ impl MemoryStore {
             )
             .map_err(|e| MemoryError::Cozo(format!("unlink lookup: {e}")))?
             .rows
-            .len()
-            > 0;
+            .is_empty();
 
         if !existed {
             return Ok(false);

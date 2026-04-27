@@ -21,8 +21,7 @@ pub async fn push_skill_to_instances(
     skill_id: &str,
     instance_ids: &[Uuid],
 ) -> AppResult<Vec<SkillPushResult>> {
-    let (source_kind, source_ref, name, content_hash) =
-        locate_skill(&state.pool, skill_id).await?;
+    let (source_kind, source_ref, name, content_hash) = locate_skill(&state.pool, skill_id).await?;
     let dir = skill_dir(
         &state.skills_dir(),
         &source_kind,

@@ -205,7 +205,11 @@ mod tests {
         )
         .expect("ok");
         match v {
-            PropertyValue::Number(n) => assert!((n - 3.14).abs() < 1e-9),
+            PropertyValue::Number(n) => {
+                #[allow(clippy::approx_constant)]
+                let expected = 3.14_f64;
+                assert!((n - expected).abs() < 1e-9);
+            }
             other => panic!("expected Number, got {other:?}"),
         }
     }

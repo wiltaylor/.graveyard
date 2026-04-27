@@ -55,10 +55,11 @@ impl InboxMessage {
 
 /// Modes the Inbox view can be in. `List` is the default; the others
 /// are modal overlays on top of the message list.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum InboxMode {
     /// Just browsing the list; detail of the selected row is shown
     /// beneath it.
+    #[default]
     List,
     /// Composing a reply to the selected message. The recipient is
     /// fixed to the original sender.
@@ -106,12 +107,6 @@ impl ForwardState {
         } else {
             format!("{note}\n\n{}", self.quoted)
         }
-    }
-}
-
-impl Default for InboxMode {
-    fn default() -> Self {
-        InboxMode::List
     }
 }
 

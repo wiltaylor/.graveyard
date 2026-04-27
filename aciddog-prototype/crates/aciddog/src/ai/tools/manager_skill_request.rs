@@ -131,9 +131,7 @@ impl Tool for ManagerSkillRequestTool {
                 let id = match input.get("instance_id").and_then(Value::as_str) {
                     Some(s) => s,
                     None => {
-                        return ToolOutput::error(
-                            "list_instance_skills requires `instance_id`",
-                        );
+                        return ToolOutput::error("list_instance_skills requires `instance_id`");
                     }
                 };
                 ("GET", format!("/api/skills/instances/{id}"), None)
@@ -157,27 +155,19 @@ impl Tool for ManagerSkillRequestTool {
                     }
                 };
                 let body = json!({ "instance_ids": ids });
-                (
-                    "POST",
-                    format!("/api/skills/{skill_id}/push"),
-                    Some(body),
-                )
+                ("POST", format!("/api/skills/{skill_id}/push"), Some(body))
             }
             "import_from_instance" => {
                 let id = match input.get("instance_id").and_then(Value::as_str) {
                     Some(s) => s,
                     None => {
-                        return ToolOutput::error(
-                            "import_from_instance requires `instance_id`",
-                        );
+                        return ToolOutput::error("import_from_instance requires `instance_id`");
                     }
                 };
                 let name = match input.get("skill_name").and_then(Value::as_str) {
                     Some(s) => s,
                     None => {
-                        return ToolOutput::error(
-                            "import_from_instance requires `skill_name`",
-                        );
+                        return ToolOutput::error("import_from_instance requires `skill_name`");
                     }
                 };
                 let body = json!({ "instance_id": id, "skill_name": name });
@@ -187,9 +177,7 @@ impl Tool for ManagerSkillRequestTool {
                 let id = match input.get("marketplace_id").and_then(Value::as_str) {
                     Some(s) => s,
                     None => {
-                        return ToolOutput::error(
-                            "update_marketplace requires `marketplace_id`",
-                        );
+                        return ToolOutput::error("update_marketplace requires `marketplace_id`");
                     }
                 };
                 ("POST", format!("/api/marketplaces/{id}/update"), None)
@@ -204,9 +192,7 @@ impl Tool for ManagerSkillRequestTool {
                 ("POST", format!("/api/skills/{id}/update"), None)
             }
             other => {
-                return ToolOutput::error(format!(
-                    "ManagerSkillRequest: unknown action `{other}`"
-                ));
+                return ToolOutput::error(format!("ManagerSkillRequest: unknown action `{other}`"));
             }
         };
 

@@ -12,6 +12,7 @@
 //!     fetched into a sibling git clone.
 //!   - `{ "source": "git-subdir", "url": "...", "path": "...", "ref": "..." }`:
 //!     fetched and the named subdir consumed.
+//!
 //! `url` and `npm` sources are deferred — see "Out of scope" in the
 //! plan.
 
@@ -28,9 +29,7 @@ use sqlx::SqlitePool;
 use tokio::sync::mpsc;
 
 use crate::error::{AppError, AppResult};
-use crate::skills::catalog::{
-    hash_dir, is_valid_skill_name, load_skill_files, store_skill_dir,
-};
+use crate::skills::catalog::{hash_dir, is_valid_skill_name, load_skill_files, store_skill_dir};
 use crate::skills::{MarketplaceAvailableSkill, MarketplaceSummary};
 use crate::state::AppState;
 
@@ -166,14 +165,13 @@ pub async fn add_marketplace(
         //      before/during the post-rename DB writes (or a delete
         //      partially failed). Auto-clean orphans so the user
         //      doesn't get stuck with an undeletable marketplace.
-        let row_exists = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM skill_marketplaces WHERE id = ?1",
-        )
-        .bind(&id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(AppError::Db)?
-        .is_some();
+        let row_exists =
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM skill_marketplaces WHERE id = ?1")
+                .bind(&id)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(AppError::Db)?
+                .is_some();
         if row_exists {
             return Err(AppError::Conflict(format!(
                 "marketplace `{id}` already exists"
@@ -200,8 +198,10 @@ pub async fn add_marketplace(
 
     // Anything from here on must roll back final_dir + DB rows on error,
     // or the next add of the same id will hit a stale orphan.
-    let outcome =
-        finalize_add(state, &id, git_url, ref_spec, &final_dir, &manifest, progress).await;
+    let outcome = finalize_add(
+        state, &id, git_url, ref_spec, &final_dir, &manifest, progress,
+    )
+    .await;
     match outcome {
         Ok(summary) => Ok(summary),
         Err(e) => {
@@ -358,14 +358,12 @@ pub async fn list_available_skills(
     state: &AppState,
     marketplace_id: &str,
 ) -> AppResult<Vec<MarketplaceAvailableSkill>> {
-    let _ = sqlx::query_as::<_, (String,)>(
-        "SELECT id FROM skill_marketplaces WHERE id = ?1",
-    )
-    .bind(marketplace_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(AppError::Db)?
-    .ok_or(AppError::NotFound)?;
+    let _ = sqlx::query_as::<_, (String,)>("SELECT id FROM skill_marketplaces WHERE id = ?1")
+        .bind(marketplace_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(AppError::Db)?
+        .ok_or(AppError::NotFound)?;
     let dir = state.marketplaces_dir().join(marketplace_id);
     if !dir.is_dir() {
         return Err(AppError::Validation(format!(
@@ -373,8 +371,14 @@ pub async fn list_available_skills(
         )));
     }
     let manifest = read_manifest(&dir)?;
-    enumerate_marketplace_skills(state, marketplace_id, &manifest, &dir, &ProgressSink::noop())
-        .await
+    enumerate_marketplace_skills(
+        state,
+        marketplace_id,
+        &manifest,
+        &dir,
+        &ProgressSink::noop(),
+    )
+    .await
 }
 
 /// Install a single available skill from a marketplace into the
@@ -412,8 +416,8 @@ pub async fn install_skill(
             )));
         }
         let files = load_skill_files(&skill_dir)?;
-        let upstream_hash = hash_dir(&skill_dir)
-            .map_err(|e| AppError::Validation(format!("hash: {e}")))?;
+        let upstream_hash =
+            hash_dir(&skill_dir).map_err(|e| AppError::Validation(format!("hash: {e}")))?;
         store_skill_dir(
             &state.skills_dir(),
             "marketplace",
@@ -440,8 +444,7 @@ pub async fn install_skill(
 pub async fn remove_marketplace(state: &AppState, id: &str) -> AppResult<()> {
     let dir = state.marketplaces_dir().join(id);
     if dir.exists() {
-        fs::remove_dir_all(&dir)
-            .map_err(|e| AppError::Validation(format!("remove clone: {e}")))?;
+        fs::remove_dir_all(&dir).map_err(|e| AppError::Validation(format!("remove clone: {e}")))?;
     }
     let bucket = state.skills_dir().join(format!("marketplace-{id}"));
     if bucket.exists() {
@@ -499,15 +502,14 @@ struct MarketplaceRow {
 /// FS walks rather than per-skill cost — refreshing one or many is
 /// indistinguishable.
 pub async fn refresh_skill(state: &AppState, skill_id: &str) -> AppResult<()> {
-    let (source_kind, source_ref, name) =
-        sqlx::query_as::<_, (String, Option<String>, String)>(
-            "SELECT source_kind, source_ref, name FROM skills WHERE id = ?1",
-        )
-        .bind(skill_id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(AppError::Db)?
-        .ok_or(AppError::NotFound)?;
+    let (source_kind, source_ref, name) = sqlx::query_as::<_, (String, Option<String>, String)>(
+        "SELECT source_kind, source_ref, name FROM skills WHERE id = ?1",
+    )
+    .bind(skill_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Db)?
+    .ok_or(AppError::NotFound)?;
     if source_kind != "marketplace" {
         return Err(AppError::Validation(format!(
             "skill `{skill_id}` is not marketplace-sourced — nothing to refresh"
@@ -718,11 +720,7 @@ async fn resolve_plugin_dir(
             }
             Ok(Some(sub))
         }
-        PluginSource::Object(SourceObject::Url {
-            url,
-            ref_spec,
-            sha,
-        }) => {
+        PluginSource::Object(SourceObject::Url { url, ref_spec, sha }) => {
             let cache_key = format!(
                 "url--{}--{}--{}",
                 sanitize_url(url),
@@ -845,9 +843,8 @@ async fn ensure_npm_plugin(
         version_path
     );
     let manifest_bytes = http_get_bytes(http, &manifest_url).await?;
-    let manifest: NpmVersionManifest = serde_json::from_slice(&manifest_bytes).map_err(|e| {
-        AppError::Validation(format!("parse npm manifest at {manifest_url}: {e}"))
-    })?;
+    let manifest: NpmVersionManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| AppError::Validation(format!("parse npm manifest at {manifest_url}: {e}")))?;
     let tarball = manifest.dist.tarball;
     let tarball_bytes = http_get_bytes(http, &tarball).await?;
     extract_archive_to_dir(&tarball_bytes, dest)
@@ -920,11 +917,9 @@ fn extract_archive_to_dir(bytes: &[u8], dest: &Path) -> AppResult<()> {
         return Err(e);
     }
     if dest.exists() {
-        fs::remove_dir_all(dest)
-            .map_err(|e| AppError::Validation(format!("remove old: {e}")))?;
+        fs::remove_dir_all(dest).map_err(|e| AppError::Validation(format!("remove old: {e}")))?;
     }
-    fs::rename(&staging, dest)
-        .map_err(|e| AppError::Validation(format!("rename: {e}")))
+    fs::rename(&staging, dest).map_err(|e| AppError::Validation(format!("rename: {e}")))
 }
 
 /// `ustar` magic at offset 257 — the structural marker that says
@@ -935,8 +930,8 @@ fn has_tar_magic(bytes: &[u8]) -> bool {
 
 fn extract_zip_to(bytes: &[u8], dest: &Path) -> AppResult<()> {
     let cursor = Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|e| AppError::Validation(format!("open zip: {e}")))?;
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|e| AppError::Validation(format!("open zip: {e}")))?;
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
@@ -948,13 +943,11 @@ fn extract_zip_to(bytes: &[u8], dest: &Path) -> AppResult<()> {
         check_entry_path(&raw)?;
         let out = dest.join(&raw);
         if entry.is_dir() {
-            fs::create_dir_all(&out)
-                .map_err(|e| AppError::Validation(format!("mkdir: {e}")))?;
+            fs::create_dir_all(&out).map_err(|e| AppError::Validation(format!("mkdir: {e}")))?;
             continue;
         }
         if let Some(parent) = out.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| AppError::Validation(format!("mkdir: {e}")))?;
+            fs::create_dir_all(parent).map_err(|e| AppError::Validation(format!("mkdir: {e}")))?;
         }
         let mut buf = Vec::with_capacity(entry.size() as usize);
         entry
@@ -993,13 +986,11 @@ fn extract_tar_archive<R: Read>(mut archive: tar::Archive<R>, dest: &Path) -> Ap
         }
         let out = dest.join(&raw);
         if etype.is_dir() {
-            fs::create_dir_all(&out)
-                .map_err(|e| AppError::Validation(format!("mkdir: {e}")))?;
+            fs::create_dir_all(&out).map_err(|e| AppError::Validation(format!("mkdir: {e}")))?;
             continue;
         }
         if let Some(parent) = out.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| AppError::Validation(format!("mkdir: {e}")))?;
+            fs::create_dir_all(parent).map_err(|e| AppError::Validation(format!("mkdir: {e}")))?;
         }
         let mut buf = Vec::new();
         entry
@@ -1105,11 +1096,8 @@ fn clone_repo_pinned(
         let object = repo
             .find_object(oid, None)
             .map_err(|e| AppError::Validation(format!("find commit {sha} in {url}: {e}")))?;
-        repo.checkout_tree(
-            &object,
-            Some(git2::build::CheckoutBuilder::new().force()),
-        )
-        .map_err(|e| AppError::Validation(format!("checkout {sha}: {e}")))?;
+        repo.checkout_tree(&object, Some(git2::build::CheckoutBuilder::new().force()))
+            .map_err(|e| AppError::Validation(format!("checkout {sha}: {e}")))?;
         repo.set_head_detached(oid)
             .map_err(|e| AppError::Validation(format!("set_head_detached {sha}: {e}")))?;
     }
@@ -1117,8 +1105,8 @@ fn clone_repo_pinned(
 }
 
 fn pull_repo(dir: &Path, ref_spec: Option<&str>) -> AppResult<()> {
-    let repo = Repository::open(dir)
-        .map_err(|e| AppError::Validation(format!("open repo: {e}")))?;
+    let repo =
+        Repository::open(dir).map_err(|e| AppError::Validation(format!("open repo: {e}")))?;
     let branch = ref_spec.unwrap_or("HEAD");
     let mut remote = repo
         .find_remote("origin")
@@ -1160,8 +1148,8 @@ fn pull_repo(dir: &Path, ref_spec: Option<&str>) -> AppResult<()> {
 }
 
 fn head_sha(dir: &Path) -> AppResult<String> {
-    let repo = Repository::open(dir)
-        .map_err(|e| AppError::Validation(format!("open repo: {e}")))?;
+    let repo =
+        Repository::open(dir).map_err(|e| AppError::Validation(format!("open repo: {e}")))?;
     let head = repo
         .head()
         .map_err(|e| AppError::Validation(format!("head: {e}")))?;
@@ -1276,11 +1264,7 @@ mod tests {
         }"#;
         let m: MarketplaceManifest = serde_json::from_str(raw).expect("parse");
         match &m.plugins[0].source {
-            PluginSource::Object(SourceObject::Url {
-                url,
-                ref_spec,
-                sha,
-            }) => {
+            PluginSource::Object(SourceObject::Url { url, ref_spec, sha }) => {
                 assert_eq!(url, "https://example.com/p.tgz");
                 assert!(ref_spec.is_none());
                 assert!(sha.is_none());
@@ -1288,11 +1272,7 @@ mod tests {
             _ => panic!("expected url"),
         }
         match &m.plugins[1].source {
-            PluginSource::Object(SourceObject::Url {
-                url,
-                ref_spec,
-                sha,
-            }) => {
+            PluginSource::Object(SourceObject::Url { url, ref_spec, sha }) => {
                 assert_eq!(url, "https://github.com/o/r.git");
                 assert_eq!(ref_spec.as_deref(), Some("main"));
                 assert_eq!(sha.as_deref(), Some("abc1234"));

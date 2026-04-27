@@ -155,10 +155,7 @@ pub fn build_router(state: AppState, static_dir: &Path) -> Router {
             "/marketplaces",
             get(skills::list_market).post(skills::add_market),
         )
-        .route(
-            "/marketplaces/:id",
-            delete(skills::delete_market),
-        )
+        .route("/marketplaces/:id", delete(skills::delete_market))
         .route("/marketplaces/:id/update", post(skills::update_market))
         .route("/marketplaces/:id/skills", get(skills::list_market_skills))
         .route(

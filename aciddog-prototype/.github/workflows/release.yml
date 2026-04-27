@@ -122,6 +122,7 @@ jobs:
       - uses: Swatinem/rust-cache@f51f967e158417aafa338a1e46ab22095f07aa01
         with:
           key: aciddog-test
+      - run: just wcl-schema-install
       - run: just app-test manager-test
 
   build:
