@@ -193,6 +193,7 @@ function deserializeAgent(b: BlockRef): AgentState | null {
     compaction: asString(a.compaction),
     supervisor: asBool(a.supervisor),
     sysadmin: asBool(a.sysadmin),
+    leader: asBool(a.leader),
     on_reload: asString(a.on_reload) as ReloadAction | undefined,
   };
 }
@@ -228,6 +229,7 @@ function deserializeAutomaton(b: BlockRef): AutomatonState | null {
     can_message: asStringList(a.can_message),
     supervisor: asBool(a.supervisor),
     sysadmin: asBool(a.sysadmin),
+    leader: asBool(a.leader),
   };
   switch (type) {
     case "script":

@@ -484,6 +484,14 @@ struct AutomatonOutcome {
 
 // --- Deep-compare helpers -------------------------------------------
 
+// NOTE on the leader-flag: `Agent` and `Automaton` both derive
+// `PartialEq` over their full struct (including the new `leader`
+// field), so flipping `leader = true/false` in the WCL and running
+// `/reload` lands in the `old_a != new_a` branch below. The TUI's
+// `App::visible_order` helper recomputes leader-bucket partitioning
+// on every render tick from the latest `App::config`, so the agent
+// list re-sorts on the next redraw with no extra plumbing required.
+
 /// Did the agent's *effective* runtime config change between two
 /// loads? The agent struct itself is one input, but the agent's
 /// behaviour also depends on the resolved ai_core, compaction,

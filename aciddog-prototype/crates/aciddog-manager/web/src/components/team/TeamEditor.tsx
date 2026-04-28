@@ -681,6 +681,9 @@ function entityList<T extends { id: string }>(props: {
   onAdd: () => void;
   onRemove: (idx: number) => void;
   newLabel: string;
+  /** Optional inline prefix rendered before the item id (e.g. 👑 for
+   * leader-flagged agents/automatons). Return `null` to omit. */
+  decorate?: (item: T) => JSX.Element | null;
 }): JSX.Element {
   return (
     <Card padded={true}>
@@ -741,7 +744,10 @@ function entityList<T extends { id: string }>(props: {
                 }}
                 onClick={() => props.setSelected(item.id)}
               >
-                <span>{item.id}</span>
+                <span>
+                  {props.decorate ? props.decorate(item) : null}
+                  {item.id}
+                </span>
                 <button
                   type="button"
                   onClick={(e) => {
@@ -1158,6 +1164,14 @@ function AgentsSection(props: SectionProps): JSX.Element {
         onAdd: add,
         onRemove: remove,
         newLabel: "Add agent",
+        // Leader-flagged agents get a 👑 prefix in the editor list,
+        // mirroring the runtime list / TUI render. Cosmetic only.
+        decorate: (a) =>
+          a.leader ? (
+            <span title="leader" aria-label="leader" style={{ "margin-right": "4px" }}>
+              👑
+            </span>
+          ) : null,
       })}
       scrolling={
         <Show when={selectedItem()}>
@@ -1342,8 +1356,10 @@ function AgentForm(props: {
       <RolesCard
         supervisor={a().supervisor ?? false}
         sysadmin={a().sysadmin ?? false}
+        leader={a().leader ?? false}
         onSupervisor={(v) => props.onPatch({ supervisor: v ? true : undefined })}
         onSysadmin={(v) => props.onPatch({ sysadmin: v ? true : undefined })}
+        onLeader={(v) => props.onPatch({ leader: v ? true : undefined })}
       />
     </Card>
   );
@@ -1352,8 +1368,10 @@ function AgentForm(props: {
 function RolesCard(props: {
   supervisor: boolean;
   sysadmin: boolean;
+  leader: boolean;
   onSupervisor: (v: boolean) => void;
   onSysadmin: (v: boolean) => void;
+  onLeader: (v: boolean) => void;
 }): JSX.Element {
   return (
     <div
@@ -1390,6 +1408,12 @@ function RolesCard(props: {
           description="Adds server shutdown / exit / reload on top of supervisor; implies supervisor."
           checked={props.sysadmin}
           onChange={props.onSysadmin}
+        />
+        <Checkbox
+          label="Leader"
+          description="Pin to the top of the agent list and decorate with 👑 in the TUI / web UI. Cosmetic only — no behavioural impact."
+          checked={props.leader}
+          onChange={props.onLeader}
         />
       </div>
     </div>
@@ -1621,6 +1645,14 @@ function AutomatonsSection(props: SectionProps): JSX.Element {
         onAdd: add,
         onRemove: remove,
         newLabel: "Add automaton",
+        // Leader-flagged automatons get a 👑 prefix to mirror the
+        // runtime list / TUI render. Cosmetic only.
+        decorate: (a) =>
+          a.leader ? (
+            <span title="leader" aria-label="leader" style={{ "margin-right": "4px" }}>
+              👑
+            </span>
+          ) : null,
       })}
       scrolling={
         <Show when={selectedItem()}>
@@ -1644,6 +1676,7 @@ function AutomatonsSection(props: SectionProps): JSX.Element {
                 replacement.can_message = cur.can_message;
                 replacement.supervisor = cur.supervisor;
                 replacement.sysadmin = cur.sysadmin;
+                replacement.leader = cur.leader;
                 props.ctx.setConfig("automatons", selectedIdx(), replacement);
               }}
               onIdChange={(id) => {
@@ -1838,11 +1871,15 @@ function AutomatonForm(props: {
       <RolesCard
         supervisor={a().supervisor ?? false}
         sysadmin={a().sysadmin ?? false}
+        leader={a().leader ?? false}
         onSupervisor={(v) =>
           props.onPatch({ supervisor: v ? true : undefined } as Partial<AutomatonState>)
         }
         onSysadmin={(v) =>
           props.onPatch({ sysadmin: v ? true : undefined } as Partial<AutomatonState>)
+        }
+        onLeader={(v) =>
+          props.onPatch({ leader: v ? true : undefined } as Partial<AutomatonState>)
         }
       />
     </Card>

@@ -2561,28 +2561,66 @@ impl App {
             }
         }
 
+        // Precompute leader-flag for every chat. Only top-level Agents
+        // and Automatons whose config block has `leader = true` count.
+        // Workers (and chats that have ended up nested via
+        // visible_parent) never lift to the leaders bucket.
+        let leader: Vec<bool> = (0..self.chats.len()).map(|i| self.is_leader(i)).collect();
+
         let mut out: Vec<(usize, usize)> = Vec::with_capacity(self.chats.len());
         // Iterative DFS keyed by "what's the visible parent we're
         // currently listing children of?". Stable recursion is fine
         // here because `chats` is small (tens of entries at most).
+        //
+        // At the top level (parent == None) we partition into two
+        // passes — leader-flagged top-level chats first, everyone else
+        // second — preserving declaration order within each bucket.
+        // Nested levels keep the original single-pass declaration
+        // order (workers under their parent etc.). We do NOT reorder
+        // `self.chats` itself — `parent_idx` is a usize index into
+        // that vec and reshuffling it would corrupt worker links.
         fn walk(
             chats: &[AgentChat],
             vp: &[Option<usize>],
+            leader: &[bool],
             out: &mut Vec<(usize, usize)>,
             parent: Option<usize>,
             depth: usize,
         ) {
-            for (i, c) in chats.iter().enumerate() {
-                if c.hibernated {
-                    continue;
+            if parent.is_none() {
+                // Pass 1: leader-flagged top-level chats.
+                for (i, c) in chats.iter().enumerate() {
+                    if c.hibernated {
+                        continue;
+                    }
+                    if vp[i] == parent && leader[i] {
+                        out.push((i, depth));
+                        walk(chats, vp, leader, out, Some(i), depth + 1);
+                    }
                 }
-                if vp[i] == parent {
-                    out.push((i, depth));
-                    walk(chats, vp, out, Some(i), depth + 1);
+                // Pass 2: everyone else.
+                for (i, c) in chats.iter().enumerate() {
+                    if c.hibernated {
+                        continue;
+                    }
+                    if vp[i] == parent && !leader[i] {
+                        out.push((i, depth));
+                        walk(chats, vp, leader, out, Some(i), depth + 1);
+                    }
+                }
+            } else {
+                for (i, c) in chats.iter().enumerate() {
+                    if c.hibernated {
+                        continue;
+                    }
+                    if vp[i] == parent {
+                        out.push((i, depth));
+                        walk(chats, vp, leader, out, Some(i), depth + 1);
+                    }
                 }
             }
         }
-        walk(&self.chats, &visible_parent, &mut out, None, 0);
+        walk(&self.chats, &visible_parent, &leader, &mut out, None, 0);
         out
     }
 
@@ -7105,6 +7143,36 @@ impl App {
         }
     }
 
+    /// Is the caller at `idx` a top-level Agent or Automaton flagged
+    /// `leader = true`? Workers, nested chats (parent_idx set), and
+    /// agents/automatons whose config block has `leader = false`
+    /// return false.
+    pub(crate) fn is_leader(&self, idx: usize) -> bool {
+        let Some(chat) = self.chats.get(idx) else {
+            return false;
+        };
+        if chat.parent_idx.is_some() {
+            return false;
+        }
+        match chat.kind {
+            ChatKind::Agent => self
+                .config
+                .agents
+                .iter()
+                .find(|a| a.id == chat.display_name)
+                .map(|a| a.leader)
+                .unwrap_or(false),
+            ChatKind::Automaton => self
+                .config
+                .automatons
+                .iter()
+                .find(|a| a.id == chat.display_name)
+                .map(|a| a.leader)
+                .unwrap_or(false),
+            ChatKind::Worker => false,
+        }
+    }
+
     /// Is the caller at `idx` flagged `sysadmin = true`? Both
     /// configured agents and configured automatons may be sysadmins
     /// (mirroring the supervisor rule); workers cannot be.
@@ -7164,22 +7232,36 @@ impl App {
             let _ = reply.send(Response::err("not a supervisor"));
             return;
         }
+        // Sort iteration so leader-flagged top-level Agent / Automaton
+        // chats come first (preserving declaration order within ties).
+        // The kind column already encodes Agent vs Automaton, so the
+        // crown-rendering surfaces (TUI + manager) get a single
+        // `leader` bool per row regardless of kind.
+        let mut indices: Vec<usize> = (0..self.chats.len()).collect();
+        indices.sort_by_key(|&i| if self.is_leader(i) { 0u8 } else { 1u8 });
+
         let mut out = String::new();
-        out.push_str("id\tkind\tstatus\tparent\tai_core\n");
-        for chat in &self.chats {
+        // Wire-format break: header gains a trailing `leader` column.
+        // The manager parser is tolerant — a 5-column legacy header
+        // (no leader) parses with leader=false on every row.
+        out.push_str("id\tkind\tstatus\tparent\tai_core\tleader\n");
+        for &i in &indices {
+            let chat = &self.chats[i];
             let parent = chat
                 .parent_idx
                 .and_then(|p| self.chats.get(p))
                 .map(|c| c.display_name.as_str())
                 .unwrap_or("-");
             let core = chat.ai_core_id.as_deref().unwrap_or("-");
+            let leader = self.is_leader(i);
             out.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}\t{}\t{}\n",
                 chat.display_name,
                 Self::kind_label(chat),
                 Self::status_label(chat),
                 parent,
                 core,
+                leader,
             ));
         }
         let _ = reply.send(Response::ok(out.trim_end().to_string()));
@@ -13603,6 +13685,7 @@ mod tests {
                 compaction: None,
                 supervisor: false,
                 sysadmin: false,
+                leader: false,
                 on_reload: ReloadAction::Ignore,
             }],
             workers: vec![],
@@ -13620,6 +13703,7 @@ mod tests {
                 },
                 supervisor: false,
                 sysadmin: false,
+                leader: false,
             }],
             ai_cores: vec![],
             memory_banks: vec![],
@@ -13680,6 +13764,7 @@ mod tests {
                 compaction: None,
                 supervisor: false,
                 sysadmin: false,
+                leader: false,
                 on_reload: ReloadAction::Ignore,
             }],
             workers: vec![],
@@ -13752,6 +13837,7 @@ mod tests {
                 compaction: None,
                 supervisor: false,
                 sysadmin: false,
+                leader: false,
                 on_reload: ReloadAction::Ignore,
             }],
             workers: vec![],
@@ -13800,6 +13886,7 @@ mod tests {
                     compaction: None,
                     supervisor: false,
                     sysadmin: false,
+                    leader: false,
                     on_reload: ReloadAction::Ignore,
                 },
                 Agent {
@@ -13818,6 +13905,7 @@ mod tests {
                     compaction: None,
                     supervisor: false,
                     sysadmin: false,
+                    leader: false,
                     on_reload: ReloadAction::Ignore,
                 },
                 Agent {
@@ -13836,6 +13924,7 @@ mod tests {
                     compaction: None,
                     supervisor: false,
                     sysadmin: false,
+                    leader: false,
                     on_reload: ReloadAction::Ignore,
                 },
             ],
@@ -15787,6 +15876,7 @@ mod tests {
                     compaction: None,
                     supervisor: false,
                     sysadmin: false,
+                    leader: false,
                     on_reload: ReloadAction::Ignore,
                 },
                 Agent {
@@ -15805,6 +15895,7 @@ mod tests {
                     compaction: None,
                     supervisor: false,
                     sysadmin: false,
+                    leader: false,
                     on_reload: ReloadAction::Ignore,
                 },
             ],
@@ -16626,6 +16717,159 @@ mod tests {
         );
         // Selection snapped to the parent.
         assert_eq!(app.selected, 0);
+    }
+
+    /// Build a minimal Agent fixture for visible_order tests. Defaults
+    /// `leader = false`; callers flip the flag in-place.
+    fn leader_test_agent(id: &str) -> Agent {
+        Agent {
+            id: id.into(),
+            role: "r".into(),
+            role_description: None,
+            model: Some("m".into()),
+            instructions: "i".into(),
+            can_message: None,
+            can_create_workers: None,
+            can_run_workflows: None,
+            tools: None,
+            ai_core: None,
+            memory_banks: None,
+            skills: None,
+            compaction: None,
+            supervisor: false,
+            sysadmin: false,
+            leader: false,
+            on_reload: ReloadAction::Ignore,
+        }
+    }
+
+    fn leader_test_config(agents: Vec<Agent>, automatons: Vec<Automaton>) -> AciddogConfig {
+        AciddogConfig {
+            team: Team {
+                id: "t".into(),
+                description: "d".into(),
+                replace_thinking_messages: false,
+                default_ai_core: Some("default".into()),
+            },
+            agents,
+            workers: vec![],
+            automatons,
+            ai_cores: vec![crate::config::AiCore {
+                id: "default".into(),
+                kind: crate::config::AiCoreKind::ClaudeCode {
+                    system_prompt: None,
+                    model: None,
+                    default_tools: None,
+                },
+                usage_provider: None,
+            }],
+            memory_banks: vec![],
+            compactions: vec![],
+            channels: vec![],
+            workflows: vec![],
+            webhooks: vec![],
+            thinking_messages: vec!["thinking".into()],
+        }
+    }
+
+    #[test]
+    fn visible_order_pins_leaders_to_top() {
+        // [coder, planner, tester] in declaration order; leader=true
+        // on tester. visible_order should yield tester first, then
+        // coder, then planner — confirming leader-first + declaration-
+        // order tiebreak (Wil decision 3).
+        let mut coder = leader_test_agent("coder");
+        let mut planner = leader_test_agent("planner");
+        let mut tester = leader_test_agent("tester");
+        coder.leader = false;
+        planner.leader = false;
+        tester.leader = true;
+        let cfg = leader_test_config(vec![coder, planner, tester], vec![]);
+        let app = App::new(cfg);
+
+        // Resolve display-name -> chat index (order of insertion is
+        // declaration order, so this lets the assertion be written in
+        // terms of names rather than fragile indices).
+        let idx = |name: &str| -> usize {
+            app.chats
+                .iter()
+                .position(|c| c.display_name == name)
+                .unwrap_or_else(|| panic!("no chat named {name}"))
+        };
+        let order: Vec<usize> = app.visible_order().into_iter().map(|(i, _)| i).collect();
+        assert_eq!(
+            order,
+            vec![idx("tester"), idx("coder"), idx("planner")],
+            "leader (tester) must pin first, then non-leaders preserve declaration order"
+        );
+    }
+
+    #[test]
+    fn visible_order_pins_multiple_leaders_in_declaration_order() {
+        // [coder, planner, tester] with leader on coder AND tester.
+        // Expect [coder, tester, planner] — both leaders bucket-first
+        // with declaration order preserved within the bucket.
+        let mut coder = leader_test_agent("coder");
+        let mut planner = leader_test_agent("planner");
+        let mut tester = leader_test_agent("tester");
+        coder.leader = true;
+        planner.leader = false;
+        tester.leader = true;
+        let cfg = leader_test_config(vec![coder, planner, tester], vec![]);
+        let app = App::new(cfg);
+
+        let idx = |name: &str| -> usize {
+            app.chats
+                .iter()
+                .position(|c| c.display_name == name)
+                .unwrap_or_else(|| panic!("no chat named {name}"))
+        };
+        let order: Vec<usize> = app.visible_order().into_iter().map(|(i, _)| i).collect();
+        assert_eq!(
+            order,
+            vec![idx("coder"), idx("tester"), idx("planner")],
+            "tied leaders must preserve declaration order"
+        );
+    }
+
+    #[test]
+    fn visible_order_pins_automaton_leader() {
+        // Scope-expansion case: automatons are leader-eligible. Build
+        // one agent (non-leader) plus one automaton with leader=true
+        // and assert the automaton pins to the top above the agent.
+        let cfg = leader_test_config(
+            vec![leader_test_agent("coder")],
+            vec![Automaton {
+                id: "portal".into(),
+                role: "manager portal".into(),
+                role_description: None,
+                can_message: None,
+                backend: crate::config::AutomatonBackend::Script {
+                    command: "python3".into(),
+                    args: vec![],
+                    cwd: None,
+                    env: vec![],
+                    timeout_seconds: None,
+                },
+                supervisor: false,
+                sysadmin: false,
+                leader: true,
+            }],
+        );
+        let app = App::new(cfg);
+
+        let idx = |name: &str| -> usize {
+            app.chats
+                .iter()
+                .position(|c| c.display_name == name)
+                .unwrap_or_else(|| panic!("no chat named {name}"))
+        };
+        let order: Vec<usize> = app.visible_order().into_iter().map(|(i, _)| i).collect();
+        assert_eq!(
+            order,
+            vec![idx("portal"), idx("coder")],
+            "leader-flagged automaton must pin above non-leader agent"
+        );
     }
 
     #[test]

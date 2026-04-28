@@ -84,6 +84,12 @@ pub struct Agent {
     /// config is parsed.
     #[serde(default)]
     pub sysadmin: bool,
+    /// Pin to the top of the agent list and decorate with 👑 in the
+    /// TUI and web UI. Purely cosmetic — sort + crown only, no
+    /// behavioural overload. Multiple leaders are tied by declaration
+    /// order.
+    #[serde(default)]
+    pub leader: bool,
     /// What `/reload` does when this agent's effective config changes.
     /// Default is [`ReloadAction::Ignore`] — the running session keeps
     /// its current prompt/model/tools until the next `/compact` or
@@ -188,6 +194,11 @@ pub struct Automaton {
     /// `ServerReload`) on top of supervisor. Implies `supervisor =
     /// true` after parse.
     pub sysadmin: bool,
+    /// Same semantics as [`Agent::leader`] — pins the automaton to the
+    /// top of the agent list and decorates it with 👑 in the TUI / web
+    /// UI. Purely cosmetic.
+    #[serde(default)]
+    pub leader: bool,
 }
 
 /// The two delivery backends an automaton can use. See [`Automaton`].
@@ -1315,6 +1326,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 compaction: optional_string(b, "compaction"),
                 supervisor: optional_bool(b, "supervisor")?.unwrap_or(false),
                 sysadmin: optional_bool(b, "sysadmin")?.unwrap_or(false),
+                leader: optional_bool(b, "leader")?.unwrap_or(false),
                 on_reload,
             })
         })
@@ -1789,6 +1801,7 @@ fn parse_automaton(b: &wcl_lang::BlockRef) -> Result<Automaton, ConfigError> {
     let sysadmin = optional_bool(b, "sysadmin")?.unwrap_or(false);
     // sysadmin implies supervisor, mirroring the agent rule.
     let supervisor = optional_bool(b, "supervisor")?.unwrap_or(false) || sysadmin;
+    let leader = optional_bool(b, "leader")?.unwrap_or(false);
     Ok(Automaton {
         id,
         role,
@@ -1797,6 +1810,7 @@ fn parse_automaton(b: &wcl_lang::BlockRef) -> Result<Automaton, ConfigError> {
         backend,
         supervisor,
         sysadmin,
+        leader,
     })
 }
 
@@ -3111,6 +3125,42 @@ mod tests {
     fn on_reload_defaults_to_ignore() {
         let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
         assert_eq!(cfg.agents[0].on_reload, ReloadAction::Ignore);
+    }
+
+    #[test]
+    fn agent_leader_defaults_to_false() {
+        let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
+        assert!(!cfg.agents[0].leader);
+    }
+
+    #[test]
+    fn agent_leader_parses_true() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                leader = true
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert!(cfg.agents[0].leader);
+    }
+
+    #[test]
+    fn sysadmin_does_not_imply_leader() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                sysadmin = true
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert!(cfg.agents[0].sysadmin);
+        assert!(cfg.agents[0].supervisor); // sysadmin implies supervisor
+        assert!(!cfg.agents[0].leader); // but NOT leader
     }
 
     #[test]

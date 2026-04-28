@@ -204,6 +204,7 @@ export function serializeAgent(a: AgentState): string {
     .string("compaction", a.compaction)
     .bool("supervisor", a.supervisor)
     .bool("sysadmin", a.sysadmin)
+    .bool("leader", a.leader)
     .symbol("on_reload", a.on_reload);
   return b.build("agent", a.id);
 }
@@ -259,7 +260,8 @@ export function serializeAutomaton(a: AutomatonState): string {
   }
   b.list("can_message", a.can_message)
     .bool("supervisor", a.supervisor)
-    .bool("sysadmin", a.sysadmin);
+    .bool("sysadmin", a.sysadmin)
+    .bool("leader", a.leader);
   return b.build("automaton", a.id);
 }
 

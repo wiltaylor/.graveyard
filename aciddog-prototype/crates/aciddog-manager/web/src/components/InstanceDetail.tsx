@@ -174,7 +174,17 @@ export default function InstanceDetail(props: Props): JSX.Element {
                 }
               >
                 <Table
-                  rows={resp().agents}
+                  // Defensive sort: backend already pins leader=true
+                  // top-level rows first, but if we're talking to an
+                  // older daemon (legacy 5-col header → leader=false
+                  // everywhere) the sort is a no-op. Stable sort so
+                  // declaration order is preserved within each bucket.
+                  rows={[...resp().agents].sort((a, b) => {
+                    const aIsLeader = a.leader && a.parent === null;
+                    const bIsLeader = b.leader && b.parent === null;
+                    if (aIsLeader === bIsLeader) return 0;
+                    return aIsLeader ? -1 : 1;
+                  })}
                   rowKey={(a) => a.id}
                   onRowClick={(a) => props.onSelectAgent(a.id)}
                   columns={[
@@ -183,6 +193,15 @@ export default function InstanceDetail(props: Props): JSX.Element {
                       header: <Eyebrow>ID</Eyebrow>,
                       render: (a) => (
                         <span style={{ color: "var(--accent-fg)", "font-weight": "500" }}>
+                          <Show when={a.leader && a.parent === null}>
+                            <span
+                              title="leader"
+                              aria-label="leader"
+                              style={{ "margin-right": "0.35em" }}
+                            >
+                              👑
+                            </span>
+                          </Show>
                           {a.id}
                         </span>
                       ),

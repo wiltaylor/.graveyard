@@ -26,6 +26,9 @@ export interface AgentRow {
   status: string;
   parent: string | null;
   ai_core: string | null;
+  /** Top-of-list pin + 👑 decoration. False when the upstream daemon
+   * speaks the legacy 5-column header (no `leader` column). */
+  leader: boolean;
 }
 
 export interface AgentListResponse {

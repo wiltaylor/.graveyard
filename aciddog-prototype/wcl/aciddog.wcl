@@ -44,6 +44,10 @@ schema "agent" {
   // Sysadmins have everything a supervisor does plus `server shutdown`
   // and `server exit`. Implies `supervisor = true` after parse.
   sysadmin: bool @optional @default(false)
+  // Pin to the top of the agent list and decorate with 👑 in the TUI
+  // and web UI. Purely cosmetic — sort + crown only, no behavioural
+  // overload. Multiple leaders are tied by declaration order.
+  leader: bool @optional @default(false)
   // What `/reload` does to this agent's running session when its
   // effective config changes (the agent block itself, the resolved
   // ai_core, the referenced compaction, memory banks, skills, or
@@ -106,6 +110,10 @@ schema "automaton" {
   // true` after parse. Mainly used by the manager portal automaton
   // so the web UI can trigger config reloads.
   sysadmin: bool @optional @default(false)
+  // Pin to the top of the agent list and decorate with 👑 in the TUI
+  // and web UI. Purely cosmetic — sort + crown only, no behavioural
+  // overload. Multiple leaders are tied by declaration order.
+  leader: bool @optional @default(false)
 
   variant "script" {
     // Executable to spawn. Either a bare binary name on PATH (e.g.

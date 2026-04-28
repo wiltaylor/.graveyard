@@ -188,6 +188,7 @@ mod tests {
                 compaction: None,
                 supervisor: false,
                 sysadmin: false,
+                leader: false,
                 on_reload: crate::config::ReloadAction::Ignore,
             }],
             workers: vec![],

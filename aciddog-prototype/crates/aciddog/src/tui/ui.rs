@@ -19,6 +19,15 @@ use super::tasks_view::{FormField, TaskForm, TaskFormKind, TaskRow, TasksPrompt,
 const APP_NAME: &str = "aciddog";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Glyph rendered before the display name for leader-flagged agents
+/// and automatons in the agent list. Centralised here so a future
+/// terminal-capability fallback (ACIDDOG_NO_EMOJI=1, etc.) only has
+/// to be wired up in one place. For now we ship the crown raw to
+/// match the existing 9-glyph emoji set in `render_agent_list`.
+fn leader_glyph() -> &'static str {
+    "👑"
+}
+
 pub fn render(f: &mut Frame, app: &mut App) {
     // Fresh frame: reset interactive regions.
     app.layout.chat_buttons.clear();
@@ -288,6 +297,13 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
                 spans.push(Span::styled("↳ ", Style::default().fg(Color::DarkGray)));
             }
             spans.push(Span::raw(format!("{dot} ")));
+            // Crown the leader-flagged top-level Agent / Automaton
+            // chats. Placement is "🟢 👑 name" — after the status dot,
+            // before the display name. Workers and non-leader chats
+            // skip this span entirely.
+            if app.is_leader(i) {
+                spans.push(Span::raw(format!("{} ", leader_glyph())));
+            }
             spans.push(Span::styled(c.display_name.clone(), name_style));
             if c.parent_idx.is_some() {
                 spans.push(Span::styled(

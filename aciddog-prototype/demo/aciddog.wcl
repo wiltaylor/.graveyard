@@ -212,6 +212,9 @@ agent planner {
   // supervisor automatically).
   supervisor = true
   sysadmin = true
+  // Pin to the top of the agent list and decorate with 👑 in the TUI
+  // and web UI. Cosmetic only — sort + crown, no behavioural impact.
+  leader = true
 }
 
 // Fleet administrator. Sysadmin implies supervisor, so this agent has

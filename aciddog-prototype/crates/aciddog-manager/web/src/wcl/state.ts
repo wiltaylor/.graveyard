@@ -134,6 +134,7 @@ export interface AgentState {
   compaction?: string;
   supervisor?: boolean;
   sysadmin?: boolean;
+  leader?: boolean;
   on_reload?: ReloadAction;
 }
 
@@ -165,6 +166,7 @@ interface AutomatonCommon {
   can_message?: string[];
   supervisor?: boolean;
   sysadmin?: boolean;
+  leader?: boolean;
 }
 
 export interface AutomatonScript extends AutomatonCommon {
