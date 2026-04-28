@@ -124,7 +124,21 @@ run-manager: manager-frontend-build
 
 # Build everything
 [group('build')]
-build: app-build manager-build
+build: manager-frontend-build app-build manager-build
+
+# Build aciddog (release) and install via `cargo install --path`
+[group('install')]
+app-install:
+	cargo install --path crates/aciddog --force
+
+# Build the manager (frontend embedded, release) and install via `cargo install --path`
+[group('install')]
+manager-install: manager-frontend-build
+	cargo install --path crates/aciddog-manager --force
+
+# Build and install aciddog + aciddog-manager (release) into $CARGO_HOME/bin and install the WCL schema
+[group('install')]
+install: manager-frontend-build app-install manager-install wcl-schema-install
 
 # Run every test
 [group('test')]
