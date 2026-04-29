@@ -23,6 +23,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
 tokio-stream = { version = "0.1", features = ["sync"] }
 pulldown-cmark = { version = "0.12", default-features = false }
+unicode-width = "0.1"
 similar = "2"
 base64 = "0.22"
 shlex = "1"
