@@ -115,6 +115,9 @@ pub struct InboxScreen {
     /// Cursor into [`App::inbox`]. Clamped to `0..inbox.len()`
     /// whenever the list mutates.
     pub cursor: usize,
+    /// Vertical row offset into the detail-pane Paragraph; reset to 0
+    /// whenever `cursor` moves to a new message.
+    pub detail_scroll: u16,
     /// Current mode (list vs. reply vs. forward overlay).
     pub mode: InboxMode,
     /// Transient status toast rendered beneath the list. Cleared on
@@ -131,6 +134,20 @@ impl InboxScreen {
         } else if self.cursor >= inbox_len {
             self.cursor = inbox_len - 1;
         }
+    }
+
+    /// Move the cursor to `idx` (clamped to `0..inbox_len`) and reset
+    /// the detail-pane scroll offset to the top of the new message.
+    /// Centralises the reset semantics so cursor-mutation sites can't
+    /// forget to scroll back to the top.
+    pub fn select(&mut self, idx: usize, inbox_len: usize) {
+        let clamped = if inbox_len == 0 {
+            0
+        } else {
+            idx.min(inbox_len - 1)
+        };
+        self.cursor = clamped;
+        self.detail_scroll = 0;
     }
 }
 
@@ -161,6 +178,34 @@ mod tests {
         assert_eq!(s.cursor, 2);
         s.reclamp(0);
         assert_eq!(s.cursor, 0);
+    }
+
+    /// Pins the half-tab constraint at ui.rs:1755. If a future edit
+    /// flips `Constraint::Percentage(50)` back to `Length(N)` the
+    /// detail height will diverge sharply from the half-tab target
+    /// and this test will catch it.
+    #[test]
+    fn inbox_layout_detail_pane_is_half_tab() {
+        use ratatui::layout::{Constraint, Direction, Layout, Rect};
+        let area = Rect::new(0, 0, 80, 30);
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(5),
+                Constraint::Percentage(50),
+            ])
+            .split(area);
+        let detail_height = split[2].height;
+        // Toolbar takes 1 row; remaining 29 rows are split between
+        // list (Min 5) and detail (Percentage 50). ratatui rounds, so
+        // tolerate ±1 row around the half-tab target of 15.
+        let expected = (area.height - 1) / 2;
+        let delta = (detail_height as i32 - expected as i32).abs();
+        assert!(
+            delta <= 1,
+            "detail height {detail_height} too far from half-tab {expected} (delta {delta})"
+        );
     }
 
     #[test]

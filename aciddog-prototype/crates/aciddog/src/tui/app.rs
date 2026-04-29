@@ -1316,6 +1316,11 @@ pub const VIEW_ENTRIES: &[&str] = &["Inbox", "Tasks", "Memory", "Cores", "Cron"]
 pub struct LayoutRects {
     pub agent_list_inner: Option<Rect>,
     pub chat_history_inner: Option<Rect>,
+    /// Inner rect of the inbox detail Paragraph, published by
+    /// `render_inbox_screen` when in `InboxMode::List`. Drives the
+    /// mouse-wheel hit-test so wheel events scope to the body, not
+    /// the row list.
+    pub inbox_detail_inner: Option<Rect>,
     pub chat_input_inner: Option<Rect>,
     /// Inner rect of the "views" panel on the right column. Populated
     /// by `render()` so mouse clicks on a view entry can hit-test
@@ -9165,12 +9170,14 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if !self.inbox.is_empty() && self.inbox_screen.cursor + 1 < self.inbox.len() {
-                    self.inbox_screen.cursor += 1;
+                    self.inbox_screen
+                        .select(self.inbox_screen.cursor + 1, self.inbox.len());
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.inbox_screen.cursor > 0 {
-                    self.inbox_screen.cursor -= 1;
+                    self.inbox_screen
+                        .select(self.inbox_screen.cursor - 1, self.inbox.len());
                 }
             }
             KeyCode::Char('r') => {
@@ -11792,6 +11799,13 @@ impl App {
                 }
             }
             MouseEventKind::ScrollUp => {
+                if self.active_view == ActiveView::Inbox
+                    && self.mouse_in_inbox_detail_zone(pos)
+                {
+                    self.inbox_screen.detail_scroll =
+                        self.inbox_screen.detail_scroll.saturating_sub(3);
+                    return;
+                }
                 if self.active_view == ActiveView::Memory {
                     if let Some(zone) = self.memory_scroll_hit(pos) {
                         self.memory_scroll(zone, -1);
@@ -11803,6 +11817,17 @@ impl App {
                 }
             }
             MouseEventKind::ScrollDown => {
+                if self.active_view == ActiveView::Inbox
+                    && self.mouse_in_inbox_detail_zone(pos)
+                {
+                    let max = self.inbox_detail_max_scroll();
+                    self.inbox_screen.detail_scroll = self
+                        .inbox_screen
+                        .detail_scroll
+                        .saturating_add(3)
+                        .min(max);
+                    return;
+                }
                 if self.active_view == ActiveView::Memory {
                     if let Some(zone) = self.memory_scroll_hit(pos) {
                         self.memory_scroll(zone, 1);
@@ -11919,9 +11944,7 @@ impl App {
         self.focus = Focus::Inbox;
         match hotspot {
             InboxHotspot::SelectRow(i) => {
-                if i < self.inbox.len() {
-                    self.inbox_screen.cursor = i;
-                }
+                self.inbox_screen.select(i, self.inbox.len());
                 // Drop any lingering status toast so it doesn't
                 // confuse the next interaction.
                 self.inbox_screen.status_msg = None;
@@ -12646,6 +12669,39 @@ impl App {
             .chat_history_inner
             .map(|r| rect_contains(r, pos))
             .unwrap_or(false)
+    }
+
+    /// Hit-test for the inbox detail Paragraph (the message body
+    /// pane). Drives the wheel-handler arm so wheel events scope to
+    /// the body rather than the row list. Returns false when the
+    /// rect is unset (e.g. inbox is empty, Reply/Forward modal is
+    /// up, or the user has navigated away mid-frame).
+    fn mouse_in_inbox_detail_zone(&self, pos: (u16, u16)) -> bool {
+        self.layout
+            .inbox_detail_inner
+            .map(|r| rect_contains(r, pos))
+            .unwrap_or(false)
+    }
+
+    /// Maximum scroll offset for the inbox detail Paragraph: how
+    /// many rows the user can scroll past the top before the body
+    /// runs out. Returns 0 when no message is selected, the layout
+    /// rect is unset, or the body fits inside the inner rect (i.e.
+    /// no scrolling needed).
+    fn inbox_detail_max_scroll(&self) -> u16 {
+        let inner_height = self
+            .layout
+            .inbox_detail_inner
+            .map(|r| r.height)
+            .unwrap_or(0);
+        let Some(msg) = self.inbox.get(self.inbox_screen.cursor) else {
+            return 0;
+        };
+        // Mirrors the line-count built in `render_inbox_screen`:
+        // 2 header rows (From: line + blank) + body lines.
+        let body_lines = msg.body.lines().count();
+        let body_height = u16::try_from(body_lines.saturating_add(2)).unwrap_or(u16::MAX);
+        body_height.saturating_sub(inner_height)
     }
 }
 
@@ -14407,6 +14463,124 @@ mod tests {
         let a = app.current_chat().unwrap().anchor;
         assert_eq!(a.block_idx, 0);
         assert_eq!(a.within, 27, "one tick = 3 rows back up");
+    }
+
+    /// Wheel-down inside the inbox detail-pane zone advances
+    /// `detail_scroll` by 3 rows per tick (mirrors chat-history feel).
+    #[test]
+    fn inbox_wheel_scrolls_detail_pane() {
+        use super::super::inbox_view::InboxMessage;
+        let mut app = App::new(sample_config());
+        app.layout.inbox_detail_inner = Some(Rect::new(0, 20, 80, 8));
+        app.active_view = ActiveView::Inbox;
+        app.inbox
+            .push(InboxMessage::new("a", "line\n".repeat(50)));
+        app.inbox_screen.cursor = 0;
+        app.inbox_screen.detail_scroll = 0;
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 25,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.inbox_screen.detail_scroll, 3);
+    }
+
+    /// Wheel-down past the body height clamps to
+    /// `inbox_detail_max_scroll()` so the user can't overshoot.
+    #[test]
+    fn inbox_wheel_clamps_at_max() {
+        use super::super::inbox_view::InboxMessage;
+        let mut app = App::new(sample_config());
+        app.layout.inbox_detail_inner = Some(Rect::new(0, 20, 80, 8));
+        app.active_view = ActiveView::Inbox;
+        app.inbox
+            .push(InboxMessage::new("a", "line\n".repeat(50)));
+        app.inbox_screen.cursor = 0;
+        // Pre-stuff above any reasonable max; the .min() clamp must
+        // pin detail_scroll to max_scroll on the next ScrollDown tick.
+        app.inbox_screen.detail_scroll = 100;
+        let max = app.inbox_detail_max_scroll();
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 25,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.inbox_screen.detail_scroll, max);
+        // Sanity: 50 body lines + 2 header rows − 8 inner rows = 44.
+        assert_eq!(max, 44);
+    }
+
+    /// Wheel-up at offset 0 stays at 0 (saturating_sub is the floor).
+    #[test]
+    fn inbox_wheel_clamps_at_zero() {
+        use super::super::inbox_view::InboxMessage;
+        let mut app = App::new(sample_config());
+        app.layout.inbox_detail_inner = Some(Rect::new(0, 20, 80, 8));
+        app.active_view = ActiveView::Inbox;
+        app.inbox
+            .push(InboxMessage::new("a", "line\n".repeat(50)));
+        app.inbox_screen.cursor = 0;
+        app.inbox_screen.detail_scroll = 0;
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 5,
+            row: 25,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.inbox_screen.detail_scroll, 0);
+    }
+
+    /// Wheel events outside the detail-pane rect (e.g. above the
+    /// inbox-tab area or while a Reply/Forward modal is up — modals
+    /// leave `inbox_detail_inner` at None per the per-frame reset)
+    /// must be ignored.
+    #[test]
+    fn inbox_wheel_outside_detail_zone_is_ignored() {
+        use super::super::inbox_view::InboxMessage;
+        let mut app = App::new(sample_config());
+        app.layout.inbox_detail_inner = Some(Rect::new(0, 20, 80, 8));
+        app.active_view = ActiveView::Inbox;
+        app.inbox
+            .push(InboxMessage::new("a", "line\n".repeat(50)));
+        app.inbox_screen.cursor = 0;
+        app.inbox_screen.detail_scroll = 5;
+
+        // row 5 is above the detail rect at y=20.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(app.inbox_screen.detail_scroll, 5);
+    }
+
+    /// Moving the cursor to a different message resets
+    /// `detail_scroll` to 0 so the new message renders from its
+    /// top. Locks the R2 reset semantics across all cursor-move
+    /// sites (j/k, mouse SelectRow, programmatic select).
+    #[test]
+    fn inbox_detail_scroll_resets_on_message_change() {
+        use super::super::inbox_view::InboxMessage;
+        let mut app = App::new(sample_config());
+        app.inbox.push(InboxMessage::new("a", "first body"));
+        app.inbox.push(InboxMessage::new("b", "second body"));
+        app.inbox_screen.cursor = 0;
+        app.inbox_screen.detail_scroll = 10;
+
+        app.inbox_screen.select(1, app.inbox.len());
+
+        assert_eq!(app.inbox_screen.cursor, 1);
+        assert_eq!(app.inbox_screen.detail_scroll, 0);
     }
 
     #[test]

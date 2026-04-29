@@ -44,6 +44,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.layout.memory_link_rows.clear();
     app.layout.memory_modal_outer = None;
     app.layout.inbox_hotspots.clear();
+    app.layout.inbox_detail_inner = None;
     app.layout.cron_hotspots.clear();
 
     // Input height: in Chat and Channel views, grow from 3 to 7 rows
@@ -1752,7 +1753,7 @@ fn render_inbox_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
         .constraints([
             Constraint::Length(1),
             Constraint::Min(5),
-            Constraint::Length(10),
+            Constraint::Percentage(50),
         ])
         .split(area);
     let toolbar_area = split[0];
@@ -1818,7 +1819,9 @@ fn render_inbox_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
                 .title(" detail ")
                 .border_style(Style::default().fg(Color::DarkGray));
             let inner = detail_block.inner(detail_area);
+            app.layout.inbox_detail_inner = Some(inner);
             f.render_widget(detail_block, detail_area);
+            let scroll = app.inbox_screen.detail_scroll;
             if let Some(msg) = app.inbox.get(app.inbox_screen.cursor) {
                 let mut lines: Vec<Line> = Vec::new();
                 let age_secs = msg.received_at.elapsed().as_secs();
@@ -1838,7 +1841,9 @@ fn render_inbox_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
                 for body_line in msg.body.lines() {
                     lines.push(Line::from(body_line.to_string()));
                 }
-                let p = Paragraph::new(lines).wrap(Wrap { trim: false });
+                let p = Paragraph::new(lines)
+                    .wrap(Wrap { trim: false })
+                    .scroll((scroll, 0));
                 f.render_widget(p, inner);
             }
         }
