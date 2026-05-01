@@ -50,6 +50,14 @@ pub fn build_router(state: AppState) -> Router {
             "/instances/:id/tasks/:task_id",
             patch(tasks::patch).delete(tasks::delete),
         )
+        .route(
+            "/instances/:id/tasks/:task_id/approve",
+            post(tasks::approve),
+        )
+        .route(
+            "/instances/:id/tasks/:task_id/reject",
+            post(tasks::reject),
+        )
         .route("/instances/:id/tasks/:task_id/notes", post(tasks::add_note))
         .route("/instances/:id/tasks/:task_id/todos", post(tasks::add_todo))
         .route(

@@ -207,8 +207,10 @@ export interface SendResponse {
 // ---------------------------------------------------------------------------
 
 export type TaskStatus =
+  | "planning"
   | "open"
   | "assigned"
+  | "approved"
   | "in_progress"
   | "done"
   | "cancelled";
@@ -243,6 +245,9 @@ export interface Task {
   description?: string;
   status: TaskStatus;
   assignee?: string;
+  /** Pre-stored handoff target for `planning` tasks; undefined for any
+   *  other status. On approval the value moves into `assignee`. */
+  planned_assignee?: string;
   created_by: string;
   created_at_secs: number;
   updated_at_secs: number;

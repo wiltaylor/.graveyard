@@ -93,6 +93,15 @@ pub struct CreateTaskRequest {
     pub assignee: Option<String>,
     #[serde(default)]
     pub blocked_by: Vec<Uuid>,
+    /// Optional initial status. The daemon currently only honors
+    /// `"planning"` here (other statuses are auto-derived from the
+    /// assignee).
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Pre-stored handoff target for a `planning` task; required
+    /// when `status` is `"planning"`.
+    #[serde(default)]
+    pub planned_assignee: Option<String>,
 }
 
 /// POST /api/instances/:id/tasks
@@ -112,6 +121,8 @@ pub async fn create(
             description: req.description.filter(|s| !s.trim().is_empty()),
             assignee: req.assignee.filter(|s| !s.trim().is_empty()),
             blocked_by: req.blocked_by,
+            status: req.status.filter(|s| !s.trim().is_empty()),
+            planned_assignee: req.planned_assignee.filter(|s| !s.trim().is_empty()),
         })
         .await?;
     Ok(Json(MutationResponse::from_ipc(resp)))
@@ -129,6 +140,12 @@ pub struct PatchTaskRequest {
     pub assignee: Option<String>,
     #[serde(default)]
     pub unassign: bool,
+    /// Revise the pre-stored handoff target on a `planning` task.
+    #[serde(default)]
+    pub planned_assignee: Option<String>,
+    /// Clear `planned_assignee`. Mutually exclusive with the above.
+    #[serde(default)]
+    pub clear_planned_assignee: bool,
     #[serde(default)]
     pub note: Option<String>,
     #[serde(default)]
@@ -153,12 +170,89 @@ pub async fn patch(
             status: req.status,
             assignee: req.assignee,
             unassign: req.unassign,
+            planned_assignee: req.planned_assignee,
+            clear_planned_assignee: req.clear_planned_assignee,
             note: req.note,
             add_blocked_by: req.add_blocked_by,
             remove_blocked_by: req.remove_blocked_by,
         })
         .await?;
     Ok(Json(MutationResponse::from_ipc(resp)))
+}
+
+/// POST /api/instances/:id/tasks/:task_id/approve
+///
+/// Approve a `planning` task — transitions status to `approved`
+/// and routes the assignee to the previously-stored
+/// `planned_assignee`. Wraps a `task_update` RPC: status="approved",
+/// assignee=current_planned_assignee, clear_planned_assignee=true.
+/// The web manager fetches the task client-side to read the
+/// `planned_assignee` value before issuing this call.
+pub async fn approve(
+    State(state): State<AppState>,
+    Path((id, task_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<ApproveTaskRequest>,
+) -> AppResult<Json<MutationResponse>> {
+    if req.assignee.trim().is_empty() {
+        return Err(AppError::Validation(
+            "approve: missing assignee (the planned_assignee from the task)".into(),
+        ));
+    }
+    let row = load_row_for_routes(&state, id).await?;
+    let client = Client::from_row(&row)?;
+    let resp = client
+        .send_rpc(&RequestCmd::TaskUpdate {
+            id: task_id,
+            title: None,
+            description: None,
+            status: Some("approved".into()),
+            assignee: Some(req.assignee.clone()),
+            unassign: false,
+            planned_assignee: None,
+            clear_planned_assignee: true,
+            note: Some(format!("approved by user; routed to {}", req.assignee)),
+            add_blocked_by: vec![],
+            remove_blocked_by: vec![],
+        })
+        .await?;
+    Ok(Json(MutationResponse::from_ipc(resp)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApproveTaskRequest {
+    /// The `planned_assignee` value from the task being approved.
+    /// The client passes it explicitly so the daemon doesn't need
+    /// a dedicated approve RPC.
+    pub assignee: String,
+}
+
+/// POST /api/instances/:id/tasks/:task_id/reject
+///
+/// Reject a `planning` task. The reason becomes a `Rejected: ...`
+/// comment and the task is reassigned back to its `created_by` for
+/// revision. Status stays `planning`. Empty reasons are rejected.
+pub async fn reject(
+    State(state): State<AppState>,
+    Path((id, task_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<RejectTaskRequest>,
+) -> AppResult<Json<MutationResponse>> {
+    if req.reason.trim().is_empty() {
+        return Err(AppError::Validation("reject: reason is required".into()));
+    }
+    let row = load_row_for_routes(&state, id).await?;
+    let client = Client::from_row(&row)?;
+    let resp = client
+        .send_rpc(&RequestCmd::TaskReject {
+            id: task_id,
+            reason: req.reason,
+        })
+        .await?;
+    Ok(Json(MutationResponse::from_ipc(resp)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RejectTaskRequest {
+    pub reason: String,
 }
 
 /// DELETE /api/instances/:id/tasks/:task_id

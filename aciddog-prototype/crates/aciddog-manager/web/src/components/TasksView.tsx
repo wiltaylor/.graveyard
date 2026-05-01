@@ -19,16 +19,20 @@ interface Props {
 }
 
 const STATUS_ORDER: TaskStatus[] = [
+  "planning",
   "open",
   "assigned",
+  "approved",
   "in_progress",
   "done",
   "cancelled",
 ];
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
+  planning: "Planning",
   open: "Open",
   assigned: "Assigned",
+  approved: "Approved",
   in_progress: "In progress",
   done: "Done",
   cancelled: "Cancelled",
@@ -131,8 +135,10 @@ export default function TasksView(props: Props): JSX.Element {
 
   const tasksByStatus = createMemo(() => {
     const out: Record<TaskStatus, Task[]> = {
+      planning: [],
       open: [],
       assigned: [],
+      approved: [],
       in_progress: [],
       done: [],
       cancelled: [],
@@ -202,7 +208,7 @@ export default function TasksView(props: Props): JSX.Element {
       </Show>
 
       <div class="flex-1 overflow-x-auto overflow-y-hidden px-4 py-3">
-        <div class="grid grid-cols-5 gap-3 h-full min-w-[60rem]">
+        <div class="grid grid-cols-7 gap-3 h-full min-w-[84rem]">
           <For each={STATUS_ORDER}>
             {(status) => (
               <KanbanColumn
@@ -334,6 +340,11 @@ function TaskCard(props: {
           </Show>
         </span>
       </div>
+      <Show when={props.task.status === "planning" && props.task.planned_assignee}>
+        <div class="mt-1 text-xs text-fg-3 italic">
+          → on approve: {decorateAssignee(props.task.planned_assignee, props.agents)}
+        </div>
+      </Show>
     </article>
   );
 }
@@ -612,6 +623,36 @@ function TaskDetailModal(props: {
     else props.onDeleted();
   };
 
+  const approveTask = async () => {
+    const target = props.task.planned_assignee;
+    if (!target) {
+      props.onError("approve: task has no planned_assignee");
+      return;
+    }
+    const resp = await api.approveTask(
+      props.instanceId,
+      props.task.id,
+      target,
+    );
+    if (!resp.ok) props.onError(resp.error ?? "approve failed");
+    else props.onPatched();
+  };
+
+  const rejectTask = async () => {
+    const reason = window.prompt(
+      "Why are you rejecting this plan? Your reason becomes a comment and the task is sent back to the proposing agent for revision.",
+    );
+    if (reason === null) return;
+    const trimmed = reason.trim();
+    if (!trimmed) {
+      props.onError("reject: a reason is required");
+      return;
+    }
+    const resp = await api.rejectTask(props.instanceId, props.task.id, trimmed);
+    if (!resp.ok) props.onError(resp.error ?? "reject failed");
+    else props.onPatched();
+  };
+
   const taskById = (id: string): Task | undefined =>
     props.allTasks.find((t) => t.id === id);
 
@@ -682,6 +723,50 @@ function TaskDetailModal(props: {
             {new Date(props.task.created_at_secs * 1000).toLocaleString()}
           </div>
         </section>
+
+        <Show when={props.task.status === "planning"}>
+          <section class="rounded border border-border bg-bg-1 px-3 py-2">
+            <div class="flex items-center justify-between gap-2">
+              <div>
+                <div class="text-xs uppercase tracking-wider text-fg-2">
+                  Planned assignee
+                </div>
+                <div class="font-medium">
+                  {decorateAssignee(
+                    props.task.planned_assignee,
+                    props.agents,
+                  )}
+                </div>
+                <div class="text-xs text-fg-3 mt-1">
+                  Approve to route this task to{" "}
+                  {props.task.planned_assignee ?? "(none)"} (status will
+                  flip to <code>approved</code>).
+                </div>
+              </div>
+              <div class="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={
+                    !props.task.planned_assignee ||
+                    props.task.assignee !== USER_ASSIGNEE_ID
+                  }
+                  onClick={approveTask}
+                >
+                  Approve
+                </Button>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  disabled={props.task.assignee !== USER_ASSIGNEE_ID}
+                  onClick={rejectTask}
+                >
+                  Reject
+                </Button>
+              </div>
+            </div>
+          </section>
+        </Show>
 
         <section>
           <h3 class="text-xs uppercase tracking-wider text-fg-2 mb-1">

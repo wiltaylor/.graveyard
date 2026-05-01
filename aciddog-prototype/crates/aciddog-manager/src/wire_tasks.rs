@@ -14,8 +14,15 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
+    /// Agent-proposed plan awaiting user approval. Carries a
+    /// `planned_assignee` that flips into `assignee` on approval.
+    Planning,
     Open,
     Assigned,
+    /// Plan approved by the user; routed to the previously-stored
+    /// `planned_assignee`. Same downstream behaviour as `Assigned`
+    /// but distinguishes the provenance.
+    Approved,
     InProgress,
     Done,
     Cancelled,
@@ -63,6 +70,10 @@ pub struct Task {
     pub status: TaskStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// Pre-stored handoff target for `planning` tasks. `None` for
+    /// any other status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_assignee: Option<String>,
     pub created_by: String,
     pub created_at_secs: u64,
     pub updated_at_secs: u64,

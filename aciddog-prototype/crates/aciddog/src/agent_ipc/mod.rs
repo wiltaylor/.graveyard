@@ -144,6 +144,15 @@ pub enum RequestCmd {
         /// can be claimed via `task take`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         blocked_by: Vec<Uuid>,
+        /// Initial status. Currently only `planning` is settable
+        /// here; omit for default behaviour (auto-bumps to `assigned`
+        /// when `assignee` is set, else `open`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        /// Pre-stored handoff target for a `planning` task. Required
+        /// (and only meaningful) when `status = "planning"`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        planned_assignee: Option<String>,
     },
     /// List tasks, optionally filtered.
     TaskList {
@@ -187,6 +196,13 @@ pub enum RequestCmd {
         assignee: Option<String>,
         #[serde(default)]
         unassign: bool,
+        /// Revise the pre-stored handoff target on a planning task.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        planned_assignee: Option<String>,
+        /// Clear `planned_assignee` (mutually exclusive with
+        /// `planned_assignee`).
+        #[serde(default)]
+        clear_planned_assignee: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         note: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -197,6 +213,14 @@ pub enum RequestCmd {
     /// Remove a task by id.
     TaskRemove {
         id: Uuid,
+    },
+    /// Reject a `planning` task (human-only flow). Atomically
+    /// appends `reason` as a `Rejected: ...` comment, reassigns the
+    /// task back to its `created_by` for revision, and pings the
+    /// creator. Status stays `planning`. Empty reason is rejected.
+    TaskReject {
+        id: Uuid,
+        reason: String,
     },
     /// Return a detailed rendering of a single task — full
     /// description, dependencies, and the complete note log.
@@ -879,6 +903,8 @@ mod tests {
                 description: Some("details".into()),
                 assignee: Some("tester".into()),
                 blocked_by: vec![dep],
+                status: None,
+                planned_assignee: None,
             },
         };
         let s = serde_json::to_string(&req).unwrap();
@@ -892,11 +918,15 @@ mod tests {
                 description,
                 assignee,
                 blocked_by,
+                status,
+                planned_assignee,
             } => {
                 assert_eq!(title, "fix bug");
                 assert_eq!(description.as_deref(), Some("details"));
                 assert_eq!(assignee.as_deref(), Some("tester"));
                 assert_eq!(blocked_by, vec![dep]);
+                assert!(status.is_none());
+                assert!(planned_assignee.is_none());
             }
             other => panic!("expected TaskAdd, got {other:?}"),
         }
@@ -911,6 +941,8 @@ mod tests {
                 description: None,
                 assignee: None,
                 blocked_by: vec![],
+                status: None,
+                planned_assignee: None,
             },
         };
         let s = serde_json::to_string(&req).unwrap();
@@ -918,6 +950,39 @@ mod tests {
             !s.contains("blocked_by"),
             "empty list should be omitted: {s}"
         );
+    }
+
+    #[test]
+    fn task_add_carries_planning_fields() {
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::TaskAdd {
+                title: "draft".into(),
+                description: Some("plan body".into()),
+                assignee: Some("user".into()),
+                blocked_by: vec![],
+                status: Some("planning".into()),
+                planned_assignee: Some("builders".into()),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"status\":\"planning\""), "got: {s}");
+        assert!(
+            s.contains("\"planned_assignee\":\"builders\""),
+            "got: {s}"
+        );
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::TaskAdd {
+                status,
+                planned_assignee,
+                ..
+            } => {
+                assert_eq!(status.as_deref(), Some("planning"));
+                assert_eq!(planned_assignee.as_deref(), Some("builders"));
+            }
+            other => panic!("expected TaskAdd, got {other:?}"),
+        }
     }
 
     #[test]
@@ -957,6 +1022,8 @@ mod tests {
                 status: Some("done".into()),
                 assignee: Some("coder".into()),
                 unassign: false,
+                planned_assignee: None,
+                clear_planned_assignee: false,
                 note: Some("ready".into()),
                 add_blocked_by: vec![dep],
                 remove_blocked_by: vec![],

@@ -77,6 +77,10 @@ pub enum RequestCmd {
         assignee: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         blocked_by: Vec<Uuid>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        planned_assignee: Option<String>,
     },
     TaskUpdate {
         id: Uuid,
@@ -91,6 +95,10 @@ pub enum RequestCmd {
         #[serde(default)]
         unassign: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
+        planned_assignee: Option<String>,
+        #[serde(default)]
+        clear_planned_assignee: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
         note: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         add_blocked_by: Vec<Uuid>,
@@ -99,6 +107,14 @@ pub enum RequestCmd {
     },
     TaskRemove {
         id: Uuid,
+    },
+    /// Reject a `planning` task (human-only). Atomically posts the
+    /// rejection reason as a `Rejected: ...` comment, reassigns the
+    /// task back to its `created_by`, and pings the creator. Status
+    /// stays `planning`.
+    TaskReject {
+        id: Uuid,
+        reason: String,
     },
     TaskNote {
         id: Uuid,

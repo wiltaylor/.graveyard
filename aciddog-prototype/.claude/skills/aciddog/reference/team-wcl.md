@@ -101,6 +101,19 @@ Optional free-form section label on `agent`, `automaton`, and `worker` blocks. R
 
 The `assignee` field on a task accepts three flavours of bare-string identifier, resolved at validation time in this order: chat `display_name` (configured agents, automatons, and spawned workers) → declared group label → reserved `user` id. The `user` value routes the task notification to the operator's inbox (Views → Inbox in the TUI; the inbox endpoint in the web manager).
 
+## Task statuses
+
+The board has seven statuses: `planning`, `open`, `assigned`, `approved`, `in_progress`, `done`, `cancelled`. Five of these (`open`, `assigned`, `in_progress`, `done`, `cancelled`) are user-cyclable in the TUI via `s` or via the status dropdown; the other two (`planning`, `approved`) are reserved for the user-approval workflow described below.
+
+## User-approval workflow (`planning` / `approved` statuses, `planned_assignee` field)
+
+When an agent wants the user to review work *before* it gets handed off to another agent or group, it creates the task as a **plan** assigned to the human operator with a pre-stored handoff target. The user reviews and approves; on approval the task is routed to the target.
+
+- **Create a plan**: `aciddog task add --title "<t>" --description "<plan body>" --assignee user --status planning --planned-assignee <agent|group>`. The daemon validates that `assignee` is the reserved `user` id and that `planned_assignee` resolves to a chat `display_name` or declared group label. Rejecting either field aborts the create; nothing lands on the board.
+- **User approval**: in the TUI, select the planning task and press `y` (the footer surfaces `y approve` when a Planning task assigned to user is selected). In the web manager, open the task and click **Approve**. Approval is atomic: status flips to `approved`, `assignee` becomes the previously-stored `planned_assignee`, `planned_assignee` is cleared, and the new assignee gets the standard handoff notification (chat `system_info` for agents/automatons, leader notification for groups).
+- **Rejection**: in the TUI, focus the **Reject** button on the planning-task edit form (or use the **Reject** button in the manager's task detail). Both surfaces prompt for a reason. On submit, the rejection atomically: (a) appends `Rejected: <reason>` as a comment, (b) reassigns the task back to its `created_by` (the proposing agent), and (c) pings the creator's chat with a `Plan rejected by <user>; sent back for revision` system_info. The status stays `planning` and `planned_assignee` is preserved, so the agent can revise the description / planned target with `aciddog task update --id <id> --description "<revised>" [--planned-assignee <new-target>] --assignee user` and resubmit. The `--planned-assignee` and `--clear-planned-assignee` flags both apply only on planning tasks.
+- **Status display**: the `── planning ──` header renders magenta and the `── approved ──` header renders green; everything else stays cyan. Approved is conceptually equivalent to `assigned` but distinguishes "started life as a plan" — useful for downstream reporting.
+
 ## Allowlist semantics (`can_message`, `can_create_workers`, `can_run_workflows`)
 
 WCL distinguishes *omitted* from *empty list*:

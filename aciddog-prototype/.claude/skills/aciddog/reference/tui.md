@@ -37,7 +37,7 @@ Main-area views:
 | View       | Purpose                                                              |
 |------------|----------------------------------------------------------------------|
 | Chat       | Selected agent/automaton/channel transcript with composer.           |
-| Tasks      | In-TUI task board (add/edit/delete/toggle).                          |
+| Tasks      | In-TUI task board (add/edit/delete/toggle, plus `y` to approve a planning task assigned to user — see team-wcl.md for the workflow). |
 | Memory     | Shared memory banks: search, browse, view detail.                    |
 | Cores      | Configured `ai_core`s with usage/quota info from `usage_provider`.   |
 | Inbox      | Personal messages addressed to the human operator.                   |

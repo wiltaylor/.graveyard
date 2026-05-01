@@ -142,6 +142,8 @@ export const api = {
       description?: string;
       assignee?: string;
       blocked_by?: string[];
+      status?: TaskStatus;
+      planned_assignee?: string;
     },
   ) =>
     request<MutationResponse>(`/api/instances/${id}/tasks`, {
@@ -157,6 +159,8 @@ export const api = {
       status?: TaskStatus;
       assignee?: string;
       unassign?: boolean;
+      planned_assignee?: string;
+      clear_planned_assignee?: boolean;
       note?: string;
       add_blocked_by?: string[];
       remove_blocked_by?: string[];
@@ -170,6 +174,16 @@ export const api = {
     request<MutationResponse>(`/api/instances/${id}/tasks/${taskId}`, {
       method: "DELETE",
     }),
+  approveTask: (id: string, taskId: string, assignee: string) =>
+    request<MutationResponse>(
+      `/api/instances/${id}/tasks/${taskId}/approve`,
+      { method: "POST", body: JSON.stringify({ assignee }) },
+    ),
+  rejectTask: (id: string, taskId: string, reason: string) =>
+    request<MutationResponse>(
+      `/api/instances/${id}/tasks/${taskId}/reject`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
   addTaskNote: (id: string, taskId: string, body: string) =>
     request<MutationResponse>(`/api/instances/${id}/tasks/${taskId}/notes`, {
       method: "POST",

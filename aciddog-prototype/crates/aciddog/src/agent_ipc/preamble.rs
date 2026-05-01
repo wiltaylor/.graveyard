@@ -262,8 +262,8 @@ pub fn cli_preamble(
         &[
             Row {
                 cmd: "task add",
-                params: "`--title \"<t>\"` [`--description \"…\"`] [`--assignee <id>`] [`--blocked-by <uuid>`]…",
-                desc: "Create work. Repeat `--blocked-by` for multiple deps.",
+                params: "`--title \"<t>\"` [`--description \"…\"`] [`--assignee <id>`] [`--blocked-by <uuid>`]… [`--status planning` `--assignee user` `--planned-assignee <id>`]",
+                desc: "Create work. For a user-approval workflow, propose a plan with `--status planning --assignee user --planned-assignee <target>`; the user approves and the task is routed to `<target>` (status flips to `approved`).",
             },
             Row {
                 cmd: "task list",
@@ -277,8 +277,8 @@ pub fn cli_preamble(
             },
             Row {
                 cmd: "task update",
-                params: "`--id <uuid>` [`--title` / `--description` / `--status open\\|assigned\\|in_progress\\|done\\|cancelled` / `--assignee <id>` \\| `--unassign` / `--note \"…\"` / `--add-blocked-by <uuid>`… / `--remove-blocked-by <uuid>`…]",
-                desc: "Change fields. Always attach `--note` when reassigning so the next owner sees context.",
+                params: "`--id <uuid>` [`--title` / `--description` / `--status open\\|assigned\\|in_progress\\|done\\|cancelled` / `--assignee <id>` \\| `--unassign` / `--planned-assignee <id>` \\| `--clear-planned-assignee` / `--note \"…\"` / `--add-blocked-by <uuid>`… / `--remove-blocked-by <uuid>`…]",
+                desc: "Change fields. Always attach `--note` when reassigning. On a `planning` task, use `--planned-assignee` to revise the post-approval handoff target after the user comments.",
             },
             Row {
                 cmd: "task take",
@@ -755,8 +755,8 @@ pub fn tag_preamble(
         &[
             Row {
                 cmd: "task_add",
-                params: "`\"title\":\"<t>\"`, [`\"description\":\"…\"`], [`\"assignee\":\"<id>\"`], [`\"blocked_by\":[\"<uuid>\"…]`]",
-                desc: "Create work.",
+                params: "`\"title\":\"<t>\"`, [`\"description\":\"…\"`], [`\"assignee\":\"<id>\"`], [`\"blocked_by\":[\"<uuid>\"…]`], [`\"status\":\"planning\"` `\"assignee\":\"user\"` `\"planned_assignee\":\"<id>\"`]",
+                desc: "Create work. For a user-approval workflow, propose a plan with `\"status\":\"planning\"`, `\"assignee\":\"user\"`, and `\"planned_assignee\":\"<target>\"`; the user approves and the task is routed to `<target>` (status flips to `approved`).",
             },
             Row {
                 cmd: "task_list",
@@ -770,8 +770,8 @@ pub fn tag_preamble(
             },
             Row {
                 cmd: "task_update",
-                params: "`\"id\":\"<uuid>\"` + any of: `\"title\"`, `\"description\"`, `\"status\":\"open\\|assigned\\|in_progress\\|done\\|cancelled\"`, `\"assignee\"` \\| `\"unassign\":true`, `\"note\"`, `\"add_blocked_by\":[…]`, `\"remove_blocked_by\":[…]`",
-                desc: "Omit fields you don't want to change. Always include `\"note\"` when reassigning.",
+                params: "`\"id\":\"<uuid>\"` + any of: `\"title\"`, `\"description\"`, `\"status\":\"open\\|assigned\\|in_progress\\|done\\|cancelled\"`, `\"assignee\"` \\| `\"unassign\":true`, `\"planned_assignee\"` \\| `\"clear_planned_assignee\":true`, `\"note\"`, `\"add_blocked_by\":[…]`, `\"remove_blocked_by\":[…]`",
+                desc: "Omit fields you don't want to change. Always include `\"note\"` when reassigning. On a `planning` task, set `\"planned_assignee\"` to revise the post-approval handoff target after the user comments.",
             },
             Row {
                 cmd: "task_take",

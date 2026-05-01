@@ -757,12 +757,16 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             description,
             assignee,
             blocked_by,
+            status,
+            planned_assignee,
         } => {
             let (k, s, b) = task_op_summary(&TaskCommand::Add {
                 title,
                 description,
                 assignee,
                 blocked_by,
+                status,
+                planned_assignee,
             });
             ChatBlock::task_op(k, s, b)
         }
@@ -805,6 +809,8 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             status,
             assignee,
             unassign,
+            planned_assignee,
+            clear_planned_assignee,
             note,
             add_blocked_by,
             remove_blocked_by,
@@ -816,6 +822,8 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
                 status,
                 assignee,
                 unassign,
+                planned_assignee,
+                clear_planned_assignee,
                 note,
                 add_blocked_by,
                 remove_blocked_by,
@@ -825,6 +833,13 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         RequestCmd::TaskRemove { id } => {
             let (k, s, b) = task_op_summary(&TaskCommand::Remove { id });
             ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskReject { id, reason } => {
+            ChatBlock::task_op(
+                crate::tui::blocks::TaskOpKind::Update,
+                format!("Reject: {}", short_id(id)),
+                reason,
+            )
         }
         RequestCmd::TaskTake => {
             let (k, s, b) = task_op_summary(&TaskCommand::Take);
@@ -3102,8 +3117,19 @@ impl App {
                 description,
                 assignee,
                 blocked_by,
+                status,
+                planned_assignee,
             } => {
-                self.handle_task_add(idx, title, description, assignee, blocked_by, reply);
+                self.handle_task_add(
+                    idx,
+                    title,
+                    description,
+                    assignee,
+                    blocked_by,
+                    status,
+                    planned_assignee,
+                    reply,
+                );
             }
             RequestCmd::TaskList {
                 assignee,
@@ -3128,6 +3154,8 @@ impl App {
                 status,
                 assignee,
                 unassign,
+                planned_assignee,
+                clear_planned_assignee,
                 note,
                 add_blocked_by,
                 remove_blocked_by,
@@ -3140,6 +3168,8 @@ impl App {
                     status,
                     assignee,
                     unassign,
+                    planned_assignee,
+                    clear_planned_assignee,
                     note,
                     add_blocked_by,
                     remove_blocked_by,
@@ -3148,6 +3178,9 @@ impl App {
             }
             RequestCmd::TaskRemove { id } => {
                 self.handle_task_remove(idx, id, reply);
+            }
+            RequestCmd::TaskReject { id, reason } => {
+                self.handle_task_reject(idx, id, reason, reply);
             }
             RequestCmd::TaskTake => {
                 self.handle_task_take(idx, reply);
@@ -5104,6 +5137,7 @@ impl App {
         let _ = reply.send(Response::ok("queued"));
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_task_add(
         &mut self,
         sender_idx: usize,
@@ -5111,6 +5145,8 @@ impl App {
         description: Option<String>,
         assignee: Option<String>,
         blocked_by: Vec<Uuid>,
+        status: Option<String>,
+        planned_assignee: Option<String>,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
         let Some(sender_chat) = self.chats.get(sender_idx) else {
@@ -5118,6 +5154,68 @@ impl App {
             return;
         };
         let who = sender_chat.display_name.clone();
+
+        let parsed_status = match status.as_deref().map(crate::tasks::TaskStatus::parse).transpose()
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+                return;
+            }
+        };
+
+        // Planning workflow: assignee must be `user` and a planned
+        // assignee that resolves to a chat / group is required.
+        if parsed_status == Some(crate::tasks::TaskStatus::Planning) {
+            if assignee.as_deref() != Some(crate::config::USER_INBOX_ID) {
+                let _ = reply.send(Response::err(
+                    "planning tasks must be assigned to `user` (the human operator approves them)",
+                ));
+                return;
+            }
+            let Some(target) = planned_assignee.clone() else {
+                let _ = reply.send(Response::err(
+                    "planning tasks require --planned-assignee (the post-approval handoff target)",
+                ));
+                return;
+            };
+            if self.classify_assignee(&target).is_none() {
+                let _ = reply.send(Response::err(format!(
+                    "planned_assignee: no agent / worker / group / user named `{target}`"
+                )));
+                return;
+            }
+            let task_id = match self.tasks.add_planning(
+                title,
+                description,
+                target,
+                who.clone(),
+                blocked_by,
+            ) {
+                Ok(t) => t.id,
+                Err(e) => {
+                    let _ = reply.send(Response::err(e.to_string()));
+                    return;
+                }
+            };
+            // Notify the human approver via the user inbox.
+            let title_clone = self.tasks.get(task_id).map(|t| t.title.clone()).unwrap_or_default();
+            let short = task_id.to_string();
+            let short = short.get(..8).unwrap_or(&short);
+            self.push_user_inbox(
+                who.clone(),
+                format!("Plan {short} awaiting your approval from {who}: {title_clone}"),
+            );
+            let _ = reply.send(Response::ok(format!("planning task created: {task_id}")));
+            return;
+        }
+
+        if planned_assignee.is_some() && parsed_status != Some(crate::tasks::TaskStatus::Planning) {
+            let _ = reply.send(Response::err(
+                "--planned-assignee is only meaningful with --status planning",
+            ));
+            return;
+        }
 
         let kind = if let Some(ref name) = assignee {
             match self.classify_assignee(name) {
@@ -5478,6 +5576,7 @@ impl App {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn handle_task_update(
         &mut self,
         sender_idx: usize,
@@ -5487,6 +5586,8 @@ impl App {
         status: Option<String>,
         assignee: Option<String>,
         unassign: bool,
+        planned_assignee: Option<String>,
+        clear_planned_assignee: bool,
         note: Option<String>,
         add_blocked_by: Vec<Uuid>,
         remove_blocked_by: Vec<Uuid>,
@@ -5520,11 +5621,26 @@ impl App {
             None
         };
 
+        let planned_patch: Option<Option<String>> = if clear_planned_assignee {
+            Some(None)
+        } else if let Some(name) = planned_assignee {
+            if self.classify_assignee(&name).is_none() {
+                let _ = reply.send(Response::err(format!(
+                    "planned_assignee: no agent / worker / group / user named `{name}`"
+                )));
+                return;
+            }
+            Some(Some(name))
+        } else {
+            None
+        };
+
         let patch = TaskPatch {
             title,
             description,
             status: parsed_status,
             assignee: assignee_patch,
+            planned_assignee: planned_patch,
             note,
             add_blocked_by,
             remove_blocked_by,
@@ -5569,6 +5685,31 @@ impl App {
         match self.tasks.remove(id) {
             Ok(_) => {
                 let _ = reply.send(Response::ok("task removed"));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
+    /// Handle a TaskReject IPC. Routes through `reject_planning_task`
+    /// which atomically appends the rejection comment, reassigns the
+    /// task back to `created_by`, and pings the creator.
+    fn handle_task_reject(
+        &mut self,
+        sender_idx: usize,
+        id: Uuid,
+        reason: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(sender) = self.chats.get(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        let who = sender.display_name.clone();
+        match self.reject_planning_task(id, reason, &who) {
+            Ok(creator) => {
+                let _ = reply.send(Response::ok(format!("rejected; sent back to {creator}")));
             }
             Err(e) => {
                 let _ = reply.send(Response::err(e.to_string()));
@@ -6366,9 +6507,11 @@ impl App {
             return;
         };
         let who = sender.display_name.clone();
-        match self.tasks.add_comment(task, body, who) {
+        match self.tasks.add_comment(task, body, who.clone()) {
             Ok(c) => {
-                let _ = reply.send(Response::ok(format!("comment added: {}", c.id)));
+                let cid = c.id;
+                self.notify_planning_creator_of_comment(task, &who);
+                let _ = reply.send(Response::ok(format!("comment added: {cid}")));
             }
             Err(e) => {
                 let _ = reply.send(Response::err(e.to_string()));
@@ -7106,6 +7249,36 @@ impl App {
         });
     }
 
+    /// Deliver `body` to `to` as if the human operator had typed it,
+    /// through the chat's `user_tx` channel. The AI loop picks it up
+    /// next turn so the agent actually sees + can respond to the
+    /// message. Falls back to a passive `system_info` block if the
+    /// chat is hibernated / offline (no live `user_tx`); in that case
+    /// the agent only sees a marker on next wake. Returns `true` on
+    /// active delivery, `false` on fallback or unknown recipient.
+    ///
+    /// Used by the interactive planning flows (approve / reject)
+    /// where the user genuinely expects the AI to react. Routine
+    /// task-assignment notifications stay on the passive
+    /// `notify_assignee` path so we don't wake every sleeping worker
+    /// on every reassignment.
+    pub(crate) fn deliver_active_user_message(
+        &mut self,
+        to: &str,
+        body: String,
+    ) -> bool {
+        let Some(idx) = self.chats.iter().position(|c| c.display_name == to) else {
+            return false;
+        };
+        if let Some(tx) = self.chats[idx].user_tx.clone() {
+            if tx.send(body.clone()).is_ok() {
+                return true;
+            }
+        }
+        self.chats[idx].push_block(ChatBlock::system_info(body));
+        false
+    }
+
     /// Push a passive `system_info` block into the assignee's chat so
     /// they see the new work next time they look at the pane. Does
     /// NOT resurrect hibernated workers — tasks are pull-driven, so
@@ -7128,6 +7301,167 @@ impl App {
         {
             chat.push_block(ChatBlock::system_info(msg));
         }
+    }
+
+    /// Wake the proposing agent on a `Planning` task when someone else
+    /// (typically the user via the TUI) adds a comment — that's the
+    /// "send back as a comment" rejection / clarification path. Skips
+    /// notification if the comment author *is* the task creator (no
+    /// point pinging yourself) or if the task isn't in `Planning`.
+    pub(crate) fn notify_planning_creator_of_comment(
+        &mut self,
+        task_id: Uuid,
+        comment_author: &str,
+    ) {
+        let Some(task) = self.tasks.get(task_id) else {
+            return;
+        };
+        if task.status != crate::tasks::TaskStatus::Planning {
+            return;
+        }
+        let creator = task.created_by.clone();
+        if creator == comment_author {
+            return;
+        }
+        let title = task.title.clone();
+        let short = task_id.to_string();
+        let short = short.get(..8).unwrap_or(&short).to_string();
+        let body = format!("Task {short} planning task got a comment from {comment_author}: {title}");
+        if creator == crate::config::USER_INBOX_ID {
+            // Edge case: user proposed the plan to themselves.
+            self.push_user_inbox(comment_author.to_string(), body);
+            return;
+        }
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.display_name == creator) {
+            chat.push_block(ChatBlock::system_info(body));
+        }
+    }
+
+    /// Approve a `Planning` task: route it to its `planned_assignee`,
+    /// flip status to `Approved`, and actively deliver a user-style
+    /// message to the new assignee (or to a group's leader) so the
+    /// AI immediately sees the approval and can act on it. Returns
+    /// the new assignee on success.
+    pub(crate) fn approve_planning_task(
+        &mut self,
+        task_id: Uuid,
+        approver: &str,
+    ) -> Result<String, crate::tasks::TaskError> {
+        let target = self.tasks.approve(task_id, approver)?;
+        let title = self.tasks.get(task_id).map(|t| t.title.clone()).unwrap_or_default();
+        let short = task_id.to_string();
+        let short = short.get(..8).unwrap_or(&short).to_string();
+        let msg = format!(
+            "I approved the plan for task {short} (\"{title}\") and routed it to you.\n\n\
+             Status is now `approved`. Please proceed with the work as described \
+             in the task; mark it `in_progress` when you start and `done` when \
+             complete."
+        );
+        if let Some(kind) = self.classify_assignee(&target) {
+            match kind {
+                AssigneeKind::Chat => {
+                    self.deliver_active_user_message(&target, msg);
+                }
+                AssigneeKind::Group => {
+                    if let Some(leader) =
+                        self.config.group_leader(&target).map(|s| s.to_string())
+                    {
+                        self.deliver_active_user_message(&leader, msg);
+                    } else {
+                        tracing::warn!(
+                            group = %target,
+                            %task_id,
+                            "approved plan routed to group with no leader; no active notification dispatched"
+                        );
+                    }
+                }
+                AssigneeKind::User => {
+                    self.push_user_inbox(approver.to_string(), msg);
+                }
+            }
+        }
+        Ok(target)
+    }
+
+    /// Reject a `Planning` task: append the reason as a comment,
+    /// reassign the task back to its `created_by` for revision, and
+    /// actively deliver a user-style message to the creator so the
+    /// AI immediately sees the rejection (rather than just a passive
+    /// marker). Status stays as `Planning` so the agent knows to
+    /// revise and resubmit. Returns the creator name for the
+    /// caller's status line.
+    pub(crate) fn reject_planning_task(
+        &mut self,
+        task_id: Uuid,
+        reason: String,
+        rejecter: &str,
+    ) -> Result<String, crate::tasks::TaskError> {
+        let creator = self.tasks.reject_planning(task_id, reason.clone(), rejecter)?;
+        let title = self
+            .tasks
+            .get(task_id)
+            .map(|t| t.title.clone())
+            .unwrap_or_default();
+        let short = task_id.to_string();
+        let short = short.get(..8).unwrap_or(&short).to_string();
+        // User-perspective message — delivered via `user_tx` so the
+        // AI processes it as a fresh user turn and can respond /
+        // revise. Framing makes the rejection + next step explicit.
+        let msg = format!(
+            "I rejected your plan for task {short} (\"{title}\"). Reason: {reason}\n\n\
+             The task is back in your queue with status `planning`. \
+             Please revise the description (and `planned_assignee` if needed) \
+             and resubmit when ready by reassigning the task to `user`."
+        );
+        if let Some(kind) = self.classify_assignee(&creator) {
+            match kind {
+                AssigneeKind::Chat => {
+                    self.deliver_active_user_message(&creator, msg);
+                }
+                AssigneeKind::Group => {
+                    if let Some(leader) =
+                        self.config.group_leader(&creator).map(|s| s.to_string())
+                    {
+                        self.deliver_active_user_message(&leader, msg);
+                    }
+                }
+                AssigneeKind::User => {
+                    self.push_user_inbox(rejecter.to_string(), msg);
+                }
+            }
+        }
+        Ok(creator)
+    }
+
+    /// Form-level Approve button: approve the planning task, surface a
+    /// status line, and close the modal so the user lands back on the
+    /// list with the new (Approved) status visible.
+    pub(crate) fn approve_planning_task_from_form(&mut self, task_id: Uuid) {
+        match self.approve_planning_task(task_id, OPERATOR) {
+            Ok(target) => {
+                self.tasks_screen.status_msg = Some(format!("approved → {target}"));
+                self.tasks_screen.close_modal();
+            }
+            Err(e) => {
+                self.tasks_screen.status_msg = Some(format!("error: {e}"));
+            }
+        }
+    }
+
+    /// Form-level Reject button: open the standard comment-add prompt
+    /// pre-seeded with a "Rejection: " hint. On submit, the existing
+    /// planning-creator notification fires and the task remains in
+    /// `Planning` so the proposing agent can revise.
+    pub(crate) fn open_reject_prompt_for_form(&mut self, task_id: Uuid) {
+        // Reuse the existing AddComment prompt flow — keeps a single
+        // code path for "comment by user on a planning task fires a
+        // notification". The footer/title in the renderer surfaces
+        // the rejection framing while we're in this prompt.
+        self.tasks_screen.prompt =
+            Some(super::tasks_view::TasksPrompt::RejectPlan {
+                task_id,
+                body: String::new(),
+            });
     }
 
     /// Resolve `name` against the live config. Order: chat display_name
@@ -10911,6 +11245,39 @@ impl App {
                     self.tasks_screen.reclamp(&rows);
                 }
             }
+            // Approve the selected planning task: route it to its
+            // pre-stored `planned_assignee`, flip status to Approved,
+            // and notify the new assignee. No-op (with a status msg)
+            // if the selected task isn't an approvable planning task.
+            KeyCode::Char('y') => {
+                if let Some(id) = self.tasks_screen.selected_task_id(&rows) {
+                    let approvable = self
+                        .tasks
+                        .get(id)
+                        .map(|t| {
+                            t.status == crate::tasks::TaskStatus::Planning
+                                && t.assignee.as_deref()
+                                    == Some(crate::config::USER_INBOX_ID)
+                        })
+                        .unwrap_or(false);
+                    if !approvable {
+                        self.tasks_screen.status_msg =
+                            Some("only planning tasks assigned to user can be approved".into());
+                    } else {
+                        match self.approve_planning_task(id, OPERATOR) {
+                            Ok(target) => {
+                                self.tasks_screen.status_msg =
+                                    Some(format!("approved → {target}"));
+                            }
+                            Err(e) => {
+                                self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                            }
+                        }
+                        let rows = TasksScreen::rows(&self.tasks);
+                        self.tasks_screen.reclamp(&rows);
+                    }
+                }
+            }
             // Open the TODOs overlay on the selected task.
             KeyCode::Char('o') => {
                 if let Some(id) = self.tasks_screen.selected_task_id(&rows) {
@@ -11287,6 +11654,20 @@ impl App {
                 FormField::Cancel => self.tasks_screen.close_modal(),
                 FormField::Todos => form.toggle_todos_collapsed(),
                 FormField::Comments => form.toggle_comments_collapsed(),
+                FormField::Approve => {
+                    if let TaskFormKind::Edit(id) = form.kind {
+                        // Drop the form before calling approve so the
+                        // borrow on `self.tasks_screen.form` is free
+                        // for the modal-close inside this method.
+                        let _ = focused;
+                        self.approve_planning_task_from_form(id);
+                    }
+                }
+                FormField::Reject => {
+                    if let TaskFormKind::Edit(id) = form.kind {
+                        self.open_reject_prompt_for_form(id);
+                    }
+                }
                 _ if on_dropdown => form.open_picker(),
                 _ if on_blocked_by => self.open_blocked_by_picker_for_form(),
                 _ => self.submit_task_form(),
@@ -11705,6 +12086,7 @@ impl App {
                                         form.comments_cursor = idx;
                                     }
                                 }
+                                self.notify_planning_creator_of_comment(id, OPERATOR);
                             }
                             Err(e) => {
                                 self.tasks_screen.status_msg = Some(format!("error: {e}"));
@@ -11792,6 +12174,40 @@ impl App {
                 KeyCode::Backspace => {
                     buffer.pop();
                 }
+                _ => {}
+            },
+            TasksPrompt::RejectPlan { task_id, body } => match code {
+                KeyCode::Esc => {
+                    self.tasks_screen.prompt = None;
+                }
+                KeyCode::Enter => {
+                    if !body.trim().is_empty() {
+                        let id = *task_id;
+                        let reason = std::mem::take(body);
+                        match self.reject_planning_task(id, reason, OPERATOR) {
+                            Ok(creator) => {
+                                self.tasks_screen.status_msg =
+                                    Some(format!("rejected → {creator}"));
+                                self.tasks_screen.prompt = None;
+                                // Close the modal — the task no longer
+                                // belongs to the user, so leaving the
+                                // edit form open would be confusing.
+                                self.tasks_screen.close_modal();
+                            }
+                            Err(e) => {
+                                self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                                self.tasks_screen.prompt = None;
+                            }
+                        }
+                    } else {
+                        // Empty reason → just close the prompt.
+                        self.tasks_screen.prompt = None;
+                    }
+                }
+                KeyCode::Backspace => {
+                    body.pop();
+                }
+                KeyCode::Char(c) => body.push(c),
                 _ => {}
             },
         }
@@ -13269,6 +13685,24 @@ impl App {
         match field {
             FormField::Ok => self.submit_task_form(),
             FormField::Cancel => self.tasks_screen.close_modal(),
+            FormField::Approve => {
+                let id = match self.tasks_screen.form.as_ref().map(|f| f.kind) {
+                    Some(TaskFormKind::Edit(id)) => Some(id),
+                    _ => None,
+                };
+                if let Some(id) = id {
+                    self.approve_planning_task_from_form(id);
+                }
+            }
+            FormField::Reject => {
+                let id = match self.tasks_screen.form.as_ref().map(|f| f.kind) {
+                    Some(TaskFormKind::Edit(id)) => Some(id),
+                    _ => None,
+                };
+                if let Some(id) = id {
+                    self.open_reject_prompt_for_form(id);
+                }
+            }
             _ => {
                 // Focus the field first.
                 if let Some(form) = self.tasks_screen.form.as_mut() {
@@ -13785,11 +14219,19 @@ pub(crate) fn task_op_summary(
             description,
             assignee,
             blocked_by,
+            status,
+            planned_assignee,
         } => {
             let mut subj = format!("Add: {title}");
             let mut notes: Vec<String> = Vec::new();
+            if let Some(s) = status {
+                notes.push(format!("status: {s}"));
+            }
             if let Some(a) = assignee {
                 notes.push(format!("assigned: {a}"));
+            }
+            if let Some(p) = planned_assignee {
+                notes.push(format!("planned: {p}"));
             }
             if !blocked_by.is_empty() {
                 notes.push(format!("{} deps", blocked_by.len()));
@@ -13838,6 +14280,8 @@ pub(crate) fn task_op_summary(
             status,
             assignee,
             unassign,
+            planned_assignee,
+            clear_planned_assignee,
             note,
             add_blocked_by,
             remove_blocked_by,
@@ -13854,6 +14298,12 @@ pub(crate) fn task_op_summary(
             }
             if *unassign {
                 changes.push("unassign".into());
+            }
+            if let Some(p) = planned_assignee {
+                changes.push(format!("planned: {p}"));
+            }
+            if *clear_planned_assignee {
+                changes.push("clear-planned".into());
             }
             if !add_blocked_by.is_empty() {
                 changes.push(format!("+{} deps", add_blocked_by.len()));
@@ -18227,6 +18677,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx,
@@ -18256,6 +18708,8 @@ mod tests {
                     description: None,
                     assignee: Some("b".into()),
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx,
@@ -18291,6 +18745,8 @@ mod tests {
                     description: None,
                     assignee: Some("ghost".into()),
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx,
@@ -18328,6 +18784,8 @@ mod tests {
                     description: None,
                     assignee: Some("engineering".into()),
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx,
@@ -18385,6 +18843,8 @@ mod tests {
                     description: None,
                     assignee: Some("engineering".into()),
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx,
@@ -18411,6 +18871,8 @@ mod tests {
                     description: None,
                     assignee: Some(crate::config::USER_INBOX_ID.into()),
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx,
@@ -18441,6 +18903,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx1,
@@ -18460,6 +18924,8 @@ mod tests {
                     status: None,
                     assignee: Some("engineering".into()),
                     unassign: false,
+                    planned_assignee: None,
+                    clear_planned_assignee: false,
                     note: None,
                     add_blocked_by: vec![],
                     remove_blocked_by: vec![],
@@ -18495,6 +18961,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx1,
@@ -18514,6 +18982,8 @@ mod tests {
                     status: None,
                     assignee: Some(crate::config::USER_INBOX_ID.into()),
                     unassign: false,
+                    planned_assignee: None,
+                    clear_planned_assignee: false,
                     note: None,
                     add_blocked_by: vec![],
                     remove_blocked_by: vec![],
@@ -18543,6 +19013,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx1,
@@ -18604,6 +19076,8 @@ mod tests {
                     description: None,
                     assignee: Some("a".into()),
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx1,
@@ -18623,6 +19097,8 @@ mod tests {
                     status: None,
                     assignee: Some("b".into()),
                     unassign: false,
+                    planned_assignee: None,
+                    clear_planned_assignee: false,
                     note: Some("ready for test, see PR #1".into()),
                     add_blocked_by: vec![],
                     remove_blocked_by: vec![],
@@ -18660,6 +19136,8 @@ mod tests {
                     status: None,
                     assignee: Some("a".into()),
                     unassign: false,
+                    planned_assignee: None,
+                    clear_planned_assignee: false,
                     note: Some("bug in edge case X".into()),
                     add_blocked_by: vec![],
                     remove_blocked_by: vec![],
@@ -18697,6 +19175,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx1,
@@ -18714,6 +19194,8 @@ mod tests {
                     status: Some("nope".into()),
                     assignee: None,
                     unassign: false,
+                    planned_assignee: None,
+                    clear_planned_assignee: false,
                     note: None,
                     add_blocked_by: vec![],
                     remove_blocked_by: vec![],
@@ -18744,6 +19226,8 @@ mod tests {
                         description: None,
                         assignee: Some(assignee.into()),
                         blocked_by: vec![],
+                        status: None,
+                        planned_assignee: None,
                     },
                 },
                 reply: tx,
@@ -18787,6 +19271,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx1,
@@ -18820,6 +19306,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx1,
@@ -18861,6 +19349,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx1,
@@ -18947,6 +19437,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx1,
@@ -19382,6 +19874,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx0,
@@ -19397,6 +19891,8 @@ mod tests {
                     description: Some("Wire up the thing.\nAcceptance: tests pass.".into()),
                     assignee: Some("b".into()),
                     blocked_by: vec![prereq],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx1,
@@ -19498,6 +19994,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx1,
@@ -19514,6 +20012,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![prereq_id],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx2,
@@ -19550,6 +20050,8 @@ mod tests {
                     status: Some("done".into()),
                     assignee: None,
                     unassign: false,
+                    planned_assignee: None,
+                    clear_planned_assignee: false,
                     note: None,
                     add_blocked_by: vec![],
                     remove_blocked_by: vec![],
@@ -19590,6 +20092,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![Uuid::new_v4()],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx,
@@ -19615,6 +20119,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx1,
@@ -19630,6 +20136,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![x],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx2,
@@ -19648,6 +20156,8 @@ mod tests {
                     status: None,
                     assignee: None,
                     unassign: false,
+                    planned_assignee: None,
+                    clear_planned_assignee: false,
                     note: None,
                     add_blocked_by: vec![y],
                     remove_blocked_by: vec![],
@@ -19675,6 +20185,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx1,
@@ -19690,6 +20202,8 @@ mod tests {
                     description: None,
                     assignee: None,
                     blocked_by: vec![prereq],
+                    status: None,
+                    planned_assignee: None,
                 },
             },
             reply: tx2,
@@ -19731,6 +20245,8 @@ mod tests {
                         description: None,
                         assignee: Some("b".into()),
                         blocked_by: vec![],
+                        status: None,
+                        planned_assignee: None,
                     },
                 },
                 reply: tx,
@@ -21237,34 +21753,34 @@ mod tests {
             .id;
         app.active_view = ActiveView::Tasks;
         app.focus = Focus::Tasks;
-        // The main area rect starts at row 2; the first task row
-        // sits at row 3 after the "── open ──" header at row 2.
+        // The main area rect starts at row 2; the rendered list is
+        // Planning header → Open header → first Open task. So the
+        // first task sits at display row 4.
         app.layout.chat_history_inner = Some(Rect::new(0, 2, 60, 20));
-        // Sanity: row 3 must be a task.
         let rows = TasksScreen::rows(&app.tasks);
-        match rows.get(1) {
+        match rows.get(2) {
             Some(super::super::tasks_view::TaskRow::Task(t_id)) => {
                 assert_eq!(*t_id, id);
             }
-            other => panic!("expected first task at row index 1, got {other:?}"),
+            other => panic!("expected first task at row index 2, got {other:?}"),
         }
         // First click: selects.
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 5,
-            row: 3,
+            row: 4,
             modifiers: KeyModifiers::NONE,
         });
         assert!(
             app.tasks_screen.form.is_none(),
             "single click should not open form"
         );
-        assert_eq!(app.tasks_screen.selected_row, 1);
+        assert_eq!(app.tasks_screen.selected_row, 2);
         // Second click: opens the edit modal.
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 5,
-            row: 3,
+            row: 4,
             modifiers: KeyModifiers::NONE,
         });
         let form = app

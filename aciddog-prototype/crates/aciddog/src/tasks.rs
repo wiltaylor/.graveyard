@@ -24,11 +24,23 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::config::USER_INBOX_ID;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
+    /// Agent-proposed plan awaiting user approval. The task is
+    /// assigned to the user and carries a `planned_assignee`; on
+    /// approval the planned target becomes the assignee and the
+    /// status flips to [`Approved`](Self::Approved).
+    Planning,
     Open,
     Assigned,
+    /// Plan has been approved by the user and routed to the
+    /// previously-stored `planned_assignee`. Acts like `Assigned`
+    /// but distinguishes "started life as a plan" from "directly
+    /// handed off".
+    Approved,
     InProgress,
     Done,
     Cancelled,
@@ -37,8 +49,10 @@ pub enum TaskStatus {
 impl TaskStatus {
     pub fn parse(s: &str) -> Result<Self, TaskError> {
         match s.trim().to_ascii_lowercase().as_str() {
+            "planning" | "plan" => Ok(Self::Planning),
             "open" => Ok(Self::Open),
             "assigned" => Ok(Self::Assigned),
+            "approved" | "approve" => Ok(Self::Approved),
             "in_progress" | "in-progress" | "inprogress" => Ok(Self::InProgress),
             "done" => Ok(Self::Done),
             "cancelled" | "canceled" => Ok(Self::Cancelled),
@@ -48,8 +62,10 @@ impl TaskStatus {
 
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Planning => "planning",
             Self::Open => "open",
             Self::Assigned => "assigned",
+            Self::Approved => "approved",
             Self::InProgress => "in_progress",
             Self::Done => "done",
             Self::Cancelled => "cancelled",
@@ -135,6 +151,12 @@ pub struct Task {
     pub description: Option<String>,
     pub status: TaskStatus,
     pub assignee: Option<String>,
+    /// Pre-stored handoff target for `Planning` tasks. Set when an
+    /// agent proposes a plan to the user; cleared on approval (the
+    /// value moves into `assignee`). `serde(default)` so older JSON
+    /// files without this field still load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_assignee: Option<String>,
     pub created_by: String,
     pub created_at_secs: u64,
     pub updated_at_secs: u64,
@@ -149,8 +171,20 @@ pub enum TaskError {
     #[error("task {0} not found")]
     NotFound(Uuid),
 
-    #[error("invalid status `{0}` (expected open|assigned|in_progress|done|cancelled)")]
+    #[error(
+        "invalid status `{0}` \
+         (expected planning|open|assigned|approved|in_progress|done|cancelled)"
+    )]
     InvalidStatus(String),
+
+    #[error("planning task requires assignee={0:?} and a planned_assignee")]
+    PlanningRequiresUserAndTarget(&'static str),
+
+    #[error("task {0} is not in planning status; only planning tasks can be approved")]
+    NotInPlanning(Uuid),
+
+    #[error("task {0} is in planning but has no planned_assignee")]
+    PlanningWithoutTarget(Uuid),
 
     #[error("no unassigned tasks available")]
     NoFreeTasks,
@@ -206,6 +240,11 @@ pub struct TaskPatch {
     /// `None` leaves the field untouched. This three-state shape lets
     /// `update` distinguish "don't touch" from "clear" in one call.
     pub assignee: Option<Option<String>>,
+    /// Same three-state shape as `assignee`, for the
+    /// `planned_assignee` (the post-approval handoff target on a
+    /// `Planning` task). Agents revise plans by patching this field
+    /// in response to user comments.
+    pub planned_assignee: Option<Option<String>>,
     pub note: Option<String>,
     /// Dependency ids to add to `blocked_by` on this update.
     pub add_blocked_by: Vec<Uuid>,
@@ -298,6 +337,7 @@ impl TaskStore {
             description,
             status,
             assignee,
+            planned_assignee: None,
             created_by,
             created_at_secs: now,
             updated_at_secs: now,
@@ -310,6 +350,139 @@ impl TaskStore {
         self.persist()?;
         // Safe: we just pushed.
         Ok(self.tasks.last().unwrap())
+    }
+
+    /// Create a `Planning` task assigned to the user inbox with a
+    /// pre-stored handoff target. The user reviews the plan and either
+    /// approves it (see [`approve`](Self::approve)) or comments to
+    /// request a revision. Rejects empty titles and empty
+    /// `planned_assignee` (the proposing agent must name a concrete
+    /// chat / group up-front).
+    pub fn add_planning(
+        &mut self,
+        title: String,
+        description: Option<String>,
+        planned_assignee: String,
+        created_by: String,
+        blocked_by: Vec<Uuid>,
+    ) -> Result<&Task, TaskError> {
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return Err(TaskError::EmptyTitle);
+        }
+        let planned_assignee = planned_assignee.trim().to_string();
+        if planned_assignee.is_empty() {
+            return Err(TaskError::PlanningRequiresUserAndTarget(USER_INBOX_ID));
+        }
+        let mut deps: Vec<Uuid> = Vec::new();
+        for d in blocked_by {
+            if !self.tasks.iter().any(|t| t.id == d) {
+                return Err(TaskError::UnknownDependency(d));
+            }
+            if !deps.contains(&d) {
+                deps.push(d);
+            }
+        }
+        let now = now_secs();
+        let task = Task {
+            id: Uuid::new_v4(),
+            title,
+            description,
+            status: TaskStatus::Planning,
+            assignee: Some(USER_INBOX_ID.to_string()),
+            planned_assignee: Some(planned_assignee),
+            created_by,
+            created_at_secs: now,
+            updated_at_secs: now,
+            notes: Vec::new(),
+            blocked_by: deps,
+            todos: Vec::new(),
+            comments: Vec::new(),
+        };
+        self.tasks.push(task);
+        self.persist()?;
+        Ok(self.tasks.last().unwrap())
+    }
+
+    /// Atomically reject a `Planning` task: append the rejection
+    /// reason as a comment, reassign the task back to its
+    /// `created_by` (the proposing agent), append a system note, and
+    /// keep the status as `Planning` so the agent knows to revise
+    /// and resubmit. Returns the creator name so the caller can
+    /// dispatch the standard handoff notification.
+    pub fn reject_planning(
+        &mut self,
+        id: Uuid,
+        reason: String,
+        rejecter: &str,
+    ) -> Result<String, TaskError> {
+        let reason = reason.trim().to_string();
+        if reason.is_empty() {
+            return Err(TaskError::EmptyCommentBody);
+        }
+        let now = now_secs();
+        let pos = self
+            .tasks
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or(TaskError::NotFound(id))?;
+        if self.tasks[pos].status != TaskStatus::Planning {
+            return Err(TaskError::NotInPlanning(id));
+        }
+        let creator = self.tasks[pos].created_by.clone();
+        {
+            let t = &mut self.tasks[pos];
+            t.comments.push(Comment {
+                id: Uuid::new_v4(),
+                author: rejecter.to_string(),
+                timestamp_secs: now,
+                body: format!("Rejected: {reason}"),
+            });
+            t.assignee = Some(creator.clone());
+            t.notes.push(Note {
+                author: rejecter.to_string(),
+                timestamp_secs: now,
+                body: format!("rejected by {rejecter}; sent back to {creator} for revision"),
+            });
+            t.updated_at_secs = now;
+        }
+        self.persist()?;
+        Ok(creator)
+    }
+
+    /// Atomically approve a `Planning` task: set status to `Approved`,
+    /// move `planned_assignee` into `assignee`, append a system note
+    /// recording the approver and the new routing. Returns the
+    /// pre-approval `planned_assignee` so the caller can dispatch the
+    /// handoff notification (the field is `None` after this call).
+    pub fn approve(&mut self, id: Uuid, approver: &str) -> Result<String, TaskError> {
+        let now = now_secs();
+        let pos = self
+            .tasks
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or(TaskError::NotFound(id))?;
+        if self.tasks[pos].status != TaskStatus::Planning {
+            return Err(TaskError::NotInPlanning(id));
+        }
+        let target = self.tasks[pos]
+            .planned_assignee
+            .clone()
+            .ok_or(TaskError::PlanningWithoutTarget(id))?;
+        {
+            let t = &mut self.tasks[pos];
+            t.status = TaskStatus::Approved;
+            t.assignee = Some(target.clone());
+            t.planned_assignee = None;
+            t.updated_at_secs = now;
+            t.notes.push(Note {
+                author: approver.to_string(),
+                timestamp_secs: now,
+                body: format!("approved by {approver}; routed to {target}"),
+            });
+        }
+        self.persist()?;
+        Ok(target)
     }
 
     pub fn get(&self, id: Uuid) -> Option<&Task> {
@@ -424,6 +597,9 @@ impl TaskStore {
                     }
                 }
             }
+        }
+        if let Some(new_planned) = patch.planned_assignee {
+            t.planned_assignee = new_planned;
         }
         for dep in patch.add_blocked_by {
             if !t.blocked_by.contains(&dep) {
@@ -1537,5 +1713,205 @@ mod tests {
         let t = s2.get(tid).unwrap();
         assert_eq!(t.todos.len(), 1);
         assert_eq!(t.comments.len(), 1);
+    }
+
+    // ----- Planning + Approval -----
+
+    #[test]
+    fn add_planning_creates_user_assigned_task_with_target() {
+        let mut s = mk_store();
+        let t = s
+            .add_planning(
+                "draft auth flow".into(),
+                Some("OAuth handoff plan".into()),
+                "builders".into(),
+                "planner".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .clone();
+        assert_eq!(t.status, TaskStatus::Planning);
+        assert_eq!(t.assignee.as_deref(), Some(USER_INBOX_ID));
+        assert_eq!(t.planned_assignee.as_deref(), Some("builders"));
+        assert_eq!(t.created_by, "planner");
+    }
+
+    #[test]
+    fn add_planning_rejects_empty_planned_assignee() {
+        let mut s = mk_store();
+        assert!(matches!(
+            s.add_planning(
+                "t".into(),
+                None,
+                "   ".into(),
+                "planner".into(),
+                Vec::new()
+            ),
+            Err(TaskError::PlanningRequiresUserAndTarget(_))
+        ));
+    }
+
+    #[test]
+    fn approve_routes_to_planned_assignee_and_sets_approved() {
+        let mut s = mk_store();
+        let id = s
+            .add_planning(
+                "t".into(),
+                None,
+                "builders".into(),
+                "planner".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        let target = s.approve(id, USER_INBOX_ID).unwrap();
+        assert_eq!(target, "builders");
+        let t = s.get(id).unwrap();
+        assert_eq!(t.status, TaskStatus::Approved);
+        assert_eq!(t.assignee.as_deref(), Some("builders"));
+        assert!(t.planned_assignee.is_none());
+        assert_eq!(t.notes.len(), 1);
+        assert!(t.notes[0].body.contains("approved by"));
+        assert!(t.notes[0].body.contains("routed to builders"));
+    }
+
+    #[test]
+    fn approve_rejects_non_planning_task() {
+        let mut s = mk_store();
+        let id = s
+            .add("t".into(), None, None, "alice".into(), Vec::new())
+            .unwrap()
+            .id;
+        assert!(matches!(
+            s.approve(id, USER_INBOX_ID),
+            Err(TaskError::NotInPlanning(_))
+        ));
+    }
+
+    #[test]
+    fn reject_planning_bounces_to_creator_and_keeps_planning() {
+        let mut s = mk_store();
+        let id = s
+            .add_planning(
+                "t".into(),
+                None,
+                "builders".into(),
+                "planner".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        let creator = s
+            .reject_planning(id, "needs more detail".into(), USER_INBOX_ID)
+            .unwrap();
+        assert_eq!(creator, "planner");
+        let t = s.get(id).unwrap();
+        assert_eq!(t.status, TaskStatus::Planning);
+        assert_eq!(t.assignee.as_deref(), Some("planner"));
+        assert_eq!(t.comments.len(), 1);
+        assert!(t.comments[0].body.starts_with("Rejected: "));
+        assert!(t.comments[0].body.contains("needs more detail"));
+        assert_eq!(t.notes.len(), 1);
+        assert!(t.notes[0].body.contains("rejected by"));
+        assert!(t.notes[0].body.contains("sent back to planner"));
+        // planned_assignee is preserved so the agent can revise and
+        // resubmit without losing the original target.
+        assert_eq!(t.planned_assignee.as_deref(), Some("builders"));
+    }
+
+    #[test]
+    fn reject_planning_rejects_non_planning_task() {
+        let mut s = mk_store();
+        let id = s
+            .add("t".into(), None, None, "alice".into(), Vec::new())
+            .unwrap()
+            .id;
+        assert!(matches!(
+            s.reject_planning(id, "no".into(), USER_INBOX_ID),
+            Err(TaskError::NotInPlanning(_))
+        ));
+    }
+
+    #[test]
+    fn reject_planning_rejects_empty_reason() {
+        let mut s = mk_store();
+        let id = s
+            .add_planning(
+                "t".into(),
+                None,
+                "builders".into(),
+                "planner".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        assert!(matches!(
+            s.reject_planning(id, "   ".into(), USER_INBOX_ID),
+            Err(TaskError::EmptyCommentBody)
+        ));
+    }
+
+    #[test]
+    fn parse_status_accepts_planning_and_approved() {
+        assert_eq!(TaskStatus::parse("planning").unwrap(), TaskStatus::Planning);
+        assert_eq!(TaskStatus::parse("plan").unwrap(), TaskStatus::Planning);
+        assert_eq!(TaskStatus::parse("approved").unwrap(), TaskStatus::Approved);
+    }
+
+    #[test]
+    fn task_loads_legacy_json_without_planned_assignee() {
+        // `planned_assignee` is `serde(default)` so older JSON that
+        // pre-dates the planning workflow still loads. The other
+        // post-pre-release fields (todos / comments / blocked_by) are
+        // still required.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("tasks.json");
+        std::fs::write(
+            &path,
+            br#"[{
+                "id": "00000000-0000-0000-0000-000000000001",
+                "title": "legacy",
+                "description": null,
+                "status": "open",
+                "assignee": null,
+                "created_by": "alice",
+                "created_at_secs": 1,
+                "updated_at_secs": 1,
+                "notes": [],
+                "blocked_by": [],
+                "todos": [],
+                "comments": []
+            }]"#,
+        )
+        .unwrap();
+        let s = TaskStore::load_or_init(path).unwrap();
+        let t = &s.all()[0];
+        assert!(t.planned_assignee.is_none());
+        assert_eq!(t.status, TaskStatus::Open);
+    }
+
+    #[test]
+    fn planned_assignee_round_trips_across_reload() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("tasks.json");
+        let tid;
+        {
+            let mut s = TaskStore::load_or_init(path.clone()).unwrap();
+            tid = s
+                .add_planning(
+                    "t".into(),
+                    None,
+                    "builders".into(),
+                    "planner".into(),
+                    Vec::new(),
+                )
+                .unwrap()
+                .id;
+        }
+        let s2 = TaskStore::load_or_init(path).unwrap();
+        let t = s2.get(tid).unwrap();
+        assert_eq!(t.status, TaskStatus::Planning);
+        assert_eq!(t.planned_assignee.as_deref(), Some("builders"));
+        assert_eq!(t.assignee.as_deref(), Some(USER_INBOX_ID));
     }
 }

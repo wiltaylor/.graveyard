@@ -435,6 +435,19 @@ pub enum TaskCommand {
         /// <uuid>`). `task take` skips tasks with any open dep.
         #[arg(long = "blocked-by")]
         blocked_by: Vec<Uuid>,
+        /// Initial status for the task. Currently only `planning` is
+        /// settable here — that creates the task as a user-approval
+        /// plan (see `--planned-assignee`). Omit for the default
+        /// behaviour (auto-bumps to `assigned` if `--assignee` is
+        /// supplied, otherwise `open`).
+        #[arg(long)]
+        status: Option<String>,
+        /// Pre-stored handoff target for `--status planning` tasks.
+        /// On user approval the task's assignee flips to this value
+        /// and the status becomes `approved`. Required (and only
+        /// meaningful) when `--status planning` is supplied.
+        #[arg(long = "planned-assignee")]
+        planned_assignee: Option<String>,
     },
     /// List tasks, optionally filtered.
     List {
@@ -469,6 +482,19 @@ pub enum TaskCommand {
         /// Clear the assignee (mutually exclusive with `--assignee`).
         #[arg(long, conflicts_with = "assignee")]
         unassign: bool,
+        /// Revise the pre-stored handoff target on a `planning` task.
+        /// Use this when the user has commented on the plan and the
+        /// agent wants to route to a different agent / group on
+        /// approval.
+        #[arg(long = "planned-assignee")]
+        planned_assignee: Option<String>,
+        /// Clear the planned assignee (mutually exclusive with
+        /// `--planned-assignee`). Only meaningful on planning tasks.
+        #[arg(
+            long = "clear-planned-assignee",
+            conflicts_with = "planned_assignee"
+        )]
+        clear_planned_assignee: bool,
         /// Append a note to the task log. Recommended when
         /// reassigning.
         #[arg(long)]
@@ -996,12 +1022,16 @@ mod tests {
                         description,
                         assignee,
                         blocked_by,
+                        status,
+                        planned_assignee,
                     },
             } => {
                 assert_eq!(title, "fix bug");
                 assert!(description.is_none());
                 assert!(assignee.is_none());
                 assert!(blocked_by.is_empty());
+                assert!(status.is_none());
+                assert!(planned_assignee.is_none());
             }
             other => panic!("expected Task::Add, got {other:?}"),
         }
@@ -1029,12 +1059,48 @@ mod tests {
                         description,
                         assignee,
                         blocked_by,
+                        status,
+                        planned_assignee,
                     },
             } => {
                 assert_eq!(title, "fix bug");
                 assert_eq!(description.as_deref(), Some("details here"));
                 assert_eq!(assignee.as_deref(), Some("tester"));
                 assert!(blocked_by.is_empty());
+                assert!(status.is_none());
+                assert!(planned_assignee.is_none());
+            }
+            other => panic!("expected Task::Add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_task_add_planning() {
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "task",
+            "add",
+            "--title",
+            "draft",
+            "--assignee",
+            "user",
+            "--status",
+            "planning",
+            "--planned-assignee",
+            "builders",
+        ])
+        .unwrap();
+        match args.cmd {
+            AgentCommand::Task {
+                cmd:
+                    TaskCommand::Add {
+                        status,
+                        planned_assignee,
+                        ..
+                    },
+            } => {
+                assert_eq!(status.as_deref(), Some("planning"));
+                assert_eq!(planned_assignee.as_deref(), Some("builders"));
             }
             other => panic!("expected Task::Add, got {other:?}"),
         }

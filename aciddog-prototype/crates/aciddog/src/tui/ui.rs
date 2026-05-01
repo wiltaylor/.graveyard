@@ -1139,6 +1139,16 @@ fn render_tasks_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
                     Style::default().fg(Color::Yellow),
                 )),
             ),
+            TasksPrompt::RejectPlan { body, .. } => (
+                " reject reason ".to_string(),
+                Line::from(vec![
+                    Span::styled(body.clone(), Style::default().fg(Color::Red)),
+                    Span::styled(
+                        "▏",
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+            ),
         }
     } else if let Some(form) = app.tasks_screen.form.as_ref() {
         let hint = if form.picker.is_some() {
@@ -1165,12 +1175,23 @@ fn render_tasks_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
             )),
         )
     } else {
+        // When a Planning task assigned to user is selected, surface
+        // the `y` approve hint up-front; otherwise show the standard
+        // shortcut row.
+        let rows = TasksScreen::rows(&app.tasks);
+        let hint = match app.tasks_screen.selected_task_id(&rows).and_then(|id| app.tasks.get(id))
+        {
+            Some(t)
+                if t.status == crate::tasks::TaskStatus::Planning
+                    && t.assignee.as_deref() == Some(crate::config::USER_INBOX_ID) =>
+            {
+                "y approve · a add · e/⏎ edit · d del · t take · n note · s status · esc back"
+            }
+            _ => "a add · e/⏎ edit · d del · t take · n note · s status · esc back",
+        };
         (
             " tasks ".to_string(),
-            Line::from(Span::styled(
-                "a add · e/⏎ edit · d del · t take · n note · s status · esc back",
-                Style::default().fg(Color::DarkGray),
-            )),
+            Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray))),
         )
     };
     let block = Block::default()
@@ -1594,6 +1615,18 @@ fn render_channels_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
     inner
 }
 
+/// Color used for the `── status ──` header strip on the tasks screen.
+/// `Planning` is magenta (action requested from the user); `Approved`
+/// is green (just-validated work, queued); everything else stays cyan.
+fn status_header_color(status: crate::tasks::TaskStatus) -> Color {
+    use crate::tasks::TaskStatus::*;
+    match status {
+        Planning => Color::Magenta,
+        Approved => Color::Green,
+        _ => Color::Cyan,
+    }
+}
+
 fn render_tasks_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     let focused = app.focus == Focus::Tasks;
     let block = Block::default()
@@ -1623,7 +1656,7 @@ fn render_tasks_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
                 ListItem::new(Line::from(Span::styled(
                     label,
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(status_header_color(*status))
                         .add_modifier(Modifier::BOLD),
                 )))
             }
@@ -2557,6 +2590,8 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
             let display_value = if is_dropdown {
                 if raw_value.is_empty() && *field == FormField::Assignee {
                     "(unassigned)".to_string()
+                } else if raw_value.is_empty() && *field == FormField::PlannedAssignee {
+                    "(no target)".to_string()
                 } else if raw_value.is_empty() {
                     "-".to_string()
                 } else {
@@ -2642,14 +2677,22 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
     for field in &button_fields {
         let label = format!(" {} ", field.label());
         let is_focused = *field == form.focused_field;
+        // Approve / Reject get distinct colors so the destructive
+        // and approving paths read at a glance; Ok / Cancel keep
+        // the original cyan.
+        let accent = match field {
+            FormField::Approve => Color::Green,
+            FormField::Reject => Color::Red,
+            _ => Color::Cyan,
+        };
         let style = if is_focused {
             Style::default()
-                .bg(Color::Cyan)
+                .bg(accent)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(accent)
                 .add_modifier(Modifier::BOLD)
         };
         let btn_w = label.chars().count() as u16 + 2; // brackets
@@ -2707,7 +2750,12 @@ fn render_dropdown_picker(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|s| {
             if s.is_empty() && picker_field == FormField::Assignee {
                 "(unassigned)".len()
-            } else if picker_field == FormField::Assignee {
+            } else if s.is_empty() && picker_field == FormField::PlannedAssignee {
+                "(no target)".len()
+            } else if matches!(
+                picker_field,
+                FormField::Assignee | FormField::PlannedAssignee
+            ) {
                 super::tasks_view::decorate_assignee_label(s, &app.config).len()
             } else {
                 s.len()
@@ -2722,6 +2770,7 @@ fn render_dropdown_picker(f: &mut Frame, area: Rect, app: &mut App) {
 
     let title = match picker_field {
         FormField::Assignee => " pick assignee ",
+        FormField::PlannedAssignee => " pick handoff target ",
         FormField::Status => " pick status ",
         _ => " pick ",
     };
@@ -2737,9 +2786,14 @@ fn render_dropdown_picker(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|o| {
             let label = if o.is_empty() && picker_field == FormField::Assignee {
                 "(unassigned)".to_string()
+            } else if o.is_empty() && picker_field == FormField::PlannedAssignee {
+                "(no target)".to_string()
             } else if o.is_empty() {
                 "-".to_string()
-            } else if picker_field == FormField::Assignee {
+            } else if matches!(
+                picker_field,
+                FormField::Assignee | FormField::PlannedAssignee
+            ) {
                 super::tasks_view::decorate_assignee_label(o, &app.config)
             } else {
                 o.clone()

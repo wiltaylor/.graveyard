@@ -35,8 +35,23 @@ pub fn decorate_assignee_label(name: &str, cfg: &crate::config::AciddogConfig) -
 
 /// Order of status groups in the rendered list. Driving everything
 /// off this single array keeps rendering, tests, and status cycling
-/// in sync.
-pub const STATUS_ORDER: [TaskStatus; 5] = [
+/// in sync. `Planning` leads (it's pre-handoff); `Approved` sits
+/// between `Assigned` and `InProgress` because an approved plan is
+/// queued work that hasn't been started yet.
+pub const STATUS_ORDER: [TaskStatus; 7] = [
+    TaskStatus::Planning,
+    TaskStatus::Open,
+    TaskStatus::Assigned,
+    TaskStatus::Approved,
+    TaskStatus::InProgress,
+    TaskStatus::Done,
+    TaskStatus::Cancelled,
+];
+
+/// Statuses the operator can cycle through with the `s` key. Excludes
+/// `Planning` and `Approved` — those flow through the dedicated
+/// approval workflow rather than ad-hoc status edits.
+pub const CYCLE_STATUS_ORDER: [TaskStatus; 5] = [
     TaskStatus::Open,
     TaskStatus::Assigned,
     TaskStatus::InProgress,
@@ -68,6 +83,11 @@ pub enum FormField {
     Description,
     Assignee,
     Status,
+    /// Pre-stored handoff target on a `Planning` task. Editable
+    /// dropdown so the user can override the agent's proposed
+    /// routing before approving. Only included in tab order when
+    /// the underlying task is in `Planning`.
+    PlannedAssignee,
     /// Task-dependency list. Enter opens a multi-select picker.
     BlockedBy,
     /// Read-only collapsible TODO list. Enter toggles collapse;
@@ -80,6 +100,15 @@ pub enum FormField {
     /// edit / delete still go through the dedicated `c` overlay
     /// from the task list.
     Comments,
+    /// Approve a `Planning` task (only present in tab order when the
+    /// underlying task is in Planning + assigned to user). Routes
+    /// the task to its `planned_assignee` and flips status to
+    /// `Approved`.
+    Approve,
+    /// Reject a `Planning` task — opens a comment prompt for the
+    /// rejection reason. The task stays in Planning; the comment
+    /// notifies the proposing agent so they can revise the plan.
+    Reject,
     Ok,
     Cancel,
 }
@@ -91,16 +120,22 @@ impl FormField {
             Self::Description => "Description",
             Self::Assignee => "Assignee",
             Self::Status => "Status",
+            Self::PlannedAssignee => "On approve",
             Self::BlockedBy => "Blocked by",
             Self::Todos => "TODOs",
             Self::Comments => "Comments",
+            Self::Approve => "Approve",
+            Self::Reject => "Reject",
             Self::Ok => "OK",
             Self::Cancel => "Cancel",
         }
     }
 
     pub fn is_button(self) -> bool {
-        matches!(self, Self::Ok | Self::Cancel)
+        matches!(
+            self,
+            Self::Ok | Self::Cancel | Self::Approve | Self::Reject
+        )
     }
 }
 
@@ -182,6 +217,14 @@ pub struct TaskForm {
     /// onscreen after edits.
     pub last_visible_lines: u16,
     pub assignee: String,
+    /// Pre-stored handoff target on a planning task. Populated from
+    /// `task.planned_assignee` on edit-open; passed back through the
+    /// patch on submit. Empty string means "no target".
+    pub planned_assignee: String,
+    /// Snapshot of `task.planned_assignee` at edit-open time so
+    /// `apply_form` can detect "user changed this field" vs "left it
+    /// alone" and emit the right three-state patch.
+    pub original_planned_assignee: String,
     pub status: String,
     /// Current in-form blocked-by set. For Edit, seeded from the
     /// task's existing deps at open time (also snapshotted into
@@ -234,6 +277,11 @@ pub struct TaskForm {
     /// this string is never actually written to in the happy path.
     #[doc(hidden)]
     pub _button_sink: String,
+    /// True when the form should expose `Approve` / `Reject`
+    /// buttons. Set on `new_edit` if the underlying task is in
+    /// Planning + assigned to the user; controls whether those two
+    /// `FormField` variants show up in `tab_order`.
+    pub show_approval_buttons: bool,
 }
 
 impl TaskForm {
@@ -247,6 +295,8 @@ impl TaskForm {
             last_wrap_width: 0,
             last_visible_lines: DESCRIPTION_MIN_VISIBLE_LINES,
             assignee: String::new(),
+            planned_assignee: String::new(),
+            original_planned_assignee: String::new(),
             status: String::new(),
             blocked_by: Vec::new(),
             original_blocked_by: Vec::new(),
@@ -262,12 +312,16 @@ impl TaskForm {
             todos_cursor: 0,
             comments_cursor: 0,
             _button_sink: String::new(),
+            show_approval_buttons: false,
         }
     }
 
     pub fn new_edit(task: &Task) -> Self {
         let desc = task.description.clone().unwrap_or_default();
         let cursor = desc.len();
+        let show_approval_buttons = task.status == TaskStatus::Planning
+            && task.assignee.as_deref() == Some(crate::config::USER_INBOX_ID);
+        let planned = task.planned_assignee.clone().unwrap_or_default();
         Self {
             kind: TaskFormKind::Edit(task.id),
             title: task.title.clone(),
@@ -277,6 +331,8 @@ impl TaskForm {
             last_wrap_width: 0,
             last_visible_lines: DESCRIPTION_MIN_VISIBLE_LINES,
             assignee: task.assignee.clone().unwrap_or_default(),
+            planned_assignee: planned.clone(),
+            original_planned_assignee: planned,
             status: task.status.as_str().to_string(),
             blocked_by: task.blocked_by.clone(),
             original_blocked_by: task.blocked_by.clone(),
@@ -292,6 +348,7 @@ impl TaskForm {
             todos_cursor: 0,
             comments_cursor: 0,
             _button_sink: String::new(),
+            show_approval_buttons,
         }
     }
 
@@ -311,7 +368,10 @@ impl TaskForm {
     }
 
     pub fn is_dropdown(field: FormField) -> bool {
-        matches!(field, FormField::Assignee | FormField::Status)
+        matches!(
+            field,
+            FormField::Assignee | FormField::Status | FormField::PlannedAssignee
+        )
     }
 
     /// Open a picker popup for the currently focused dropdown
@@ -325,8 +385,18 @@ impl TaskForm {
         }
         let (options, current) = match field {
             FormField::Assignee => (self.assignee_options.clone(), self.assignee.as_str()),
+            FormField::PlannedAssignee => (
+                // Same option list as Assignee — the planned target
+                // resolves through the same chat / group / user
+                // hierarchy on the daemon side.
+                self.assignee_options.clone(),
+                self.planned_assignee.as_str(),
+            ),
             FormField::Status => (
-                STATUS_ORDER
+                // The picker offers the ad-hoc cycle statuses only.
+                // `Planning`/`Approved` flow through the dedicated
+                // approval workflow rather than being user-set here.
+                CYCLE_STATUS_ORDER
                     .iter()
                     .map(|s| s.as_str().to_string())
                     .collect(),
@@ -366,6 +436,7 @@ impl TaskForm {
         };
         match p.field {
             FormField::Assignee => self.assignee = value,
+            FormField::PlannedAssignee => self.planned_assignee = value,
             FormField::Status => self.status = value,
             _ => {}
         }
@@ -377,28 +448,42 @@ impl TaskForm {
     /// also skipped (a brand-new task has neither). Ok and Cancel
     /// buttons are always last so Tabbing lands you on them before
     /// wrapping to Title.
-    pub fn tab_order(&self) -> &'static [FormField] {
-        match self.kind {
-            TaskFormKind::Add => &[
+    pub fn tab_order(&self) -> Vec<FormField> {
+        let mut out: Vec<FormField> = match self.kind {
+            TaskFormKind::Add => vec![
                 FormField::Title,
                 FormField::Description,
                 FormField::Assignee,
                 FormField::BlockedBy,
-                FormField::Ok,
-                FormField::Cancel,
             ],
-            TaskFormKind::Edit(_) => &[
-                FormField::Title,
-                FormField::Description,
-                FormField::Assignee,
-                FormField::Status,
-                FormField::BlockedBy,
-                FormField::Todos,
-                FormField::Comments,
-                FormField::Ok,
-                FormField::Cancel,
-            ],
+            TaskFormKind::Edit(_) => {
+                let mut v = vec![
+                    FormField::Title,
+                    FormField::Description,
+                    FormField::Assignee,
+                    FormField::Status,
+                ];
+                // The PlannedAssignee field only makes sense on a
+                // planning task. We use the snapshotted status string
+                // (parsed) here so the field stays in tab order even
+                // if the user has just edited the visible status —
+                // the form regenerates on form-reopen anyway.
+                if TaskStatus::parse(&self.status).ok() == Some(TaskStatus::Planning) {
+                    v.push(FormField::PlannedAssignee);
+                }
+                v.push(FormField::BlockedBy);
+                v.push(FormField::Todos);
+                v.push(FormField::Comments);
+                v
+            }
+        };
+        if self.show_approval_buttons {
+            out.push(FormField::Approve);
+            out.push(FormField::Reject);
         }
+        out.push(FormField::Ok);
+        out.push(FormField::Cancel);
+        out
     }
 
     pub fn focus_next(&mut self) {
@@ -426,10 +511,13 @@ impl TaskForm {
             FormField::Title => &mut self.title,
             FormField::Description => &mut self.description,
             FormField::Assignee => &mut self.assignee,
+            FormField::PlannedAssignee => &mut self.planned_assignee,
             FormField::Status => &mut self.status,
             FormField::BlockedBy
             | FormField::Todos
             | FormField::Comments
+            | FormField::Approve
+            | FormField::Reject
             | FormField::Ok
             | FormField::Cancel => &mut self._button_sink,
         }
@@ -440,10 +528,13 @@ impl TaskForm {
             FormField::Title => &self.title,
             FormField::Description => &self.description,
             FormField::Assignee => &self.assignee,
+            FormField::PlannedAssignee => &self.planned_assignee,
             FormField::Status => &self.status,
             FormField::BlockedBy
             | FormField::Todos
             | FormField::Comments
+            | FormField::Approve
+            | FormField::Reject
             | FormField::Ok
             | FormField::Cancel => "",
         }
@@ -758,6 +849,12 @@ pub enum TasksPrompt {
         comment_id: Uuid,
         buffer: String,
     },
+    /// Collecting a rejection reason for a `Planning` task. On
+    /// submit the body is appended as a comment (which automatically
+    /// pings the proposing agent via
+    /// `notify_planning_creator_of_comment`) and the task remains in
+    /// `Planning` so the agent can revise.
+    RejectPlan { task_id: Uuid, body: String },
 }
 
 /// The two sub-entity overlays (TODOs and Comments) that sit on top
@@ -1045,6 +1142,20 @@ fn apply_form(form: &TaskForm, store: &mut TaskStore) -> Result<(), TaskError> {
             } else {
                 Some(TaskStatus::parse(&form.status)?)
             };
+            // Diff original vs current planned-assignee using the
+            // same three-state shape as `assignee_patch`. Only emit a
+            // patch when the value actually changed.
+            let planned_patch: Option<Option<String>> = {
+                let cur = form.planned_assignee.trim();
+                let orig = form.original_planned_assignee.trim();
+                if cur == orig {
+                    None
+                } else if cur.is_empty() {
+                    Some(None)
+                } else {
+                    Some(Some(cur.to_string()))
+                }
+            };
             // Diff original vs current blocked-by.
             let add_deps: Vec<Uuid> = form
                 .blocked_by
@@ -1066,6 +1177,7 @@ fn apply_form(form: &TaskForm, store: &mut TaskStore) -> Result<(), TaskError> {
                     description: desc_patch,
                     status: status_patch,
                     assignee: assignee_patch,
+                    planned_assignee: planned_patch,
                     note: None,
                     add_blocked_by: add_deps,
                     remove_blocked_by: remove_deps,
@@ -1308,8 +1420,16 @@ pub fn line_count(s: &str) -> u16 {
 }
 
 pub fn next_status(s: TaskStatus) -> TaskStatus {
-    let pos = STATUS_ORDER.iter().position(|x| *x == s).unwrap_or(0);
-    STATUS_ORDER[(pos + 1) % STATUS_ORDER.len()]
+    // The `s` key cycles only through the ad-hoc statuses
+    // (`CYCLE_STATUS_ORDER`); `Planning`/`Approved` flow through the
+    // dedicated approval workflow. If we land on one of those (e.g.
+    // an unapproved plan that someone manually status-edits), drop
+    // back to the start of the cycle.
+    let pos = CYCLE_STATUS_ORDER
+        .iter()
+        .position(|x| *x == s)
+        .unwrap_or(0);
+    CYCLE_STATUS_ORDER[(pos + 1) % CYCLE_STATUS_ORDER.len()]
 }
 
 fn first_task_row(rows: &[TaskRow]) -> Option<usize> {
@@ -1343,15 +1463,17 @@ mod tests {
     fn rows_group_tasks_under_status_headers_in_order() {
         let s = seeded_store();
         let rows = TasksScreen::rows(&s);
-        // 5 headers + 2 tasks.
-        assert_eq!(rows.len(), 7);
-        assert!(matches!(rows[0], TaskRow::Header(TaskStatus::Open)));
-        assert!(matches!(rows[1], TaskRow::Task(_)));
-        assert!(matches!(rows[2], TaskRow::Header(TaskStatus::Assigned)));
-        assert!(matches!(rows[3], TaskRow::Task(_)));
-        assert!(matches!(rows[4], TaskRow::Header(TaskStatus::InProgress)));
-        assert!(matches!(rows[5], TaskRow::Header(TaskStatus::Done)));
-        assert!(matches!(rows[6], TaskRow::Header(TaskStatus::Cancelled)));
+        // 7 headers + 2 tasks.
+        assert_eq!(rows.len(), 9);
+        assert!(matches!(rows[0], TaskRow::Header(TaskStatus::Planning)));
+        assert!(matches!(rows[1], TaskRow::Header(TaskStatus::Open)));
+        assert!(matches!(rows[2], TaskRow::Task(_)));
+        assert!(matches!(rows[3], TaskRow::Header(TaskStatus::Assigned)));
+        assert!(matches!(rows[4], TaskRow::Task(_)));
+        assert!(matches!(rows[5], TaskRow::Header(TaskStatus::Approved)));
+        assert!(matches!(rows[6], TaskRow::Header(TaskStatus::InProgress)));
+        assert!(matches!(rows[7], TaskRow::Header(TaskStatus::Done)));
+        assert!(matches!(rows[8], TaskRow::Header(TaskStatus::Cancelled)));
     }
 
     #[test]
@@ -1359,11 +1481,11 @@ mod tests {
         let s = seeded_store();
         let rows = TasksScreen::rows(&s);
         let mut screen = TasksScreen {
-            selected_row: 1, // first task
+            selected_row: 2, // first task (open1)
             ..Default::default()
         };
         screen.move_down(&rows);
-        assert_eq!(screen.selected_row, 3); // second task; skipped the header at 2
+        assert_eq!(screen.selected_row, 4); // second task; skipped the Assigned header at 3
     }
 
     #[test]
@@ -1371,11 +1493,11 @@ mod tests {
         let s = seeded_store();
         let rows = TasksScreen::rows(&s);
         let mut screen = TasksScreen {
-            selected_row: 3,
+            selected_row: 4,
             ..Default::default()
         };
         screen.move_up(&rows);
-        assert_eq!(screen.selected_row, 1);
+        assert_eq!(screen.selected_row, 2);
     }
 
     #[test]
@@ -1393,21 +1515,21 @@ mod tests {
     fn reclamp_snaps_away_from_header_after_delete() {
         let mut s = seeded_store();
         let rows_before = TasksScreen::rows(&s);
-        // Selection on the second task (assigned1).
+        // Selection on the second task (assigned1) at row 4.
         let mut screen = TasksScreen {
-            selected_row: 3,
+            selected_row: 4,
             ..Default::default()
         };
-        let assigned_id = match rows_before[3] {
+        let assigned_id = match rows_before[4] {
             TaskRow::Task(id) => id,
             _ => panic!(),
         };
         s.remove(assigned_id).unwrap();
         let rows_after = TasksScreen::rows(&s);
         screen.reclamp(&rows_after);
-        // Row 3 is now the "in_progress" header; reclamp should
-        // snap to the first selectable task in the new rows.
-        assert_eq!(screen.selected_row, 1);
+        // After deletion the row at 4 is a header; reclamp should
+        // snap back to the only remaining task (open1, now at row 2).
+        assert_eq!(screen.selected_row, 2);
     }
 
     #[test]
@@ -1713,6 +1835,8 @@ mod tests {
                 last_wrap_width: 0,
                 last_visible_lines: DESCRIPTION_MIN_VISIBLE_LINES,
                 assignee: "coder".into(),
+                planned_assignee: String::new(),
+                original_planned_assignee: String::new(),
                 status: "".into(),
                 blocked_by: Vec::new(),
                 original_blocked_by: Vec::new(),
@@ -1728,6 +1852,7 @@ mod tests {
                 todos_cursor: 0,
                 comments_cursor: 0,
                 _button_sink: String::new(),
+                show_approval_buttons: false,
             }),
             ..Default::default()
         };
@@ -1897,6 +2022,7 @@ mod tests {
             description: None,
             status: TaskStatus::Open,
             assignee: None,
+            planned_assignee: None,
             created_by: "a".into(),
             created_at_secs: 0,
             updated_at_secs: 0,
@@ -1908,8 +2034,12 @@ mod tests {
         form.focused_field = FormField::Status;
         form.open_picker();
         let p = form.picker.as_ref().unwrap();
-        assert_eq!(p.options.len(), STATUS_ORDER.len());
+        // Picker excludes `Planning` and `Approved` — those are set
+        // only via the approval workflow.
+        assert_eq!(p.options.len(), CYCLE_STATUS_ORDER.len());
         assert_eq!(p.options[0], "open");
+        assert!(!p.options.iter().any(|o| o == "planning"));
+        assert!(!p.options.iter().any(|o| o == "approved"));
         // Preselects the current status ("open" → index 0).
         assert_eq!(p.selected, 0);
     }
