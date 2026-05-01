@@ -8,13 +8,17 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use super::app::{format_task_detail, ActiveView, AgentStatus, App, ChatKind, Focus};
+use super::app::{ActiveView, AgentStatus, App, ChatKind, Focus};
 use super::blocks::{block_fingerprint, AnchorScratch, ChatButton, ScrollAnchor};
 use super::cores_view::{agents_using_core, format_usage_cell, is_team_default, CoreRow};
 use super::memory_view::{
     BankFocus, LinkPickerFocus, LinksOverlay, MemoryStage, NoteDetail, NoteField, NoteForm,
 };
 use super::tasks_view::{FormField, TaskForm, TaskFormKind, TaskRow, TasksPrompt, TasksScreen};
+
+/// Visible row count of an expanded Todos / Comments scroll box. The
+/// label is rendered separately and adds one more row.
+const SECTION_EXPANDED_BOX_ROWS: u16 = 6;
 
 const APP_NAME: &str = "aciddog";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -32,6 +36,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // Fresh frame: reset interactive regions.
     app.layout.chat_buttons.clear();
     app.layout.task_form_fields.clear();
+    app.layout.task_form_todo_rows.clear();
+    app.layout.task_form_comment_rows.clear();
     app.layout.task_form_picker_rows.clear();
     app.layout.task_form_picker_outer = None;
     app.layout.task_form_picker_buttons.clear();
@@ -185,8 +191,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.active_view == ActiveView::Tasks {
         if app.tasks_screen.form.is_some() {
             render_task_form(f, main_area, app);
-        } else if let Some(id) = app.tasks_screen.detail {
-            render_task_detail(f, main_area, &*app, id);
         } else if app.tasks_screen.child_overlay.is_some() {
             render_child_overlay(f, main_area, app);
         }
@@ -1085,12 +1089,66 @@ fn render_tasks_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
                     Style::default().fg(Color::Yellow),
                 )),
             ),
+            TasksPrompt::AddTodo { body, .. } => (
+                " new todo ".to_string(),
+                Line::from(vec![
+                    Span::raw(body.clone()),
+                    Span::styled(
+                        "▏",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+            ),
+            TasksPrompt::ConfirmDeleteTodo { .. } => (
+                " delete todo? ".to_string(),
+                Line::from(Span::styled(
+                    "press y to delete, n or esc to cancel",
+                    Style::default().fg(Color::Yellow),
+                )),
+            ),
+            TasksPrompt::AddComment { body, .. } => (
+                " new comment ".to_string(),
+                Line::from(vec![
+                    Span::raw(body.clone()),
+                    Span::styled(
+                        "▏",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+            ),
+            TasksPrompt::EditComment { body, .. } => (
+                " edit comment ".to_string(),
+                Line::from(vec![
+                    Span::raw(body.clone()),
+                    Span::styled(
+                        "▏",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+            ),
+            TasksPrompt::ConfirmDeleteComment { .. } => (
+                " delete comment? ".to_string(),
+                Line::from(Span::styled(
+                    "press y to delete, n or esc to cancel",
+                    Style::default().fg(Color::Yellow),
+                )),
+            ),
         }
     } else if let Some(form) = app.tasks_screen.form.as_ref() {
         let hint = if form.picker.is_some() {
             "↑/↓ nav · enter pick · esc cancel"
         } else if form.blocked_by_picker.is_some() {
             "↑/↓ nav · space toggle · enter save · esc cancel"
+        } else if form.focused_field == FormField::Todos && !form.todos_collapsed {
+            "j/k cursor · space toggle done · a add · d delete · enter collapse · tab next · esc cancel"
+        } else if form.focused_field == FormField::Comments && !form.comments_collapsed {
+            "j/k cursor · a add · e edit · d delete · enter collapse · tab next · esc cancel"
         } else {
             "tab/↓ next · shift-tab/↑ prev · enter submit (or open dropdown/list) · esc cancel"
         };
@@ -1110,7 +1168,7 @@ fn render_tasks_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
         (
             " tasks ".to_string(),
             Line::from(Span::styled(
-                "a add · e edit · d del · t take · n note · s status · ⏎ detail · esc back",
+                "a add · e/⏎ edit · d del · t take · n note · s status · esc back",
                 Style::default().fg(Color::DarkGray),
             )),
         )
@@ -2316,14 +2374,21 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
     // Collect field hit-rects into a local buffer so we can drop the
     // immutable borrow on `app` before writing them back.
     let mut hit_rects: Vec<(FormField, Rect)> = Vec::new();
+    let mut todo_hit_rects: Vec<(uuid::Uuid, Rect)> = Vec::new();
+    let mut comment_hit_rects: Vec<(uuid::Uuid, Rect)> = Vec::new();
 
     // Compute how many rows to reserve for the Description scroll
     // box. The box grows to use whatever vertical space is left
     // after the simpler (single-line-value) fields + BlockedBy list
-    // + buttons + spacer + error line.
+    // + Todos / Comments boxes + buttons + spacer + error line.
     let simple_value_fields = value_fields
         .iter()
-        .filter(|f| **f != FormField::Description && **f != FormField::BlockedBy)
+        .filter(|f| {
+            **f != FormField::Description
+                && **f != FormField::BlockedBy
+                && **f != FormField::Todos
+                && **f != FormField::Comments
+        })
         .count() as u16;
     let blocked_by_block_rows: u16 = {
         // label + list (up to 4 entries + possible "…more", or the
@@ -2331,8 +2396,27 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
         // doesn't bounce around on content change.
         6
     };
+    // Each collapsible section takes one row when collapsed (the
+    // bottom-padded summary) and SECTION_EXPANDED_BOX_ROWS when
+    // expanded; the label is +1 in either case.
+    let section_rows = |present: bool, collapsed: bool| -> u16 {
+        if !present {
+            return 0;
+        }
+        if collapsed {
+            2
+        } else {
+            1 + SECTION_EXPANDED_BOX_ROWS
+        }
+    };
+    let todos_present = value_fields.contains(&FormField::Todos);
+    let comments_present = value_fields.contains(&FormField::Comments);
+    let todos_block_rows = section_rows(todos_present, form.todos_collapsed);
+    let comments_block_rows = section_rows(comments_present, form.comments_collapsed);
     let overhead = simple_value_fields * 2
         + blocked_by_block_rows
+        + todos_block_rows
+        + comments_block_rows
         + 1 /* spacer */
         + 1 /* err */
         + 1 /* buttons */
@@ -2349,8 +2433,13 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
         let is_dropdown = TaskForm::is_dropdown(*field);
         let is_blocked_by = *field == FormField::BlockedBy;
         let is_description = *field == FormField::Description;
+        let is_todos = *field == FormField::Todos;
+        let is_comments = *field == FormField::Comments;
+        let is_section = is_todos || is_comments;
 
-        // Label line.
+        // Label line. The Todos / Comments labels embed the count
+        // and a glyph so the user can tell at a glance whether the
+        // section is expanded.
         let label_style = if is_focused {
             Style::default()
                 .fg(Color::Cyan)
@@ -2358,8 +2447,36 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             Style::default().fg(Color::DarkGray)
         };
+        let section_label = if is_section {
+            let collapsed = if is_todos {
+                form.todos_collapsed
+            } else {
+                form.comments_collapsed
+            };
+            let glyph = if collapsed { "▶" } else { "▼" };
+            let count = match form.kind {
+                TaskFormKind::Edit(id) => all_tasks
+                    .iter()
+                    .find(|t| t.id == id)
+                    .map(|t| {
+                        if is_todos {
+                            t.todos.len()
+                        } else {
+                            t.comments.len()
+                        }
+                    })
+                    .unwrap_or(0),
+                TaskFormKind::Add => 0,
+            };
+            Some(format!("{glyph} {} ({count}):", field.label()))
+        } else {
+            None
+        };
         let label_spans = vec![
-            Span::styled(format!("{}:", field.label()), label_style),
+            Span::styled(
+                section_label.unwrap_or_else(|| format!("{}:", field.label())),
+                label_style,
+            ),
             if is_focused && is_blocked_by {
                 Span::styled(
                     "   enter to manage",
@@ -2370,6 +2487,24 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
             } else if is_focused && is_description {
                 Span::styled(
                     "   enter for newline · tab next field",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                )
+            } else if is_focused && is_section {
+                let hint = if is_todos {
+                    if form.todos_collapsed {
+                        "   enter to expand · `o` from list to manage"
+                    } else {
+                        "   enter to collapse · j/k scroll · `o` from list to manage"
+                    }
+                } else if form.comments_collapsed {
+                    "   enter to expand · `c` from list to manage"
+                } else {
+                    "   enter to collapse · j/k scroll · `c` from list to manage"
+                };
+                Span::styled(
+                    hint,
                     Style::default()
                         .fg(Color::DarkGray)
                         .add_modifier(Modifier::ITALIC),
@@ -2398,6 +2533,23 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
             // "…N more"). Each line looks up the task for its title
             // + status so dropped tasks render as "(missing)".
             rows_drawn = render_blocked_by_value_rows(f, inner, y, &*form, &all_tasks);
+            y += rows_drawn;
+        } else if is_section {
+            let task = match form.kind {
+                TaskFormKind::Edit(id) => all_tasks.iter().find(|t| t.id == id),
+                TaskFormKind::Add => None,
+            };
+            rows_drawn = render_form_section_box(
+                f,
+                inner,
+                y,
+                form,
+                is_focused,
+                is_todos,
+                task,
+                &mut todo_hit_rects,
+                &mut comment_hit_rects,
+            );
             y += rows_drawn;
         } else {
             rows_drawn = 1;
@@ -2512,6 +2664,8 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
 
     // Commit hit rects.
     app.layout.task_form_fields = hit_rects;
+    app.layout.task_form_todo_rows = todo_hit_rects;
+    app.layout.task_form_comment_rows = comment_hit_rects;
 
     // Picker popup overlays the form when open. Single-select
     // (assignee/status) uses the dropdown picker; BlockedBy uses
@@ -2614,34 +2768,6 @@ fn render_dropdown_picker(f: &mut Frame, area: Rect, app: &mut App) {
         rows.push(Rect::new(inner.x, inner.y + i, inner.width, 1));
     }
     app.layout.task_form_picker_rows = rows;
-}
-
-fn render_task_detail(f: &mut Frame, area: Rect, app: &App, id: uuid::Uuid) {
-    let Some(t) = app.tasks.get(id) else {
-        return;
-    };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let body = format_task_detail(t, &app.tasks, now);
-
-    let w = 80.min(area.width);
-    let h = area.height.saturating_sub(2).max(10);
-    let rect = centered_rect(area, w, h);
-    f.render_widget(Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" task detail (press any key to close) ")
-        .border_style(Style::default().fg(Color::Cyan));
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
-    let lines: Vec<Line> = body
-        .lines()
-        .map(|l| Line::from(Span::raw(l.to_string())))
-        .collect();
-    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
-    f.render_widget(para, inner);
 }
 
 /// Render the multi-line Description scroll box inside the form.
@@ -2768,6 +2894,202 @@ fn render_description_scroll_box(
             Paragraph::new(Span::styled("▼", Style::default().fg(Color::DarkGray))),
             hint_rect,
         );
+    }
+
+    total_rows
+}
+
+/// Render the read-only TODOs / Comments value block inside the
+/// task edit form. When collapsed, draws a single dim "(N items —
+/// Enter to expand)" summary. When expanded, draws a bordered
+/// scroll box (matching the Description box's chrome) and lists
+/// items vertically with the section's own scroll offset applied.
+/// Returns the number of screen rows drawn so the caller can
+/// advance `y`.
+///
+/// `is_todos == false` means "render the Comments section."
+fn render_form_section_box(
+    f: &mut Frame,
+    inner: Rect,
+    start_y: u16,
+    form: &mut super::tasks_view::TaskForm,
+    focused: bool,
+    is_todos: bool,
+    task: Option<&crate::tasks::Task>,
+    todo_hit_rects: &mut Vec<(uuid::Uuid, Rect)>,
+    comment_hit_rects: &mut Vec<(uuid::Uuid, Rect)>,
+) -> u16 {
+    let collapsed = if is_todos {
+        form.todos_collapsed
+    } else {
+        form.comments_collapsed
+    };
+    let count = task
+        .map(|t| {
+            if is_todos {
+                t.todos.len()
+            } else {
+                t.comments.len()
+            }
+        })
+        .unwrap_or(0);
+
+    if collapsed {
+        let plural = if count == 1 { "" } else { "s" };
+        let summary = if count == 0 {
+            "  (none)".to_string()
+        } else {
+            format!("  ({count} item{plural} — click or Enter to expand)")
+        };
+        let style = if focused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC)
+        };
+        let line_rect = Rect::new(inner.x, start_y, inner.width, 1);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(summary, style))),
+            line_rect,
+        );
+        return 1;
+    }
+
+    // Expanded box: bordered, 6 inner rows.
+    let total_rows = SECTION_EXPANDED_BOX_ROWS;
+    let max_space = (inner.y + inner.height).saturating_sub(start_y);
+    let total_rows = total_rows.min(max_space);
+    if total_rows < 3 {
+        return 0;
+    }
+    let rect = Rect::new(
+        inner.x + 2,
+        start_y,
+        inner.width.saturating_sub(2),
+        total_rows,
+    );
+    let border_color = if focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    let box_inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    // Build per-row data: (item_id, line content). Empty section gets
+    // a single placeholder line with a nil id (never used as a hit
+    // target because the rect list is empty for the empty case).
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut rows: Vec<(uuid::Uuid, String)> = Vec::new();
+    if count > 0 {
+        if let Some(t) = task {
+            if is_todos {
+                for td in &t.todos {
+                    let short = td.id.to_string();
+                    let short = short.get(..8).unwrap_or(&short).to_string();
+                    rows.push((
+                        td.id,
+                        format!("[{}] {}  {}", td.status.glyph(), short, td.body),
+                    ));
+                }
+            } else {
+                for c in &t.comments {
+                    rows.push((
+                        c.id,
+                        format!(
+                            "[{} · {}] {}",
+                            super::app::format_age(now, c.timestamp_secs),
+                            c.author,
+                            c.body
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    // Clamp the cursor against the live count, then auto-track scroll
+    // so the cursor is always within the visible window.
+    let visible = box_inner.height as usize;
+    let cursor = if is_todos {
+        &mut form.todos_cursor
+    } else {
+        &mut form.comments_cursor
+    };
+    if rows.is_empty() {
+        *cursor = 0;
+    } else if *cursor >= rows.len() {
+        *cursor = rows.len() - 1;
+    }
+    let cursor_idx = *cursor;
+    // Auto-scroll the section so the cursor is in view. We only
+    // adjust the section's scroll field when the cursor would
+    // otherwise fall above or below the visible window.
+    let scroll_field = if is_todos {
+        &mut form.todos_scroll
+    } else {
+        &mut form.comments_scroll
+    };
+    let max_scroll = (rows.len()).saturating_sub(visible) as u16;
+    if (*scroll_field as usize) > cursor_idx {
+        *scroll_field = cursor_idx as u16;
+    } else if cursor_idx >= (*scroll_field as usize) + visible.max(1) {
+        *scroll_field = (cursor_idx + 1).saturating_sub(visible.max(1)) as u16;
+    }
+    if *scroll_field > max_scroll {
+        *scroll_field = max_scroll;
+    }
+    let scroll = *scroll_field as usize;
+
+    if rows.is_empty() {
+        let line_rect = Rect::new(box_inner.x, box_inner.y, box_inner.width, 1);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "(none)",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ))),
+            line_rect,
+        );
+    } else {
+        for vrow in 0..visible {
+            let item_idx = scroll + vrow;
+            let Some((item_id, line)) = rows.get(item_idx) else {
+                break;
+            };
+            let row_rect = Rect::new(
+                box_inner.x,
+                box_inner.y + vrow as u16,
+                box_inner.width,
+                1,
+            );
+            let is_cursor = focused && item_idx == cursor_idx;
+            let style = if is_cursor {
+                Style::default()
+                    .bg(Color::Cyan)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(line.clone(), style))),
+                row_rect,
+            );
+            if is_todos {
+                todo_hit_rects.push((*item_id, row_rect));
+            } else {
+                comment_hit_rects.push((*item_id, row_rect));
+            }
+        }
     }
 
     total_rows

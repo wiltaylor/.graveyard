@@ -35,7 +35,8 @@ use crate::usage;
 
 use super::cores_view::{CoresScreen, UsageEvent};
 use super::tasks_view::{
-    ChildOverlay, ChildPromptKind, FormField, TaskForm, TasksPrompt, TasksScreen, OPERATOR,
+    ChildOverlay, ChildPromptKind, FormField, TaskForm, TaskFormKind, TasksPrompt, TasksScreen,
+    OPERATOR,
 };
 
 /// True when a child-overlay prompt is a yes/no confirmation rather
@@ -1356,6 +1357,13 @@ pub struct LayoutRects {
     /// frame. Clicking a field focuses it (and opens the picker on
     /// dropdowns); clicking a button activates it.
     pub task_form_fields: Vec<(FormField, Rect)>,
+    /// Per-row hit rects for the expanded TODOs section in the task
+    /// edit form. `Uuid` is the todo id; clicking the row toggles its
+    /// status between Pending and Completed.
+    pub task_form_todo_rows: Vec<(uuid::Uuid, Rect)>,
+    /// Per-row hit rects for the expanded Comments section. Clicking
+    /// the row sets `comments_cursor` to that index.
+    pub task_form_comment_rows: Vec<(uuid::Uuid, Rect)>,
     /// When a dropdown picker is open, each visible option gets a
     /// clickable rect here. Populated by `render_dropdown_picker`
     /// and consumed by the mouse handler.
@@ -8477,9 +8485,7 @@ impl App {
         // must reach the view's own key handler.
         let tasks_modal_open = self.active_view == ActiveView::Tasks
             && self.focus == Focus::Tasks
-            && (self.tasks_screen.form.is_some()
-                || self.tasks_screen.detail.is_some()
-                || self.tasks_screen.prompt.is_some());
+            && (self.tasks_screen.form.is_some() || self.tasks_screen.prompt.is_some());
         let memory_modal_open = self.active_view == ActiveView::Memory
             && self.focus == Focus::Memory
             && self.memory_screen.has_active_modal();
@@ -10834,21 +10840,16 @@ impl App {
         // Clear transient status messages the moment the user types.
         self.tasks_screen.status_msg = None;
 
+        // Prompt takes priority over the form so the comment-add /
+        // edit / delete prompts can overlay an open edit form via the
+        // chat input bar.
+        if self.tasks_screen.prompt.is_some() {
+            self.handle_task_prompt_key(code);
+            return;
+        }
         // Modal form takes all input.
         if self.tasks_screen.form.is_some() {
             self.handle_task_form_key(code);
-            return;
-        }
-        // Detail modal: any key closes it.
-        if self.tasks_screen.detail.is_some() {
-            if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
-                self.tasks_screen.close_modal();
-            }
-            return;
-        }
-        // One-line prompt (note / delete-confirm) takes all input.
-        if self.tasks_screen.prompt.is_some() {
-            self.handle_task_prompt_key(code);
             return;
         }
         // TODOs / Comments overlay takes all input while open.
@@ -10923,8 +10924,15 @@ impl App {
                 }
             }
             KeyCode::Enter => {
+                // Enter on a row opens the edit form (the only task-
+                // detail surface). The form lays out title, description,
+                // assignee, status, blocked-by plus collapsible read-
+                // only TODOs and Comments sections.
                 if let Some(id) = self.tasks_screen.selected_task_id(&rows) {
-                    self.tasks_screen.open_detail(id);
+                    if let Some(t) = self.tasks.get(id) {
+                        self.tasks_screen.open_edit(t);
+                        self.inject_assignee_options();
+                    }
                 }
             }
             KeyCode::Esc => {
@@ -11214,6 +11222,9 @@ impl App {
         let on_button = focused.is_button();
         let on_blocked_by = focused == FormField::BlockedBy;
         let on_description = focused == FormField::Description;
+        let on_todos = focused == FormField::Todos;
+        let on_comments = focused == FormField::Comments;
+        let on_section = on_todos || on_comments;
 
         // Description has its own text-editor key map.
         if on_description {
@@ -11264,24 +11275,220 @@ impl App {
 
         match code {
             KeyCode::Esc => self.tasks_screen.close_modal(),
-            // Tab/Down → next control; Shift-Tab/Up → previous.
+            // Tab/Down → next control; Shift-Tab/Up → previous. The
+            // Todos / Comments sections claim j/k for inner scroll
+            // when expanded, but always yield Tab and Up/Down to the
+            // form's own focus walk so the user can leave the
+            // section without first collapsing it.
             KeyCode::Tab | KeyCode::Down => form.focus_next(),
             KeyCode::BackTab | KeyCode::Up => form.focus_prev(),
             KeyCode::Enter => match focused {
                 FormField::Ok => self.submit_task_form(),
                 FormField::Cancel => self.tasks_screen.close_modal(),
+                FormField::Todos => form.toggle_todos_collapsed(),
+                FormField::Comments => form.toggle_comments_collapsed(),
                 _ if on_dropdown => form.open_picker(),
                 _ if on_blocked_by => self.open_blocked_by_picker_for_form(),
                 _ => self.submit_task_form(),
             },
-            KeyCode::Backspace if !on_dropdown && !on_button && !on_blocked_by => {
+            // Cursor navigation inside an expanded section. The
+            // renderer auto-tracks scroll to keep the cursor in view;
+            // we don't have the live task here so we drop the cursor
+            // walk down to the helpers below which consult `self.tasks`.
+            KeyCode::Char('j') if on_section => {
+                self.move_form_section_cursor(1);
+            }
+            KeyCode::Char('k') if on_section => {
+                self.move_form_section_cursor(-1);
+            }
+            // Space on Todos toggles the cursor-selected todo between
+            // Pending and Completed. Mirrors a checkbox click in the
+            // mouse handler.
+            KeyCode::Char(' ') if on_todos && !form.todos_collapsed => {
+                self.toggle_form_selected_todo();
+            }
+            // `a` on the expanded TODOs section opens an inline
+            // add-todo prompt at the chat input bar; the form stays
+            // visible behind it.
+            KeyCode::Char('a') if on_todos && !form.todos_collapsed => {
+                self.open_form_add_todo_prompt();
+            }
+            // `d` opens the y/n confirmation prompt for the cursor-
+            // selected todo. Confirming removes it from the store;
+            // declining or Esc returns control to the form intact.
+            KeyCode::Char('d') if on_todos && !form.todos_collapsed => {
+                self.open_form_delete_todo_prompt();
+            }
+            // Comment management while focused + expanded: a/e/d
+            // pipe into TasksPrompt so the user can compose without
+            // leaving the form.
+            KeyCode::Char('a') if on_comments && !form.comments_collapsed => {
+                self.open_form_add_comment_prompt();
+            }
+            KeyCode::Char('e') if on_comments && !form.comments_collapsed => {
+                self.open_form_edit_comment_prompt();
+            }
+            KeyCode::Char('d') if on_comments && !form.comments_collapsed => {
+                self.open_form_delete_comment_prompt();
+            }
+            KeyCode::Backspace if !on_dropdown && !on_button && !on_blocked_by && !on_section => {
                 form.field_mut(focused).pop();
             }
-            KeyCode::Char(c) if !on_dropdown && !on_button && !on_blocked_by => {
+            KeyCode::Char(c) if !on_dropdown && !on_button && !on_blocked_by && !on_section => {
                 form.field_mut(focused).push(c);
             }
             _ => {}
         }
+    }
+
+    /// Step the cursor inside the currently-focused expanded section
+    /// by `delta` rows. Reads the live task to compute the upper
+    /// bound. No-op if no form is open or the section is collapsed.
+    fn move_form_section_cursor(&mut self, delta: i32) {
+        let Some(form) = self.tasks_screen.form.as_ref() else {
+            return;
+        };
+        let TaskFormKind::Edit(task_id) = form.kind else {
+            return;
+        };
+        let focused = form.focused_field;
+        let Some(task) = self.tasks.get(task_id) else {
+            return;
+        };
+        let len = match focused {
+            FormField::Todos if !form.todos_collapsed => task.todos.len(),
+            FormField::Comments if !form.comments_collapsed => task.comments.len(),
+            _ => return,
+        };
+        let Some(form) = self.tasks_screen.form.as_mut() else {
+            return;
+        };
+        match focused {
+            FormField::Todos => form.move_todos_cursor(delta, len),
+            FormField::Comments => form.move_comments_cursor(delta, len),
+            _ => {}
+        }
+    }
+
+    /// Toggle the cursor-selected TODO between Pending and Completed.
+    /// Stays a no-op if the section is collapsed, the form is closed,
+    /// or the cursor is past the end.
+    fn toggle_form_selected_todo(&mut self) {
+        let Some(form) = self.tasks_screen.form.as_ref() else {
+            return;
+        };
+        let TaskFormKind::Edit(task_id) = form.kind else {
+            return;
+        };
+        if form.todos_collapsed {
+            return;
+        }
+        let cursor = form.todos_cursor;
+        let Some(task) = self.tasks.get(task_id) else {
+            return;
+        };
+        let Some(td) = task.todos.get(cursor) else {
+            return;
+        };
+        let next_status = match td.status {
+            crate::tasks::TodoStatus::Completed => crate::tasks::TodoStatus::Pending,
+            _ => crate::tasks::TodoStatus::Completed,
+        };
+        let todo_id = td.id;
+        let _ = self.tasks.update_todo(task_id, todo_id, None, Some(next_status));
+    }
+
+    fn open_form_add_todo_prompt(&mut self) {
+        let Some(form) = self.tasks_screen.form.as_ref() else {
+            return;
+        };
+        let TaskFormKind::Edit(task_id) = form.kind else {
+            return;
+        };
+        self.tasks_screen.prompt = Some(TasksPrompt::AddTodo {
+            task_id,
+            body: String::new(),
+        });
+    }
+
+    fn open_form_delete_todo_prompt(&mut self) {
+        let Some(form) = self.tasks_screen.form.as_ref() else {
+            return;
+        };
+        let TaskFormKind::Edit(task_id) = form.kind else {
+            return;
+        };
+        let cursor = form.todos_cursor;
+        let Some(task) = self.tasks.get(task_id) else {
+            return;
+        };
+        let Some(td) = task.todos.get(cursor) else {
+            return;
+        };
+        let todo_id = td.id;
+        self.tasks_screen.prompt = Some(TasksPrompt::ConfirmDeleteTodo {
+            task_id,
+            todo_id,
+            buffer: String::new(),
+        });
+    }
+
+    fn open_form_add_comment_prompt(&mut self) {
+        let Some(form) = self.tasks_screen.form.as_ref() else {
+            return;
+        };
+        let TaskFormKind::Edit(task_id) = form.kind else {
+            return;
+        };
+        self.tasks_screen.prompt = Some(TasksPrompt::AddComment {
+            task_id,
+            body: String::new(),
+        });
+    }
+
+    fn open_form_edit_comment_prompt(&mut self) {
+        let Some(form) = self.tasks_screen.form.as_ref() else {
+            return;
+        };
+        let TaskFormKind::Edit(task_id) = form.kind else {
+            return;
+        };
+        let cursor = form.comments_cursor;
+        let Some(task) = self.tasks.get(task_id) else {
+            return;
+        };
+        let Some(c) = task.comments.get(cursor) else {
+            return;
+        };
+        let comment_id = c.id;
+        let body = c.body.clone();
+        self.tasks_screen.prompt = Some(TasksPrompt::EditComment {
+            task_id,
+            comment_id,
+            body,
+        });
+    }
+
+    fn open_form_delete_comment_prompt(&mut self) {
+        let Some(form) = self.tasks_screen.form.as_ref() else {
+            return;
+        };
+        let TaskFormKind::Edit(task_id) = form.kind else {
+            return;
+        };
+        let cursor = form.comments_cursor;
+        let Some(task) = self.tasks.get(task_id) else {
+            return;
+        };
+        let Some(c) = task.comments.get(cursor) else {
+            return;
+        };
+        let comment_id = c.id;
+        self.tasks_screen.prompt = Some(TasksPrompt::ConfirmDeleteComment {
+            task_id,
+            comment_id,
+            buffer: String::new(),
+        });
     }
 
     /// Open the blocked-by multi-select picker, feeding it the full
@@ -11380,6 +11587,206 @@ impl App {
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') => {
                     self.tasks_screen.close_modal();
+                }
+                KeyCode::Char(c) => buffer.push(c),
+                KeyCode::Backspace => {
+                    buffer.pop();
+                }
+                _ => {}
+            },
+            TasksPrompt::AddTodo { task_id, body } => match code {
+                // Cancel: drop the prompt only — keep the form open.
+                KeyCode::Esc => {
+                    self.tasks_screen.prompt = None;
+                }
+                KeyCode::Enter => {
+                    if !body.trim().is_empty() {
+                        let id = *task_id;
+                        let body = std::mem::take(body);
+                        match self.tasks.add_todo(id, body, OPERATOR.to_string()) {
+                            Ok(td) => {
+                                let new_id = td.id;
+                                self.tasks_screen.status_msg = Some("todo added".into());
+                                self.tasks_screen.prompt = None;
+                                // Bump the form's cursor onto the
+                                // freshly-added todo so Space toggles
+                                // it without an extra j-walk.
+                                if let (Some(form), Some(t)) = (
+                                    self.tasks_screen.form.as_mut(),
+                                    self.tasks.get(id),
+                                ) {
+                                    if let Some(idx) =
+                                        t.todos.iter().position(|td| td.id == new_id)
+                                    {
+                                        form.todos_cursor = idx;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                                self.tasks_screen.prompt = None;
+                            }
+                        }
+                    } else {
+                        self.tasks_screen.prompt = None;
+                    }
+                }
+                KeyCode::Backspace => {
+                    body.pop();
+                }
+                KeyCode::Char(c) => body.push(c),
+                _ => {}
+            },
+            TasksPrompt::ConfirmDeleteTodo {
+                task_id,
+                todo_id,
+                buffer,
+            } => match code {
+                KeyCode::Esc => {
+                    self.tasks_screen.prompt = None;
+                }
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    let task_id = *task_id;
+                    let todo_id = *todo_id;
+                    match self.tasks.remove_todo(task_id, todo_id) {
+                        Ok(_) => {
+                            self.tasks_screen.status_msg = Some("todo removed".into());
+                        }
+                        Err(e) => {
+                            self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                        }
+                    }
+                    // Snap the cursor back into range so a follow-up
+                    // Space doesn't index past the new end.
+                    if let (Some(form), Some(t)) =
+                        (self.tasks_screen.form.as_mut(), self.tasks.get(task_id))
+                    {
+                        let len = t.todos.len();
+                        if len == 0 {
+                            form.todos_cursor = 0;
+                        } else if form.todos_cursor >= len {
+                            form.todos_cursor = len - 1;
+                        }
+                    }
+                    self.tasks_screen.prompt = None;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') => {
+                    self.tasks_screen.prompt = None;
+                }
+                KeyCode::Char(c) => buffer.push(c),
+                KeyCode::Backspace => {
+                    buffer.pop();
+                }
+                _ => {}
+            },
+            TasksPrompt::AddComment { task_id, body } => match code {
+                // Cancel: drop the prompt only — keep the form open.
+                KeyCode::Esc => {
+                    self.tasks_screen.prompt = None;
+                }
+                KeyCode::Enter => {
+                    if !body.trim().is_empty() {
+                        let id = *task_id;
+                        let body = std::mem::take(body);
+                        match self.tasks.add_comment(id, body, OPERATOR.to_string()) {
+                            Ok(c) => {
+                                let new_id = c.id;
+                                self.tasks_screen.status_msg = Some("comment added".into());
+                                // Drop the prompt and bump the cursor
+                                // to the freshly-added row.
+                                self.tasks_screen.prompt = None;
+                                if let (Some(form), Some(t)) = (
+                                    self.tasks_screen.form.as_mut(),
+                                    self.tasks.get(id),
+                                ) {
+                                    if let Some(idx) =
+                                        t.comments.iter().position(|c| c.id == new_id)
+                                    {
+                                        form.comments_cursor = idx;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                                self.tasks_screen.prompt = None;
+                            }
+                        }
+                    } else {
+                        // Empty body: just dismiss the prompt.
+                        self.tasks_screen.prompt = None;
+                    }
+                }
+                KeyCode::Backspace => {
+                    body.pop();
+                }
+                KeyCode::Char(c) => body.push(c),
+                _ => {}
+            },
+            TasksPrompt::EditComment {
+                task_id,
+                comment_id,
+                body,
+            } => match code {
+                KeyCode::Esc => {
+                    self.tasks_screen.prompt = None;
+                }
+                KeyCode::Enter => {
+                    if !body.trim().is_empty() {
+                        let task_id = *task_id;
+                        let comment_id = *comment_id;
+                        let body = std::mem::take(body);
+                        match self.tasks.update_comment(task_id, comment_id, body) {
+                            Ok(_) => {
+                                self.tasks_screen.status_msg = Some("comment updated".into());
+                            }
+                            Err(e) => {
+                                self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                            }
+                        }
+                    }
+                    self.tasks_screen.prompt = None;
+                }
+                KeyCode::Backspace => {
+                    body.pop();
+                }
+                KeyCode::Char(c) => body.push(c),
+                _ => {}
+            },
+            TasksPrompt::ConfirmDeleteComment {
+                task_id,
+                comment_id,
+                buffer,
+            } => match code {
+                KeyCode::Esc => {
+                    self.tasks_screen.prompt = None;
+                }
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    let task_id = *task_id;
+                    let comment_id = *comment_id;
+                    match self.tasks.remove_comment(task_id, comment_id) {
+                        Ok(_) => {
+                            self.tasks_screen.status_msg = Some("comment removed".into());
+                        }
+                        Err(e) => {
+                            self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                        }
+                    }
+                    // Snap the cursor back into range.
+                    if let (Some(form), Some(t)) = (
+                        self.tasks_screen.form.as_mut(),
+                        self.tasks.get(task_id),
+                    ) {
+                        let len = t.comments.len();
+                        if len == 0 {
+                            form.comments_cursor = 0;
+                        } else if form.comments_cursor >= len {
+                            form.comments_cursor = len - 1;
+                        }
+                    }
+                    self.tasks_screen.prompt = None;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') => {
+                    self.tasks_screen.prompt = None;
                 }
                 KeyCode::Char(c) => buffer.push(c),
                 KeyCode::Backspace => {
@@ -12790,6 +13197,66 @@ impl App {
             return;
         }
 
+        // Click on a TODO row: first click selects (focus + move
+        // cursor); a second click on the already-selected row is what
+        // actually toggles the done state. Two-step pattern keeps a
+        // mis-aimed click from accidentally checking off the wrong
+        // todo. Beats the field hit-test because the row rects sit
+        // inside the section's outer rect.
+        if let Some((todo_id, row_idx)) = self
+            .layout
+            .task_form_todo_rows
+            .iter()
+            .enumerate()
+            .find(|(_, (_, r))| rect_contains(*r, pos))
+            .map(|(idx, (id, _))| (*id, idx))
+        {
+            let mut should_toggle = false;
+            if let Some(form) = self.tasks_screen.form.as_mut() {
+                let new_cursor = (form.todos_scroll as usize) + row_idx;
+                should_toggle =
+                    form.focused_field == FormField::Todos && form.todos_cursor == new_cursor;
+                form.focused_field = FormField::Todos;
+                form.todos_cursor = new_cursor;
+            }
+            if should_toggle {
+                let task_id = match self.tasks_screen.form.as_ref().map(|f| f.kind) {
+                    Some(TaskFormKind::Edit(id)) => Some(id),
+                    _ => None,
+                };
+                if let Some(task_id) = task_id {
+                    let next = self
+                        .tasks
+                        .get(task_id)
+                        .and_then(|t| t.todos.iter().find(|td| td.id == todo_id))
+                        .map(|td| match td.status {
+                            crate::tasks::TodoStatus::Completed => crate::tasks::TodoStatus::Pending,
+                            _ => crate::tasks::TodoStatus::Completed,
+                        });
+                    if let Some(next) = next {
+                        let _ = self.tasks.update_todo(task_id, todo_id, None, Some(next));
+                    }
+                }
+            }
+            return;
+        }
+
+        // Click on a comment row sets the cursor.
+        if let Some((_, row_idx)) = self
+            .layout
+            .task_form_comment_rows
+            .iter()
+            .enumerate()
+            .find(|(_, (_, r))| rect_contains(*r, pos))
+            .map(|(idx, (id, _))| (*id, idx))
+        {
+            if let Some(form) = self.tasks_screen.form.as_mut() {
+                form.focused_field = FormField::Comments;
+                form.comments_cursor = (form.comments_scroll as usize) + row_idx;
+            }
+            return;
+        }
+
         // No picker: hit-test form fields and buttons.
         let hit = self
             .layout
@@ -12816,6 +13283,19 @@ impl App {
                     }
                 } else if field == FormField::BlockedBy {
                     self.open_blocked_by_picker_for_form();
+                }
+                // Clicking the Todos / Comments label toggles the
+                // collapse state — same as Enter on a focused
+                // section. Click on a row inside the expanded box is
+                // handled above and short-circuits before this point.
+                else if field == FormField::Todos {
+                    if let Some(form) = self.tasks_screen.form.as_mut() {
+                        form.toggle_todos_collapsed();
+                    }
+                } else if field == FormField::Comments {
+                    if let Some(form) = self.tasks_screen.form.as_mut() {
+                        form.toggle_comments_collapsed();
+                    }
                 }
             }
         }
@@ -19748,7 +20228,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_opens_detail_modal_and_esc_closes_it() {
+    fn enter_on_task_row_opens_edit_form() {
         let mut app = App::new(sample_config());
         app.tasks
             .add("t".into(), None, None, "seed".into(), Vec::new())
@@ -19758,9 +20238,433 @@ mod tests {
         let rows = TasksScreen::rows(&app.tasks);
         app.tasks_screen.reclamp(&rows);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.tasks_screen.detail.is_some());
+        assert!(matches!(
+            app.tasks_screen.form.as_ref().map(|f| f.kind),
+            Some(TaskFormKind::Edit(_))
+        ));
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(app.tasks_screen.detail.is_none());
+        assert!(app.tasks_screen.form.is_none());
+    }
+
+    #[test]
+    fn edit_form_tab_order_includes_todos_and_comments() {
+        let mut app = App::new(sample_config());
+        app.tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        let order = app.tasks_screen.form.as_ref().unwrap().tab_order();
+        assert!(order.contains(&FormField::Todos));
+        assert!(order.contains(&FormField::Comments));
+    }
+
+    #[test]
+    fn add_form_tab_order_excludes_todos_and_comments() {
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        let order = app.tasks_screen.form.as_ref().unwrap().tab_order();
+        assert!(!order.contains(&FormField::Todos));
+        assert!(!order.contains(&FormField::Comments));
+    }
+
+    #[test]
+    fn edit_form_todos_and_comments_default_collapsed_with_zero_scroll() {
+        let mut app = App::new(sample_config());
+        app.tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        let form = app.tasks_screen.form.as_ref().unwrap();
+        assert!(form.todos_collapsed);
+        assert!(form.comments_collapsed);
+        assert_eq!(form.todos_scroll, 0);
+        assert_eq!(form.comments_scroll, 0);
+    }
+
+    #[test]
+    fn enter_on_focused_todos_field_toggles_collapse() {
+        let mut app = App::new(sample_config());
+        app.tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        // Focus the Todos field directly (avoids Description swallowing keys).
+        app.tasks_screen.form.as_mut().unwrap().focused_field = FormField::Todos;
+        assert!(app.tasks_screen.form.as_ref().unwrap().todos_collapsed);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!app.tasks_screen.form.as_ref().unwrap().todos_collapsed);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.tasks_screen.form.as_ref().unwrap().todos_collapsed);
+    }
+
+    #[test]
+    fn enter_on_focused_comments_field_toggles_collapse_and_resets_scroll() {
+        let mut app = App::new(sample_config());
+        app.tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        {
+            let form = app.tasks_screen.form.as_mut().unwrap();
+            form.focused_field = FormField::Comments;
+            // Pretend the user had scrolled within an earlier expansion.
+            form.comments_scroll = 7;
+        }
+        // Toggling resets scroll so a re-expansion lands at the top.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        let form = app.tasks_screen.form.as_ref().unwrap();
+        assert!(!form.comments_collapsed);
+        assert_eq!(form.comments_scroll, 0);
+    }
+
+    #[test]
+    fn j_k_moves_todo_cursor_only_when_expanded() {
+        let mut app = App::new(sample_config());
+        let task_id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        // Three todos so cursor has somewhere to walk.
+        for body in ["one", "two", "three"] {
+            app.tasks
+                .add_todo(task_id, body.into(), "seed".into())
+                .unwrap();
+        }
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        app.tasks_screen.form.as_mut().unwrap().focused_field = FormField::Todos;
+
+        // Collapsed: j/k are absorbed (no cursor movement, no text
+        // mutation either since Todos is gated as a "section").
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 0);
+
+        // Expand, walk down twice, then up once.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 2);
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 1);
+        // Past the end is clamped.
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 2);
+    }
+
+    #[test]
+    fn space_toggles_cursor_selected_todo_done() {
+        let mut app = App::new(sample_config());
+        let task_id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        for body in ["one", "two"] {
+            app.tasks
+                .add_todo(task_id, body.into(), "seed".into())
+                .unwrap();
+        }
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        // Focus + expand Todos, then point cursor at the second todo.
+        {
+            let form = app.tasks_screen.form.as_mut().unwrap();
+            form.focused_field = FormField::Todos;
+            form.todos_collapsed = false;
+            form.todos_cursor = 1;
+        }
+
+        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(
+            app.tasks.get(task_id).unwrap().todos[1].status,
+            crate::tasks::TodoStatus::Completed
+        );
+
+        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(
+            app.tasks.get(task_id).unwrap().todos[1].status,
+            crate::tasks::TodoStatus::Pending
+        );
+    }
+
+    #[test]
+    fn a_in_expanded_todos_opens_add_todo_prompt_and_commits_to_store() {
+        let mut app = App::new(sample_config());
+        let task_id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        {
+            let form = app.tasks_screen.form.as_mut().unwrap();
+            form.focused_field = FormField::Todos;
+            form.todos_collapsed = false;
+        }
+
+        // `a` opens the add-todo prompt overlaid on the form.
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert!(matches!(
+            app.tasks_screen.prompt,
+            Some(TasksPrompt::AddTodo { .. })
+        ));
+        assert!(app.tasks_screen.form.is_some(), "form must stay open");
+
+        // Type body, commit, prompt closes, todo lands on the task,
+        // and the form's cursor lands on the new todo.
+        for c in "first todo".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.tasks_screen.prompt.is_none());
+        let todos = &app.tasks.get(task_id).unwrap().todos;
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].body, "first todo");
+        assert_eq!(todos[0].status, crate::tasks::TodoStatus::Pending);
+        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 0);
+    }
+
+    #[test]
+    fn d_then_y_in_expanded_todos_removes_selected_todo() {
+        let mut app = App::new(sample_config());
+        let task_id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        let id_a = app
+            .tasks
+            .add_todo(task_id, "keep".into(), "seed".into())
+            .unwrap()
+            .id;
+        let id_b = app
+            .tasks
+            .add_todo(task_id, "doomed".into(), "seed".into())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        {
+            let form = app.tasks_screen.form.as_mut().unwrap();
+            form.focused_field = FormField::Todos;
+            form.todos_collapsed = false;
+            // Aim at the second todo (the doomed one).
+            form.todos_cursor = 1;
+        }
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(matches!(
+            app.tasks_screen.prompt,
+            Some(TasksPrompt::ConfirmDeleteTodo { .. })
+        ));
+
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert!(app.tasks_screen.prompt.is_none());
+        let todos = &app.tasks.get(task_id).unwrap().todos;
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].id, id_a);
+        assert_ne!(todos[0].id, id_b);
+        // Cursor must clamp back into range after the delete.
+        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 0);
+        // Form stays open.
+        assert!(app.tasks_screen.form.is_some());
+    }
+
+    #[test]
+    fn d_then_n_in_expanded_todos_keeps_todo() {
+        let mut app = App::new(sample_config());
+        let task_id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.tasks
+            .add_todo(task_id, "stay".into(), "seed".into())
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        {
+            let form = app.tasks_screen.form.as_mut().unwrap();
+            form.focused_field = FormField::Todos;
+            form.todos_collapsed = false;
+        }
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(app.tasks_screen.prompt.is_none());
+        assert_eq!(app.tasks.get(task_id).unwrap().todos.len(), 1);
+    }
+
+    #[test]
+    fn esc_cancels_add_todo_prompt_without_creating_todo() {
+        let mut app = App::new(sample_config());
+        let task_id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        {
+            let form = app.tasks_screen.form.as_mut().unwrap();
+            form.focused_field = FormField::Todos;
+            form.todos_collapsed = false;
+        }
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        for c in "scratch".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.tasks_screen.prompt.is_none());
+        assert!(app.tasks.get(task_id).unwrap().todos.is_empty());
+        assert!(app.tasks_screen.form.is_some());
+    }
+
+    #[test]
+    fn a_in_expanded_comments_opens_add_comment_prompt() {
+        let mut app = App::new(sample_config());
+        app.tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        {
+            let form = app.tasks_screen.form.as_mut().unwrap();
+            form.focused_field = FormField::Comments;
+            form.comments_collapsed = false;
+        }
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert!(matches!(
+            app.tasks_screen.prompt,
+            Some(TasksPrompt::AddComment { .. })
+        ));
+
+        // Type, commit; the comment should land on the live task and
+        // the form should still be open.
+        for c in "hello".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.tasks_screen.prompt.is_none());
+        assert!(app.tasks_screen.form.is_some());
+        let comments = &app.tasks.all()[0].comments;
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].body, "hello");
+    }
+
+    #[test]
+    fn e_in_expanded_comments_edits_selected_comment() {
+        let mut app = App::new(sample_config());
+        let task_id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.tasks
+            .add_comment(task_id, "seed".into(), "first".into())
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        {
+            let form = app.tasks_screen.form.as_mut().unwrap();
+            form.focused_field = FormField::Comments;
+            form.comments_collapsed = false;
+            form.comments_cursor = 0;
+        }
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        assert!(matches!(
+            app.tasks_screen.prompt,
+            Some(TasksPrompt::EditComment { .. })
+        ));
+
+        // Replace the body wholesale.
+        for _ in 0.."first".len() {
+            app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+        }
+        for c in "edited".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.tasks_screen.prompt.is_none());
+        assert_eq!(app.tasks.get(task_id).unwrap().comments[0].body, "edited");
+    }
+
+    #[test]
+    fn d_then_y_in_expanded_comments_removes_selected_comment() {
+        let mut app = App::new(sample_config());
+        let task_id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.tasks
+            .add_comment(task_id, "seed".into(), "doomed".into())
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        {
+            let form = app.tasks_screen.form.as_mut().unwrap();
+            form.focused_field = FormField::Comments;
+            form.comments_collapsed = false;
+            form.comments_cursor = 0;
+        }
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(matches!(
+            app.tasks_screen.prompt,
+            Some(TasksPrompt::ConfirmDeleteComment { .. })
+        ));
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert!(app.tasks_screen.prompt.is_none());
+        assert!(app.tasks.get(task_id).unwrap().comments.is_empty());
+        // Form must remain open after the comment delete.
+        assert!(app.tasks_screen.form.is_some());
     }
 
     #[test]
@@ -20075,6 +20979,130 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
         assert!(app.tasks_screen.form.is_none());
         assert_eq!(app.tasks.all().len(), 0);
+    }
+
+    #[test]
+    fn first_click_on_todo_row_selects_second_click_toggles() {
+        let mut app = App::new(sample_config());
+        let task_id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        let todo_id = app
+            .tasks
+            .add_todo(task_id, "do thing".into(), "seed".into())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        // Simulate the renderer expanding the section + emitting a
+        // hit rect for the row.
+        {
+            let form = app.tasks_screen.form.as_mut().unwrap();
+            form.focused_field = FormField::Title;
+            form.todos_collapsed = false;
+            form.todos_cursor = 0;
+            form.todos_scroll = 0;
+        }
+        let row_rect = Rect::new(10, 30, 40, 1);
+        app.layout.task_form_todo_rows = vec![(todo_id, row_rect)];
+
+        // First click: focus + select; status unchanged.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 12,
+            row: 30,
+            modifiers: KeyModifiers::NONE,
+        });
+        let form = app.tasks_screen.form.as_ref().unwrap();
+        assert_eq!(form.focused_field, FormField::Todos);
+        assert_eq!(form.todos_cursor, 0);
+        assert_eq!(
+            app.tasks.get(task_id).unwrap().todos[0].status,
+            crate::tasks::TodoStatus::Pending,
+            "first click must not toggle"
+        );
+
+        // Second click on the same row: now toggles.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 14,
+            row: 30,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.tasks.get(task_id).unwrap().todos[0].status,
+            crate::tasks::TodoStatus::Completed
+        );
+
+        // Third click toggles back.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 14,
+            row: 30,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(
+            app.tasks.get(task_id).unwrap().todos[0].status,
+            crate::tasks::TodoStatus::Pending
+        );
+    }
+
+    #[test]
+    fn click_on_different_todo_row_only_moves_cursor() {
+        let mut app = App::new(sample_config());
+        let task_id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        let id_a = app
+            .tasks
+            .add_todo(task_id, "a".into(), "seed".into())
+            .unwrap()
+            .id;
+        let id_b = app
+            .tasks
+            .add_todo(task_id, "b".into(), "seed".into())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        {
+            let form = app.tasks_screen.form.as_mut().unwrap();
+            // Pretend the user already selected todo `a`.
+            form.focused_field = FormField::Todos;
+            form.todos_collapsed = false;
+            form.todos_cursor = 0;
+        }
+        app.layout.task_form_todo_rows = vec![
+            (id_a, Rect::new(10, 30, 40, 1)),
+            (id_b, Rect::new(10, 31, 40, 1)),
+        ];
+
+        // Click the OTHER row: only moves cursor, no toggle.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 14,
+            row: 31,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 1);
+        assert_eq!(
+            app.tasks.get(task_id).unwrap().todos[0].status,
+            crate::tasks::TodoStatus::Pending
+        );
+        assert_eq!(
+            app.tasks.get(task_id).unwrap().todos[1].status,
+            crate::tasks::TodoStatus::Pending
+        );
     }
 
     #[test]

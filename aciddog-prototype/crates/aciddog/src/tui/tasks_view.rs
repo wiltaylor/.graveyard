@@ -70,6 +70,16 @@ pub enum FormField {
     Status,
     /// Task-dependency list. Enter opens a multi-select picker.
     BlockedBy,
+    /// Read-only collapsible TODO list. Enter toggles collapse;
+    /// when expanded, j/k or arrows scroll the inner box. Add /
+    /// edit / delete still go through the dedicated `o` overlay
+    /// from the task list.
+    Todos,
+    /// Read-only collapsible Comments list. Enter toggles collapse;
+    /// when expanded, j/k or arrows scroll the inner box. Add /
+    /// edit / delete still go through the dedicated `c` overlay
+    /// from the task list.
+    Comments,
     Ok,
     Cancel,
 }
@@ -82,6 +92,8 @@ impl FormField {
             Self::Assignee => "Assignee",
             Self::Status => "Status",
             Self::BlockedBy => "Blocked by",
+            Self::Todos => "TODOs",
+            Self::Comments => "Comments",
             Self::Ok => "OK",
             Self::Cancel => "Cancel",
         }
@@ -192,6 +204,30 @@ pub struct TaskForm {
     /// When `Some`, the multi-select blocked-by picker is overlaid
     /// on the form.
     pub blocked_by_picker: Option<BlockedByPicker>,
+    /// Whether the read-only TODOs section is collapsed (default `true`
+    /// = collapsed, so opening a task doesn't dump everything at once).
+    /// Toggled with Enter while the `Todos` field is focused.
+    pub todos_collapsed: bool,
+    /// Whether the read-only Comments section is collapsed (default
+    /// `true`). Toggled with Enter while the `Comments` field is
+    /// focused.
+    pub comments_collapsed: bool,
+    /// Vertical scroll offset (in rows) for the expanded TODOs box.
+    /// Clamped each frame against the rendered row count; auto-tracked
+    /// to keep `todos_cursor` in view.
+    pub todos_scroll: u16,
+    /// Vertical scroll offset (in rows) for the expanded Comments box.
+    /// Clamped each frame against the rendered row count; auto-tracked
+    /// to keep `comments_cursor` in view.
+    pub comments_scroll: u16,
+    /// Selected row index inside the expanded TODOs box. Used by Space
+    /// (toggle) and mouse clicks. Clamped against the live todo count
+    /// each render.
+    pub todos_cursor: usize,
+    /// Selected row index inside the expanded Comments box. Used by
+    /// `a`/`e`/`d` and mouse clicks. Clamped against the live comment
+    /// count each render.
+    pub comments_cursor: usize,
     /// Unused sink returned by `field_mut` for button variants so
     /// the signature can stay `&mut String` without panics. Key
     /// handlers gate character input on `FormField::is_button` so
@@ -219,6 +255,12 @@ impl TaskForm {
             assignee_options: vec![String::new()],
             picker: None,
             blocked_by_picker: None,
+            todos_collapsed: true,
+            comments_collapsed: true,
+            todos_scroll: 0,
+            comments_scroll: 0,
+            todos_cursor: 0,
+            comments_cursor: 0,
             _button_sink: String::new(),
         }
     }
@@ -243,6 +285,12 @@ impl TaskForm {
             assignee_options: vec![String::new()],
             picker: None,
             blocked_by_picker: None,
+            todos_collapsed: true,
+            comments_collapsed: true,
+            todos_scroll: 0,
+            comments_scroll: 0,
+            todos_cursor: 0,
+            comments_cursor: 0,
             _button_sink: String::new(),
         }
     }
@@ -325,8 +373,10 @@ impl TaskForm {
 
     /// All fields in tab order. For Add, the Status field is
     /// skipped since new tasks derive their status from whether an
-    /// assignee is set. Ok and Cancel buttons are always last so
-    /// Tabbing lands you on them before wrapping to Title.
+    /// assignee is set; the read-only Todos/Comments sections are
+    /// also skipped (a brand-new task has neither). Ok and Cancel
+    /// buttons are always last so Tabbing lands you on them before
+    /// wrapping to Title.
     pub fn tab_order(&self) -> &'static [FormField] {
         match self.kind {
             TaskFormKind::Add => &[
@@ -343,6 +393,8 @@ impl TaskForm {
                 FormField::Assignee,
                 FormField::Status,
                 FormField::BlockedBy,
+                FormField::Todos,
+                FormField::Comments,
                 FormField::Ok,
                 FormField::Cancel,
             ],
@@ -364,17 +416,22 @@ impl TaskForm {
     }
 
     /// Returns a mutable string ref for text-backed fields.
-    /// Non-text fields (buttons, the list-picker `BlockedBy`) have
-    /// no editable string value; callers must gate character input
-    /// before writing. The sink is returned for those variants to
-    /// keep the signature `&mut String` without panics.
+    /// Non-text fields (buttons, the list-picker `BlockedBy`, the
+    /// read-only `Todos`/`Comments` boxes) have no editable string
+    /// value; callers must gate character input before writing. The
+    /// sink is returned for those variants to keep the signature
+    /// `&mut String` without panics.
     pub fn field_mut(&mut self, field: FormField) -> &mut String {
         match field {
             FormField::Title => &mut self.title,
             FormField::Description => &mut self.description,
             FormField::Assignee => &mut self.assignee,
             FormField::Status => &mut self.status,
-            FormField::BlockedBy | FormField::Ok | FormField::Cancel => &mut self._button_sink,
+            FormField::BlockedBy
+            | FormField::Todos
+            | FormField::Comments
+            | FormField::Ok
+            | FormField::Cancel => &mut self._button_sink,
         }
     }
 
@@ -384,8 +441,53 @@ impl TaskForm {
             FormField::Description => &self.description,
             FormField::Assignee => &self.assignee,
             FormField::Status => &self.status,
-            FormField::BlockedBy | FormField::Ok | FormField::Cancel => "",
+            FormField::BlockedBy
+            | FormField::Todos
+            | FormField::Comments
+            | FormField::Ok
+            | FormField::Cancel => "",
         }
+    }
+
+    /// Flip the TODOs collapse flag. Resets the section's scroll +
+    /// cursor so re-expanding always lands at the top.
+    pub fn toggle_todos_collapsed(&mut self) {
+        self.todos_collapsed = !self.todos_collapsed;
+        self.todos_scroll = 0;
+        self.todos_cursor = 0;
+    }
+
+    /// Flip the Comments collapse flag. Resets the section's scroll
+    /// + cursor so re-expanding always lands at the top.
+    pub fn toggle_comments_collapsed(&mut self) {
+        self.comments_collapsed = !self.comments_collapsed;
+        self.comments_scroll = 0;
+        self.comments_cursor = 0;
+    }
+
+    /// Move the TODOs cursor by `delta` rows, clamped to `len`. The
+    /// renderer auto-tracks `todos_scroll` to keep the cursor in
+    /// view. No-op when the list is empty.
+    pub fn move_todos_cursor(&mut self, delta: i32, len: usize) {
+        if len == 0 {
+            self.todos_cursor = 0;
+            return;
+        }
+        let max = (len - 1) as i32;
+        let next = (self.todos_cursor as i32 + delta).clamp(0, max);
+        self.todos_cursor = next as usize;
+    }
+
+    /// Move the Comments cursor by `delta` rows, clamped to `len`.
+    /// Same auto-scroll behaviour as `move_todos_cursor`.
+    pub fn move_comments_cursor(&mut self, delta: i32, len: usize) {
+        if len == 0 {
+            self.comments_cursor = 0;
+            return;
+        }
+        let max = (len - 1) as i32;
+        let next = (self.comments_cursor as i32 + delta).clamp(0, max);
+        self.comments_cursor = next as usize;
     }
 
     /// Open the multi-select picker for Blocked-by. `all_tasks` is
@@ -620,13 +722,42 @@ pub(crate) fn offset_at_col_in_segment(s: &str, segment: &VisualLine, col: u16) 
     off
 }
 
-/// One-shot prompts that piggy-back on the chat input bar.
+/// One-shot prompts that piggy-back on the chat input bar. Variants
+/// prefixed `*Comment` are opened from inside the edit-form Comments
+/// section and stay live while the form is rendered behind the input
+/// bar — the dispatcher routes to the prompt before the form, so
+/// keystrokes hit the prompt until it commits or cancels.
 #[derive(Debug, Clone)]
 pub enum TasksPrompt {
     /// Collecting a note body for `task_id`.
     Note { task_id: Uuid, body: String },
-    /// Awaiting y/n on delete confirmation.
+    /// Awaiting y/n on delete confirmation (whole task).
     ConfirmDelete { task_id: Uuid, buffer: String },
+    /// Composing a new TODO body on `task_id`. Triggered by `a`
+    /// while the form's TODOs section is focused + expanded.
+    AddTodo { task_id: Uuid, body: String },
+    /// Awaiting y/n on a TODO delete confirmation.
+    ConfirmDeleteTodo {
+        task_id: Uuid,
+        todo_id: Uuid,
+        buffer: String,
+    },
+    /// Composing a new comment body on `task_id`. Triggered by `a`
+    /// while the form's Comments section is focused + expanded.
+    AddComment { task_id: Uuid, body: String },
+    /// Editing an existing comment's body. Pre-populated from the
+    /// current value so backspace/edit feels like an in-place edit.
+    EditComment {
+        task_id: Uuid,
+        comment_id: Uuid,
+        body: String,
+    },
+    /// Awaiting y/n on a comment delete confirmation.
+    ConfirmDeleteComment {
+        task_id: Uuid,
+        comment_id: Uuid,
+        buffer: String,
+    },
 }
 
 /// The two sub-entity overlays (TODOs and Comments) that sit on top
@@ -675,12 +806,11 @@ impl ChildOverlay {
 pub struct TasksScreen {
     pub selected_row: usize,
     pub form: Option<TaskForm>,
-    pub detail: Option<Uuid>,
     pub prompt: Option<TasksPrompt>,
     /// The TODOs or Comments overlay for a task, when open.
-    /// Mutually exclusive with `form` / `detail` / `prompt` in
-    /// practice; the key handler gates on this field's presence
-    /// before routing any normal task-view keys.
+    /// Mutually exclusive with `form` / `prompt` in practice; the key
+    /// handler gates on this field's presence before routing any
+    /// normal task-view keys.
     pub child_overlay: Option<ChildOverlay>,
     /// Transient error/success message shown at the bottom of the
     /// task area. Cleared on next key press.
@@ -769,13 +899,8 @@ impl TasksScreen {
         self.form = Some(TaskForm::new_edit(task));
     }
 
-    pub fn open_detail(&mut self, id: Uuid) {
-        self.detail = Some(id);
-    }
-
     pub fn close_modal(&mut self) {
         self.form = None;
-        self.detail = None;
         self.prompt = None;
         self.child_overlay = None;
     }
@@ -1596,6 +1721,12 @@ mod tests {
                 assignee_options: vec!["".into(), "coder".into()],
                 picker: None,
                 blocked_by_picker: None,
+                todos_collapsed: true,
+                comments_collapsed: true,
+                todos_scroll: 0,
+                comments_scroll: 0,
+                todos_cursor: 0,
+                comments_cursor: 0,
                 _button_sink: String::new(),
             }),
             ..Default::default()
@@ -1684,10 +1815,13 @@ mod tests {
             .unwrap()
             .id;
         let edit = TaskForm::new_edit(s.get(id).unwrap());
-        // Edit: Title, Description, Assignee, Status, BlockedBy, Ok, Cancel.
-        assert_eq!(edit.tab_order().len(), 7);
-        assert_eq!(edit.tab_order()[5], FormField::Ok);
-        assert_eq!(edit.tab_order()[6], FormField::Cancel);
+        // Edit: Title, Description, Assignee, Status, BlockedBy,
+        // Todos, Comments, Ok, Cancel.
+        assert_eq!(edit.tab_order().len(), 9);
+        assert_eq!(edit.tab_order()[5], FormField::Todos);
+        assert_eq!(edit.tab_order()[6], FormField::Comments);
+        assert_eq!(edit.tab_order()[7], FormField::Ok);
+        assert_eq!(edit.tab_order()[8], FormField::Cancel);
     }
 
     #[test]
