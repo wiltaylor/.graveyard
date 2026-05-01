@@ -408,6 +408,29 @@ schema "ai_core" {
     default_tools: list(string) @optional
   }
 
+  // OpenAI Codex CLI core. Drives the `codex` binary (install with
+  // `npm i -g @openai/codex`). Codex generates its own per-thread
+  // UUID and exposes it via the `thread.started` JSON event; aciddog
+  // captures it and uses `codex exec resume <uuid>` on subsequent
+  // turns. Codex always grants the model shell access (no per-tool
+  // allowlist flag), so `default_tools` is validated for parity with
+  // copilotCli/geminiCli but not enforced at runtime. Authenticate
+  // out-of-band via `codex login` (ChatGPT subscription or OpenAI API
+  // key) — no credentials are configured here. Every spawn passes
+  // `--dangerously-bypass-approvals-and-sandbox` so the daemon never
+  // stalls on approval prompts.
+  variant "codexCli" {
+    // Optional `--model <id>` passed on every turn. Accepts codex's
+    // native model ids (e.g. `gpt-5.1-codex`, `gpt-5.4`, `o4-mini`).
+    // Omit to let codex use whatever its config / login defaults to.
+    model: string @optional
+    // Fallback tool allowlist. Uses the aciddog-side capitalized
+    // names (`Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`) — only
+    // those six are accepted. Drives the first-turn `<tools>`
+    // preamble; codex itself does not honour an allowlist flag.
+    default_tools: list(string) @optional
+  }
+
   // Generic OpenAI-chat-completions-compatible core. Works against
   // api.openai.com, OpenRouter, Ollama's OpenAI-compatible endpoint,
   // or any other provider that implements `/chat/completions`.

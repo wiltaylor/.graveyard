@@ -53,7 +53,7 @@ team default {
 
 | Block               | Purpose                                                                                 |
 |---------------------|-----------------------------------------------------------------------------------------|
-| `ai_core`           | Named runtime (claudeCode, anthropicApi, openAiApi, openAiChatgpt, copilotCli, geminiCli, jules). |
+| `ai_core`           | Named runtime (claudeCode, anthropicApi, openAiApi, openAiChatgpt, copilotCli, geminiCli, codexCli, jules). |
 | `agent`             | Persistent AI actor. Joins channels, has a mailbox, optionally supervisor/sysadmin.     |
 | `worker`            | **Template** for ephemeral actors spawned on demand by an agent's `worker create`.      |
 | `automaton`         | Script-backed (`:script`), webservice-backed (`:webservice`), or remote-bridge (`:remote`) pseudo-agent — no AI core. |
@@ -64,7 +64,7 @@ team default {
 | `workflow`          | Reusable typed-input procedure with sequential steps.                                   |
 | `thinking_messages` | Pool of indicator strings shown while an agent works (merge or replace).                |
 
-## AI core variants (seven)
+## AI core variants (eight)
 
 | `type`            | Backend                                              | Auth model                          | `model` field |
 |-------------------|------------------------------------------------------|-------------------------------------|---------------|
@@ -74,6 +74,7 @@ team default {
 | `:openAiChatgpt`  | ChatGPT subscription via OAuth (Codex `/responses`)  | `credential` (auth.json entry)      | required      |
 | `:copilotCli`     | Local `copilot` CLI                                  | `copilot auth`                      | optional (`--model`) |
 | `:geminiCli`      | Local `gemini` CLI                                   | `gemini` builtin auth               | optional (`--model`) |
+| `:codexCli`       | Local `codex` CLI                                    | `codex login`                       | optional (`--model`) |
 | `:jules`          | Google Jules remote worker (worker-only)             | `apiKeyEnv` → env var               | n/a (Jules picks) |
 
 Direct-API cores (`:anthropicApi`, `:openAiApi`, `:openAiChatgpt`) require a `model` either on the core or on every agent/worker that uses it. CLI cores fall through to the child binary's default if neither is set. The `:jules` core is **only** valid for `worker` templates — never for an `agent`.

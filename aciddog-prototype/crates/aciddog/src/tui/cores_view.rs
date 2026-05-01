@@ -139,6 +139,7 @@ fn kind_label(kind: &AiCoreKind) -> &'static str {
         AiCoreKind::OpenAiChatgpt { .. } => "openAiChatgpt",
         AiCoreKind::CopilotCli { .. } => "copilotCli",
         AiCoreKind::GeminiCli { .. } => "geminiCli",
+        AiCoreKind::CodexCli { .. } => "codexCli",
         AiCoreKind::Jules { .. } => "jules",
     }
 }
@@ -151,7 +152,8 @@ fn credential_label(kind: &AiCoreKind) -> Option<String> {
         AiCoreKind::OpenAiChatgpt { credential, .. } => Some(credential.clone()),
         AiCoreKind::ClaudeCode { .. }
         | AiCoreKind::CopilotCli { .. }
-        | AiCoreKind::GeminiCli { .. } => None,
+        | AiCoreKind::GeminiCli { .. }
+        | AiCoreKind::CodexCli { .. } => None,
     }
 }
 

@@ -110,6 +110,19 @@ ai_core gemini_flash {
   default_tools = ["Read"]
 }
 
+// OpenAI Codex CLI core. Requires the `codex` binary on PATH (install
+// with `npm i -g @openai/codex`) and a logged-in `codex login` session
+// — either a ChatGPT subscription or an OpenAI API key. Codex always
+// has shell access; `default_tools` only drives the first-turn
+// `<tools>` preamble. Every spawn passes
+// `--dangerously-bypass-approvals-and-sandbox` so the daemon doesn't
+// stall on approval prompts.
+ai_core codex_default {
+  type = :codexCli
+  model = "gpt-5.5"
+  default_tools = ["Read"]
+}
+
 // Google Jules remote-worker core. Jules runs the task on its own
 // infrastructure against a GitHub repo rather than on this machine.
 // Before first use:
@@ -339,6 +352,24 @@ agent scribe {
   tools = ["Read"]
   ai_core = "chatgpt_gpt54"
   compaction = "drop_compact"
+}
+
+// Codex CLI agent — exercises the `codexCli` code path via a logged-in
+// `codex` session (ChatGPT subscription or OpenAI API key). `tools =
+// ["Read"]` keeps the agent on the tag-IPC protocol so mailbox routing
+// through codex gets tested too. Note: codex always has shell access
+// regardless of the tool list, but the prompt preamble steers it
+// toward `<aciddog-call>` tags for inter-agent messaging.
+agent rubberduck {
+  role = "rubberduck"
+  role_description = <<EOT
+    You are the team's rubber duck. Other agents send you a problem they're stuck on — a bug, a confusing piece of code, a design decision — and you reply with one or two clarifying questions that force them to articulate their assumptions. You don't propose solutions; you make them explain themselves until the answer surfaces. Stay curious and concrete. Never offer code or commands.
+  EOT
+  instructions = "When sent a problem, reply with one or two clarifying questions that surface the asker's hidden assumptions. No solutions, no code, no preamble — just the questions. If the request came through your mailbox (wrapped in `<Message from=\"...\">`), use `send` to route the reply back to the original sender."
+  model = "gpt-5.5"
+  tools = ["Read"]
+  ai_core = "codex_default"
+  group = "engineering"
 }
 
 // Low-stakes morale agent wired through the GitHub Copilot CLI core

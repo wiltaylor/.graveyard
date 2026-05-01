@@ -23,7 +23,7 @@ use clap::Parser;
 
 use crate::agent_ipc::{self, AgentSocketEvent, HistorySelector, RequestCmd, Response};
 use crate::ai::{
-    AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, CopilotCliCore,
+    AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, CodexCliCore, CopilotCliCore,
     GeminiCliCore, JulesCore, JulesProperties, OpenAiApiCore, OpenAiChatgptCore, PromptParts,
     WorkerCtx,
 };
@@ -78,6 +78,7 @@ pub(super) fn core_display_label(core: &AiCore) -> String {
         AiCoreKind::OpenAiChatgpt { .. } => "openai-chatgpt",
         AiCoreKind::CopilotCli { .. } => "copilot-cli",
         AiCoreKind::GeminiCli { .. } => "gemini-cli",
+        AiCoreKind::CodexCli { .. } => "codex-cli",
         AiCoreKind::Jules { .. } => "jules",
     };
     format!("{kind} ({})", core.id)
@@ -93,6 +94,11 @@ pub(super) fn core_usage_mode(kind: &AiCoreKind) -> ContextUsageMode {
         AiCoreKind::ClaudeCode { .. }
         | AiCoreKind::CopilotCli { .. }
         | AiCoreKind::GeminiCli { .. }
+        // Codex's `turn.completed.usage.input_tokens` is the full
+        // context-window input for that turn (includes prior history),
+        // so we overwrite rather than sum across turns. Same shape as
+        // claude/copilot/gemini.
+        | AiCoreKind::CodexCli { .. }
         // Jules doesn't report token usage — `Replace` keeps any
         // stray event from accumulating forever (none are expected).
         | AiCoreKind::Jules { .. } => ContextUsageMode::Replace,
@@ -119,7 +125,8 @@ fn shell_tool_name_for_core(core: &AiCore) -> Option<&'static str> {
         | AiCoreKind::OpenAiApi { .. }
         | AiCoreKind::OpenAiChatgpt { .. }
         | AiCoreKind::CopilotCli { .. }
-        | AiCoreKind::GeminiCli { .. } => Some("Bash"),
+        | AiCoreKind::GeminiCli { .. }
+        | AiCoreKind::CodexCli { .. } => Some("Bash"),
         // Jules runs in Google's remote sandbox; no local shell is
         // reachable. Tag IPC is the only agent-level surface.
         AiCoreKind::Jules { .. } => None,
@@ -398,6 +405,26 @@ pub(super) fn build_core_with_extras(
                 GeminiCliCore::with_session_id(session_id, tools)
             } else {
                 GeminiCliCore::new(session_id, parts, tools)
+            }
+            .with_env(env);
+            if let Some(m) = agent_model.map(str::to_string).or_else(|| model.clone()) {
+                c = c.with_model(m);
+            }
+            if let Some(tx) = socket_tx {
+                c = c.with_socket_tx(tx);
+            }
+            Ok(Box::new(c))
+        }
+        AiCoreKind::CodexCli { model, .. } => {
+            // Same `resume = true` semantics as gemini: skip the
+            // first-turn preamble; codex's own thread history is not
+            // recovered (the captured `thread_id` lives in core
+            // memory, not on disk), so the first post-resurrection
+            // turn spawns a fresh codex thread under the covers.
+            let mut c = if resume {
+                CodexCliCore::with_session_id(session_id, tools)
+            } else {
+                CodexCliCore::new(session_id, parts, tools)
             }
             .with_env(env);
             if let Some(m) = agent_model.map(str::to_string).or_else(|| model.clone()) {

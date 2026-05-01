@@ -67,6 +67,15 @@ ai_core default_core {
 //   default_tools = ["Read"]
 // }
 
+// OpenAI Codex CLI. Requires `codex` on PATH (`npm i -g @openai/codex`)
+// and a logged-in `codex login` session (ChatGPT subscription or
+// OpenAI API key).
+// ai_core codex {
+//   type = :codexCli
+//   model = "gpt-5.1-codex"
+//   default_tools = ["Read"]
+// }
+
 // Google Jules remote worker. WORKER-ONLY — never use on an `agent`.
 // ai_core jules_remote {
 //   type = :jules

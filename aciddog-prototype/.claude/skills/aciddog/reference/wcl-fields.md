@@ -240,6 +240,13 @@ Common fields:
 | `model`         | string       | opt    | `--model <id>` for `gemini` CLI. |
 | `default_tools` | list(string) | opt    | Capitalised aciddog names — only the same six map. |
 
+### variant `:codexCli`
+
+| Field           | Type         | Status | Description |
+|-----------------|--------------|--------|-------------|
+| `model`         | string       | opt    | `--model <id>` for `codex` CLI (e.g. `gpt-5.1-codex`, `gpt-5.4`). |
+| `default_tools` | list(string) | opt    | Capitalised aciddog names — only `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep` accepted. Codex always has shell access regardless; the list drives the first-turn `<tools>` preamble. |
+
 ### variant `:jules` (worker-only)
 
 | Field                  | Type    | Status               | Description |

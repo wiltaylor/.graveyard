@@ -532,6 +532,30 @@ pub enum AiCoreKind {
         /// Glob, Grep) — see `validate_ai_core_tools`.
         default_tools: Option<Vec<String>>,
     },
+    /// OpenAI Codex CLI core — drives the `codex` binary (install with
+    /// `npm i -g @openai/codex`). Codex generates its own per-thread
+    /// UUID and exposes it via the `thread.started` JSON event; the
+    /// core captures it and uses `codex exec resume <uuid>` on
+    /// subsequent turns. Codex always grants the model shell access —
+    /// there is no per-tool allowlist flag — so `default_tools` is
+    /// validated for the same six aciddog names accepted by
+    /// `copilotCli`/`geminiCli` purely to keep the first-turn `<tools>`
+    /// preamble accurate; codex itself decides what to call.
+    /// Authentication runs through `codex login` (ChatGPT subscription
+    /// or OpenAI API key); aciddog does not configure credentials here.
+    CodexCli {
+        /// Optional `--model <id>` passed on every turn. `None` lets
+        /// codex use whatever its config / login defaults to. Accepts
+        /// codex's native model ids (e.g. `gpt-5.1-codex`, `gpt-5.4`,
+        /// `o4-mini`).
+        model: Option<String>,
+        /// Per-core default tool allowlist. Limited to the same six
+        /// aciddog-side names as `copilotCli` / `geminiCli`
+        /// (Bash, Read, Write, Edit, Glob, Grep). Validated at parse
+        /// time even though codex itself can't enforce it — the names
+        /// drive the first-turn `<tools>` preamble.
+        default_tools: Option<Vec<String>>,
+    },
     /// OpenAI ChatGPT-subscription core — targets the Codex
     /// `/responses` surface on `chatgpt.com/backend-api/codex`, gated
     /// by the user's ChatGPT Plus/Pro/Team entitlement. Authentication
@@ -628,7 +652,8 @@ impl AiCore {
             | AiCoreKind::OpenAiApi { default_tools, .. }
             | AiCoreKind::OpenAiChatgpt { default_tools, .. }
             | AiCoreKind::CopilotCli { default_tools, .. }
-            | AiCoreKind::GeminiCli { default_tools, .. } => default_tools.as_deref(),
+            | AiCoreKind::GeminiCli { default_tools, .. }
+            | AiCoreKind::CodexCli { default_tools, .. } => default_tools.as_deref(),
             // Jules runs on Google's remote sandbox — it doesn't use
             // aciddog's built-in tools. Tools are only relevant for the
             // tag-IPC preamble Jules sees on its first prompt, and we
@@ -648,9 +673,9 @@ impl AiCore {
             AiCoreKind::AnthropicApi { model, .. }
             | AiCoreKind::OpenAiApi { model, .. }
             | AiCoreKind::OpenAiChatgpt { model, .. } => Some(model.as_str()),
-            AiCoreKind::CopilotCli { model, .. } | AiCoreKind::GeminiCli { model, .. } => {
-                model.as_deref()
-            }
+            AiCoreKind::CopilotCli { model, .. }
+            | AiCoreKind::GeminiCli { model, .. }
+            | AiCoreKind::CodexCli { model, .. } => model.as_deref(),
             // Jules chooses its own model on the backend; we never
             // pass a `--model` equivalent.
             AiCoreKind::Jules { .. } => None,
@@ -1475,6 +1500,10 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                     default_tools: optional_string_list(b, "default_tools")?,
                 },
                 "geminiCli" => AiCoreKind::GeminiCli {
+                    model: optional_string(b, "model"),
+                    default_tools: optional_string_list(b, "default_tools")?,
+                },
+                "codexCli" => AiCoreKind::CodexCli {
                     model: optional_string(b, "model"),
                     default_tools: optional_string_list(b, "default_tools")?,
                 },
@@ -2420,6 +2449,10 @@ fn validate_ai_core_tools(cores: &[AiCore]) -> Result<(), ConfigError> {
         .iter()
         .copied()
         .collect();
+    let codex_known: std::collections::HashSet<&str> = crate::ai::codex_cli::CODEX_ALLOWED_TOOLS
+        .iter()
+        .copied()
+        .collect();
     for core in cores {
         let (type_name, defaults, allowlist) = match &core.kind {
             AiCoreKind::AnthropicApi { default_tools, .. } => {
@@ -2436,6 +2469,9 @@ fn validate_ai_core_tools(cores: &[AiCore]) -> Result<(), ConfigError> {
             }
             AiCoreKind::GeminiCli { default_tools, .. } => {
                 ("geminiCli", default_tools.as_deref(), &gemini_known)
+            }
+            AiCoreKind::CodexCli { default_tools, .. } => {
+                ("codexCli", default_tools.as_deref(), &codex_known)
             }
             AiCoreKind::ClaudeCode { .. } | AiCoreKind::Jules { .. } => continue,
         };
@@ -2553,6 +2589,7 @@ fn validate_compaction_refs(
                 Some(AiCoreKind::ClaudeCode { .. }) => return Ok(()),
                 Some(AiCoreKind::CopilotCli { .. }) => "copilotCli",
                 Some(AiCoreKind::GeminiCli { .. }) => "geminiCli",
+                Some(AiCoreKind::CodexCli { .. }) => "codexCli",
                 Some(AiCoreKind::AnthropicApi { .. }) => "anthropicApi",
                 Some(AiCoreKind::OpenAiApi { .. }) => "openAiApi",
                 Some(AiCoreKind::OpenAiChatgpt { .. }) => "openAiChatgpt",
@@ -5434,6 +5471,79 @@ mod tests {
         "#;
         let cfg = parse_config(src, &dummy_path()).unwrap();
         assert_eq!(cfg.ai_cores[0].runtime_model(), Some("auto-gemini-3"));
+    }
+
+    #[test]
+    fn parses_ai_core_block_with_codex_cli_variant() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core codex_default {
+                type = :codexCli
+                model = "gpt-5.1-codex"
+                default_tools = ["Read", "Grep"]
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].kind,
+            AiCoreKind::CodexCli {
+                model: Some("gpt-5.1-codex".into()),
+                default_tools: Some(vec!["Read".into(), "Grep".into()]),
+            }
+        );
+    }
+
+    #[test]
+    fn codex_cli_model_is_optional() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core bare { type = :codexCli }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.ai_cores[0].kind,
+            AiCoreKind::CodexCli {
+                model: None,
+                default_tools: None,
+            }
+        );
+    }
+
+    #[test]
+    fn codex_cli_runtime_model_returns_configured_model() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core c { type = :codexCli model = "gpt-5.1-codex" }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.ai_cores[0].runtime_model(), Some("gpt-5.1-codex"));
+    }
+
+    #[test]
+    fn rejects_unknown_tool_for_codex_cli() {
+        let src = r#"
+            team default { description = "t" }
+            agent a { role = "r" instructions = "i" }
+            ai_core c {
+                type = :codexCli
+                default_tools = ["WebFetch"]
+            }
+        "#;
+        match parse_config(src, &dummy_path()) {
+            Err(ConfigError::UnknownTool {
+                core,
+                type_name,
+                tool,
+            }) => {
+                assert_eq!(core, "c");
+                assert_eq!(type_name, "codexCli");
+                assert_eq!(tool, "WebFetch");
+            }
+            other => panic!("expected UnknownTool, got {other:?}"),
+        }
     }
 
     #[test]

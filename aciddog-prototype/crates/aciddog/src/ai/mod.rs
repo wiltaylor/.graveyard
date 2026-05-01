@@ -1,5 +1,6 @@
 pub mod anthropic_api;
 pub mod claude_code;
+pub mod codex_cli;
 pub mod context_window;
 pub mod copilot_cli;
 pub mod core;
@@ -13,6 +14,7 @@ pub mod tools;
 
 pub use anthropic_api::AnthropicApiCore;
 pub use claude_code::{AciddogCliCtx, ChannelPromptCtx, ClaudeCodeCore, PromptParts, WorkerCtx};
+pub use codex_cli::CodexCliCore;
 pub use context_window::model_context_window;
 pub use copilot_cli::CopilotCliCore;
 pub use core::{AICore, AIError};

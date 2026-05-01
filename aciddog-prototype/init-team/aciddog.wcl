@@ -13,7 +13,7 @@ import <aciddog.wcl>
 // ─── AI core ───────────────────────────────────────────────────────
 // Local `claude` CLI. No API key — uses whatever `claude` is logged
 // into. Swap or add other cores (anthropicApi, openAiApi, copilotCli,
-// geminiCli) once you know what you want.
+// geminiCli, codexCli) once you know what you want.
 
 ai_core default_core {
   type = :claudeCode
