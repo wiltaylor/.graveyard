@@ -55,6 +55,18 @@ schema "agent" {
   // order across agents → automatons → workers. Leaders pin to the
   // top of their own group (not the global top); rows with no
   // `group` fall under an `(ungrouped)` section rendered last.
+  //
+  // Group labels are also resolvable as task assignees: `aciddog task
+  // add --assignee <group>` files the task against the group. The
+  // first declared agent or automaton with `group = "<name>"` AND
+  // `leader = true` is the group's leader and receives a system_info
+  // notification in their chat pane on group assignment. A group
+  // without a leader still accepts tasks but no notification fires
+  // (warning emitted at config load).
+  //
+  // Group names must be distinct from any declared id (agent, worker,
+  // automaton, channel, webhook, workflow) and from the reserved
+  // `user` id, so task assignment can resolve unambiguously.
   group: string @optional
   // What `/reload` does to this agent's running session when its
   // effective config changes (the agent block itself, the resolved
@@ -86,7 +98,9 @@ schema "worker" {
   // Same semantics as `schema "agent"`'s `group` field — labels this
   // worker template's row in the team-editor list. Workers in the
   // runtime sidebar always nest under their spawning parent regardless
-  // of `group`, so this field is editor-metadata only at runtime.
+  // of `group`, so this field is editor-metadata only at runtime and
+  // does not participate in task-assignment resolution (only agent and
+  // automaton groups are runtime-resolvable assignees).
   group: string @optional
 }
 
@@ -130,6 +144,9 @@ schema "automaton" {
   // Same semantics as `schema "agent"`'s `group` field — clusters
   // this automaton with other rows sharing the same label under a
   // "── {group} ──" header in the TUI sidebar and the web manager.
+  // An automaton with `group = "<name>"` and `leader = true` is
+  // eligible to be the group leader for task notifications (agents
+  // are searched first; automatons are the fallback).
   group: string @optional
 
   variant "script" {

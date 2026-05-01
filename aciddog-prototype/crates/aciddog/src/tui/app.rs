@@ -2430,6 +2430,17 @@ pub(super) fn make_automaton_chat(automaton: &crate::config::Automaton) -> Agent
     }
 }
 
+/// Result of resolving a task `assignee` string against the live config.
+/// `Chat` is a configured agent / automaton / spawned worker (matches a
+/// chat `display_name`); `Group` is a declared group label; `User` is
+/// the reserved `user` recipient routed to the operator's inbox.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AssigneeKind {
+    Chat,
+    Group,
+    User,
+}
+
 impl App {
     pub fn new(config: AciddogConfig) -> Self {
         let channels: Vec<ChannelState> = config
@@ -4953,11 +4964,7 @@ impl App {
                 ));
                 return;
             }
-            self.inbox.push(super::inbox_view::InboxMessage::new(
-                from_label.clone(),
-                body,
-            ));
-            self.inbox_screen.reclamp(self.inbox.len());
+            self.push_user_inbox(from_label.clone(), body);
             let _ = reply.send(Response::ok("queued"));
             return;
         }
@@ -5104,12 +5111,19 @@ impl App {
         };
         let who = sender_chat.display_name.clone();
 
-        if let Some(ref name) = assignee {
-            if !self.chats.iter().any(|c| &c.display_name == name) {
-                let _ = reply.send(Response::err(format!("no agent or worker named `{name}`")));
-                return;
+        let kind = if let Some(ref name) = assignee {
+            match self.classify_assignee(name) {
+                Some(k) => Some(k),
+                None => {
+                    let _ = reply.send(Response::err(format!(
+                        "no agent / worker / group / user named `{name}`"
+                    )));
+                    return;
+                }
             }
-        }
+        } else {
+            None
+        };
 
         let (task_id, title_clone, assignee_clone) = match self.tasks.add(
             title,
@@ -5125,16 +5139,8 @@ impl App {
             }
         };
 
-        if let Some(new_assignee) = assignee_clone {
-            // Don't notify yourself on self-assignment during `add`.
-            if new_assignee != who {
-                self.notify_assignee(
-                    &new_assignee,
-                    task_id,
-                    &title_clone,
-                    &format!("assigned to you by {who}"),
-                );
-            }
+        if let (Some(new_assignee), Some(kind)) = (assignee_clone, kind) {
+            self.dispatch_assignment_notice(kind, &new_assignee, task_id, &title_clone, &who);
         }
 
         let _ = reply.send(Response::ok(format!("task created: {task_id}")));
@@ -5495,8 +5501,10 @@ impl App {
         let assignee_patch: Option<Option<String>> = if unassign {
             Some(None)
         } else if let Some(name) = assignee {
-            if !self.chats.iter().any(|c| c.display_name == name) {
-                let _ = reply.send(Response::err(format!("no agent or worker named `{name}`")));
+            if self.classify_assignee(&name).is_none() {
+                let _ = reply.send(Response::err(format!(
+                    "no agent / worker / group / user named `{name}`"
+                )));
                 return;
             }
             Some(Some(name))
@@ -5522,15 +5530,16 @@ impl App {
             }
         };
 
-        if let Some(new_assignee) = outcome.reassigned_to.as_deref() {
-            if new_assignee != who {
-                if let Some(t) = self.tasks.get(id) {
-                    let title_clone = t.title.clone();
-                    self.notify_assignee(
-                        new_assignee,
+        if let Some(new_assignee) = outcome.reassigned_to.clone() {
+            if let Some(kind) = self.classify_assignee(&new_assignee) {
+                let title_clone = self.tasks.get(id).map(|t| t.title.clone());
+                if let Some(title_clone) = title_clone {
+                    self.dispatch_assignment_notice(
+                        kind,
+                        &new_assignee,
                         id,
                         &title_clone,
-                        &format!("assigned to you by {who}"),
+                        &who,
                     );
                 }
             }
@@ -7110,6 +7119,84 @@ impl App {
             .find(|c| c.display_name == assignee_display)
         {
             chat.push_block(ChatBlock::system_info(msg));
+        }
+    }
+
+    /// Resolve `name` against the live config. Order: chat display_name
+    /// (agents / automatons / spawned workers) → declared group label →
+    /// reserved `user` id. `None` ⇒ unknown assignee.
+    pub(crate) fn classify_assignee(&self, name: &str) -> Option<AssigneeKind> {
+        if name == crate::config::USER_INBOX_ID {
+            return Some(AssigneeKind::User);
+        }
+        if self.chats.iter().any(|c| c.display_name == name) {
+            return Some(AssigneeKind::Chat);
+        }
+        if self.config.is_group(name) {
+            return Some(AssigneeKind::Group);
+        }
+        None
+    }
+
+    /// Append a message to the operator's inbox and reclamp the cursor.
+    /// Single source of truth for inbox writes — used by the
+    /// `to == USER_INBOX_ID` send-message branch and by user-assigned
+    /// task notifications.
+    pub(crate) fn push_user_inbox(&mut self, from: String, body: String) {
+        self.inbox
+            .push(super::inbox_view::InboxMessage::new(from, body));
+        self.inbox_screen.reclamp(self.inbox.len());
+    }
+
+    /// Dispatch the assignment notification for a task that just landed
+    /// on `assignee` (already validated via `classify_assignee`). Chat
+    /// assignment writes a `system_info` block into the assignee's pane
+    /// (skipped for self-assignment); group assignment notifies the
+    /// group's leader; user assignment pushes onto the operator inbox.
+    fn dispatch_assignment_notice(
+        &mut self,
+        kind: AssigneeKind,
+        assignee: &str,
+        task_id: Uuid,
+        title: &str,
+        who: &str,
+    ) {
+        match kind {
+            AssigneeKind::Chat => {
+                if assignee != who {
+                    self.notify_assignee(
+                        assignee,
+                        task_id,
+                        title,
+                        &format!("assigned to you by {who}"),
+                    );
+                }
+            }
+            AssigneeKind::Group => {
+                let leader = self.config.group_leader(assignee).map(|s| s.to_string());
+                if let Some(leader) = leader {
+                    if leader != who {
+                        self.notify_assignee(
+                            &leader,
+                            task_id,
+                            title,
+                            &format!("assigned to group {assignee} by {who}"),
+                        );
+                    }
+                } else {
+                    tracing::warn!(
+                        group = %assignee,
+                        %task_id,
+                        "task assigned to group with no leader; no notification dispatched"
+                    );
+                }
+            }
+            AssigneeKind::User => {
+                let short = task_id.to_string();
+                let short = short.get(..8).unwrap_or(&short);
+                let body = format!("Task {short} assigned to you by {who}: {title}");
+                self.push_user_inbox(who.to_string(), body);
+            }
         }
     }
 
@@ -11228,8 +11315,11 @@ impl App {
     }
 
     /// Populate the assignee-dropdown options on the currently-open
-    /// form from the team's visible chats. Called immediately after
-    /// `open_add` / `open_edit`.
+    /// form from the team's visible chats, declared groups, and the
+    /// reserved `user` recipient. Called immediately after `open_add`
+    /// / `open_edit`. Stored values stay raw; kind-aware glyphs are
+    /// applied at render time via
+    /// [`super::tasks_view::decorate_assignee_label`].
     fn inject_assignee_options(&mut self) {
         let mut options: Vec<String> = vec![String::new()];
         for c in &self.chats {
@@ -11238,6 +11328,10 @@ impl App {
             // so a hand-off mid-hibernation stays possible.
             options.push(c.display_name.clone());
         }
+        for g in self.config.groups() {
+            options.push(g.to_string());
+        }
+        options.push(crate::config::USER_INBOX_ID.to_string());
         if let Some(form) = self.tasks_screen.form.as_mut() {
             form.set_assignee_options(options);
         }
@@ -17724,6 +17818,232 @@ mod tests {
         let resp = rx.await.unwrap();
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("ghost"));
+    }
+
+    /// Mutate `sample_config()` to put `b` in group "engineering" with
+    /// `leader = true`, `c` in the same group as a non-leader, and
+    /// leave `a` ungrouped. Used by group-assignment tests below.
+    fn sample_config_with_engineering_group() -> AciddogConfig {
+        let mut cfg = sample_config();
+        cfg.agents[1].group = Some("engineering".into());
+        cfg.agents[1].leader = true;
+        cfg.agents[2].group = Some("engineering".into());
+        cfg
+    }
+
+    #[tokio::test]
+    async fn task_add_to_group_notifies_group_leader() {
+        let mut app = App::new(sample_config_with_engineering_group());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+        let leader_blocks_before = app.chats[1].blocks.len();
+        let other_blocks_before = app.chats[2].blocks.len();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::TaskAdd {
+                    title: "wire up auth".into(),
+                    description: None,
+                    assignee: Some("engineering".into()),
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok, "error: {:?}", resp.error);
+
+        // Task is recorded with the group label as the literal assignee.
+        let id = parse_task_created(resp.message.as_deref().unwrap());
+        let t = app.tasks.get(id).unwrap();
+        assert_eq!(t.assignee.as_deref(), Some("engineering"));
+
+        // Leader (chat[1] = "b") gets a system block; non-leader
+        // member (chat[2] = "c") does NOT.
+        assert_eq!(
+            app.chats[1].blocks.len(),
+            leader_blocks_before + 1,
+            "leader should receive a notification"
+        );
+        assert_eq!(
+            app.chats[2].blocks.len(),
+            other_blocks_before,
+            "non-leader group member must not receive a notification"
+        );
+        match app.chats[1].blocks.last().unwrap() {
+            ChatBlock::System { text, .. } => {
+                assert!(
+                    text.contains("assigned to group engineering by a"),
+                    "got: {text}"
+                );
+                assert!(text.contains("wire up auth"), "got: {text}");
+            }
+            other => panic!("expected System block, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn task_add_to_leaderless_group_succeeds_without_notification() {
+        let mut cfg = sample_config();
+        // engineering exists but has no leader.
+        cfg.agents[1].group = Some("engineering".into());
+        cfg.agents[2].group = Some("engineering".into());
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+        let b_before = app.chats[1].blocks.len();
+        let c_before = app.chats[2].blocks.len();
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::TaskAdd {
+                    title: "no leader".into(),
+                    description: None,
+                    assignee: Some("engineering".into()),
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok, "task creation should succeed even without a leader");
+        assert_eq!(app.chats[1].blocks.len(), b_before);
+        assert_eq!(app.chats[2].blocks.len(), c_before);
+    }
+
+    #[tokio::test]
+    async fn task_add_to_user_pushes_inbox_message() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+        assert!(app.inbox.is_empty());
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::TaskAdd {
+                    title: "review PR".into(),
+                    description: None,
+                    assignee: Some(crate::config::USER_INBOX_ID.into()),
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok, "error: {:?}", resp.error);
+
+        assert_eq!(app.inbox.len(), 1);
+        let msg = &app.inbox[0];
+        assert_eq!(msg.from, "a");
+        assert!(msg.body.contains("assigned to you by a"), "got: {}", msg.body);
+        assert!(msg.body.contains("review PR"), "got: {}", msg.body);
+    }
+
+    #[tokio::test]
+    async fn task_update_reassign_to_group_notifies_new_leader() {
+        let mut app = App::new(sample_config_with_engineering_group());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+
+        // First create an unassigned task as `a`.
+        let (tx1, rx1) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "initial".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx1,
+        });
+        let id = parse_task_created(rx1.await.unwrap().message.as_deref().unwrap());
+        let leader_before = app.chats[1].blocks.len();
+
+        // Now reassign to the engineering group.
+        let (tx2, rx2) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskUpdate {
+                    id,
+                    title: None,
+                    description: None,
+                    status: None,
+                    assignee: Some("engineering".into()),
+                    unassign: false,
+                    note: None,
+                    add_blocked_by: vec![],
+                    remove_blocked_by: vec![],
+                },
+            },
+            reply: tx2,
+        });
+        let resp = rx2.await.unwrap();
+        assert!(resp.ok, "error: {:?}", resp.error);
+
+        let t = app.tasks.get(id).unwrap();
+        assert_eq!(t.assignee.as_deref(), Some("engineering"));
+        assert_eq!(
+            app.chats[1].blocks.len(),
+            leader_before + 1,
+            "leader chat should grow by one system block"
+        );
+    }
+
+    #[tokio::test]
+    async fn task_update_reassign_to_user_pushes_inbox_message() {
+        let mut app = App::new(sample_config());
+        wire_up_agent_ids_and_channels(&mut app);
+        let a = app.chats[0].session_id.unwrap();
+
+        // Create an unassigned task as `a`.
+        let (tx1, rx1) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskAdd {
+                    title: "for the human".into(),
+                    description: None,
+                    assignee: None,
+                    blocked_by: vec![],
+                },
+            },
+            reply: tx1,
+        });
+        let id = parse_task_created(rx1.await.unwrap().message.as_deref().unwrap());
+        assert!(app.inbox.is_empty());
+
+        // Reassign to user.
+        let (tx2, rx2) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: a,
+                cmd: RequestCmd::TaskUpdate {
+                    id,
+                    title: None,
+                    description: None,
+                    status: None,
+                    assignee: Some(crate::config::USER_INBOX_ID.into()),
+                    unassign: false,
+                    note: None,
+                    add_blocked_by: vec![],
+                    remove_blocked_by: vec![],
+                },
+            },
+            reply: tx2,
+        });
+        assert!(rx2.await.unwrap().ok);
+        assert_eq!(app.inbox.len(), 1);
+        assert!(app.inbox[0].body.contains("for the human"));
     }
 
     #[tokio::test]

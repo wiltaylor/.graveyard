@@ -42,6 +42,61 @@ const TODO_LABEL: Record<TodoStatus, string> = {
   completed: "Completed",
 };
 
+/// Reserved recipient id mirroring `aciddog::config::USER_INBOX_ID`.
+const USER_ASSIGNEE_ID = "user";
+
+type AssigneeKind = "agent" | "automaton" | "worker" | "group" | "user";
+
+interface AssigneeOption {
+  value: string;
+  label: string;
+  kind: AssigneeKind;
+}
+
+function distinctGroups(agents: AgentRow[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const a of agents) {
+    if (a.group && !seen.has(a.group)) {
+      seen.add(a.group);
+      out.push(a.group);
+    }
+  }
+  return out;
+}
+
+function buildAssigneeOptions(agents: AgentRow[]): AssigneeOption[] {
+  const out: AssigneeOption[] = [];
+  for (const a of agents) {
+    if (a.kind === "agent" || a.kind === "automaton") {
+      out.push({
+        value: a.id,
+        label: `${a.id} (${a.kind})`,
+        kind: a.kind,
+      });
+    }
+  }
+  for (const g of distinctGroups(agents)) {
+    out.push({ value: g, label: `👥 ${g}`, kind: "group" });
+  }
+  out.push({
+    value: USER_ASSIGNEE_ID,
+    label: `🧑 ${USER_ASSIGNEE_ID}`,
+    kind: "user",
+  });
+  return out;
+}
+
+function decorateAssignee(
+  name: string | null | undefined,
+  agents: AgentRow[],
+): string {
+  if (!name) return "unassigned";
+  if (name === USER_ASSIGNEE_ID) return `🧑 ${name}`;
+  if (distinctGroups(agents).includes(name)) return `👥 ${name}`;
+  return name;
+}
+
 export default function TasksView(props: Props): JSX.Element {
   const [tasks, setTasks] = createSignal<Task[]>([]);
   const [error, setError] = createSignal<string | null>(null);
@@ -153,6 +208,7 @@ export default function TasksView(props: Props): JSX.Element {
               <KanbanColumn
                 status={status}
                 tasks={tasksByStatus()[status]}
+                agents={props.agents}
                 onDrop={(taskId) => moveTask(taskId, status)}
                 onCardClick={(taskId) => setOpenTaskId(taskId)}
               />
@@ -200,6 +256,7 @@ export default function TasksView(props: Props): JSX.Element {
 function KanbanColumn(props: {
   status: TaskStatus;
   tasks: Task[];
+  agents: AgentRow[];
   onDrop: (taskId: string) => void;
   onCardClick: (taskId: string) => void;
 }): JSX.Element {
@@ -233,7 +290,11 @@ function KanbanColumn(props: {
       <div class="flex-1 overflow-y-auto p-2 space-y-2">
         <For each={props.tasks}>
           {(t) => (
-            <TaskCard task={t} onClick={() => props.onCardClick(t.id)} />
+            <TaskCard
+              task={t}
+              agents={props.agents}
+              onClick={() => props.onCardClick(t.id)}
+            />
           )}
         </For>
       </div>
@@ -241,7 +302,11 @@ function KanbanColumn(props: {
   );
 }
 
-function TaskCard(props: { task: Task; onClick: () => void }): JSX.Element {
+function TaskCard(props: {
+  task: Task;
+  agents: AgentRow[];
+  onClick: () => void;
+}): JSX.Element {
   return (
     <article
       draggable={true}
@@ -254,7 +319,7 @@ function TaskCard(props: { task: Task; onClick: () => void }): JSX.Element {
     >
       <div class="font-medium line-clamp-2">{props.task.title}</div>
       <div class="mt-1 flex items-center justify-between text-xs text-fg-2">
-        <span>{props.task.assignee ?? "unassigned"}</span>
+        <span>{decorateAssignee(props.task.assignee, props.agents)}</span>
         <span>
           <Show when={props.task.todos.length > 0}>
             <span>
@@ -285,8 +350,7 @@ function AddTaskModal(props: {
   const [assignee, setAssignee] = createSignal("");
   const [submitting, setSubmitting] = createSignal(false);
 
-  const assigneeCandidates = () =>
-    props.agents.filter((a) => a.kind === "agent" || a.kind === "automaton");
+  const assigneeCandidates = () => buildAssigneeOptions(props.agents);
 
   const submit = async (e: SubmitEvent) => {
     e.preventDefault();
@@ -341,11 +405,7 @@ function AddTaskModal(props: {
           >
             <option value="">(unassigned)</option>
             <For each={assigneeCandidates()}>
-              {(a) => (
-                <option value={a.id}>
-                  {a.id} ({a.kind})
-                </option>
-              )}
+              {(a) => <option value={a.value}>{a.label}</option>}
             </For>
           </select>
         </label>
@@ -555,8 +615,7 @@ function TaskDetailModal(props: {
   const taskById = (id: string): Task | undefined =>
     props.allTasks.find((t) => t.id === id);
 
-  const assigneeCandidates = () =>
-    props.agents.filter((a) => a.kind === "agent" || a.kind === "automaton");
+  const assigneeCandidates = () => buildAssigneeOptions(props.agents);
 
   return (
     <ModalShell onClose={props.onClose} title={`Task · ${props.task.id.slice(0, 8)}`}>
@@ -612,11 +671,7 @@ function TaskDetailModal(props: {
               >
                 <option value="">(unassigned)</option>
                 <For each={assigneeCandidates()}>
-                  {(a) => (
-                    <option value={a.id}>
-                      {a.id} ({a.kind})
-                    </option>
-                  )}
+                  {(a) => <option value={a.value}>{a.label}</option>}
                 </For>
               </select>
             </label>

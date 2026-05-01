@@ -2237,7 +2237,13 @@ fn render_task_row(app: &App, id: uuid::Uuid, selected: bool) -> ListItem<'stati
     } else {
         format!(" [ready({})] ", t.blocked_by.len())
     };
-    let assignee_label = format!(" {} ", t.assignee.as_deref().unwrap_or("-"));
+    let assignee_raw = t.assignee.as_deref().unwrap_or("-");
+    let assignee_decorated = if assignee_raw == "-" {
+        "-".to_string()
+    } else {
+        super::tasks_view::decorate_assignee_label(assignee_raw, &app.config)
+    };
+    let assignee_label = format!(" {} ", assignee_decorated);
     let mut base_style = if blocked {
         Style::default().fg(Color::DarkGray)
     } else {
@@ -2547,6 +2553,8 @@ fn render_dropdown_picker(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|s| {
             if s.is_empty() && picker_field == FormField::Assignee {
                 "(unassigned)".len()
+            } else if picker_field == FormField::Assignee {
+                super::tasks_view::decorate_assignee_label(s, &app.config).len()
             } else {
                 s.len()
             }
@@ -2577,6 +2585,8 @@ fn render_dropdown_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 "(unassigned)".to_string()
             } else if o.is_empty() {
                 "-".to_string()
+            } else if picker_field == FormField::Assignee {
+                super::tasks_view::decorate_assignee_label(o, &app.config)
             } else {
                 o.clone()
             };

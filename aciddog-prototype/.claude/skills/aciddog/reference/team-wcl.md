@@ -94,6 +94,12 @@ Optional free-form section label on `agent`, `automaton`, and `worker` blocks. R
 - **Leaders**: pin to the top of *their own group* (not the global top). A leader without a `group` floats to the top of `(ungrouped)`.
 - **Workers**: at runtime, workers nest under their spawning parent regardless of `group` — the field is editor-metadata only there. The team-editor's worker tab does honour it for visual consistency.
 - **Empty string** (`group = ""`) is normalised to "no group" at parse time.
+- **Task assignment**: a group label is also a valid task assignee. `aciddog task add --assignee <group>` files the task against the group; the first agent (then automaton) declared with `group = "<name>"` and `leader = true` is the group's leader and receives a `system_info` notification in their chat pane on group assignment. Groups without a leader still accept tasks (a `tracing::warn!` is emitted at config load), but no notification fires.
+- **Name uniqueness**: group labels must be distinct from any declared id (agent / automaton / worker / channel / webhook / workflow) and from the reserved `user` id; collisions are rejected at config load with `GroupNameCollides`.
+
+## Task assignees beyond agents (`group`, `user`)
+
+The `assignee` field on a task accepts three flavours of bare-string identifier, resolved at validation time in this order: chat `display_name` (configured agents, automatons, and spawned workers) → declared group label → reserved `user` id. The `user` value routes the task notification to the operator's inbox (Views → Inbox in the TUI; the inbox endpoint in the web manager).
 
 ## Allowlist semantics (`can_message`, `can_create_workers`, `can_run_workflows`)
 

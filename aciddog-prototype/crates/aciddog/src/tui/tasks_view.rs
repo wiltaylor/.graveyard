@@ -16,6 +16,23 @@ use crate::tasks::{Task, TaskError, TaskPatch, TaskStatus, TaskStore};
 /// the human operator.
 pub const OPERATOR: &str = "tui";
 
+/// Decorate a raw assignee value with a kind-aware glyph for display.
+/// Stored values stay raw — this is called only at render time so the
+/// task data on disk and on the wire remains a plain id / group name /
+/// `"user"` string.
+pub fn decorate_assignee_label(name: &str, cfg: &crate::config::AciddogConfig) -> String {
+    if name.is_empty() {
+        return String::new();
+    }
+    if name == crate::config::USER_INBOX_ID {
+        return format!("🧑 {name}");
+    }
+    if cfg.is_group(name) {
+        return format!("👥 {name}");
+    }
+    name.to_string()
+}
+
 /// Order of status groups in the rendered list. Driving everything
 /// off this single array keeps rendering, tests, and status cycling
 /// in sync.

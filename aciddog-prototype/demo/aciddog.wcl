@@ -236,7 +236,8 @@ agent admin {
   tools = ["Read"]
   supervisor = true
   sysadmin = true
-  group = "admin"
+  leader = true
+  group = "ops"
 }
 
 agent coder {

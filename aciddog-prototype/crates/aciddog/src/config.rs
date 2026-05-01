@@ -1275,6 +1275,17 @@ pub enum ConfigError {
         "{kind} id `{id}` is reserved (the `user` id is reserved for the human operator's inbox)"
     )]
     ReservedId { kind: String, id: String },
+
+    #[error(
+        "group label `{group}` collides with declared {with_kind} id `{with_id}` — \
+         group names must be distinct from any agent / automaton / worker / channel / webhook / \
+         workflow id and from the reserved `user` id, so task assignment can resolve unambiguously"
+    )]
+    GroupNameCollides {
+        group: String,
+        with_kind: &'static str,
+        with_id: String,
+    },
 }
 
 pub fn load_config(path: &Path) -> Result<AciddogConfig, ConfigError> {
@@ -1574,6 +1585,8 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
     validate_workflow_allowlists(&agents, &workers, &workflows)?;
     validate_automaton_refs(&agents, &automatons)?;
     validate_webhooks(&agents, &automatons, &webhooks)?;
+    validate_group_names(&agents, &automatons, &workers, &channels, &webhooks, &workflows)?;
+    warn_groups_without_leaders(&agents, &automatons);
 
     let mut user_messages: Vec<String> = Vec::new();
     for block in doc.blocks_of_type_resolved("thinking_messages").iter() {
@@ -2103,6 +2116,115 @@ fn validate_reserved_ids(
         check("webhook", &w.id)?;
     }
     Ok(())
+}
+
+/// Group labels (from agent / automaton `group` fields) participate in
+/// task-assignee resolution alongside agent ids and the reserved `user`
+/// id. To keep `assignee = "engineering"` unambiguous, a group label
+/// must not collide with any declared id or with `USER_INBOX_ID`. We
+/// scan agents + automatons for distinct group labels and check each
+/// against the full id space.
+fn validate_group_names(
+    agents: &[Agent],
+    automatons: &[Automaton],
+    workers: &[Worker],
+    channels: &[Channel],
+    webhooks: &[Webhook],
+    workflows: &[Workflow],
+) -> Result<(), ConfigError> {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut groups: Vec<&str> = Vec::new();
+    for label in agents
+        .iter()
+        .filter_map(|a| a.group.as_deref())
+        .chain(automatons.iter().filter_map(|a| a.group.as_deref()))
+    {
+        if !label.is_empty() && seen.insert(label) {
+            groups.push(label);
+        }
+    }
+    for label in groups {
+        if label == USER_INBOX_ID {
+            return Err(ConfigError::GroupNameCollides {
+                group: label.to_string(),
+                with_kind: "reserved user inbox",
+                with_id: USER_INBOX_ID.to_string(),
+            });
+        }
+        if let Some(a) = agents.iter().find(|a| a.id == label) {
+            return Err(ConfigError::GroupNameCollides {
+                group: label.to_string(),
+                with_kind: "agent",
+                with_id: a.id.clone(),
+            });
+        }
+        if let Some(a) = automatons.iter().find(|a| a.id == label) {
+            return Err(ConfigError::GroupNameCollides {
+                group: label.to_string(),
+                with_kind: "automaton",
+                with_id: a.id.clone(),
+            });
+        }
+        if let Some(w) = workers.iter().find(|w| w.id == label) {
+            return Err(ConfigError::GroupNameCollides {
+                group: label.to_string(),
+                with_kind: "worker",
+                with_id: w.id.clone(),
+            });
+        }
+        if let Some(c) = channels.iter().find(|c| c.id == label) {
+            return Err(ConfigError::GroupNameCollides {
+                group: label.to_string(),
+                with_kind: "channel",
+                with_id: c.id.clone(),
+            });
+        }
+        if let Some(w) = webhooks.iter().find(|w| w.id == label) {
+            return Err(ConfigError::GroupNameCollides {
+                group: label.to_string(),
+                with_kind: "webhook",
+                with_id: w.id.clone(),
+            });
+        }
+        if let Some(w) = workflows.iter().find(|w| w.id == label) {
+            return Err(ConfigError::GroupNameCollides {
+                group: label.to_string(),
+                with_kind: "workflow",
+                with_id: w.id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Soft check: any group used by agents/automatons should have a
+/// `leader = true` member so tasks assigned to that group have a
+/// notification target. We only warn (not error) so existing teams keep
+/// booting; runtime task assignment to a leaderless group surfaces a
+/// clean per-call message.
+fn warn_groups_without_leaders(agents: &[Agent], automatons: &[Automaton]) {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for label in agents
+        .iter()
+        .filter_map(|a| a.group.as_deref())
+        .chain(automatons.iter().filter_map(|a| a.group.as_deref()))
+    {
+        if label.is_empty() || !seen.insert(label) {
+            continue;
+        }
+        let has_leader = agents
+            .iter()
+            .any(|a| a.group.as_deref() == Some(label) && a.leader)
+            || automatons
+                .iter()
+                .any(|a| a.group.as_deref() == Some(label) && a.leader);
+        if !has_leader {
+            tracing::warn!(
+                group = label,
+                "group has no `leader = true` member; tasks assigned to this group will surface a runtime error"
+            );
+        }
+    }
 }
 
 /// Every id mentioned in a `can_message` list must correspond to a real
@@ -2755,6 +2877,76 @@ impl AciddogConfig {
         self.agents.iter().any(|a| a.id == id) || self.automatons.iter().any(|a| a.id == id)
     }
 
+    /// Distinct, non-empty group labels declared on agents and
+    /// automatons, in first-declaration order (agents first, then
+    /// automatons). Worker `group` fields are editor-metadata only at
+    /// runtime, so they're excluded from the runtime resolution surface
+    /// (task assignment, leader lookup).
+    pub fn groups(&self) -> Vec<&str> {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut out: Vec<&str> = Vec::new();
+        for label in self
+            .agents
+            .iter()
+            .filter_map(|a| a.group.as_deref())
+            .chain(self.automatons.iter().filter_map(|a| a.group.as_deref()))
+        {
+            if !label.is_empty() && seen.insert(label) {
+                out.push(label);
+            }
+        }
+        out
+    }
+
+    /// `true` iff `name` matches a declared group label.
+    pub fn is_group(&self, name: &str) -> bool {
+        !name.is_empty() && self.groups().contains(&name)
+    }
+
+    /// First declared agent or automaton with `group == group` and
+    /// `leader == true`. Agents are searched before automatons; ties
+    /// resolve by declaration order. Returns `None` for unknown groups
+    /// or groups whose only members are non-leaders.
+    pub fn group_leader(&self, group: &str) -> Option<&str> {
+        if group.is_empty() {
+            return None;
+        }
+        if let Some(a) = self
+            .agents
+            .iter()
+            .find(|a| a.leader && a.group.as_deref() == Some(group))
+        {
+            return Some(a.id.as_str());
+        }
+        if let Some(a) = self
+            .automatons
+            .iter()
+            .find(|a| a.leader && a.group.as_deref() == Some(group))
+        {
+            return Some(a.id.as_str());
+        }
+        None
+    }
+
+    /// Agent + automaton ids declaring this group, in declaration order
+    /// (agents first, then automatons). Empty for unknown groups.
+    pub fn group_members(&self, group: &str) -> Vec<&str> {
+        if group.is_empty() {
+            return Vec::new();
+        }
+        self.agents
+            .iter()
+            .filter(|a| a.group.as_deref() == Some(group))
+            .map(|a| a.id.as_str())
+            .chain(
+                self.automatons
+                    .iter()
+                    .filter(|a| a.group.as_deref() == Some(group))
+                    .map(|a| a.id.as_str()),
+            )
+            .collect()
+    }
+
     /// Returns true if the actor identified by `actor_template_id` is
     /// permitted to spawn a worker of template id `worker_id`.
     ///
@@ -3247,6 +3439,116 @@ mod tests {
         "#;
         let cfg = parse_config(src, &dummy_path()).unwrap();
         assert_eq!(cfg.automatons[0].group.as_deref(), Some("integrations"));
+    }
+
+    #[test]
+    fn groups_returns_distinct_labels_in_declaration_order() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner   { role = "a" instructions = "b" group = "engineering" leader = true }
+            agent coder     { role = "a" instructions = "b" group = "engineering" }
+            agent jokemaster { role = "a" instructions = "b" group = "morale" }
+            agent scribe    { role = "a" instructions = "b" }
+            automaton mascot { role = "echo" command = "true" group = "morale" }
+            automaton ops    { role = "echo" command = "true" group = "platform" leader = true }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.groups(), vec!["engineering", "morale", "platform"]);
+        assert!(cfg.is_group("engineering"));
+        assert!(!cfg.is_group("scribe"));
+        assert!(!cfg.is_group(""));
+    }
+
+    #[test]
+    fn group_leader_resolves_first_leader_agents_then_automatons() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner   { role = "a" instructions = "b" group = "engineering" leader = true }
+            agent coder     { role = "a" instructions = "b" group = "engineering" }
+            automaton mascot { role = "echo" command = "true" group = "morale" leader = true }
+            agent jokemaster { role = "a" instructions = "b" group = "morale" }
+            agent platform_lead { role = "a" instructions = "b" group = "platform" }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.group_leader("engineering"), Some("planner"));
+        // Agents before automatons even though the automaton declared
+        // `leader = true` first.
+        assert_eq!(cfg.group_leader("morale"), Some("mascot"));
+        // No leader → None (warn-only at parse).
+        assert_eq!(cfg.group_leader("platform"), None);
+        assert_eq!(cfg.group_leader("missing"), None);
+        assert_eq!(cfg.group_leader(""), None);
+    }
+
+    #[test]
+    fn group_members_lists_agents_then_automatons() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner    { role = "a" instructions = "b" group = "engineering" leader = true }
+            agent coder      { role = "a" instructions = "b" group = "engineering" }
+            automaton runner { role = "echo" command = "true" group = "engineering" }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.group_members("engineering"),
+            vec!["planner", "coder", "runner"]
+        );
+        assert!(cfg.group_members("nope").is_empty());
+        assert!(cfg.group_members("").is_empty());
+    }
+
+    #[test]
+    fn group_name_collision_with_agent_id_is_rejected() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner { role = "a" instructions = "b" leader = true }
+            agent coder   { role = "a" instructions = "b" group = "planner" }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ConfigError::GroupNameCollides { group, with_kind, with_id }
+                    if group == "planner" && *with_kind == "agent" && with_id == "planner"
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn group_name_collision_with_user_inbox_id_is_rejected() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner { role = "a" instructions = "b" group = "user" leader = true }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ConfigError::GroupNameCollides { group, .. } if group == "user"
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn group_name_collision_with_workflow_id_is_rejected() {
+        let src = r#"
+            team default { description = "t" }
+            agent planner { role = "a" instructions = "b" group = "build" leader = true }
+            workflow build {
+                description = "noop"
+                max_retries = 0
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ConfigError::GroupNameCollides { with_kind, .. } if *with_kind == "workflow"
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]
