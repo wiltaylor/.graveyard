@@ -44,6 +44,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.layout.memory_link_rows.clear();
     app.layout.memory_modal_outer = None;
     app.layout.inbox_hotspots.clear();
+    app.layout.inbox_list_inner = None;
     app.layout.inbox_detail_inner = None;
     app.layout.cron_hotspots.clear();
 
@@ -1769,6 +1770,7 @@ fn render_inbox_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
         .border_style(focus_border_style(focused));
     let list_inner = list_block.inner(list_area);
     f.render_widget(list_block, list_area);
+    app.layout.inbox_list_inner = Some(list_inner);
 
     // Render each row manually so we can register one hotspot per row.
     for (i, msg) in app.inbox.iter().enumerate() {
@@ -1814,14 +1816,19 @@ fn render_inbox_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     // Detail pane / overlay
     match &app.inbox_screen.mode {
         InboxMode::List => {
+            let detail_focused = focused
+                && app.inbox_screen.pane == super::inbox_view::InboxPane::Detail;
             let detail_block = Block::default()
                 .borders(Borders::ALL)
                 .title(" detail ")
-                .border_style(Style::default().fg(Color::DarkGray));
+                .border_style(if detail_focused {
+                    focus_border_style(true)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                });
             let inner = detail_block.inner(detail_area);
             app.layout.inbox_detail_inner = Some(inner);
             f.render_widget(detail_block, detail_area);
-            let scroll = app.inbox_screen.detail_scroll;
             if let Some(msg) = app.inbox.get(app.inbox_screen.cursor) {
                 let mut lines: Vec<Line> = Vec::new();
                 let age_secs = msg.received_at.elapsed().as_secs();
@@ -1841,9 +1848,19 @@ fn render_inbox_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
                 for body_line in msg.body.lines() {
                     lines.push(Line::from(body_line.to_string()));
                 }
+                // Clamp the scroll so the user can't lose the body
+                // off the top by overshooting at the bottom. The body
+                // wraps, so this is an under-estimate of the rendered
+                // row count — but it's better than letting the offset
+                // grow without bound.
+                let total_rows = lines.len() as u16;
+                let max_scroll = total_rows.saturating_sub(inner.height.max(1));
+                if app.inbox_screen.detail_scroll > max_scroll {
+                    app.inbox_screen.detail_scroll = max_scroll;
+                }
                 let p = Paragraph::new(lines)
                     .wrap(Wrap { trim: false })
-                    .scroll((scroll, 0));
+                    .scroll((app.inbox_screen.detail_scroll, 0));
                 f.render_widget(p, inner);
             }
         }

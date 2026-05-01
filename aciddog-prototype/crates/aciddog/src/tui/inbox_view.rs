@@ -110,6 +110,16 @@ impl ForwardState {
     }
 }
 
+/// Which sub-pane of the Inbox view currently has the keyboard /
+/// mouse-wheel target. Tab toggles `List` → `Detail`; Esc from `Detail`
+/// returns to `List`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InboxPane {
+    #[default]
+    List,
+    Detail,
+}
+
 #[derive(Debug, Default)]
 pub struct InboxScreen {
     /// Cursor into [`App::inbox`]. Clamped to `0..inbox.len()`
@@ -123,16 +133,35 @@ pub struct InboxScreen {
     /// Transient status toast rendered beneath the list. Cleared on
     /// the next keypress.
     pub status_msg: Option<String>,
+    /// Which sub-pane (list vs. detail) the keyboard / wheel currently
+    /// drives. Reset to `List` whenever the message cursor changes.
+    pub pane: InboxPane,
 }
 
 impl InboxScreen {
     /// Re-clamp the cursor after the backing inbox mutated (messages
-    /// arrived or were deleted). Idempotent.
+    /// arrived or were deleted). Idempotent. Resets the detail scroll
+    /// whenever the selection actually moves so a new message starts
+    /// at the top.
     pub fn reclamp(&mut self, inbox_len: usize) {
+        let prev = self.cursor;
         if inbox_len == 0 {
             self.cursor = 0;
         } else if self.cursor >= inbox_len {
             self.cursor = inbox_len - 1;
+        }
+        if self.cursor != prev {
+            self.detail_scroll = 0;
+        }
+    }
+
+    /// Move the list selection, resetting the detail scroll so the
+    /// detail pane starts from the top of the new message. Use this
+    /// from every code path that mutates `cursor`.
+    pub fn set_cursor(&mut self, new_cursor: usize) {
+        if self.cursor != new_cursor {
+            self.cursor = new_cursor;
+            self.detail_scroll = 0;
         }
     }
 

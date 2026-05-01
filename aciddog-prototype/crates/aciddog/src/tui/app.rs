@@ -1316,11 +1316,6 @@ pub const VIEW_ENTRIES: &[&str] = &["Inbox", "Tasks", "Memory", "Cores", "Cron"]
 pub struct LayoutRects {
     pub agent_list_inner: Option<Rect>,
     pub chat_history_inner: Option<Rect>,
-    /// Inner rect of the inbox detail Paragraph, published by
-    /// `render_inbox_screen` when in `InboxMode::List`. Drives the
-    /// mouse-wheel hit-test so wheel events scope to the body, not
-    /// the row list.
-    pub inbox_detail_inner: Option<Rect>,
     pub chat_input_inner: Option<Rect>,
     /// Inner rect of the "views" panel on the right column. Populated
     /// by `render()` so mouse clicks on a view entry can hit-test
@@ -1402,6 +1397,13 @@ pub struct LayoutRects {
     /// Painted top-to-bottom; the mouse handler picks the first hit
     /// so overlays stacked above the list take precedence.
     pub inbox_hotspots: Vec<(Rect, super::inbox_view::InboxHotspot)>,
+    /// Inner rect of the Inbox view's list pane. Used by the wheel
+    /// handler to scope scroll events to the message list.
+    pub inbox_list_inner: Option<Rect>,
+    /// Inner rect of the Inbox view's detail pane. Wheel events inside
+    /// this rect scroll the message body; clicks switch the inbox sub-
+    /// pane focus to `Detail`.
+    pub inbox_detail_inner: Option<Rect>,
     /// Clickable hot-rects drawn by the Cron view each frame.
     /// Populated by `render_cron_screen` + `render_cron_modals`, and
     /// cleared at the start of every frame. Modal overlays are
@@ -8273,6 +8275,26 @@ impl App {
             && self.focus == Focus::Memory
             && self.memory_screen.has_active_modal();
         if matches!(code, KeyCode::Tab) && !tasks_modal_open && !memory_modal_open {
+            // Inbox sub-pane Tab: when focused on the inbox list,
+            // first Tab moves focus into the detail pane (still on
+            // Focus::Inbox). The next Tab advances the outer cycle
+            // and resets the sub-pane back to List.
+            if self.focus == Focus::Inbox && self.active_view == ActiveView::Inbox {
+                use super::inbox_view::InboxPane;
+                match self.inbox_screen.pane {
+                    InboxPane::List if !self.inbox.is_empty() => {
+                        self.inbox_screen.pane = InboxPane::Detail;
+                        return;
+                    }
+                    InboxPane::Detail => {
+                        self.inbox_screen.pane = InboxPane::List;
+                        // Fall through to the outer cycle below so
+                        // Detail → outer-Tab leaves the inbox view
+                        // entirely and lands on Agents.
+                    }
+                    _ => {}
+                }
+            }
             let main = match self.active_view {
                 ActiveView::Chat | ActiveView::Channel(_) => Focus::Chat,
                 ActiveView::Tasks => Focus::Tasks,
@@ -8739,6 +8761,8 @@ impl App {
     pub(super) fn open_inbox_view(&mut self) {
         self.active_view = ActiveView::Inbox;
         self.focus = Focus::Inbox;
+        // Always land on the list pane when entering the view.
+        self.inbox_screen.pane = super::inbox_view::InboxPane::List;
         self.inbox_screen.reclamp(self.inbox.len());
     }
 
@@ -9165,20 +9189,44 @@ impl App {
         // List mode (default).
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
+                // Esc from the detail pane returns to the list pane
+                // (so it doesn't kick the user all the way out of the
+                // inbox view in one keystroke).
+                if self.inbox_screen.pane == super::inbox_view::InboxPane::Detail {
+                    self.inbox_screen.pane = super::inbox_view::InboxPane::List;
+                    return;
+                }
                 self.active_view = ActiveView::Chat;
                 self.focus = Focus::Agents;
+                self.inbox_screen.pane = super::inbox_view::InboxPane::List;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if !self.inbox.is_empty() && self.inbox_screen.cursor + 1 < self.inbox.len() {
+                if self.inbox_screen.pane == super::inbox_view::InboxPane::Detail {
+                    self.inbox_screen.detail_scroll =
+                        self.inbox_screen.detail_scroll.saturating_add(1);
+                } else if !self.inbox.is_empty()
+                    && self.inbox_screen.cursor + 1 < self.inbox.len()
+                {
                     self.inbox_screen
                         .select(self.inbox_screen.cursor + 1, self.inbox.len());
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if self.inbox_screen.cursor > 0 {
+                if self.inbox_screen.pane == super::inbox_view::InboxPane::Detail {
+                    self.inbox_screen.detail_scroll =
+                        self.inbox_screen.detail_scroll.saturating_sub(1);
+                } else if self.inbox_screen.cursor > 0 {
                     self.inbox_screen
                         .select(self.inbox_screen.cursor - 1, self.inbox.len());
                 }
+            }
+            KeyCode::PageDown => {
+                self.inbox_screen.detail_scroll =
+                    self.inbox_screen.detail_scroll.saturating_add(5);
+            }
+            KeyCode::PageUp => {
+                self.inbox_screen.detail_scroll =
+                    self.inbox_screen.detail_scroll.saturating_sub(5);
             }
             KeyCode::Char('r') => {
                 let Some(msg) = self.inbox.get(self.inbox_screen.cursor) else {
@@ -9209,6 +9257,10 @@ impl App {
             KeyCode::Char('d') => {
                 if self.inbox_screen.cursor < self.inbox.len() {
                     self.inbox.remove(self.inbox_screen.cursor);
+                    // Content at the cursor changed (or vanished),
+                    // so the existing scroll offset no longer matches
+                    // the message that's now displayed.
+                    self.inbox_screen.detail_scroll = 0;
                     self.inbox_screen.reclamp(self.inbox.len());
                 }
             }
@@ -9269,6 +9321,7 @@ impl App {
         if sent {
             if self.inbox_screen.cursor < self.inbox.len() {
                 self.inbox.remove(self.inbox_screen.cursor);
+                self.inbox_screen.detail_scroll = 0;
                 self.inbox_screen.reclamp(self.inbox.len());
             }
             self.inbox_screen.mode = InboxMode::List;
@@ -11812,6 +11865,26 @@ impl App {
                         return;
                     }
                 }
+                if self.active_view == ActiveView::Inbox {
+                    // Detail pane: scroll the message body up.
+                    if let Some(rect) = self.layout.inbox_detail_inner {
+                        if rect_contains(rect, pos) {
+                            self.inbox_screen.detail_scroll =
+                                self.inbox_screen.detail_scroll.saturating_sub(3);
+                            return;
+                        }
+                    }
+                    // List pane: move the selection up.
+                    if let Some(rect) = self.layout.inbox_list_inner {
+                        if rect_contains(rect, pos) {
+                            if self.inbox_screen.cursor > 0 {
+                                self.inbox_screen
+                                    .set_cursor(self.inbox_screen.cursor - 1);
+                            }
+                            return;
+                        }
+                    }
+                }
                 if self.mouse_in_chat_scroll_zone(pos) {
                     self.scroll_up(3);
                 }
@@ -11832,6 +11905,28 @@ impl App {
                     if let Some(zone) = self.memory_scroll_hit(pos) {
                         self.memory_scroll(zone, 1);
                         return;
+                    }
+                }
+                if self.active_view == ActiveView::Inbox {
+                    // Detail pane: scroll the message body down.
+                    if let Some(rect) = self.layout.inbox_detail_inner {
+                        if rect_contains(rect, pos) {
+                            self.inbox_screen.detail_scroll =
+                                self.inbox_screen.detail_scroll.saturating_add(3);
+                            return;
+                        }
+                    }
+                    // List pane: advance the selection.
+                    if let Some(rect) = self.layout.inbox_list_inner {
+                        if rect_contains(rect, pos) {
+                            if !self.inbox.is_empty()
+                                && self.inbox_screen.cursor + 1 < self.inbox.len()
+                            {
+                                self.inbox_screen
+                                    .set_cursor(self.inbox_screen.cursor + 1);
+                            }
+                            return;
+                        }
                     }
                 }
                 if self.mouse_in_chat_scroll_zone(pos) {
@@ -11937,6 +12032,16 @@ impl App {
             .find(|(rect, _)| rect_contains(*rect, pos))
             .map(|(_, h)| h.clone());
         let Some(hotspot) = hit else {
+            // No hotspot under the cursor — but a click inside the
+            // detail pane should still grab focus and switch the pane
+            // to Detail so the wheel and j/k start scrolling the body.
+            if let Some(rect) = self.layout.inbox_detail_inner {
+                if rect_contains(rect, pos) {
+                    self.focus = Focus::Inbox;
+                    self.inbox_screen.pane = super::inbox_view::InboxPane::Detail;
+                    return true;
+                }
+            }
             return false;
         };
         // A click anywhere on a hotspot also grabs focus, matching the
@@ -11945,6 +12050,10 @@ impl App {
         match hotspot {
             InboxHotspot::SelectRow(i) => {
                 self.inbox_screen.select(i, self.inbox.len());
+                // Clicking a list row implies the user is working in
+                // the list pane, so any prior detail-pane focus is
+                // dropped.
+                self.inbox_screen.pane = super::inbox_view::InboxPane::List;
                 // Drop any lingering status toast so it doesn't
                 // confuse the next interaction.
                 self.inbox_screen.status_msg = None;
@@ -11977,6 +12086,7 @@ impl App {
             InboxHotspot::DeleteButton => {
                 if self.inbox_screen.cursor < self.inbox.len() {
                     self.inbox.remove(self.inbox_screen.cursor);
+                    self.inbox_screen.detail_scroll = 0;
                     self.inbox_screen.reclamp(self.inbox.len());
                 }
             }
@@ -14404,6 +14514,205 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert!(app.current_chat().unwrap().sticky_bottom);
+    }
+
+    #[test]
+    fn scroll_wheel_in_inbox_moves_cursor() {
+        use super::super::inbox_view::InboxMessage;
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Inbox;
+        app.layout.inbox_list_inner = Some(Rect::new(0, 0, 80, 10));
+        app.inbox.push(InboxMessage::new("a", "one"));
+        app.inbox.push(InboxMessage::new("b", "two"));
+        app.inbox.push(InboxMessage::new("c", "three"));
+        app.inbox_screen.cursor = 0;
+
+        // Wheel down inside the rect advances the cursor one row per tick.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.inbox_screen.cursor, 1);
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.inbox_screen.cursor, 2);
+        // Clamps at the last item.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.inbox_screen.cursor, 2);
+
+        // Wheel up walks the cursor back and clamps at zero.
+        for _ in 0..5 {
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 5,
+                row: 5,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
+        assert_eq!(app.inbox_screen.cursor, 0);
+    }
+
+    #[test]
+    fn scroll_wheel_outside_inbox_list_is_ignored() {
+        use super::super::inbox_view::InboxMessage;
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Inbox;
+        app.layout.inbox_list_inner = Some(Rect::new(0, 0, 80, 10));
+        app.inbox.push(InboxMessage::new("a", "one"));
+        app.inbox.push(InboxMessage::new("b", "two"));
+        app.inbox_screen.cursor = 0;
+
+        // Position outside both rects — cursor and detail_scroll
+        // must stay put.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 30,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.inbox_screen.cursor, 0);
+        assert_eq!(app.inbox_screen.detail_scroll, 0);
+    }
+
+    #[test]
+    fn scroll_wheel_in_inbox_detail_scrolls_body_not_cursor() {
+        use super::super::inbox_view::InboxMessage;
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Inbox;
+        app.layout.inbox_list_inner = Some(Rect::new(0, 0, 80, 10));
+        app.layout.inbox_detail_inner = Some(Rect::new(0, 20, 80, 8));
+        app.inbox.push(InboxMessage::new(
+            "a",
+            // Body taller than the pane so scrolling has somewhere to go.
+            (0..50)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+        app.inbox_screen.cursor = 0;
+
+        // Wheel down inside the detail rect scrolls the body, three rows
+        // per tick — cursor must stay put.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 22,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.inbox_screen.cursor, 0);
+        assert_eq!(app.inbox_screen.detail_scroll, 3);
+
+        // Wheel up rolls it back, clamps at zero.
+        for _ in 0..5 {
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 5,
+                row: 22,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
+        assert_eq!(app.inbox_screen.detail_scroll, 0);
+    }
+
+    #[test]
+    fn moving_inbox_cursor_resets_detail_scroll() {
+        use super::super::inbox_view::InboxMessage;
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Inbox;
+        app.layout.inbox_list_inner = Some(Rect::new(0, 0, 80, 10));
+        app.inbox.push(InboxMessage::new("a", "one"));
+        app.inbox.push(InboxMessage::new("b", "two"));
+        app.inbox_screen.cursor = 0;
+        app.inbox_screen.detail_scroll = 17;
+
+        // Wheel-down in the list moves the selection — detail_scroll
+        // resets to 0 so the next message starts at the top.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.inbox_screen.cursor, 1);
+        assert_eq!(app.inbox_screen.detail_scroll, 0);
+    }
+
+    #[test]
+    fn tab_in_inbox_cycles_list_to_detail_then_outer() {
+        use super::super::inbox_view::{InboxMessage, InboxPane};
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Inbox;
+        app.focus = Focus::Inbox;
+        app.inbox.push(InboxMessage::new("a", "one"));
+        assert_eq!(app.inbox_screen.pane, InboxPane::List);
+
+        // First Tab: stay on Focus::Inbox, switch to Detail pane.
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Inbox);
+        assert_eq!(app.inbox_screen.pane, InboxPane::Detail);
+
+        // Second Tab: leave the inbox view; pane resets to List for
+        // when the user comes back.
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.focus, Focus::Agents);
+        assert_eq!(app.inbox_screen.pane, InboxPane::List);
+    }
+
+    #[test]
+    fn keyboard_jk_in_detail_pane_scrolls_body() {
+        use super::super::inbox_view::{InboxMessage, InboxPane};
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Inbox;
+        app.focus = Focus::Inbox;
+        app.inbox.push(InboxMessage::new(
+            "a",
+            (0..50)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+        app.inbox_screen.pane = InboxPane::Detail;
+
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.inbox_screen.detail_scroll, 1);
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(app.inbox_screen.detail_scroll, 3);
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(app.inbox_screen.detail_scroll, 2);
+        // Cursor must not have moved while the detail pane was focused.
+        assert_eq!(app.inbox_screen.cursor, 0);
+    }
+
+    #[test]
+    fn esc_from_detail_pane_returns_to_list_pane() {
+        use super::super::inbox_view::{InboxMessage, InboxPane};
+        let mut app = App::new(sample_config());
+        app.active_view = ActiveView::Inbox;
+        app.focus = Focus::Inbox;
+        app.inbox.push(InboxMessage::new("a", "x"));
+        app.inbox_screen.pane = InboxPane::Detail;
+
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        // Still in the inbox view, just back on the list pane.
+        assert_eq!(app.active_view, ActiveView::Inbox);
+        assert_eq!(app.focus, Focus::Inbox);
+        assert_eq!(app.inbox_screen.pane, InboxPane::List);
+
+        // Second Esc actually leaves the inbox view.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.active_view, ActiveView::Chat);
     }
 
     /// Scrolling inside a tall first block must advance `within` without
