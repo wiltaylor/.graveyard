@@ -684,7 +684,42 @@ function entityList<T extends { id: string }>(props: {
   /** Optional inline prefix rendered before the item id (e.g. 👑 for
    * leader-flagged agents/automatons). Return `null` to omit. */
   decorate?: (item: T) => JSX.Element | null;
+  /** When provided, the chip list is bucketed by the returned group
+   * label (`undefined` ⇒ "(ungrouped)"). Buckets follow first-
+   * appearance order across `items`, with `(ungrouped)` always
+   * rendered last. Mirrors the TUI sidebar's grouping. */
+  groupOf?: (item: T) => string | undefined;
 }): JSX.Element {
+  // Preserve original indices so onRemove still hits the right slot
+  // after we reshuffle items by group.
+  const indexed = (): { item: T; origIdx: number }[] =>
+    props.items.map((item, origIdx) => ({ item, origIdx }));
+
+  const groups = (): { label: string; rows: { item: T; origIdx: number }[] }[] => {
+    if (!props.groupOf) {
+      return [{ label: "", rows: indexed() }];
+    }
+    const order: (string | undefined)[] = [];
+    const buckets = new Map<string, { item: T; origIdx: number }[]>();
+    const keyFor = (g: string | undefined) => g ?? "__ungrouped__";
+    for (const entry of indexed()) {
+      const g = props.groupOf!(entry.item);
+      const key = keyFor(g);
+      if (!buckets.has(key)) {
+        buckets.set(key, []);
+        order.push(g);
+      }
+      buckets.get(key)!.push(entry);
+    }
+    if (!order.some((g) => g === undefined)) order.push(undefined);
+    return order
+      .map((g) => ({
+        label: g ?? "(ungrouped)",
+        rows: buckets.get(keyFor(g)) ?? [],
+      }))
+      .filter((b) => b.rows.length > 0);
+  };
+
   return (
     <Card padded={true}>
       <div
@@ -714,59 +749,82 @@ function entityList<T extends { id: string }>(props: {
         when={props.items.length > 0}
         fallback={<Empty>No entries.</Empty>}
       >
-        <div
-          style={{
-            display: "flex",
-            "flex-wrap": "wrap",
-            gap: "6px",
-          }}
-        >
-          <For each={props.items}>
-            {(item, idx) => (
-              <div
-                style={{
-                  display: "flex",
-                  "align-items": "center",
-                  gap: "4px",
-                  padding: "4px 8px",
-                  border:
-                    props.selectedId === item.id
-                      ? "1px solid var(--accent)"
-                      : "1px solid var(--bg-3)",
-                  "border-radius": "4px",
-                  "font-family": "var(--font-mono)",
-                  "font-size": "12px",
-                  cursor: "pointer",
-                  background:
-                    props.selectedId === item.id
-                      ? "var(--bg-2)"
-                      : "transparent",
-                }}
-                onClick={() => props.setSelected(item.id)}
-              >
-                <span>
-                  {props.decorate ? props.decorate(item) : null}
-                  {item.id}
-                </span>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    props.onRemove(idx());
-                  }}
+        <div style={{ display: "flex", "flex-direction": "column", gap: "10px" }}>
+          <For each={groups()}>
+            {(bucket) => (
+              <div>
+                <Show when={props.groupOf}>
+                  <div
+                    style={{
+                      "font-size": "10px",
+                      "font-weight": "600",
+                      "letter-spacing": "0.08em",
+                      "text-transform": "uppercase",
+                      color: "var(--fg-2)",
+                      "font-style": "italic",
+                      "margin-bottom": "4px",
+                    }}
+                  >
+                    ── {bucket.label} ──
+                  </div>
+                </Show>
+                <div
                   style={{
-                    border: "none",
-                    background: "transparent",
-                    color: "var(--fg-3)",
-                    cursor: "pointer",
-                    padding: "0 2px",
-                    "font-size": "14px",
-                    "line-height": "1",
+                    display: "flex",
+                    "flex-wrap": "wrap",
+                    gap: "6px",
                   }}
-                  aria-label={`Remove ${item.id}`}
                 >
-                  ×
-                </button>
+                  <For each={bucket.rows}>
+                    {(entry) => (
+                      <div
+                        style={{
+                          display: "flex",
+                          "align-items": "center",
+                          gap: "4px",
+                          padding: "4px 8px",
+                          border:
+                            props.selectedId === entry.item.id
+                              ? "1px solid var(--accent)"
+                              : "1px solid var(--bg-3)",
+                          "border-radius": "4px",
+                          "font-family": "var(--font-mono)",
+                          "font-size": "12px",
+                          cursor: "pointer",
+                          background:
+                            props.selectedId === entry.item.id
+                              ? "var(--bg-2)"
+                              : "transparent",
+                        }}
+                        onClick={() => props.setSelected(entry.item.id)}
+                      >
+                        <span>
+                          {props.decorate ? props.decorate(entry.item) : null}
+                          {entry.item.id}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            props.onRemove(entry.origIdx);
+                          }}
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            color: "var(--fg-3)",
+                            cursor: "pointer",
+                            padding: "0 2px",
+                            "font-size": "14px",
+                            "line-height": "1",
+                          }}
+                          aria-label={`Remove ${entry.item.id}`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    )}
+                  </For>
+                </div>
               </div>
             )}
           </For>
@@ -1172,6 +1230,8 @@ function AgentsSection(props: SectionProps): JSX.Element {
               👑
             </span>
           ) : null,
+        // Cluster the chips by `group` to mirror the runtime sidebar.
+        groupOf: (a) => a.group,
       })}
       scrolling={
         <Show when={selectedItem()}>
@@ -1352,6 +1412,13 @@ function AgentForm(props: {
             })
           }
         />
+        <Input
+          label="Group (optional)"
+          value={a().group ?? ""}
+          onInput={(e) =>
+            props.onPatch({ group: optionalString(e.currentTarget.value) })
+          }
+        />
       </div>
       <RolesCard
         supervisor={a().supervisor ?? false}
@@ -1453,6 +1520,11 @@ function WorkersSection(props: SectionProps): JSX.Element {
         onAdd: add,
         onRemove: remove,
         newLabel: "Add worker",
+        // Cluster the chips by `group` to mirror the runtime sidebar.
+        // Workers are editor-metadata only at runtime (always nest
+        // under their parent), but the bucketing makes the editor
+        // pane consistent with agents and automatons.
+        groupOf: (w) => w.group,
       })}
       scrolling={
         <Show when={selectedItem()}>
@@ -1602,6 +1674,13 @@ function WorkerForm(props: {
           ]}
           onChange={(v) => props.onPatch({ compaction: v === "" ? undefined : v })}
         />
+        <Input
+          label="Group (optional)"
+          value={w().group ?? ""}
+          onInput={(e) =>
+            props.onPatch({ group: optionalString(e.currentTarget.value) })
+          }
+        />
       </div>
     </Card>
   );
@@ -1653,6 +1732,8 @@ function AutomatonsSection(props: SectionProps): JSX.Element {
               👑
             </span>
           ) : null,
+        // Cluster the chips by `group` to mirror the runtime sidebar.
+        groupOf: (a) => a.group,
       })}
       scrolling={
         <Show when={selectedItem()}>
@@ -1677,6 +1758,7 @@ function AutomatonsSection(props: SectionProps): JSX.Element {
                 replacement.supervisor = cur.supervisor;
                 replacement.sysadmin = cur.sysadmin;
                 replacement.leader = cur.leader;
+                replacement.group = cur.group;
                 props.ctx.setConfig("automatons", selectedIdx(), replacement);
               }}
               onIdChange={(id) => {
@@ -1867,6 +1949,13 @@ function AutomatonForm(props: {
             />
           </>
         </Show>
+        <Input
+          label="Group (optional)"
+          value={a().group ?? ""}
+          onInput={(e) =>
+            props.onPatch({ group: optionalString(e.currentTarget.value) } as Partial<AutomatonState>)
+          }
+        />
       </div>
       <RolesCard
         supervisor={a().supervisor ?? false}

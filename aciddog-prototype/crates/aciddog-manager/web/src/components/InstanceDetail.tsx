@@ -174,17 +174,38 @@ export default function InstanceDetail(props: Props): JSX.Element {
                 }
               >
                 <Table
-                  // Defensive sort: backend already pins leader=true
-                  // top-level rows first, but if we're talking to an
-                  // older daemon (legacy 5-col header → leader=false
-                  // everywhere) the sort is a no-op. Stable sort so
-                  // declaration order is preserved within each bucket.
-                  rows={[...resp().agents].sort((a, b) => {
-                    const aIsLeader = a.leader && a.parent === null;
-                    const bIsLeader = b.leader && b.parent === null;
-                    if (aIsLeader === bIsLeader) return 0;
-                    return aIsLeader ? -1 : 1;
-                  })}
+                  // Two-key stable sort: bucket by `group` in
+                  // first-appearance order (named groups first,
+                  // ungrouped last to mirror the TUI sidebar's
+                  // `(ungrouped)` placement), then within each bucket
+                  // pin leader=true rows first. Older daemons that
+                  // emit the legacy 5/6-column table have group=null
+                  // on every row — the bucketing collapses to a single
+                  // (ungrouped) section and the leader sort still
+                  // applies, so the layout degrades gracefully.
+                  rows={(() => {
+                    const order: (string | null)[] = [];
+                    for (const a of resp().agents) {
+                      const g = a.group ?? null;
+                      if (!order.includes(g)) order.push(g);
+                    }
+                    if (!order.includes(null)) order.push(null);
+                    const indexOfBucket = (g: string | null) => {
+                      const i = order.indexOf(g);
+                      return i === -1 ? order.length : i;
+                    };
+                    return [...resp().agents].sort((a, b) => {
+                      const ag = a.group ?? null;
+                      const bg = b.group ?? null;
+                      const ai = indexOfBucket(ag);
+                      const bi = indexOfBucket(bg);
+                      if (ai !== bi) return ai - bi;
+                      const aIsLeader = a.leader && a.parent === null;
+                      const bIsLeader = b.leader && b.parent === null;
+                      if (aIsLeader === bIsLeader) return 0;
+                      return aIsLeader ? -1 : 1;
+                    });
+                  })()}
                   rowKey={(a) => a.id}
                   onRowClick={(a) => props.onSelectAgent(a.id)}
                   columns={[
@@ -203,6 +224,20 @@ export default function InstanceDetail(props: Props): JSX.Element {
                             </span>
                           </Show>
                           {a.id}
+                        </span>
+                      ),
+                    },
+                    {
+                      key: "group",
+                      header: <Eyebrow>Group</Eyebrow>,
+                      render: (a) => (
+                        <span
+                          style={{
+                            color: a.group ? "var(--fg-1)" : "var(--fg-2)",
+                            "font-style": a.group ? "normal" : "italic",
+                          }}
+                        >
+                          {a.group ?? "(ungrouped)"}
                         </span>
                       ),
                     },

@@ -1508,6 +1508,20 @@ pub enum ChatKind {
     Automaton,
 }
 
+/// One row in the rendered agent-list sidebar. Group headers separate
+/// `Chat` rows that share a `group` value; they're inserted by
+/// `App::agent_list_visual_rows` so the renderer and the click
+/// handler agree on row positions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentListVisualRow {
+    /// Italic non-selectable section header. The label is the bare
+    /// group name (or `"(ungrouped)"` for the catch-all bucket); the
+    /// renderer adds visual chrome like `── {label} ──`.
+    GroupHeader { label: String },
+    /// Selectable chat row at the given indentation depth.
+    Chat { idx: usize, depth: usize },
+}
+
 #[derive(Debug, Default)]
 pub struct AgentChat {
     pub blocks: Vec<ChatBlock>,
@@ -2544,10 +2558,46 @@ impl App {
             .unwrap_or(false)
     }
 
+    /// Visible rows in the agent-list sidebar — either a group
+    /// section header (non-selectable, inserted at group transitions)
+    /// or a chat row (selectable). The renderer walks this to draw
+    /// the list and the click handler walks it to map a clicked row
+    /// back to a chat index, so the two stay in sync as group headers
+    /// shift the visual position of chat rows.
+    pub fn agent_list_visual_rows(&self) -> Vec<AgentListVisualRow> {
+        let order = self.visible_order();
+        let mut out: Vec<AgentListVisualRow> = Vec::with_capacity(order.len() + 4);
+        let mut current_group: Option<Option<String>> = None;
+        for (i, depth) in order {
+            if depth == 0 {
+                let g = self.chat_group(i).map(|s| s.to_string());
+                let needs_header = match &current_group {
+                    None => true,
+                    Some(prev) => prev != &g,
+                };
+                if needs_header {
+                    let label = g.clone().unwrap_or_else(|| "(ungrouped)".to_string());
+                    out.push(AgentListVisualRow::GroupHeader { label });
+                    current_group = Some(g);
+                }
+            }
+            out.push(AgentListVisualRow::Chat { idx: i, depth });
+        }
+        out
+    }
+
     /// Display order for the agent list: chat indices paired with
     /// their indentation depth. Hibernated chats are skipped. Workers
     /// appear immediately after the nearest *visible* ancestor; if
     /// that ancestor is hidden the worker floats up to the next one.
+    ///
+    /// Top-level chats are bucketed by their `group` field in
+    /// first-declaration order (named groups first, ungrouped last).
+    /// Within each bucket leader-flagged chats pin first, then the
+    /// rest in declaration order. Group section headers are NOT
+    /// emitted by this function — `agent_list_visual_rows` wraps
+    /// this output with the headers the renderer + click handler
+    /// share. See `App::chat_group`.
     pub fn visible_order(&self) -> Vec<(usize, usize)> {
         // Precompute nearest visible ancestor for every chat. `None`
         // means the chat is rendered at the top level.
@@ -2574,60 +2624,90 @@ impl App {
         // visible_parent) never lift to the leaders bucket.
         let leader: Vec<bool> = (0..self.chats.len()).map(|i| self.is_leader(i)).collect();
 
+        // Effective group per top-level chat. Workers (and other
+        // nested chats) don't need their own bucket since they're
+        // emitted recursively under their visible parent — `None` for
+        // them, and we skip them in the bucket walk.
+        let group_of: Vec<Option<String>> = (0..self.chats.len())
+            .map(|i| {
+                if visible_parent[i].is_some() {
+                    None
+                } else {
+                    self.chat_group(i).map(|s| s.to_string())
+                }
+            })
+            .collect();
+
+        // Build the ordered list of bucket labels by walking top-level
+        // visible chats once in declaration order. `None` is appended
+        // at the end if it's not already present, so ungrouped rows
+        // always render below named groups.
+        let mut buckets: Vec<Option<String>> = Vec::new();
+        for (i, c) in self.chats.iter().enumerate() {
+            if c.hibernated || visible_parent[i].is_some() {
+                continue;
+            }
+            let g = group_of[i].clone();
+            if !buckets.iter().any(|b| b == &g) {
+                buckets.push(g);
+            }
+        }
+        if !buckets.iter().any(|b| b.is_none()) {
+            buckets.push(None);
+        }
+
         let mut out: Vec<(usize, usize)> = Vec::with_capacity(self.chats.len());
         // Iterative DFS keyed by "what's the visible parent we're
         // currently listing children of?". Stable recursion is fine
         // here because `chats` is small (tens of entries at most).
         //
-        // At the top level (parent == None) we partition into two
-        // passes — leader-flagged top-level chats first, everyone else
-        // second — preserving declaration order within each bucket.
-        // Nested levels keep the original single-pass declaration
-        // order (workers under their parent etc.). We do NOT reorder
-        // `self.chats` itself — `parent_idx` is a usize index into
-        // that vec and reshuffling it would corrupt worker links.
-        fn walk(
+        // At the top level we walk one bucket at a time. Within each
+        // bucket: pass 1 picks leader-flagged chats (declaration
+        // order), pass 2 picks the rest (declaration order). We do NOT
+        // reorder `self.chats` itself — `parent_idx` is a usize index
+        // into that vec and reshuffling it would corrupt worker links.
+        // Nested levels (workers under their parent) keep the original
+        // single-pass declaration order regardless of bucketing.
+        fn walk_children(
             chats: &[AgentChat],
             vp: &[Option<usize>],
-            leader: &[bool],
             out: &mut Vec<(usize, usize)>,
-            parent: Option<usize>,
+            parent: usize,
             depth: usize,
         ) {
-            if parent.is_none() {
-                // Pass 1: leader-flagged top-level chats.
-                for (i, c) in chats.iter().enumerate() {
-                    if c.hibernated {
-                        continue;
-                    }
-                    if vp[i] == parent && leader[i] {
-                        out.push((i, depth));
-                        walk(chats, vp, leader, out, Some(i), depth + 1);
-                    }
+            for (i, c) in chats.iter().enumerate() {
+                if c.hibernated {
+                    continue;
                 }
-                // Pass 2: everyone else.
-                for (i, c) in chats.iter().enumerate() {
-                    if c.hibernated {
-                        continue;
-                    }
-                    if vp[i] == parent && !leader[i] {
-                        out.push((i, depth));
-                        walk(chats, vp, leader, out, Some(i), depth + 1);
-                    }
-                }
-            } else {
-                for (i, c) in chats.iter().enumerate() {
-                    if c.hibernated {
-                        continue;
-                    }
-                    if vp[i] == parent {
-                        out.push((i, depth));
-                        walk(chats, vp, leader, out, Some(i), depth + 1);
-                    }
+                if vp[i] == Some(parent) {
+                    out.push((i, depth));
+                    walk_children(chats, vp, out, i, depth + 1);
                 }
             }
         }
-        walk(&self.chats, &visible_parent, &leader, &mut out, None, 0);
+
+        for bucket in &buckets {
+            // Pass 1: leader-flagged top-level chats in this bucket.
+            for (i, c) in self.chats.iter().enumerate() {
+                if c.hibernated || visible_parent[i].is_some() {
+                    continue;
+                }
+                if &group_of[i] == bucket && leader[i] {
+                    out.push((i, 0));
+                    walk_children(&self.chats, &visible_parent, &mut out, i, 1);
+                }
+            }
+            // Pass 2: everyone else in this bucket.
+            for (i, c) in self.chats.iter().enumerate() {
+                if c.hibernated || visible_parent[i].is_some() {
+                    continue;
+                }
+                if &group_of[i] == bucket && !leader[i] {
+                    out.push((i, 0));
+                    walk_children(&self.chats, &visible_parent, &mut out, i, 1);
+                }
+            }
+        }
         out
     }
 
@@ -7150,6 +7230,45 @@ impl App {
         }
     }
 
+    /// The `group` field on the chat at `idx`. Returns the configured
+    /// label for top-level Agents and Automatons; returns the visible
+    /// parent's group for workers (so the renderer can label sections
+    /// even though workers always render nested under their parent).
+    /// `None` ⇒ the chat falls under the `(ungrouped)` section header.
+    pub(crate) fn chat_group(&self, idx: usize) -> Option<&str> {
+        let chat = self.chats.get(idx)?;
+        match chat.kind {
+            ChatKind::Agent => self
+                .config
+                .agents
+                .iter()
+                .find(|a| a.id == chat.display_name)
+                .and_then(|a| a.group.as_deref()),
+            ChatKind::Automaton => self
+                .config
+                .automatons
+                .iter()
+                .find(|a| a.id == chat.display_name)
+                .and_then(|a| a.group.as_deref()),
+            ChatKind::Worker => {
+                // Workers don't get their own bucket — they nest under
+                // their parent. Walk up to the nearest non-worker
+                // ancestor and use its group, so renderers calling
+                // `chat_group` on a worker get a sensible label rather
+                // than the worker template's own (editor-only) `group`.
+                let mut p = chat.parent_idx;
+                while let Some(pi) = p {
+                    let parent = self.chats.get(pi)?;
+                    if parent.kind != ChatKind::Worker {
+                        return self.chat_group(pi);
+                    }
+                    p = parent.parent_idx;
+                }
+                None
+            }
+        }
+    }
+
     /// Is the caller at `idx` a top-level Agent or Automaton flagged
     /// `leader = true`? Workers, nested chats (parent_idx set), and
     /// agents/automatons whose config block has `leader = false`
@@ -7248,10 +7367,11 @@ impl App {
         indices.sort_by_key(|&i| if self.is_leader(i) { 0u8 } else { 1u8 });
 
         let mut out = String::new();
-        // Wire-format break: header gains a trailing `leader` column.
-        // The manager parser is tolerant — a 5-column legacy header
-        // (no leader) parses with leader=false on every row.
-        out.push_str("id\tkind\tstatus\tparent\tai_core\tleader\n");
+        // Wire-format break: header gains a trailing `group` column on
+        // top of the prior `leader` column. The manager parser is
+        // tolerant — 5/6-column legacy headers parse with the missing
+        // columns defaulted (leader=false, group=None).
+        out.push_str("id\tkind\tstatus\tparent\tai_core\tleader\tgroup\n");
         for &i in &indices {
             let chat = &self.chats[i];
             let parent = chat
@@ -7261,14 +7381,16 @@ impl App {
                 .unwrap_or("-");
             let core = chat.ai_core_id.as_deref().unwrap_or("-");
             let leader = self.is_leader(i);
+            let group = self.chat_group(i).unwrap_or("-");
             out.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 chat.display_name,
                 Self::kind_label(chat),
                 Self::status_label(chat),
                 parent,
                 core,
                 leader,
+                group,
             ));
         }
         let _ = reply.send(Response::ok(out.trim_end().to_string()));
@@ -11742,16 +11864,26 @@ impl App {
                 if let Some(rect) = self.layout.agent_list_inner {
                     if rect_contains(rect, pos) {
                         let row_in_list = ev.row.saturating_sub(rect.y) as usize;
-                        let order = self.visible_order();
-                        if let Some((chat_idx, _)) = order.get(row_in_list).copied() {
-                            self.selected = chat_idx;
-                            // Picking an agent always returns to the
-                            // chat view — matches the j/k keyboard
-                            // behaviour.
-                            self.return_to_chat_if_viewing_tasks();
-                            self.focus = Focus::Chat;
-                        } else {
-                            self.focus = Focus::Agents;
+                        // Walk the same row layout the renderer uses
+                        // so group-header rows are treated as inert
+                        // dividers rather than misaligning the click
+                        // by one chat per visible header.
+                        let rows = self.agent_list_visual_rows();
+                        match rows.get(row_in_list) {
+                            Some(AgentListVisualRow::Chat { idx, .. }) => {
+                                self.selected = *idx;
+                                // Picking an agent always returns to
+                                // the chat view — matches the j/k
+                                // keyboard behaviour.
+                                self.return_to_chat_if_viewing_tasks();
+                                self.focus = Focus::Chat;
+                            }
+                            _ => {
+                                // Header row or out-of-range click —
+                                // grab focus so j/k navigation works
+                                // but don't change the selection.
+                                self.focus = Focus::Agents;
+                            }
                         }
                         return;
                     }
@@ -13852,6 +13984,7 @@ mod tests {
                 supervisor: false,
                 sysadmin: false,
                 leader: false,
+                group: None,
                 on_reload: ReloadAction::Ignore,
             }],
             workers: vec![],
@@ -13870,6 +14003,7 @@ mod tests {
                 supervisor: false,
                 sysadmin: false,
                 leader: false,
+                group: None,
             }],
             ai_cores: vec![],
             memory_banks: vec![],
@@ -13931,6 +14065,7 @@ mod tests {
                 supervisor: false,
                 sysadmin: false,
                 leader: false,
+                group: None,
                 on_reload: ReloadAction::Ignore,
             }],
             workers: vec![],
@@ -14004,6 +14139,7 @@ mod tests {
                 supervisor: false,
                 sysadmin: false,
                 leader: false,
+                group: None,
                 on_reload: ReloadAction::Ignore,
             }],
             workers: vec![],
@@ -14053,6 +14189,7 @@ mod tests {
                     supervisor: false,
                     sysadmin: false,
                     leader: false,
+                    group: None,
                     on_reload: ReloadAction::Ignore,
                 },
                 Agent {
@@ -14072,6 +14209,7 @@ mod tests {
                     supervisor: false,
                     sysadmin: false,
                     leader: false,
+                    group: None,
                     on_reload: ReloadAction::Ignore,
                 },
                 Agent {
@@ -14091,6 +14229,7 @@ mod tests {
                     supervisor: false,
                     sysadmin: false,
                     leader: false,
+                    group: None,
                     on_reload: ReloadAction::Ignore,
                 },
             ],
@@ -14431,14 +14570,70 @@ mod tests {
         let mut app = App::new(sample_config());
         app.layout.agent_list_inner = Some(Rect::new(10, 5, 20, 10));
 
+        // Visual row 0 is the `(ungrouped)` header (sample_config has
+        // no `group` set on its agents). Visual rows 1/2/3 are the
+        // three agents — clicking row 5 (rect.y=5) + offset 2 = ev.row
+        // 7 lands on the second chat (idx 1). Pre-grouping this test
+        // asserted idx 2, but the renderer always inserted that
+        // header; the click handler just wasn't accounting for it
+        // (the user-reported "wrong agent" bug).
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 15,
             row: 7,
             modifiers: KeyModifiers::NONE,
         });
-        assert_eq!(app.selected, 2);
+        assert_eq!(app.selected, 1);
         assert_eq!(app.focus, Focus::Chat);
+    }
+
+    #[test]
+    fn click_past_group_header_selects_correct_agent() {
+        // Two agents in one named group + one in another → three chat
+        // rows but two header rows interleaved, so the agent-list
+        // layout is:
+        //   row 0: ── alpha ──
+        //   row 1: agent_a       (clickable)
+        //   row 2: agent_b       (clickable)
+        //   row 3: ── beta ──
+        //   row 4: agent_c       (clickable)
+        // Clicking row 4 must land on agent_c (idx 2), not on the
+        // second header (no-op) or on agent_b shifted by one.
+        let mut a = leader_test_agent("agent_a");
+        let mut b = leader_test_agent("agent_b");
+        let mut c = leader_test_agent("agent_c");
+        a.group = Some("alpha".into());
+        b.group = Some("alpha".into());
+        c.group = Some("beta".into());
+        let cfg = leader_test_config(vec![a, b, c], vec![]);
+        let mut app = App::new(cfg);
+        app.layout.agent_list_inner = Some(Rect::new(0, 0, 30, 10));
+
+        // Click the row showing agent_c — visual row 4, ev.row 4.
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        });
+        let c_idx = app
+            .chats
+            .iter()
+            .position(|c| c.display_name == "agent_c")
+            .expect("agent_c chat exists");
+        assert_eq!(app.selected, c_idx, "click on row 4 must select agent_c");
+
+        // Clicking the second group header (visual row 3) must NOT
+        // change the selection — headers are inert dividers.
+        app.selected = c_idx;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.selected, c_idx, "header click is a no-op");
+        assert_eq!(app.focus, Focus::Agents);
     }
 
     #[test]
@@ -16360,6 +16555,7 @@ mod tests {
                     supervisor: false,
                     sysadmin: false,
                     leader: false,
+                    group: None,
                     on_reload: ReloadAction::Ignore,
                 },
                 Agent {
@@ -16379,6 +16575,7 @@ mod tests {
                     supervisor: false,
                     sysadmin: false,
                     leader: false,
+                    group: None,
                     on_reload: ReloadAction::Ignore,
                 },
             ],
@@ -16396,6 +16593,7 @@ mod tests {
                     memory_banks: None,
                     skills: None,
                     compaction: None,
+                    group: None,
                 },
                 Worker {
                     id: "fetcher".into(),
@@ -16410,6 +16608,7 @@ mod tests {
                     memory_banks: None,
                     skills: None,
                     compaction: None,
+                    group: None,
                 },
             ],
             automatons: vec![],
@@ -17222,6 +17421,7 @@ mod tests {
             supervisor: false,
             sysadmin: false,
             leader: false,
+            group: None,
             on_reload: ReloadAction::Ignore,
         }
     }
@@ -17337,6 +17537,7 @@ mod tests {
                 supervisor: false,
                 sysadmin: false,
                 leader: true,
+                group: None,
             }],
         );
         let app = App::new(cfg);
@@ -19762,10 +19963,12 @@ mod tests {
         let mut app = App::new(sample_config());
         app.active_view = ActiveView::Tasks;
         app.layout.agent_list_inner = Some(Rect::new(60, 5, 20, 10));
+        // Row 5 is the `(ungrouped)` header — inert. The first
+        // clickable agent row sits one line below at row 6.
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 61,
-            row: 5,
+            row: 6,
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.active_view, ActiveView::Chat);

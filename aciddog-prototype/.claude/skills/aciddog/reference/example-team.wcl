@@ -128,6 +128,11 @@ agent planner {
   supervisor = true
   sysadmin   = true                   // implies supervisor=true
   on_reload  = :ignore                // :ignore (default) | :compact | :reset
+  // Free-form section label. Rows sharing a `group` value cluster
+  // under a "── {group} ──" header in the TUI sidebar / web manager.
+  // Leaders pin to the top of their own group; rows with no `group`
+  // fall under `(ungrouped)` (rendered last).
+  group      = "engineering"
 }
 
 agent coder {
@@ -139,6 +144,7 @@ agent coder {
   memory_banks = ["project_context"]
   compaction = "last_word"
   on_reload  = :compact
+  group      = "engineering"
 }
 
 // ─── Workers (templates) ───────────────────────────────────────────

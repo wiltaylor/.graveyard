@@ -90,6 +90,15 @@ pub struct Agent {
     /// order.
     #[serde(default)]
     pub leader: bool,
+    /// Optional section label for the agent list. Rows sharing a
+    /// `group` value cluster under a "── {group} ──" header in the TUI
+    /// sidebar and the web manager. `None` ⇒ this agent falls under
+    /// the `(ungrouped)` section. Section ordering follows
+    /// first-declaration order across agents → automatons → workers;
+    /// leaders pin to the top of their own group rather than the
+    /// global top.
+    #[serde(default)]
+    pub group: Option<String>,
     /// What `/reload` does when this agent's effective config changes.
     /// Default is [`ReloadAction::Ignore`] — the running session keeps
     /// its current prompt/model/tools until the next `/compact` or
@@ -138,6 +147,12 @@ pub struct Worker {
     /// for instances of this template. Same semantics as
     /// `Agent::compaction`.
     pub compaction: Option<String>,
+    /// Optional section label for the team editor's worker list. Same
+    /// semantics as [`Agent::group`]. Workers in the runtime sidebar
+    /// always nest under their spawning parent regardless of `group`,
+    /// so this field is editor-metadata only at runtime.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 /// A script-backed pseudo-agent. Unlike [`Agent`]/[`Worker`], an
@@ -199,6 +214,11 @@ pub struct Automaton {
     /// UI. Purely cosmetic.
     #[serde(default)]
     pub leader: bool,
+    /// Same semantics as [`Agent::group`] — clusters this automaton
+    /// with other rows sharing the same label under a "── {group} ──"
+    /// header in the TUI sidebar and the web manager.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 /// The two delivery backends an automaton can use. See [`Automaton`].
@@ -1327,6 +1347,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 supervisor: optional_bool(b, "supervisor")?.unwrap_or(false),
                 sysadmin: optional_bool(b, "sysadmin")?.unwrap_or(false),
                 leader: optional_bool(b, "leader")?.unwrap_or(false),
+                group: optional_string(b, "group").filter(|s| !s.is_empty()),
                 on_reload,
             })
         })
@@ -1358,6 +1379,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 memory_banks: optional_string_list(b, "memory_banks")?,
                 skills: optional_string_list(b, "skills")?,
                 compaction: optional_string(b, "compaction"),
+                group: optional_string(b, "group").filter(|s| !s.is_empty()),
             })
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
@@ -1802,6 +1824,7 @@ fn parse_automaton(b: &wcl_lang::BlockRef) -> Result<Automaton, ConfigError> {
     // sysadmin implies supervisor, mirroring the agent rule.
     let supervisor = optional_bool(b, "supervisor")?.unwrap_or(false) || sysadmin;
     let leader = optional_bool(b, "leader")?.unwrap_or(false);
+    let group = optional_string(b, "group").filter(|s| !s.is_empty());
     Ok(Automaton {
         id,
         role,
@@ -1811,6 +1834,7 @@ fn parse_automaton(b: &wcl_lang::BlockRef) -> Result<Automaton, ConfigError> {
         supervisor,
         sysadmin,
         leader,
+        group,
     })
 }
 
@@ -3161,6 +3185,68 @@ mod tests {
         assert!(cfg.agents[0].sysadmin);
         assert!(cfg.agents[0].supervisor); // sysadmin implies supervisor
         assert!(!cfg.agents[0].leader); // but NOT leader
+    }
+
+    #[test]
+    fn agent_group_defaults_to_none() {
+        let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
+        assert!(cfg.agents[0].group.is_none());
+    }
+
+    #[test]
+    fn agent_group_parses_value() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                group = "engineering"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.agents[0].group.as_deref(), Some("engineering"));
+    }
+
+    #[test]
+    fn agent_empty_group_normalises_to_none() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                group = ""
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert!(cfg.agents[0].group.is_none());
+    }
+
+    #[test]
+    fn worker_group_parses_value() {
+        let src = r#"
+            team default { description = "t" }
+            worker scout {
+                role = "x"
+                instructions = "y"
+                group = "engineering"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.workers[0].group.as_deref(), Some("engineering"));
+    }
+
+    #[test]
+    fn automaton_group_parses_value() {
+        let src = r#"
+            team default { description = "t" }
+            automaton bot {
+                role = "echo"
+                command = "true"
+                group = "integrations"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.automatons[0].group.as_deref(), Some("integrations"));
     }
 
     #[test]

@@ -215,6 +215,12 @@ agent planner {
   // Pin to the top of the agent list and decorate with 👑 in the TUI
   // and web UI. Cosmetic only — sort + crown, no behavioural impact.
   leader = true
+  // Free-form section label. Rows sharing a `group` value cluster
+  // under a "── {group} ──" header in the TUI sidebar and the web
+  // manager. Leaders pin to the top of their own group; rows with no
+  // `group` fall under `(ungrouped)`. Section ordering follows
+  // first-declaration order.
+  group = "engineering"
 }
 
 // Fleet administrator. Sysadmin implies supervisor, so this agent has
@@ -230,6 +236,7 @@ agent admin {
   tools = ["Read"]
   supervisor = true
   sysadmin = true
+  group = "admin"
 }
 
 agent coder {
@@ -251,6 +258,7 @@ agent coder {
   // /reset). `:compact` runs the agent's compaction strategy when the
   // config changes; `:reset` drops and rebuilds immediately.
   on_reload = :compact
+  group = "engineering"
 }
 
 agent tester {
@@ -273,6 +281,7 @@ agent tester {
   // summarise strategy instead — serialise the transcript through the
   // default core and inject the digest into a fresh session.
   compaction = "running_notes"
+  group = "engineering"
 }
 
 // Persistent humorist, wired to the OpenRouter core so the OpenAI-API
@@ -289,6 +298,7 @@ agent jokemaster {
   ai_core = "openrouter"
   // Plain drop — cheapest way to reset the humourist's context.
   compaction = "drop_compact"
+  group = "morale"
 }
 
 // Corporate-speak bs talker wired through the Google Gemini CLI core.
@@ -310,6 +320,7 @@ agent humblemoonbeam {
   instructions = "When sent a topic, respond with 2-3 sentences of pure corporate-speak that 'add value' while saying almost nothing concrete. If the topic arrived via your inbox (wrapped in `<Message from=\"...\">`), use `send` to route the reply back to the original sender. No preamble, no apologies, no meta-commentary — the buzzword soup is the entire deliverable."
   tools = ["Read"]
   ai_core = "gemini_flash"
+  group = "morale"
 }
 
 // ChatGPT-subscription-backed agent — exercises the `openAiChatgpt`
@@ -342,6 +353,7 @@ agent shitposter {
   instructions = "When sent a topic, reply with one short shitpost about it — group-chat energy, self-aware, tech-flavoured, clean-ish. One or two lines, no preamble, no commentary. If the topic came through your mailbox rather than from a user directly, use `send` to route the reply back to the original sender. Do not implement code, do not run commands — the post is the entire deliverable."
   tools = ["Read"]
   ai_core = "copilot_haiku"
+  group = "morale"
 }
 
 // Workers are ephemeral agents. They are not spawned at startup;
@@ -359,6 +371,7 @@ worker researcher {
   EOT
   instructions = "Investigate a specific question from your parent. If the answer requires fetching something from the wider system, spawn a `fetcher` sub-worker."
   can_create_workers = ["fetcher"]
+  group = "engineering"
 }
 
 worker fetcher {
@@ -367,6 +380,7 @@ worker fetcher {
     You retrieve. Your parent has named a specific file, log, or snippet. Get it, return it verbatim in your completion report, and stop. Do not analyse, summarise, or editorialise — your parent will do that.
   EOT
   instructions = "Retrieve a specific file, log, or snippet requested by your parent, then report back with the result."
+  group = "engineering"
 }
 
 worker jokester {
@@ -375,6 +389,7 @@ worker jokester {
     You write jokes. One short, clean joke about the topic your parent gave you. Two or three lines maximum. No setup outside the joke itself, no apologies, no preamble — the joke is the entire deliverable.
   EOT
   instructions = "Write one short, clean joke about the topic your parent gave you. Keep it to two or three lines at most. Deliver the finished joke as your completion report — no progress updates, no preamble, just the punchline."
+  group = "morale"
 }
 
 // Remote Jules worker template. Hands off implementation tasks to
@@ -408,6 +423,7 @@ worker jules_refactor {
   EOT
   instructions = "Complete the task your parent gave you. Plan first, wait for approval, then execute the plan and report back with the final outcome (including any PR URL)."
   ai_core = "jules_remote"
+  group = "engineering"
 }
 
 // Custom thinking-indicator messages. A random line from the pool is

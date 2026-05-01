@@ -205,6 +205,7 @@ export function serializeAgent(a: AgentState): string {
     .bool("supervisor", a.supervisor)
     .bool("sysadmin", a.sysadmin)
     .bool("leader", a.leader)
+    .string("group", a.group)
     .symbol("on_reload", a.on_reload);
   return b.build("agent", a.id);
 }
@@ -222,7 +223,8 @@ export function serializeWorker(w: WorkerState): string {
     .string("ai_core", w.ai_core)
     .list("memory_banks", w.memory_banks)
     .list("skills", w.skills)
-    .string("compaction", w.compaction);
+    .string("compaction", w.compaction)
+    .string("group", w.group);
   return b.build("worker", w.id);
 }
 
@@ -261,7 +263,8 @@ export function serializeAutomaton(a: AutomatonState): string {
   b.list("can_message", a.can_message)
     .bool("supervisor", a.supervisor)
     .bool("sysadmin", a.sysadmin)
-    .bool("leader", a.leader);
+    .bool("leader", a.leader)
+    .string("group", a.group);
   return b.build("automaton", a.id);
 }
 

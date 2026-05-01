@@ -194,6 +194,7 @@ function deserializeAgent(b: BlockRef): AgentState | null {
     supervisor: asBool(a.supervisor),
     sysadmin: asBool(a.sysadmin),
     leader: asBool(a.leader),
+    group: asString(a.group),
     on_reload: asString(a.on_reload) as ReloadAction | undefined,
   };
 }
@@ -214,6 +215,7 @@ function deserializeWorker(b: BlockRef): WorkerState | null {
     memory_banks: asStringList(a.memory_banks),
     skills: asStringList(a.skills),
     compaction: asString(a.compaction),
+    group: asString(a.group),
   };
 }
 
@@ -230,6 +232,7 @@ function deserializeAutomaton(b: BlockRef): AutomatonState | null {
     supervisor: asBool(a.supervisor),
     sysadmin: asBool(a.sysadmin),
     leader: asBool(a.leader),
+    group: asString(a.group),
   };
   switch (type) {
     case "script":

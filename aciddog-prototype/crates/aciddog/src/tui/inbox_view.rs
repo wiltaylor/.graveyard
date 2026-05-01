@@ -263,6 +263,7 @@ mod tests {
                 supervisor: false,
                 sysadmin: false,
                 leader: false,
+                group: None,
                 on_reload: crate::config::ReloadAction::Ignore,
             }],
             workers: vec![],

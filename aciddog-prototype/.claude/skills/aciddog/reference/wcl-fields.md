@@ -36,6 +36,8 @@ Notation: `req` = required, `opt` = optional, `default` shown when relevant.
 | `compaction`         | string          | opt                  | Compaction policy id. Falls back to `:drop` when `/compact` fires unconfigured. |
 | `supervisor`         | bool            | opt, default `false` | Grants observe/control RPCs and bypasses own `can_message`. |
 | `sysadmin`           | bool            | opt, default `false` | Adds `server shutdown` / `server exit` / `server reload`. **Implies `supervisor = true`.** |
+| `leader`             | bool            | opt, default `false` | Pin to the top of the agent's group with 👑. Cosmetic. |
+| `group`              | string          | opt                  | Free-form section label. Rows sharing a value cluster under a `── {group} ──` header in the TUI sidebar / web manager. Leaders pin to the top of their own group; ungrouped rows fall under `(ungrouped)` (rendered last). |
 | `on_reload`          | symbol          | opt                  | `:ignore` (default), `:compact`, or `:reset` — what `/reload` does to this agent's running session. |
 
 ---
@@ -56,6 +58,7 @@ Notation: `req` = required, `opt` = optional, `default` shown when relevant.
 | `memory_banks`       | list(string)    | opt    | Banks accessible. |
 | `skills`             | list(string)    | opt    | Pre-announced skills. |
 | `compaction`         | string          | opt    | Compaction policy id. |
+| `group`              | string          | opt    | Same as `agent.group`. Editor-metadata only at runtime — workers in the runtime sidebar always nest under their spawning parent regardless of `group`. |
 
 Workers do **not** support `can_message`, `supervisor`, `sysadmin`, or `on_reload`.
 
@@ -74,6 +77,8 @@ Common fields (all variants):
 | `can_message`      | list(string)    | opt                  | Targets reachable via `aciddog send --to`. |
 | `supervisor`       | bool            | opt, default `false` | Supervisor RPCs (`:webservice` typically). |
 | `sysadmin`         | bool            | opt, default `false` | Server-lifecycle RPCs. Implies `supervisor`. |
+| `leader`           | bool            | opt, default `false` | Pin to top of group with 👑. Cosmetic. |
+| `group`            | string          | opt                  | Same as `agent.group` — clusters this automaton under a `── {group} ──` header. |
 
 ### variant `:script` (default)
 

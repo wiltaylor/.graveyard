@@ -259,69 +259,91 @@ fn render_agent_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
     // (focus) still shows while navigating with j/k.
     let active_here = app.active_view == ActiveView::Chat;
 
-    let order = app.visible_order();
-    let items: Vec<ListItem> = order
-        .iter()
-        .map(|&(i, depth)| {
-            let c = &app.chats[i];
-            // Automatons share the agent list but live in a distinct
-            // square-family icon set so the kind is always visible —
-            // not just when they're idle. Hibernation doesn't apply
-            // (no AI state to park); Asleep does, since a supervisor
-            // can put any fleet member to sleep.
-            let dot = match (c.kind, c.status) {
-                (ChatKind::Automaton, AgentStatus::Asleep) => "🟦",
-                (ChatKind::Automaton, AgentStatus::Working) => "🟨",
-                (ChatKind::Automaton, AgentStatus::Error) => "🟥",
-                (ChatKind::Automaton, _) => "🟩",
-                (_, AgentStatus::Ready) => "🟢",
-                (_, AgentStatus::Working) => "🟡",
-                (_, AgentStatus::Error) => "🔴",
-                (_, AgentStatus::Hibernated) => "💤",
-                (_, AgentStatus::Asleep) => "🌙",
-            };
-            let name_style = if i == app.selected && (active_here || focused) {
-                Style::default()
-                    .bg(Color::Cyan)
-                    .fg(Color::Black)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            let mut spans: Vec<Span> = Vec::with_capacity(4);
-            if depth > 0 {
-                // Indent once per ancestor, with a single "↳ " on the
-                // last level so the reader can see which row is the
-                // child entry.
-                if depth > 1 {
-                    spans.push(Span::raw("  ".repeat(depth - 1)));
+    // Walk the same visual-row layout the click handler uses so the
+    // two stay in lockstep — clicking a row maps to the chat the
+    // renderer drew on that line. Group headers are non-selectable;
+    // the keyboard cursor still operates on chat indices via
+    // `app.selected` and the visual row of the selected chat tracks
+    // header insertions.
+    let rows = app.agent_list_visual_rows();
+    let mut items: Vec<ListItem> = Vec::with_capacity(rows.len());
+    let mut sel_row: Option<usize> = None;
+    for row in &rows {
+        match row {
+            crate::tui::app::AgentListVisualRow::GroupHeader { label } => {
+                items.push(ListItem::new(Line::from(Span::styled(
+                    format!("── {label} ──"),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ))));
+            }
+            crate::tui::app::AgentListVisualRow::Chat { idx, depth } => {
+                let i = *idx;
+                let depth = *depth;
+                let c = &app.chats[i];
+                // Automatons share the agent list but live in a distinct
+                // square-family icon set so the kind is always visible —
+                // not just when they're idle. Hibernation doesn't apply
+                // (no AI state to park); Asleep does, since a supervisor
+                // can put any fleet member to sleep.
+                let dot = match (c.kind, c.status) {
+                    (ChatKind::Automaton, AgentStatus::Asleep) => "🟦",
+                    (ChatKind::Automaton, AgentStatus::Working) => "🟨",
+                    (ChatKind::Automaton, AgentStatus::Error) => "🟥",
+                    (ChatKind::Automaton, _) => "🟩",
+                    (_, AgentStatus::Ready) => "🟢",
+                    (_, AgentStatus::Working) => "🟡",
+                    (_, AgentStatus::Error) => "🔴",
+                    (_, AgentStatus::Hibernated) => "💤",
+                    (_, AgentStatus::Asleep) => "🌙",
+                };
+                let name_style = if i == app.selected && (active_here || focused) {
+                    Style::default()
+                        .bg(Color::Cyan)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                let mut spans: Vec<Span> = Vec::with_capacity(4);
+                if depth > 0 {
+                    // Indent once per ancestor, with a single "↳ " on the
+                    // last level so the reader can see which row is the
+                    // child entry.
+                    if depth > 1 {
+                        spans.push(Span::raw("  ".repeat(depth - 1)));
+                    }
+                    spans.push(Span::styled("↳ ", Style::default().fg(Color::DarkGray)));
                 }
-                spans.push(Span::styled("↳ ", Style::default().fg(Color::DarkGray)));
+                spans.push(Span::raw(format!("{dot} ")));
+                // Crown the leader-flagged top-level Agent / Automaton
+                // chats. Placement is "🟢 👑 name" — after the status dot,
+                // before the display name. Workers and non-leader chats
+                // skip this span entirely.
+                if app.is_leader(i) {
+                    spans.push(Span::raw(format!("{} ", leader_glyph())));
+                }
+                spans.push(Span::styled(c.display_name.clone(), name_style));
+                if c.parent_idx.is_some() {
+                    spans.push(Span::styled(
+                        " [worker]",
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+                if i == app.selected {
+                    sel_row = Some(items.len());
+                }
+                items.push(ListItem::new(Line::from(spans)));
             }
-            spans.push(Span::raw(format!("{dot} ")));
-            // Crown the leader-flagged top-level Agent / Automaton
-            // chats. Placement is "🟢 👑 name" — after the status dot,
-            // before the display name. Workers and non-leader chats
-            // skip this span entirely.
-            if app.is_leader(i) {
-                spans.push(Span::raw(format!("{} ", leader_glyph())));
-            }
-            spans.push(Span::styled(c.display_name.clone(), name_style));
-            if c.parent_idx.is_some() {
-                spans.push(Span::styled(
-                    " [worker]",
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
+        }
+    }
 
     let list = List::new(items).block(block);
 
     let mut state = ListState::default();
-    if let Some(sel_row) = order.iter().position(|(i, _)| *i == app.selected) {
-        state.select(Some(sel_row));
+    if let Some(row) = sel_row {
+        state.select(Some(row));
     }
     f.render_stateful_widget(list, area, &mut state);
     inner

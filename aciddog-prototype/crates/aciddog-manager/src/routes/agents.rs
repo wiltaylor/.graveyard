@@ -22,6 +22,12 @@ pub struct AgentRow {
     /// header (no `leader` column emitted).
     #[serde(default)]
     pub leader: bool,
+    /// Optional `group` label from the agent / automaton / worker
+    /// config block. `None` when the daemon speaks the 5- or 6-column
+    /// legacy header (no `group` column emitted) or when the row's
+    /// block has no `group` set.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,11 +73,16 @@ pub async fn list(
 
 /// Parse the tab-separated plaintext returned by
 /// `handle_admin_agent_list` (see `aciddog/src/tui/app.rs`). Tolerant
-/// of two header shapes for cross-version compatibility:
+/// of three header shapes for cross-version compatibility:
 ///   - Legacy 5-column: `id\tkind\tstatus\tparent\tai_core` — every
-///     row gets `leader = false`.
-///   - New 6-column: `id\tkind\tstatus\tparent\tai_core\tleader` —
-///     the trailing column is parsed as a `true` / `false` bool.
+///     row gets `leader = false`, `group = None`.
+///   - 6-column: `id\tkind\tstatus\tparent\tai_core\tleader` — the
+///     trailing column is parsed as a `true` / `false` bool, `group`
+///     defaults to `None`.
+///   - 7-column: `id\tkind\tstatus\tparent\tai_core\tleader\tgroup` —
+///     the trailing `group` cell uses the same `-`-means-None
+///     convention as the `parent` and `ai_core` columns.
+///
 /// Empty input yields an empty Vec. Rows whose column count doesn't
 /// match the chosen header shape are skipped.
 pub(crate) fn parse_agent_table(raw: &str) -> Vec<AgentRow> {
@@ -83,6 +94,7 @@ pub(crate) fn parse_agent_table(raw: &str) -> Vec<AgentRow> {
     let expected_cols = match header {
         "id\tkind\tstatus\tparent\tai_core" => 5,
         "id\tkind\tstatus\tparent\tai_core\tleader" => 6,
+        "id\tkind\tstatus\tparent\tai_core\tleader\tgroup" => 7,
         _ => return Vec::new(),
     };
     let mut out = Vec::new();
@@ -92,10 +104,15 @@ pub(crate) fn parse_agent_table(raw: &str) -> Vec<AgentRow> {
             continue;
         }
         let nullable = |s: &str| if s == "-" { None } else { Some(s.to_string()) };
-        let leader = if expected_cols == 6 {
+        let leader = if expected_cols >= 6 {
             parts[5] == "true"
         } else {
             false
+        };
+        let group = if expected_cols >= 7 {
+            nullable(parts[6])
+        } else {
+            None
         };
         out.push(AgentRow {
             id: parts[0].to_string(),
@@ -104,6 +121,7 @@ pub(crate) fn parse_agent_table(raw: &str) -> Vec<AgentRow> {
             parent: nullable(parts[3]),
             ai_core: nullable(parts[4]),
             leader,
+            group,
         });
     }
     out
@@ -159,5 +177,40 @@ mod tests {
     #[test]
     fn empty_input_is_ok() {
         assert!(parse_agent_table("").is_empty());
+    }
+
+    #[test]
+    fn parses_canonical_table_with_group() {
+        // Newest 7-column header (modern daemon, group column emitted).
+        // The trailing `group` cell uses `-` for None; named groups
+        // come through verbatim. Legacy headers leave group=None on
+        // every row regardless of the row content.
+        let raw = "id\tkind\tstatus\tparent\tai_core\tleader\tgroup\n\
+                   admin\tagent\tidle\t-\tclaude_code\ttrue\tadmin\n\
+                   coder\tagent\tidle\t-\tclaude_code\tfalse\tengineering\n\
+                   shitposter\tagent\tidle\t-\tcopilot_haiku\tfalse\t-\n\
+                   worker-1\tworker\tthinking\tcoder\tgemini_cli\tfalse\tengineering";
+        let rows = parse_agent_table(raw);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].id, "admin");
+        assert!(rows[0].leader);
+        assert_eq!(rows[0].group.as_deref(), Some("admin"));
+        assert_eq!(rows[1].group.as_deref(), Some("engineering"));
+        assert!(rows[2].group.is_none(), "`-` cell must parse as None");
+        assert_eq!(rows[3].group.as_deref(), Some("engineering"));
+        assert_eq!(rows[3].parent.as_deref(), Some("coder"));
+    }
+
+    #[test]
+    fn legacy_six_col_header_yields_no_group() {
+        // 6-column legacy parses with group=None on every row even
+        // when the data rows have a 7th column — those rows are
+        // skipped because the column count mismatches the header.
+        let raw = "id\tkind\tstatus\tparent\tai_core\tleader\n\
+                   admin\tagent\tidle\t-\tclaude_code\ttrue";
+        let rows = parse_agent_table(raw);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].leader);
+        assert!(rows[0].group.is_none());
     }
 }

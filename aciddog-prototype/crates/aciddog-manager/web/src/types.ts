@@ -29,6 +29,10 @@ export interface AgentRow {
   /** Top-of-list pin + 👑 decoration. False when the upstream daemon
    * speaks the legacy 5-column header (no `leader` column). */
   leader: boolean;
+  /** Optional `group` label. Null when the row's config block has no
+   * `group` set, or when the upstream daemon speaks the 5/6-column
+   * legacy header (no `group` column). */
+  group: string | null;
 }
 
 export interface AgentListResponse {

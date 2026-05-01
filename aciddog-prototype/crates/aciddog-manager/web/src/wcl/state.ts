@@ -135,6 +135,11 @@ export interface AgentState {
   supervisor?: boolean;
   sysadmin?: boolean;
   leader?: boolean;
+  /** Optional section label for the agent list. Rows sharing a
+   * `group` value cluster under a "── {group} ──" header in the TUI
+   * sidebar and the web manager. Leaders pin to the top of their own
+   * group; rows with no group fall under `(ungrouped)`. */
+  group?: string;
   on_reload?: ReloadAction;
 }
 
@@ -151,6 +156,10 @@ export interface WorkerState {
   memory_banks?: string[];
   skills?: string[];
   compaction?: string;
+  /** Same semantics as `AgentState.group`. Editor-metadata only at
+   * runtime — workers in the runtime sidebar always nest under their
+   * spawning parent regardless of `group`. */
+  group?: string;
 }
 
 // ---------------------------------------------------------------------
@@ -167,6 +176,10 @@ interface AutomatonCommon {
   supervisor?: boolean;
   sysadmin?: boolean;
   leader?: boolean;
+  /** Same semantics as `AgentState.group` — clusters this automaton
+   * under a "── {group} ──" header in the TUI sidebar and web
+   * manager. */
+  group?: string;
 }
 
 export interface AutomatonScript extends AutomatonCommon {

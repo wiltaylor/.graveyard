@@ -53,4 +53,5 @@ agent setup {
   skills = ["aciddog"]
   supervisor = true
   sysadmin   = true
+  // group = "admin"  // Optional — clusters this row under a "── {group} ──" header in the TUI sidebar / web list. Free-form label.
 }

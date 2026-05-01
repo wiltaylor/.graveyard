@@ -83,7 +83,17 @@ Direct-API cores (`:anthropicApi`, `:openAiApi`, `:openAiChatgpt`) require a `mo
 - **Agent**: declared at config-load time, runs forever, has a mailbox + chat pane, can join channels, can be a supervisor or sysadmin, has an `on_reload` policy.
 - **Worker**: a *template* — instances are spawned by `aciddog worker create --template <id> --task "..."` from within an agent that lists this template in `can_create_workers`. Workers cannot join channels, cannot be supervisors, and have no `on_reload` field.
 
-Field overlap: both accept `role`, `role_description`, `model`, `instructions`, `tools`, `ai_core`, `memory_banks`, `skills`, `compaction`, `can_create_workers`, `can_run_workflows`. Only agents accept `can_message`, `supervisor`, `sysadmin`, `on_reload`.
+Field overlap: both accept `role`, `role_description`, `model`, `instructions`, `tools`, `ai_core`, `memory_banks`, `skills`, `compaction`, `can_create_workers`, `can_run_workflows`, `group`. Only agents accept `can_message`, `supervisor`, `sysadmin`, `leader`, `on_reload`.
+
+## Grouping (`group`)
+
+Optional free-form section label on `agent`, `automaton`, and `worker` blocks. Rows sharing a value cluster under a `── {group} ──` header in the TUI sidebar and the web manager (and as `Group` column buckets in the manager's instance detail view).
+
+- **Free-form**: no pre-declared group block needed; the union of every `group` value used becomes the bucket set.
+- **Section order**: first-declaration order across `agent` → `automaton` → `worker` blocks. The `(ungrouped)` section always renders last.
+- **Leaders**: pin to the top of *their own group* (not the global top). A leader without a `group` floats to the top of `(ungrouped)`.
+- **Workers**: at runtime, workers nest under their spawning parent regardless of `group` — the field is editor-metadata only there. The team-editor's worker tab does honour it for visual consistency.
+- **Empty string** (`group = ""`) is normalised to "no group" at parse time.
 
 ## Allowlist semantics (`can_message`, `can_create_workers`, `can_run_workflows`)
 

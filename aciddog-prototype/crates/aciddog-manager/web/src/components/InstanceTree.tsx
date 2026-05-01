@@ -34,6 +34,21 @@ export default function InstanceTree(props: Props): JSX.Element {
         const instId = id.slice("inst:".length);
         next.add(`agents:${instId}`);
         next.add(`channels:${instId}`);
+        // Auto-expand every group bucket under the agents node so the
+        // user sees their agents on first click rather than a row of
+        // collapsed group folders. Buckets enumerated lazily from the
+        // current agentsFor() snapshot — ones that arrive later via
+        // SSE will start collapsed (user can click to open).
+        const agentsResp = props.agentsFor(instId);
+        if (agentsResp?.ok) {
+          const seen = new Set<string>();
+          for (const a of agentsResp.agents) {
+            const key = a.group ?? "__ungrouped__";
+            if (seen.has(key)) continue;
+            seen.add(key);
+            next.add(`agentgroup:${instId}:${key}`);
+          }
+        }
         props.onExpand(instId);
       }
     }
@@ -80,14 +95,54 @@ export default function InstanceTree(props: Props): JSX.Element {
       const agentsResp = props.agentsFor(inst.id);
       const channelsResp = props.channelsFor(inst.id);
 
-      const agentChildren: TreeNode[] = agentsResp?.ok
-        ? agentsResp.agents.map((agent) => ({
-            id: `agent:${inst.id}:${agent.id}`,
-            label: agent.id,
-            icon: "user",
-            meta: agent.status,
-          }))
-        : [];
+      // Bucket agents by their `group` value, preserving
+      // first-appearance order. `null` (no group) is appended last so
+      // ungrouped rows always render below named groups, matching the
+      // TUI sidebar's `(ungrouped)` placement. Within each bucket the
+      // backend already pins leader=true rows first; we run a stable
+      // sort here too so older daemons that don't sort still display
+      // sensibly.
+      const agentChildren: TreeNode[] = (() => {
+        if (!agentsResp?.ok) return [];
+        const buckets = new Map<string, typeof agentsResp.agents>();
+        const order: string[] = [];
+        for (const a of agentsResp.agents) {
+          const key = a.group ?? "__ungrouped__";
+          if (!buckets.has(key)) {
+            buckets.set(key, []);
+            order.push(key);
+          }
+          buckets.get(key)!.push(a);
+        }
+        if (!order.includes("__ungrouped__")) {
+          order.push("__ungrouped__");
+        }
+        const nodes: TreeNode[] = [];
+        for (const key of order) {
+          const rows = buckets.get(key);
+          if (!rows || rows.length === 0) continue;
+          const sorted = [...rows].sort((a, b) => {
+            const aIsLeader = a.leader && a.parent === null;
+            const bIsLeader = b.leader && b.parent === null;
+            if (aIsLeader === bIsLeader) return 0;
+            return aIsLeader ? -1 : 1;
+          });
+          const label = key === "__ungrouped__" ? "(ungrouped)" : key;
+          nodes.push({
+            id: `agentgroup:${inst.id}:${key}`,
+            label,
+            icon: "users",
+            meta: `${sorted.length}`,
+            children: sorted.map((agent) => ({
+              id: `agent:${inst.id}:${agent.id}`,
+              label: agent.id,
+              icon: "user",
+              meta: agent.status,
+            })),
+          });
+        }
+        return nodes;
+      })();
 
       const channelChildren: TreeNode[] = channelsResp?.ok
         ? channelsResp.channels.map((channel) => ({

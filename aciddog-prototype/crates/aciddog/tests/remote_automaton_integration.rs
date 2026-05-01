@@ -198,6 +198,7 @@ async fn remote_core_forwards_outbound_user_message() {
         supervisor: false,
         sysadmin: false,
         leader: false,
+        group: None,
     };
 
     let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
@@ -271,6 +272,7 @@ async fn proxy_socket_tunnels_request_cmd() {
         supervisor: false,
         sysadmin: false,
         leader: false,
+        group: None,
     };
 
     let (_user_tx, user_rx) = mpsc::unbounded_channel::<String>();

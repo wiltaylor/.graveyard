@@ -48,6 +48,14 @@ schema "agent" {
   // and web UI. Purely cosmetic — sort + crown only, no behavioural
   // overload. Multiple leaders are tied by declaration order.
   leader: bool @optional @default(false)
+  // Optional section label for the agent list. Rows sharing a `group`
+  // value are clustered together under a "── {group} ──" header in
+  // the TUI sidebar and the web manager. Free-form — no pre-declared
+  // group block needed; section ordering follows first-declaration
+  // order across agents → automatons → workers. Leaders pin to the
+  // top of their own group (not the global top); rows with no
+  // `group` fall under an `(ungrouped)` section rendered last.
+  group: string @optional
   // What `/reload` does to this agent's running session when its
   // effective config changes (the agent block itself, the resolved
   // ai_core, the referenced compaction, memory banks, skills, or
@@ -75,6 +83,11 @@ schema "worker" {
   memory_banks: list(string) @optional
   skills: list(string) @optional
   compaction: string @optional
+  // Same semantics as `schema "agent"`'s `group` field — labels this
+  // worker template's row in the team-editor list. Workers in the
+  // runtime sidebar always nest under their spawning parent regardless
+  // of `group`, so this field is editor-metadata only at runtime.
+  group: string @optional
 }
 
 // A script-backed pseudo-agent. Unlike `agent`/`worker`, an automaton
@@ -114,6 +127,10 @@ schema "automaton" {
   // and web UI. Purely cosmetic — sort + crown only, no behavioural
   // overload. Multiple leaders are tied by declaration order.
   leader: bool @optional @default(false)
+  // Same semantics as `schema "agent"`'s `group` field — clusters
+  // this automaton with other rows sharing the same label under a
+  // "── {group} ──" header in the TUI sidebar and the web manager.
+  group: string @optional
 
   variant "script" {
     // Executable to spawn. Either a bare binary name on PATH (e.g.
