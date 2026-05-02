@@ -3,3 +3,27 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+.diff-line--plus {
+  color: var(--success-fg, #2ec27e);
+}
+
+.diff-line--minus {
+  color: var(--danger-fg, #e25555);
+}
+
+.diff-line--hunk {
+  color: var(--fg-2, #888);
+}
+
+.diff-line--header {
+  color: var(--info-fg, #3fb6e0);
+}
+
+.diff-line--truncation {
+  color: var(--warning-fg, #d4a017);
+}
+
+.diff-line--context {
+  color: inherit;
+}

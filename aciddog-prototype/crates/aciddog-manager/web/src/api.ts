@@ -24,6 +24,8 @@ import type {
   ReadWclResponse,
   ReloadResponse,
   RemoteSkillSummary,
+  RepoDiffResponse,
+  ReposListResponse,
   SearchResponse,
   SendResponse,
   SkillPushResult,
@@ -71,6 +73,24 @@ export async function request<T>(
     throw new Error(err);
   }
   return body as T;
+}
+
+export async function listRepos(id: string): Promise<ReposListResponse> {
+  return request<ReposListResponse>(`/api/instances/${id}/repos`);
+}
+
+export async function getRepoDiff(
+  id: string,
+  repoId: string,
+  branch: string,
+): Promise<RepoDiffResponse> {
+  return request<RepoDiffResponse>(
+    `/api/instances/${id}/repos/${encodeURIComponent(repoId)}/diff`,
+    {
+      method: "POST",
+      body: JSON.stringify({ branch }),
+    },
+  );
 }
 
 export const api = {
@@ -224,6 +244,10 @@ export const api = {
       `/api/instances/${id}/tasks/${taskId}/comments/${commentId}`,
       { method: "DELETE" },
     ),
+
+  // Repos
+  listRepos,
+  getRepoDiff,
 
   // Inbox
   listInbox: (id: string) =>

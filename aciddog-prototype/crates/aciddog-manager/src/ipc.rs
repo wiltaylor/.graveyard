@@ -15,7 +15,7 @@ use uuid::Uuid;
 /// with `#[serde(tag = "cmd", rename_all = "snake_case")]`, matching
 /// `aciddog::agent_ipc::RequestCmd`. The webservice stamps its own
 /// `agent_id` server-side — we don't send one.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum RequestCmd {
     AgentList,
@@ -296,6 +296,14 @@ pub enum RequestCmd {
     CronRemove {
         id: Uuid,
     },
+    // ---- Repos -----------------------------------------------------
+    /// Supervisor structured repository/worktree list. Response
+    /// carries `Vec<wire_repos::WireRepository>` in `IpcResponse::data`.
+    ReposListJson,
+    /// Supervisor branch diff against a repo's default branch.
+    /// Response carries `wire_repos::WireDiffOutcome` in
+    /// `IpcResponse::data`.
+    RepoDiffJson { repo_id: String, branch: String },
     // ---- Skills ----------------------------------------------------
     /// Sysadmin: list every skill directory under the daemon's
     /// `.aciddog/skills/`. Distinct from the agent-scoped `SkillList`
@@ -321,7 +329,7 @@ pub enum RequestCmd {
 
 /// One file inside a skill directory. Matches
 /// `aciddog::agent_ipc::SkillFile` byte-for-byte.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SkillFile {
     pub rel_path: String,
     pub contents_b64: String,
@@ -330,7 +338,7 @@ pub struct SkillFile {
 /// Which slice of a target agent's chat log to return from
 /// `AgentHistoryJson`. Serialized with an internally-tagged `select`
 /// discriminator — mirrors `aciddog::agent_ipc::HistorySelector`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "select", rename_all = "snake_case")]
 pub enum HistorySelector {
     All,
@@ -430,6 +438,29 @@ mod tests {
         let s = serde_json::to_string(&RequestCmd::CronRemove { id }).unwrap();
         assert!(s.contains("\"cmd\":\"cron_remove\""), "got: {s}");
         assert!(s.contains(&id.to_string()), "got: {s}");
+    }
+
+    #[test]
+    fn repos_list_json_round_trips_with_cmd_tag() {
+        let literal = r#"{"cmd":"repos_list_json"}"#;
+        let cmd = RequestCmd::ReposListJson;
+        let expected: serde_json::Value = serde_json::from_str(literal).unwrap();
+        assert_eq!(serde_json::to_value(&cmd).unwrap(), expected);
+        let back: RequestCmd = serde_json::from_str(literal).unwrap();
+        assert_eq!(back, cmd);
+    }
+
+    #[test]
+    fn repo_diff_json_round_trips_with_cmd_tag_and_fields() {
+        let literal = r#"{"cmd":"repo_diff_json","repo_id":"repo-a","branch":"feature"}"#;
+        let cmd = RequestCmd::RepoDiffJson {
+            repo_id: "repo-a".into(),
+            branch: "feature".into(),
+        };
+        let expected: serde_json::Value = serde_json::from_str(literal).unwrap();
+        assert_eq!(serde_json::to_value(&cmd).unwrap(), expected);
+        let back: RequestCmd = serde_json::from_str(literal).unwrap();
+        assert_eq!(back, cmd);
     }
 
     #[test]

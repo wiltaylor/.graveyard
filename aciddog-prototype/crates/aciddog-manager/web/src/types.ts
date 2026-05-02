@@ -278,6 +278,52 @@ export interface MutationResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Repos — mirrors `aciddog::wire_repos` on the wire.
+// ---------------------------------------------------------------------------
+
+export interface WireRepository {
+  id: string;
+  path: string;
+  default_branch: string | null;
+  worktrees: WireWorktree[];
+}
+
+export interface WireWorktree {
+  path: string;
+  branch: string | null;
+}
+
+export type WireDiffLineKind =
+  | "header"
+  | "plus"
+  | "minus"
+  | "hunk"
+  | "context"
+  | "truncation";
+
+export interface WireDiffLine {
+  kind: WireDiffLineKind;
+  text: string;
+}
+
+export type WireDiffOutcome =
+  | { outcome: "no_forward_changes" }
+  | { outcome: "detached" }
+  | { outcome: "diff"; lines: WireDiffLine[]; truncated_at: number | null }
+  | { outcome: "error"; command: string; stderr: string };
+
+export interface ReposListResponse {
+  ok: boolean;
+  repos: WireRepository[];
+  error?: string;
+}
+
+export type RepoDiffResponse = WireDiffOutcome & {
+  ok: boolean;
+  error?: string;
+};
+
+// ---------------------------------------------------------------------------
 // Inbox
 // ---------------------------------------------------------------------------
 

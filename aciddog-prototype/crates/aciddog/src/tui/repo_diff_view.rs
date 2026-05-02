@@ -10,7 +10,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::repos::DiffOutcome;
+use crate::repos::{classify_diff_line, diff_command_string, diff_truncation_trailer, DiffOutcome};
+use crate::wire_repos::WireDiffLineKind;
 
 use super::app::{App, Focus};
 
@@ -64,9 +65,7 @@ impl RepoDiffScreen {
                 if let Some(original_len) = truncated_at {
                     let command = diff_command_string(repo_path, default_branch, branch);
                     styled_lines.push(Line::from(Span::styled(
-                        format!(
-                            "… diff exceeds 10 000 lines (got {original_len}); run `{command}` for the full diff."
-                        ),
+                        diff_truncation_trailer(original_len, &command),
                         Style::default().fg(Color::Yellow),
                     )));
                 }
@@ -108,20 +107,12 @@ impl RepoDiffScreen {
 }
 
 fn style_diff_line(line: String) -> Line<'static> {
-    let style = if line.starts_with('+') && !line.starts_with("+++") {
-        Style::default().fg(Color::Green)
-    } else if line.starts_with('-') && !line.starts_with("---") {
-        Style::default().fg(Color::Red)
-    } else if line.starts_with("@@") {
-        Style::default().fg(Color::DarkGray)
-    } else if line.starts_with("diff --git")
-        || line.starts_with("index ")
-        || line.starts_with("+++ ")
-        || line.starts_with("--- ")
-    {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default()
+    let style = match classify_diff_line(&line) {
+        WireDiffLineKind::Plus => Style::default().fg(Color::Green),
+        WireDiffLineKind::Minus => Style::default().fg(Color::Red),
+        WireDiffLineKind::Hunk => Style::default().fg(Color::DarkGray),
+        WireDiffLineKind::Header => Style::default().fg(Color::Cyan),
+        WireDiffLineKind::Context | WireDiffLineKind::Truncation => Style::default(),
     };
 
     if style == Style::default() {
@@ -129,13 +120,6 @@ fn style_diff_line(line: String) -> Line<'static> {
     } else {
         Line::from(Span::styled(line, style))
     }
-}
-
-fn diff_command_string(path: &Path, default_branch: &str, branch: &str) -> String {
-    format!(
-        "git -C {} diff --no-color {default_branch}...{branch}",
-        path.display()
-    )
 }
 
 pub fn render_repo_diff_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {

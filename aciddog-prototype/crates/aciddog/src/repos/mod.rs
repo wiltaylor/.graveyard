@@ -5,6 +5,7 @@ use std::time::Instant;
 use tracing::warn;
 
 use crate::config::Repository;
+use crate::wire_repos::WireDiffLineKind;
 
 #[derive(Debug, Clone)]
 pub struct Worktree {
@@ -235,7 +236,29 @@ pub fn compute_branch_diff(repo: &RepoState, branch: &str) -> Result<DiffOutcome
     })
 }
 
-fn diff_command_string(path: &Path, default_branch: &str, branch: &str) -> String {
+pub fn classify_diff_line(line: &str) -> WireDiffLineKind {
+    if line.starts_with("+++ ")
+        || line.starts_with("--- ")
+        || line.starts_with("diff --git")
+        || line.starts_with("index ")
+    {
+        WireDiffLineKind::Header
+    } else if line.starts_with('+') {
+        WireDiffLineKind::Plus
+    } else if line.starts_with('-') {
+        WireDiffLineKind::Minus
+    } else if line.starts_with("@@") {
+        WireDiffLineKind::Hunk
+    } else {
+        WireDiffLineKind::Context
+    }
+}
+
+pub fn diff_truncation_trailer(original_len: usize, command: &str) -> String {
+    format!("… diff exceeds 10 000 lines (got {original_len}); run `{command}` for the full diff.")
+}
+
+pub fn diff_command_string(path: &Path, default_branch: &str, branch: &str) -> String {
     format!(
         "git -C {} diff --no-color {default_branch}...{branch}",
         path.display()
@@ -585,6 +608,49 @@ mod tests {
 
         assert_eq!(lines, vec!["one", "two", "three", "four", "five"]);
         assert_eq!(truncated_at, None);
+    }
+
+    #[test]
+    fn classify_diff_line_classifies_headers_before_sign_lines() {
+        assert_eq!(
+            classify_diff_line("+++ b/src/lib.rs"),
+            WireDiffLineKind::Header
+        );
+        assert_eq!(
+            classify_diff_line("--- a/src/lib.rs"),
+            WireDiffLineKind::Header
+        );
+        assert_eq!(
+            classify_diff_line("diff --git a/src/lib.rs b/src/lib.rs"),
+            WireDiffLineKind::Header
+        );
+        assert_eq!(
+            classify_diff_line("index 1111111..2222222 100644"),
+            WireDiffLineKind::Header
+        );
+    }
+
+    #[test]
+    fn classify_diff_line_classifies_added_removed_hunk_and_context_lines() {
+        assert_eq!(classify_diff_line("+added"), WireDiffLineKind::Plus);
+        assert_eq!(classify_diff_line("-removed"), WireDiffLineKind::Minus);
+        assert_eq!(
+            classify_diff_line("@@ -1,2 +1,3 @@"),
+            WireDiffLineKind::Hunk
+        );
+        assert_eq!(classify_diff_line(" unchanged"), WireDiffLineKind::Context);
+    }
+
+    #[test]
+    fn diff_truncation_trailer_matches_tui_text() {
+        let command = "git -C /repo diff --no-color main...feature";
+
+        let trailer = diff_truncation_trailer(10_001, command);
+
+        assert_eq!(
+            trailer,
+            "… diff exceeds 10 000 lines (got 10001); run `git -C /repo diff --no-color main...feature` for the full diff."
+        );
     }
 
     #[test]

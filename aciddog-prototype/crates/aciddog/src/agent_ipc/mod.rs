@@ -185,6 +185,15 @@ pub enum RequestCmd {
         #[serde(default)]
         unassigned: bool,
     },
+    /// Supervisor: structured repository list for the manager web UI.
+    /// Reply carries `Vec<wire_repos::WireRepository>` in `Response::data`.
+    ReposListJson,
+    /// Supervisor: structured branch diff for a repository worktree.
+    /// Reply carries `wire_repos::WireDiffOutcome` in `Response::data`.
+    RepoDiffJson {
+        repo_id: String,
+        branch: String,
+    },
     /// Update fields on an existing task. Fields set to `None` are
     /// left unchanged. `unassign` clears the assignee (mutually
     /// exclusive with `assignee`). `add_blocked_by` / `remove_blocked_by`
@@ -1045,6 +1054,45 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn repos_list_json_roundtrips_with_literal_cmd_tag() {
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::ReposListJson,
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert_eq!(
+            s,
+            r#"{"agent_id":"00000000-0000-0000-0000-000000000000","cmd":"repos_list_json"}"#
+        );
+        let back: Request = serde_json::from_str(&s).unwrap();
+        assert!(matches!(back.cmd, RequestCmd::ReposListJson));
+    }
+
+    #[test]
+    fn repo_diff_json_roundtrips_with_literal_cmd_tag_and_fields() {
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::RepoDiffJson {
+                repo_id: "aciddog".into(),
+                branch: "feature/repos".into(),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert_eq!(
+            s,
+            r#"{"agent_id":"00000000-0000-0000-0000-000000000000","cmd":"repo_diff_json","repo_id":"aciddog","branch":"feature/repos"}"#
+        );
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::RepoDiffJson { repo_id, branch } => {
+                assert_eq!(repo_id, "aciddog");
+                assert_eq!(branch, "feature/repos");
+            }
+            other => panic!("expected RepoDiffJson, got {other:?}"),
+        }
     }
 
     #[test]

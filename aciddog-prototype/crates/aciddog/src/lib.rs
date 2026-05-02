@@ -19,6 +19,7 @@ pub mod wire_channel;
 pub mod wire_chat;
 pub mod wire_inbox;
 pub mod wire_memory;
+pub mod wire_repos;
 pub mod wire_skills;
 pub mod wire_team;
 pub mod wire_workflow;

@@ -30,9 +30,12 @@ use crate::ai::{
 use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::{AciddogConfig, AiCore, AiCoreKind};
 use crate::memory::MemoryRegistry;
-use crate::repos::compute_branch_diff;
+use crate::repos::{self, compute_branch_diff, DiffOutcome};
 use crate::tasks::{Task, TaskFilter, TaskPatch, TaskStatus, TaskStore, TodoStatus};
 use crate::usage;
+use crate::wire_repos::{
+    WireDiffLine, WireDiffLineKind, WireDiffOutcome, WireRepository, WireWorktree,
+};
 
 use super::cores_view::{CoresScreen, UsageEvent};
 use super::repo_diff_view::RepoDiffScreen;
@@ -859,6 +862,11 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             });
             ChatBlock::task_op(k, s, b)
         }
+        RequestCmd::ReposListJson => ChatBlock::from_tool_use("aciddog repos list --json", input),
+        RequestCmd::RepoDiffJson { repo_id, branch } => ChatBlock::from_tool_use(
+            &format!("aciddog repos diff --json {repo_id} {branch}"),
+            input,
+        ),
         RequestCmd::TaskShow { id } => {
             let (k, s, b) = task_op_summary(&TaskCommand::Show { id });
             ChatBlock::task_op(k, s, b)
@@ -3786,6 +3794,12 @@ impl App {
             } => {
                 self.handle_admin_task_list_json(idx, assignee, status, mine, unassigned, reply);
             }
+            RequestCmd::ReposListJson => {
+                self.reply_admin_repos_list_json(idx, reply);
+            }
+            RequestCmd::RepoDiffJson { repo_id, branch } => {
+                self.reply_admin_repo_diff_json(idx, &repo_id, &branch, reply);
+            }
             RequestCmd::TaskUpdate {
                 id,
                 title,
@@ -6059,6 +6073,116 @@ impl App {
             }
             Err(e) => {
                 let _ = reply.send(Response::err(format!("serialize tasks: {e}")));
+            }
+        }
+    }
+
+    fn handle_admin_repos_list_json(&self) -> Vec<WireRepository> {
+        self.repos
+            .iter()
+            .map(|repo| WireRepository {
+                id: repo.id.clone(),
+                path: repo.path.to_string_lossy().into_owned(),
+                default_branch: repo.default_branch.clone(),
+                worktrees: repo
+                    .worktrees
+                    .iter()
+                    .map(|worktree| WireWorktree {
+                        path: worktree.path.to_string_lossy().into_owned(),
+                        branch: worktree.branch.clone(),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    fn handle_admin_repo_diff_json(&self, repo_id: &str, branch: &str) -> WireDiffOutcome {
+        let Some(repo) = self.repos.iter().find(|repo| repo.id == repo_id) else {
+            return WireDiffOutcome::Error {
+                command: String::new(),
+                stderr: format!("unknown repo: {repo_id}"),
+            };
+        };
+
+        if !repo
+            .worktrees
+            .iter()
+            .any(|worktree| worktree.branch.as_deref() == Some(branch))
+        {
+            return WireDiffOutcome::Detached;
+        }
+
+        match compute_branch_diff(repo, branch) {
+            Ok(DiffOutcome::NoForwardChanges) => WireDiffOutcome::NoForwardChanges,
+            Ok(DiffOutcome::Diff {
+                lines,
+                truncated_at,
+            }) => {
+                let mut wire_lines = lines
+                    .into_iter()
+                    .map(|text| WireDiffLine {
+                        kind: repos::classify_diff_line(&text),
+                        text,
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(original_len) = truncated_at {
+                    let default_branch = repo.default_branch.as_deref().unwrap_or("<default>");
+                    let command = repos::diff_command_string(&repo.path, default_branch, branch);
+                    wire_lines.push(WireDiffLine {
+                        kind: WireDiffLineKind::Truncation,
+                        text: repos::diff_truncation_trailer(original_len, &command),
+                    });
+                }
+                WireDiffOutcome::Diff {
+                    lines: wire_lines,
+                    truncated_at,
+                }
+            }
+            Err(err) => WireDiffOutcome::Error {
+                command: err.command,
+                stderr: err.stderr,
+            },
+        }
+    }
+
+    fn reply_admin_repos_list_json(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+
+        match serde_json::to_value(self.handle_admin_repos_list_json()) {
+            Ok(v) => {
+                let _ = reply.send(Response::ok_data(v));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(format!("serialize repos: {e}")));
+            }
+        }
+    }
+
+    fn reply_admin_repo_diff_json(
+        &mut self,
+        sender_idx: usize,
+        repo_id: &str,
+        branch: &str,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+
+        match serde_json::to_value(self.handle_admin_repo_diff_json(repo_id, branch)) {
+            Ok(v) => {
+                let _ = reply.send(Response::ok_data(v));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(format!("serialize repo diff: {e}")));
             }
         }
     }

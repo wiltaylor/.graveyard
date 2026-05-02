@@ -7,6 +7,7 @@ pub mod health;
 pub mod inbox;
 pub mod instances;
 pub mod memory;
+pub mod repos;
 pub mod skills;
 pub mod tasks;
 pub mod team;
@@ -68,6 +69,12 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/instances/:id/tasks/:task_id/comments/:comment_id",
             patch(tasks::patch_comment).delete(tasks::delete_comment),
+        )
+        // Repos
+        .route("/instances/:id/repos", get(repos::list))
+        .route(
+            "/instances/:id/repos/:repo_id/diff",
+            post(repos::diff),
         )
         // Inbox
         .route("/instances/:id/inbox", get(inbox::list))

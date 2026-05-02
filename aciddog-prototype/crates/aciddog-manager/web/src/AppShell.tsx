@@ -13,6 +13,7 @@ import InboxView from "./components/InboxView";
 import InstanceDetail from "./components/InstanceDetail";
 import InstanceTree from "./components/InstanceTree";
 import MemoryView from "./components/MemoryView";
+import ReposView from "./components/ReposView";
 import SettingsTree, {
   type SettingsNodeId,
 } from "./components/SettingsTree";
@@ -48,6 +49,7 @@ type TabId =
   | "agents"
   | "tasks"
   | "workflows"
+  | "repos"
   | "cron"
   | "inbox"
   | "memory";
@@ -57,6 +59,7 @@ const TABS: TabItem<TabId>[] = [
   { id: "agents", label: "Agents", icon: "user" },
   { id: "tasks", label: "Tasks", icon: "check" },
   { id: "workflows", label: "Workflows", icon: "git-branch" },
+  { id: "repos", label: "Repos", icon: "git-branch" },
   { id: "cron", label: "Cron", icon: "clock" },
   { id: "inbox", label: "Inbox", icon: "bell" },
   { id: "memory", label: "Memory", icon: "database" },
@@ -427,6 +430,10 @@ export default function AppShell(props: Props): JSX.Element {
 
                 <Show when={activeTab() === "workflows"}>
                   <WorkflowsView instanceId={inst().id} />
+                </Show>
+
+                <Show when={activeTab() === "repos"}>
+                  <ReposView instanceId={inst().id} />
                 </Show>
 
                 <Show when={activeTab() === "cron"}>
