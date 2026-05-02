@@ -15368,7 +15368,7 @@ impl App {
         let width = self
             .layout
             .chat_history_inner
-            .map(|rect| rect.width.max(1))
+            .map(|rect| rect.width.saturating_sub(1).max(1))
             .unwrap_or(1);
         let Some(chat) = self.current_chat_mut() else {
             return;
@@ -17131,6 +17131,16 @@ mod tests {
         prefix + anchor.within as u32
     }
 
+    fn user_block_with_height(width: u16, target_height: u16) -> ChatBlock {
+        for len in 1..=(width as usize * target_height as usize * 2) {
+            let block = ChatBlock::user("x".repeat(len));
+            if block.height(width) == target_height {
+                return block;
+            }
+        }
+        panic!("could not build user block with height {target_height} at width {width}");
+    }
+
     fn last_block(chat: &AgentChat) -> &ChatBlock {
         chat.blocks.last().expect("no blocks")
     }
@@ -17745,16 +17755,22 @@ mod tests {
     fn scroll_wheel_in_chat_history_clears_sticky_bottom() {
         let mut app = fresh_app();
         app.layout.chat_history_inner = Some(Rect::new(0, 20, 80, 10));
+        let height_width = app
+            .layout
+            .chat_history_inner
+            .unwrap()
+            .width
+            .saturating_sub(1);
         let chat = app.current_chat_mut().unwrap();
-        chat.blocks.push(ChatBlock::user("first\n".repeat(5)));
+        chat.blocks.push(user_block_with_height(height_width, 5));
         chat.blocks.push(ChatBlock::user("second"));
-        let block0_h = chat.blocks[0].height(80);
+        let block0_h = chat.blocks[0].height(height_width);
         assert_eq!(block0_h, 5);
         chat.anchor = ScrollAnchor {
             block_idx: 1,
             within: 0,
         };
-        let before = flat_chat_anchor(&chat.blocks, chat.anchor, 80);
+        let before = flat_chat_anchor(&chat.blocks, chat.anchor, height_width);
         chat.sticky_bottom = true;
 
         app.handle_mouse(MouseEvent {
@@ -17769,7 +17785,7 @@ mod tests {
         assert_eq!(a.block_idx, 0);
         assert_eq!(a.within, block0_h.saturating_sub(3));
         assert_eq!(
-            flat_chat_anchor(&app.current_chat().unwrap().blocks, a, 80),
+            flat_chat_anchor(&app.current_chat().unwrap().blocks, a, height_width),
             before.saturating_sub(3)
         );
     }
@@ -17779,12 +17795,21 @@ mod tests {
         use ratatui::backend::TestBackend;
 
         let mut app = fresh_app();
+        app.layout.chat_history_inner = Some(Rect::new(0, 20, 80, 10));
+        let height_width = app
+            .layout
+            .chat_history_inner
+            .unwrap()
+            .width
+            .saturating_sub(1);
         let chat = app.current_chat_mut().unwrap();
         for _ in 0..5 {
-            chat.blocks.push(ChatBlock::user("line\n".repeat(10)));
+            chat.blocks.push(user_block_with_height(height_width, 10));
         }
         for (idx, block) in chat.blocks.iter().enumerate() {
-            assert_eq!(block.height(80), 10, "block {idx} height changed");
+            // NOTE: the renderer reserves column 0 for selection, so scroll
+            // assertions use the same post-shift width as LazyHeights.
+            assert_eq!(block.height(height_width), 10, "block {idx} height changed");
         }
         chat.anchor = ScrollAnchor::default();
         chat.sticky_bottom = false;
@@ -17806,10 +17831,18 @@ mod tests {
         let scrolls = [1, 3, 7, 1, 3, 7, 1, 3, 7, 1, 3, 7, 1, 3, 7, 1];
         for amount in scrolls {
             let before_anchor = app.current_chat().unwrap().anchor;
-            let before = flat_chat_anchor(&app.current_chat().unwrap().blocks, before_anchor, 80);
+            let before = flat_chat_anchor(
+                &app.current_chat().unwrap().blocks,
+                before_anchor,
+                height_width,
+            );
             app.scroll_up(amount);
             let after_anchor = app.current_chat().unwrap().anchor;
-            let after = flat_chat_anchor(&app.current_chat().unwrap().blocks, after_anchor, 80);
+            let after = flat_chat_anchor(
+                &app.current_chat().unwrap().blocks,
+                after_anchor,
+                height_width,
+            );
             assert_eq!(
                 after,
                 before.saturating_sub(amount as u32),

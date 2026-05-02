@@ -531,7 +531,14 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     // fills the viewport), so computing on demand keeps per-frame
     // work bounded by viewport height.
     let real_block_count = chat.blocks.len();
-    let mut heights = LazyHeights::new(&chat.blocks, inner.width, thinking_visible);
+    // Caller passes the post-selection-shift width: ChatBlock::render reserves
+    // col 0 for the selection indicator, and height arms subtract only their
+    // own per-variant overhead.
+    let mut heights = LazyHeights::new(
+        &chat.blocks,
+        inner.width.saturating_sub(1),
+        thinking_visible,
+    );
 
     reconcile_anchor(
         &mut chat.anchor,
@@ -678,7 +685,10 @@ fn render_channel_chat(f: &mut Frame, area: Rect, app: &mut App, idx: usize) -> 
     let mut window: Vec<(usize, u16)> = Vec::new();
     let mut total_rows: u32 = 0;
     for i in (0..ch.blocks.len()).rev() {
-        let h = ch.blocks[i].height(inner.width);
+        // Caller passes the post-selection-shift width: ChatBlock::render reserves
+        // col 0 for the selection indicator, and height arms subtract only their
+        // own per-variant overhead.
+        let h = ch.blocks[i].height(inner.width.saturating_sub(1));
         total_rows = total_rows.saturating_add(h as u32);
         window.push((i, h));
         if total_rows >= inner.height as u32 {

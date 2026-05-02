@@ -595,7 +595,10 @@ impl ChatBlock {
                 session_hash,
                 w,
             ),
-            Self::UserText { text } => wrapped_rows(text, w.saturating_sub(2)).max(1),
+            Self::UserText { text } => {
+                // render_prefix_text paints the prefix into the same body rect.
+                prefixed_text_rows("👤 ", text, w)
+            }
             Self::AiMarkdown { parsed, .. } => 1 + parsed_md_height(parsed, w),
             Self::BashTool {
                 command,
@@ -646,7 +649,10 @@ impl ChatBlock {
                 let subj = format!("{name} {input_pretty}");
                 tool_body_height(&subj, result_pretty, *collapsed, w)
             }
-            Self::System { text, .. } => wrapped_rows(text, w.saturating_sub(2)).max(1),
+            Self::System { text, .. } => {
+                // render_prefix_text paints the prefix into the same body rect.
+                prefixed_text_rows("⚙ ", text, w)
+            }
             Self::Mail {
                 direction,
                 counterpart,
@@ -658,8 +664,8 @@ impl ChatBlock {
                 tool_body_height(&subj, body, *collapsed, w)
             }
             Self::ChannelMessage { body, .. } => {
-                // Header row ("sender:" or "⭐ welcome") plus wrapped
-                // body indented two columns.
+                // Header row plus body rendered at body_rect.x + 2 with
+                // body_rect.width - 2; caller already applied the selection shift.
                 1 + wrapped_rows(body, w.saturating_sub(2)).max(1)
             }
             Self::WorkerSpawn {
@@ -692,7 +698,8 @@ impl ChatBlock {
                 tool_body_height(subject, &shown, *collapsed, w)
             }
             Self::AutomatonStdout { line } | Self::AutomatonStderr { line } => {
-                wrapped_rows(line, w.saturating_sub(2)).max(1)
+                // render_prefix_text paints the prefix into the same body rect.
+                prefixed_text_rows("» ", line, w)
             }
         }
     }
@@ -1295,26 +1302,21 @@ fn agent_info_height(
     // Row budget: detail(1..wrapped) + context(1..wrapped) + prompt
     // header(1) + optional prompt body.
     //
-    // `ChatBlock::render` always shifts its incoming rect by
-    // `+1/-1` to reserve column 0 for the selection indicator (even
-    // when not selected), so `render_agent_info` actually draws into a
-    // rect that's one narrower than the `width` we were given. Every
-    // wrap calc here has to subtract that extra column — otherwise a
-    // long line reports fewer rows than the render produces and the
-    // bottom of the block gets clipped (classic symptom: the closing
-    // `</instructions>` disappears).
+    // The caller passes the post-selection-shift width: ChatBlock::render
+    // reserves column 0 before dispatching here. Like tool_body_height, this
+    // arm only subtracts the per-row inset that render_agent_info adds.
     //
-    //   detail/context:   rect.x+2, width-2  → effective width-3
+    //   detail/context:   rect.x+2, width-2  → effective width-2
     //   prompt body:      Borders::LEFT inside rect.x+2, width-2
-    //                     → effective width-4 (extra -1 for the border)
+    //                     → effective width-3 (extra -1 for the border)
     let detail_text = agent_info_detail_line(tools, core, session_hash);
-    let detail_rows = wrapped_rows(&detail_text, width.saturating_sub(3)).max(1);
+    let detail_rows = wrapped_rows(&detail_text, width.saturating_sub(2)).max(1);
     let context_text = format_context_line(context_used, context_window);
-    let context_rows = wrapped_rows(&context_text, width.saturating_sub(3)).max(1);
+    let context_rows = wrapped_rows(&context_text, width.saturating_sub(2)).max(1);
     let prompt_body = if collapsed {
         0
     } else {
-        wrapped_rows(prompt, width.saturating_sub(4))
+        wrapped_rows(prompt, width.saturating_sub(3))
     };
     detail_rows + context_rows + 1 + prompt_body
 }
@@ -1464,22 +1466,28 @@ fn tool_body_height(_subject: &str, body: &str, collapsed: bool, width: u16) -> 
     if body.is_empty() {
         return header;
     }
-    let body_width = width.saturating_sub(2);
+    let body_width = width.saturating_sub(3);
     let body_lines: Vec<&str> = body.split('\n').collect();
-    let total_rows: u16 = body_lines
-        .iter()
-        .map(|l| wrapped_rows(l, body_width).max(1))
-        .sum();
-
     if collapsed {
-        let shown = total_rows.min(COLLAPSED_PREVIEW_ROWS);
-        let more = if total_rows > COLLAPSED_PREVIEW_ROWS {
-            1
+        let shown_rows: u16 = body_lines
+            .iter()
+            .take(COLLAPSED_PREVIEW_ROWS as usize)
+            .map(|l| wrapped_rows(l, body_width).max(1))
+            .sum();
+        let hidden = body_lines
+            .len()
+            .saturating_sub(COLLAPSED_PREVIEW_ROWS as usize);
+        let footer_rows = if hidden > 0 {
+            wrapped_rows(&format!("… ({hidden} more lines)"), body_width).max(1)
         } else {
             0
         };
-        header + shown + more
+        header + shown_rows + footer_rows
     } else {
+        let total_rows: u16 = body_lines
+            .iter()
+            .map(|l| wrapped_rows(l, body_width).max(1))
+            .sum();
         header + total_rows
     }
 }
@@ -1491,11 +1499,14 @@ fn parsed_md_height(parsed: &ParsedMd, width: u16) -> u16 {
             MdChunk::Lines(lines) => {
                 for line in lines {
                     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                    // render_parsed gives line chunks the full already-shifted rect width.
                     total = total.saturating_add(wrapped_rows(&text, width).max(1));
                 }
             }
             MdChunk::Fence { body, .. } => {
                 // header (1) + body rows + closing row (1) with copy button
+                // render_parsed allocates fence_rect height with this same
+                // width - 4 body estimate before render_fence draws borders.
                 let body_width = width.saturating_sub(4);
                 let body_rows: u16 = body
                     .split('\n')
@@ -1523,6 +1534,20 @@ fn wrapped_rows(text: &str, width: u16) -> u16 {
         .wrap(Wrap { trim: false })
         .line_count(width);
     (count as u16).max(1)
+}
+
+fn prefixed_text_rows(prefix: &str, text: &str, width: u16) -> u16 {
+    if width == 0 {
+        return 1;
+    }
+    let line = Line::from(vec![
+        Span::raw(prefix.to_string()),
+        Span::raw(text.to_string()),
+    ]);
+    (Paragraph::new(line)
+        .wrap(Wrap { trim: false })
+        .line_count(width) as u16)
+        .max(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -2357,6 +2382,205 @@ mod tests {
         assert_eq!(b.height(80), 1);
     }
 
+    fn rendered_row_count(buf: &Buffer, width: u16, height: u16) -> u16 {
+        (0..height)
+            .rev()
+            .find(|&y| {
+                (0..width).any(|x| {
+                    let symbol = buf[(x, y)].symbol();
+                    !symbol.trim().is_empty() && symbol != "│"
+                })
+            })
+            .map_or(0, |y| y + 1)
+    }
+
+    fn assert_height_matches_render(block: &ChatBlock, w: u16, label: &str) {
+        let h = block.height(w);
+        let render_width = w + 1;
+        let render_height = h + 8;
+        let area = Rect::new(0, 0, render_width, render_height);
+        let mut buf = Buffer::empty(area);
+        let mut buttons = Vec::new();
+
+        block.render(&mut buf, area, &mut buttons, 0, false);
+
+        let actual = rendered_row_count(&buf, render_width, render_height);
+        assert_eq!(
+            h, actual,
+            "{label}: height/render contract mismatch at w={w}: height={h}, rendered_rows={actual}"
+        );
+    }
+
+    #[test]
+    fn chat_block_height_matches_render_contract_mail_reproducer() {
+        let body = (0..5)
+            .map(|_| "M".repeat(77))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut block = ChatBlock::mail_sent("dev_lead", body);
+        block.toggle_collapsed();
+
+        assert_height_matches_render(&block, 79, "mail-reproducer");
+    }
+
+    fn long_lines(ch: char, line_len: usize, lines: usize) -> String {
+        (0..lines)
+            .map(|_| ch.to_string().repeat(line_len))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn bash_fixture(collapsed: bool) -> ChatBlock {
+        let mut block = ChatBlock::from_tool_use(
+            "Bash",
+            &json!({"command": "printf long-lines-for-contract"}),
+        );
+        block.apply_tool_result(&json!(long_lines('B', 58, 5)), false);
+        if !collapsed {
+            block.toggle_collapsed();
+        }
+        block
+    }
+
+    #[test]
+    fn chat_block_height_matches_render_contract_variant_matrix() {
+        let mut mail = ChatBlock::mail_sent("dev_lead", long_lines('M', 77, 5));
+        mail.toggle_collapsed();
+
+        let fixtures: Vec<(&str, ChatBlock, &[u16])> = vec![
+            (
+                "user-long-single-line",
+                ChatBlock::user("U".repeat(92)),
+                &[39, 79],
+            ),
+            (
+                "user-multi-line",
+                ChatBlock::user(long_lines('u', 45, 3)),
+                &[39, 79],
+            ),
+            ("system", ChatBlock::system_info("S".repeat(92)), &[39, 79]),
+            (
+                "automaton-stdout",
+                ChatBlock::AutomatonStdout {
+                    line: "O".repeat(92),
+                },
+                &[39, 79],
+            ),
+            (
+                "automaton-stderr",
+                ChatBlock::AutomatonStderr {
+                    line: "E".repeat(92),
+                },
+                &[39, 79],
+            ),
+            (
+                "ai-markdown-lines",
+                ChatBlock::ai_markdown("A".repeat(92)),
+                &[39, 79],
+            ),
+            (
+                "ai-markdown-fence",
+                ChatBlock::ai_markdown(format!("```text\n{}\n```", long_lines('F', 58, 3))),
+                &[39, 79],
+            ),
+            (
+                "channel-message",
+                ChatBlock::channel_message("agent", "C".repeat(92)),
+                &[39, 79],
+            ),
+            ("bash-collapsed", bash_fixture(true), &[39, 79]),
+            ("bash-expanded", bash_fixture(false), &[39, 79]),
+            ("mail-reproducer", mail, &[79]),
+            (
+                "agent-info-collapsed",
+                ChatBlock::AgentInfo {
+                    core: "core-".repeat(12),
+                    tools: vec!["Bash".into(), "Read".into(), "Edit".into()],
+                    prompt: long_lines('P', 58, 3),
+                    collapsed: true,
+                    context_used: None,
+                    context_window: Some(200_000),
+                    session_hash: "abc123def456".into(),
+                },
+                &[39, 79],
+            ),
+            (
+                "agent-info-expanded",
+                ChatBlock::AgentInfo {
+                    core: "core-".repeat(12),
+                    tools: vec!["Bash".into(), "Read".into(), "Edit".into()],
+                    prompt: long_lines('p', 58, 3),
+                    collapsed: false,
+                    context_used: None,
+                    context_window: Some(200_000),
+                    session_hash: "abc123def456".into(),
+                },
+                &[39, 79],
+            ),
+        ];
+
+        for (label, block, widths) in fixtures {
+            for w in widths {
+                assert_height_matches_render(&block, *w, label);
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_chat_blocks_do_not_overdraw_each_other() {
+        let w = 39;
+        let mut bash = bash_fixture(false);
+        let mut mail = ChatBlock::mail_sent("dev_lead", long_lines('E', 58, 4));
+        mail.toggle_collapsed();
+        if let ChatBlock::BashTool { stdout, .. } = &mut bash {
+            *stdout = long_lines('D', 58, 4);
+        }
+        let blocks = vec![
+            ChatBlock::user("A".repeat(92)),
+            ChatBlock::system_info("B".repeat(92)),
+            ChatBlock::channel_message("agent", "C".repeat(92)),
+            bash,
+            mail,
+            ChatBlock::ai_markdown("F".repeat(92)),
+            ChatBlock::AgentInfo {
+                core: "G".repeat(80),
+                tools: vec!["Read".into()],
+                prompt: long_lines('G', 58, 3),
+                collapsed: false,
+                context_used: None,
+                context_window: Some(200_000),
+                session_hash: "abc123def456".into(),
+            },
+        ];
+        let height: u16 = blocks.iter().map(|block| block.height(w)).sum::<u16>() + 8;
+        let area = Rect::new(0, 0, w + 1, height);
+        let mut buf = Buffer::empty(area);
+        let mut buttons = Vec::new();
+        let mut y = 0;
+        for (idx, block) in blocks.iter().enumerate() {
+            block.render(
+                &mut buf,
+                Rect::new(0, y, w + 1, height - y),
+                &mut buttons,
+                idx,
+                false,
+            );
+            y += block.height(w);
+        }
+
+        for row in 0..height {
+            let mut seen = std::collections::BTreeSet::new();
+            for x in 0..w + 1 {
+                for ch in buf[(x, row)].symbol().chars() {
+                    if ('A'..='G').contains(&ch) {
+                        seen.insert(ch);
+                    }
+                }
+            }
+            assert!(seen.len() <= 1, "row {row} contains sentinels {seen:?}");
+        }
+    }
+
     #[test]
     fn format_context_line_unknown_when_no_usage() {
         assert_eq!(format_context_line(None, Some(200_000)), "context: unknown");
@@ -2802,37 +3026,37 @@ mod tests {
         // diverges from the naïve estimate.
         for width in 40u16..=160 {
             let h = block.height(width);
+            let render_width = width + 1;
             // Render into a TALLER buffer than the block thinks it
             // needs — if ratatui wants more rows than h, we'll see
             // them spill past row h and know the height calc lied.
             let tall = h + 10;
-            let area = Rect::new(0, 0, width, tall);
+            let area = Rect::new(0, 0, render_width, tall);
             let mut buf = Buffer::empty(area);
             let mut btns = Vec::new();
             block.render(&mut buf, area, &mut btns, 0, false);
+            let rendered_rows = rendered_row_count(&buf, render_width, tall);
             let mut last_row_text = String::new();
-            let mut last_row_y = 0u16;
-            for y in (0..tall).rev() {
-                let mut line = String::new();
-                for x in 0..width {
-                    line.push_str(buf[(x, y)].symbol());
-                }
-                if !line.trim().is_empty() {
-                    last_row_text = line;
-                    last_row_y = y;
-                    break;
+            if rendered_rows > 0 {
+                for x in 0..render_width {
+                    let symbol = buf[(x, rendered_rows - 1)].symbol();
+                    if symbol != "│" {
+                        last_row_text.push_str(symbol);
+                    }
                 }
             }
             assert!(
                 last_row_text.contains("</instructions>"),
                 "width={width}: expected last non-empty row to contain \
-                 </instructions>, got row {last_row_y}={last_row_text:?} \
-                 (reported h={h}, tall={tall})"
+                 </instructions>, got row {}={last_row_text:?} \
+                 (reported h={h}, tall={tall})",
+                rendered_rows.saturating_sub(1)
             );
-            assert!(
-                last_row_y < h,
+            assert_eq!(
+                rendered_rows, h,
                 "width={width}: content overflowed computed height — \
-                 content at row {last_row_y} exceeds h={h}"
+                 rendered_rows={rendered_rows} \
+                 (reported h={h}, tall={tall})"
             );
         }
     }
