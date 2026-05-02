@@ -14,7 +14,9 @@ use super::cores_view::{agents_using_core, format_usage_cell, is_team_default, C
 use super::memory_view::{
     BankFocus, LinkPickerFocus, LinksOverlay, MemoryStage, NoteDetail, NoteField, NoteForm,
 };
-use super::tasks_view::{FormField, TaskForm, TaskFormKind, TaskRow, TasksPrompt, TasksScreen};
+use super::tasks_view::{
+    FormField, PopoverKind, TaskForm, TaskFormKind, TaskRow, TasksPrompt, TasksScreen,
+};
 
 /// Visible row count of an expanded Todos / Comments scroll box. The
 /// label is rendered separately and adds one more row.
@@ -37,7 +39,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.layout.chat_buttons.clear();
     app.layout.task_form_fields.clear();
     app.layout.task_form_todo_rows.clear();
+    app.layout.task_form_todos_section = None;
     app.layout.task_form_comment_rows.clear();
+    app.layout.task_form_comments_section = None;
     app.layout.task_form_picker_rows.clear();
     app.layout.task_form_picker_outer = None;
     app.layout.task_form_picker_buttons.clear();
@@ -736,6 +740,140 @@ fn blit_rows(src: &Buffer, y_from: u16, rows: u16, dst: &mut Buffer, dst_x: u16,
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod task_form_render_tests {
+    use super::*;
+    use crate::tasks::{Comment, Task, TaskStatus, Todo, TodoStatus};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn task_with_todos(count: usize) -> Task {
+        Task {
+            id: uuid::Uuid::new_v4(),
+            title: "task".into(),
+            description: None,
+            status: TaskStatus::Open,
+            assignee: None,
+            planned_assignee: None,
+            worktree: None,
+            created_by: "seed".into(),
+            created_at_secs: 0,
+            updated_at_secs: 0,
+            notes: vec![],
+            blocked_by: vec![],
+            todos: (0..count)
+                .map(|i| Todo {
+                    id: uuid::Uuid::new_v4(),
+                    body: format!("todo {i}"),
+                    status: TodoStatus::Pending,
+                    created_by: "seed".into(),
+                    created_at_secs: 0,
+                    updated_at_secs: 0,
+                })
+                .collect(),
+            comments: vec![],
+        }
+    }
+
+    fn task_with_comment(body: &str) -> Task {
+        let mut task = task_with_todos(0);
+        task.comments.push(Comment {
+            id: uuid::Uuid::new_v4(),
+            author: "alice".into(),
+            timestamp_secs: 0,
+            body: body.into(),
+        });
+        task
+    }
+
+    fn render_todos_section(count: usize) -> (Buffer, Rect) {
+        let task = task_with_todos(count);
+        let mut form = TaskForm::new_edit(&task);
+        form.todos_collapsed = false;
+        form.focused_field = FormField::Todos;
+        let mut terminal = Terminal::new(TestBackend::new(48, 10)).unwrap();
+        let mut section_rect = None;
+        terminal
+            .draw(|f| {
+                let mut todo_hit_rects = Vec::new();
+                let mut comment_hit_rects = Vec::new();
+                render_form_section_box(
+                    f,
+                    Rect::new(0, 0, 46, 8),
+                    1,
+                    &mut form,
+                    true,
+                    true,
+                    Some(&task),
+                    &mut todo_hit_rects,
+                    &mut comment_hit_rects,
+                    &mut section_rect,
+                );
+            })
+            .unwrap();
+        (terminal.backend().buffer().clone(), section_rect.unwrap())
+    }
+
+    fn right_inner_column_has_scrollbar(buf: &Buffer, section_rect: Rect) -> bool {
+        let block = Block::default().borders(Borders::ALL);
+        let inner = block.inner(section_rect);
+        let x = inner.x + inner.width.saturating_sub(1);
+        (inner.y..inner.y + inner.height).any(|y| {
+            let symbol = buf[(x, y)].symbol();
+            !symbol.trim().is_empty() && symbol != " "
+        })
+    }
+
+    fn buffer_text(buf: &Buffer) -> String {
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn todos_section_does_not_render_scrollbar_when_under_visible_rows() {
+        let (buf, rect) = render_todos_section(3);
+        assert!(!right_inner_column_has_scrollbar(&buf, rect));
+    }
+
+    #[test]
+    fn todos_section_renders_scrollbar_when_over_visible_rows() {
+        let (buf, rect) = render_todos_section(7);
+        assert!(right_inner_column_has_scrollbar(&buf, rect));
+    }
+
+    #[test]
+    fn todos_section_scrollbar_boundary_is_strictly_greater_than_visible() {
+        let (buf, rect) = render_todos_section(4);
+        assert!(!right_inner_column_has_scrollbar(&buf, rect));
+        let (buf, rect) = render_todos_section(5);
+        assert!(right_inner_column_has_scrollbar(&buf, rect));
+    }
+
+    #[test]
+    fn comment_popover_renders_title_and_multiline_body() {
+        let task = task_with_comment("first line\nsecond line");
+        let mut form = TaskForm::new_edit(&task);
+        form.open_popover(PopoverKind::Comment);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|f| {
+                render_section_popover(f, Rect::new(0, 0, 80, 24), &mut form, &task);
+            })
+            .unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Comment 1 of 1"));
+        assert!(text.contains("first line"));
+        assert!(text.contains("second line"));
+    }
+}
+
 /// Translate buttons registered against a scratch buffer at `(0, 0)` into
 /// frame coordinates at `(dst_x, dst_y)`, keeping only those whose row falls
 /// inside the visible slice `[skip_y, skip_y + visible_h)`.
@@ -1205,14 +1343,16 @@ fn render_tasks_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
             ),
         }
     } else if let Some(form) = app.tasks_screen.form.as_ref() {
-        let hint = if form.picker.is_some() {
+        let hint = if form.popover_open.is_some() {
+            "j/k scroll · Esc/Enter close"
+        } else if form.picker.is_some() {
             "↑/↓ nav · enter pick · esc cancel"
         } else if form.blocked_by_picker.is_some() {
             "↑/↓ nav · space toggle · enter save · esc cancel"
         } else if form.focused_field == FormField::Todos && !form.todos_collapsed {
-            "j/k cursor · space toggle done · a add · d delete · enter collapse · tab next · esc cancel"
+            "j/k cursor · space toggle done · a add · d delete · enter collapse · Enter: view · PgUp/PgDn: page · Home/End: jump · tab next · esc cancel"
         } else if form.focused_field == FormField::Comments && !form.comments_collapsed {
-            "j/k cursor · a add · e edit · d delete · enter collapse · tab next · esc cancel"
+            "j/k cursor · a add · e edit · d delete · enter collapse · Enter: view · PgUp/PgDn: page · Home/End: jump · tab next · esc cancel"
         } else {
             "tab/↓ next · shift-tab/↑ prev · enter submit (or open dropdown/list) · esc cancel"
         };
@@ -2889,6 +3029,8 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
     let mut hit_rects: Vec<(FormField, Rect)> = Vec::new();
     let mut todo_hit_rects: Vec<(uuid::Uuid, Rect)> = Vec::new();
     let mut comment_hit_rects: Vec<(uuid::Uuid, Rect)> = Vec::new();
+    let mut todos_section_rect: Option<Rect> = None;
+    let mut comments_section_rect: Option<Rect> = None;
 
     // Compute how many rows to reserve for the Description scroll
     // box. The box grows to use whatever vertical space is left
@@ -3062,6 +3204,11 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
                 task,
                 &mut todo_hit_rects,
                 &mut comment_hit_rects,
+                if is_todos {
+                    &mut todos_section_rect
+                } else {
+                    &mut comments_section_rect
+                },
             );
             y += rows_drawn;
         } else {
@@ -3187,6 +3334,8 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
     app.layout.task_form_fields = hit_rects;
     app.layout.task_form_todo_rows = todo_hit_rects;
     app.layout.task_form_comment_rows = comment_hit_rects;
+    app.layout.task_form_todos_section = todos_section_rect;
+    app.layout.task_form_comments_section = comments_section_rect;
 
     // Picker popup overlays the form when open. Single-select
     // (assignee/status) uses the dropdown picker; BlockedBy uses
@@ -3208,6 +3357,107 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
     {
         render_blocked_by_picker(f, area, app);
     }
+
+    let popover_task_id = app
+        .tasks_screen
+        .form
+        .as_ref()
+        .and_then(|form| match form.kind {
+            TaskFormKind::Edit(id) if form.popover_open.is_some() => Some(id),
+            _ => None,
+        });
+    if let Some(task_id) = popover_task_id {
+        if let Some(task) = all_tasks.iter().find(|t| t.id == task_id) {
+            if let Some(form) = app.tasks_screen.form.as_mut() {
+                render_section_popover(f, rect, form, task);
+            }
+        }
+    }
+}
+
+fn render_section_popover(
+    f: &mut Frame,
+    area: Rect,
+    form: &mut TaskForm,
+    task: &crate::tasks::Task,
+) {
+    let Some(kind) = form.popover_open else {
+        return;
+    };
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(50),
+            Constraint::Percentage(25),
+        ])
+        .split(area);
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(20),
+            Constraint::Percentage(60),
+            Constraint::Percentage(20),
+        ])
+        .split(vertical[1]);
+    let rect = horizontal[1];
+    if rect.width < 4 || rect.height < 4 {
+        return;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (title, body_text) = match kind {
+        PopoverKind::Todo => {
+            let len = task.todos.len();
+            let cursor = form.todos_cursor.min(len.saturating_sub(1));
+            let body = task
+                .todos
+                .get(cursor)
+                .map(|td| td.body.clone())
+                .unwrap_or_default();
+            (format!(" TODO {} of {} ", cursor + 1, len), body)
+        }
+        PopoverKind::Comment => {
+            let len = task.comments.len();
+            let cursor = form.comments_cursor.min(len.saturating_sub(1));
+            let body = task
+                .comments
+                .get(cursor)
+                .map(|c| {
+                    format!(
+                        "[{} · {}]\n\n{}",
+                        super::app::format_age(now, c.timestamp_secs),
+                        c.author,
+                        c.body
+                    )
+                })
+                .unwrap_or_default();
+            (format!(" Comment {} of {} ", cursor + 1, len), body)
+        }
+    };
+
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_bottom(" j/k scroll · Esc/Enter close ")
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let paragraph = Paragraph::new(body_text.clone()).wrap(Wrap { trim: false });
+    form.last_popover_body_height = inner.height;
+    form.last_popover_max_scroll = paragraph
+        .line_count(inner.width)
+        .saturating_sub(inner.height as usize)
+        .min(u16::MAX as usize) as u16;
+    if form.popover_scroll > form.last_popover_max_scroll {
+        form.popover_scroll = form.last_popover_max_scroll;
+    }
+    f.render_widget(paragraph.scroll((form.popover_scroll, 0)), inner);
 }
 
 fn render_dropdown_picker(f: &mut Frame, area: Rect, app: &mut App) {
@@ -3450,6 +3700,7 @@ fn render_form_section_box(
     task: Option<&crate::tasks::Task>,
     todo_hit_rects: &mut Vec<(uuid::Uuid, Rect)>,
     comment_hit_rects: &mut Vec<(uuid::Uuid, Rect)>,
+    section_rect: &mut Option<Rect>,
 ) -> u16 {
     let collapsed = if is_todos {
         form.todos_collapsed
@@ -3511,6 +3762,10 @@ fn render_form_section_box(
         .border_style(Style::default().fg(border_color));
     let box_inner = block.inner(rect);
     f.render_widget(block, rect);
+    form.last_section_visible = box_inner.height;
+    if focused {
+        *section_rect = Some(rect);
+    }
 
     // Build per-row data: (item_id, line content). Empty section gets
     // a single placeholder line with a nil id (never used as a hit
@@ -3579,9 +3834,19 @@ fn render_form_section_box(
         *scroll_field = max_scroll;
     }
     let scroll = *scroll_field as usize;
+    let total = rows.len();
+    let (content_inner, scrollbar_area) = if total > visible {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(box_inner);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (box_inner, None)
+    };
 
     if rows.is_empty() {
-        let line_rect = Rect::new(box_inner.x, box_inner.y, box_inner.width, 1);
+        let line_rect = Rect::new(content_inner.x, content_inner.y, content_inner.width, 1);
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "(none)",
@@ -3597,7 +3862,12 @@ fn render_form_section_box(
             let Some((item_id, line)) = rows.get(item_idx) else {
                 break;
             };
-            let row_rect = Rect::new(box_inner.x, box_inner.y + vrow as u16, box_inner.width, 1);
+            let row_rect = Rect::new(
+                content_inner.x,
+                content_inner.y + vrow as u16,
+                content_inner.width,
+                1,
+            );
             let is_cursor = focused && item_idx == cursor_idx;
             let style = if is_cursor {
                 Style::default()
@@ -3617,6 +3887,16 @@ fn render_form_section_box(
                 comment_hit_rects.push((*item_id, row_rect));
             }
         }
+    }
+
+    if let Some(scrollbar_area) = scrollbar_area {
+        let mut sb_state = ScrollbarState::new(total)
+            .viewport_content_length(visible)
+            .position(scroll);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        f.render_stateful_widget(scrollbar, scrollbar_area, &mut sb_state);
     }
 
     total_rows

@@ -35,8 +35,8 @@ use crate::usage;
 
 use super::cores_view::{CoresScreen, UsageEvent};
 use super::tasks_view::{
-    ChildOverlay, ChildPromptKind, FormField, TaskForm, TaskFormKind, TasksPrompt, TasksScreen,
-    OPERATOR,
+    ChildOverlay, ChildPromptKind, FormField, PopoverKind, TaskForm, TaskFormKind, TasksPrompt,
+    TasksScreen, OPERATOR,
 };
 
 /// True when a child-overlay prompt is a yes/no confirmation rather
@@ -1531,9 +1531,15 @@ pub struct LayoutRects {
     /// edit form. `Uuid` is the todo id; clicking the row toggles its
     /// status between Pending and Completed.
     pub task_form_todo_rows: Vec<(uuid::Uuid, Rect)>,
+    /// Outer rect of the expanded TODOs section box when it is the
+    /// focused task-form field. Used for mouse-wheel hit-testing.
+    pub task_form_todos_section: Option<Rect>,
     /// Per-row hit rects for the expanded Comments section. Clicking
     /// the row sets `comments_cursor` to that index.
     pub task_form_comment_rows: Vec<(uuid::Uuid, Rect)>,
+    /// Outer rect of the expanded Comments section box when it is the
+    /// focused task-form field. Used for mouse-wheel hit-testing.
+    pub task_form_comments_section: Option<Rect>,
     /// When a dropdown picker is open, each visible option gets a
     /// clickable rect here. Populated by `render_dropdown_picker`
     /// and consumed by the mouse handler.
@@ -12315,6 +12321,11 @@ impl App {
             return;
         };
 
+        if form.popover_open.is_some() {
+            Self::handle_task_form_popover_key(form, code);
+            return;
+        }
+
         // Single-select dropdown picker (assignee / status) takes
         // all keyboard input while open.
         if form.picker.is_some() {
@@ -12350,6 +12361,14 @@ impl App {
         let on_todos = focused == FormField::Todos;
         let on_comments = focused == FormField::Comments;
         let on_section = on_todos || on_comments;
+        let (todos_len, comments_len) = match form.kind {
+            TaskFormKind::Edit(id) => self
+                .tasks
+                .get(id)
+                .map(|t| (t.todos.len(), t.comments.len()))
+                .unwrap_or((0, 0)),
+            TaskFormKind::Add => (0, 0),
+        };
 
         // Description has its own text-editor key map.
         if on_description {
@@ -12400,6 +12419,40 @@ impl App {
 
         match code {
             KeyCode::Esc => self.tasks_screen.close_modal(),
+            KeyCode::PageUp if on_todos && !form.todos_collapsed && form.popover_open.is_none() => {
+                form.page_form_section_cursor(-1, PopoverKind::Todo, todos_len);
+            }
+            KeyCode::PageDown
+                if on_todos && !form.todos_collapsed && form.popover_open.is_none() =>
+            {
+                form.page_form_section_cursor(1, PopoverKind::Todo, todos_len);
+            }
+            KeyCode::Home if on_todos && !form.todos_collapsed && form.popover_open.is_none() => {
+                form.jump_form_section_cursor(false, PopoverKind::Todo, todos_len);
+            }
+            KeyCode::End if on_todos && !form.todos_collapsed && form.popover_open.is_none() => {
+                form.jump_form_section_cursor(true, PopoverKind::Todo, todos_len);
+            }
+            KeyCode::PageUp
+                if on_comments && !form.comments_collapsed && form.popover_open.is_none() =>
+            {
+                form.page_form_section_cursor(-1, PopoverKind::Comment, comments_len);
+            }
+            KeyCode::PageDown
+                if on_comments && !form.comments_collapsed && form.popover_open.is_none() =>
+            {
+                form.page_form_section_cursor(1, PopoverKind::Comment, comments_len);
+            }
+            KeyCode::Home
+                if on_comments && !form.comments_collapsed && form.popover_open.is_none() =>
+            {
+                form.jump_form_section_cursor(false, PopoverKind::Comment, comments_len);
+            }
+            KeyCode::End
+                if on_comments && !form.comments_collapsed && form.popover_open.is_none() =>
+            {
+                form.jump_form_section_cursor(true, PopoverKind::Comment, comments_len);
+            }
             // Tab/Down → next control; Shift-Tab/Up → previous. The
             // Todos / Comments sections claim j/k for inner scroll
             // when expanded, but always yield Tab and Up/Down to the
@@ -12410,7 +12463,13 @@ impl App {
             KeyCode::Enter => match focused {
                 FormField::Ok => self.submit_task_form(),
                 FormField::Cancel => self.tasks_screen.close_modal(),
+                FormField::Todos if !form.todos_collapsed && todos_len > 0 => {
+                    form.open_popover(PopoverKind::Todo);
+                }
                 FormField::Todos => form.toggle_todos_collapsed(),
+                FormField::Comments if !form.comments_collapsed && comments_len > 0 => {
+                    form.open_popover(PopoverKind::Comment);
+                }
                 FormField::Comments => form.toggle_comments_collapsed(),
                 FormField::Approve => {
                     if let TaskFormKind::Edit(id) = form.kind {
@@ -12475,6 +12534,28 @@ impl App {
             }
             KeyCode::Char(c) if !on_dropdown && !on_button && !on_blocked_by && !on_section => {
                 form.field_mut(focused).push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_task_form_popover_key(form: &mut TaskForm, code: KeyCode) {
+        // TODO: press 'e' to edit
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => form.close_popover(),
+            KeyCode::Char('j') | KeyCode::Down => {
+                form.scroll_popover(1, form.last_popover_max_scroll);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                form.scroll_popover(-1, form.last_popover_max_scroll);
+            }
+            KeyCode::PageDown => {
+                let delta = i32::from(form.last_popover_body_height.max(1));
+                form.scroll_popover(delta, form.last_popover_max_scroll);
+            }
+            KeyCode::PageUp => {
+                let delta = i32::from(form.last_popover_body_height.max(1));
+                form.scroll_popover(-delta, form.last_popover_max_scroll);
             }
             _ => {}
         }
@@ -13689,6 +13770,9 @@ impl App {
                 }
             }
             MouseEventKind::ScrollUp => {
+                if self.scroll_task_form_section_at(pos, -1) {
+                    return;
+                }
                 if self.active_view == ActiveView::Inbox && self.mouse_in_inbox_detail_zone(pos) {
                     self.inbox_screen.detail_scroll =
                         self.inbox_screen.detail_scroll.saturating_sub(3);
@@ -13724,6 +13808,9 @@ impl App {
                 }
             }
             MouseEventKind::ScrollDown => {
+                if self.scroll_task_form_section_at(pos, 1) {
+                    return;
+                }
                 if self.active_view == ActiveView::Inbox && self.mouse_in_inbox_detail_zone(pos) {
                     let max = self.inbox_detail_max_scroll();
                     self.inbox_screen.detail_scroll =
@@ -13763,6 +13850,47 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn scroll_task_form_section_at(&mut self, pos: (u16, u16), delta: i32) -> bool {
+        if self.active_view != ActiveView::Tasks {
+            return false;
+        }
+        let Some(form) = self.tasks_screen.form.as_ref() else {
+            return false;
+        };
+        let TaskFormKind::Edit(task_id) = form.kind else {
+            return false;
+        };
+        let Some(task) = self.tasks.get(task_id) else {
+            return false;
+        };
+        let hit = if !form.todos_collapsed
+            && self
+                .layout
+                .task_form_todos_section
+                .map(|r| rect_contains(r, pos))
+                .unwrap_or(false)
+        {
+            Some((PopoverKind::Todo, task.todos.len()))
+        } else if !form.comments_collapsed
+            && self
+                .layout
+                .task_form_comments_section
+                .map(|r| rect_contains(r, pos))
+                .unwrap_or(false)
+        {
+            Some((PopoverKind::Comment, task.comments.len()))
+        } else {
+            None
+        };
+        let Some((kind, len)) = hit else {
+            return false;
+        };
+        if let Some(form) = self.tasks_screen.form.as_mut() {
+            form.scroll_form_section_viewport(delta, kind, len);
+        }
+        true
     }
 
     /// Returns the scrollable "zone" the cursor is in, if any. Used by
@@ -22527,6 +22655,14 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
             app.tasks.get(task_id).unwrap().todos[1].status,
             crate::tasks::TodoStatus::Pending
         );
+    }
+
+    #[test]
+    fn esc_closes_task_form_popover() {
+        let mut form = TaskForm::new_add();
+        form.open_popover(PopoverKind::Comment);
+        App::handle_task_form_popover_key(&mut form, KeyCode::Esc);
+        assert_eq!(form.popover_open, None);
     }
 
     #[test]

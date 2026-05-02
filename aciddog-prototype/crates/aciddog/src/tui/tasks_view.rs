@@ -74,6 +74,12 @@ pub enum TaskFormKind {
     Edit(Uuid),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PopoverKind {
+    Todo,
+    Comment,
+}
+
 /// Fields (and buttons) in the modal form, laid out in tab order.
 /// Buttons participate in Tab cycling and can also be clicked; they
 /// carry no editable value.
@@ -268,6 +274,19 @@ pub struct TaskForm {
     /// `a`/`e`/`d` and mouse clicks. Clamped against the live comment
     /// count each render.
     pub comments_cursor: usize,
+    /// Full-body preview popover for the cursor-selected TODO or
+    /// comment row.
+    pub popover_open: Option<PopoverKind>,
+    /// Vertical scroll offset inside the full-body preview popover.
+    pub popover_scroll: u16,
+    /// Last rendered visible row count for the expanded TODOs /
+    /// Comments section box. Key handlers fall back to 1 before the
+    /// first render.
+    pub last_section_visible: u16,
+    /// Last rendered body height inside the preview popover.
+    pub last_popover_body_height: u16,
+    /// Last computed max scroll for the preview popover body.
+    pub last_popover_max_scroll: u16,
     /// Unused sink returned by `field_mut` for button variants so
     /// the signature can stay `&mut String` without panics. Key
     /// handlers gate character input on `FormField::is_button` so
@@ -308,6 +327,11 @@ impl TaskForm {
             comments_scroll: 0,
             todos_cursor: 0,
             comments_cursor: 0,
+            popover_open: None,
+            popover_scroll: 0,
+            last_section_visible: 0,
+            last_popover_body_height: 0,
+            last_popover_max_scroll: 0,
             _button_sink: String::new(),
             show_approval_buttons: false,
         }
@@ -344,6 +368,11 @@ impl TaskForm {
             comments_scroll: 0,
             todos_cursor: 0,
             comments_cursor: 0,
+            popover_open: None,
+            popover_scroll: 0,
+            last_section_visible: 0,
+            last_popover_body_height: 0,
+            last_popover_max_scroll: 0,
             _button_sink: String::new(),
             show_approval_buttons,
         }
@@ -537,12 +566,76 @@ impl TaskForm {
         }
     }
 
+    pub fn open_popover(&mut self, kind: PopoverKind) {
+        self.popover_open = Some(kind);
+        self.popover_scroll = 0;
+    }
+
+    pub fn close_popover(&mut self) {
+        self.popover_open = None;
+        self.popover_scroll = 0;
+    }
+
+    pub fn scroll_popover(&mut self, delta: i32, max: u16) {
+        if delta >= 0 {
+            self.popover_scroll = self.popover_scroll.saturating_add(delta as u16).min(max);
+        } else {
+            self.popover_scroll = self.popover_scroll.saturating_sub((-delta) as u16);
+        }
+    }
+
+    pub fn page_form_section_cursor(
+        &mut self,
+        delta_pages: i32,
+        kind: PopoverKind,
+        list_len: usize,
+    ) {
+        if list_len == 0 {
+            match kind {
+                PopoverKind::Todo => self.todos_cursor = 0,
+                PopoverKind::Comment => self.comments_cursor = 0,
+            }
+            return;
+        }
+        let visible = self.last_section_visible.max(1) as i32;
+        let delta = visible.saturating_mul(delta_pages);
+        let max = list_len.saturating_sub(1) as i32;
+        let cursor = match kind {
+            PopoverKind::Todo => &mut self.todos_cursor,
+            PopoverKind::Comment => &mut self.comments_cursor,
+        };
+        *cursor = ((*cursor as i32) + delta).clamp(0, max) as usize;
+    }
+
+    pub fn jump_form_section_cursor(&mut self, end: bool, kind: PopoverKind, list_len: usize) {
+        let target = if end { list_len.saturating_sub(1) } else { 0 };
+        match kind {
+            PopoverKind::Todo => self.todos_cursor = target,
+            PopoverKind::Comment => self.comments_cursor = target,
+        }
+    }
+
+    pub fn scroll_form_section_viewport(&mut self, delta: i32, kind: PopoverKind, list_len: usize) {
+        let visible = self.last_section_visible.max(1) as usize;
+        let max = list_len.saturating_sub(visible) as u16;
+        let scroll = match kind {
+            PopoverKind::Todo => &mut self.todos_scroll,
+            PopoverKind::Comment => &mut self.comments_scroll,
+        };
+        if delta >= 0 {
+            *scroll = scroll.saturating_add(delta as u16).min(max);
+        } else {
+            *scroll = scroll.saturating_sub((-delta) as u16);
+        }
+    }
+
     /// Flip the TODOs collapse flag. Resets the section's scroll +
     /// cursor so re-expanding always lands at the top.
     pub fn toggle_todos_collapsed(&mut self) {
         self.todos_collapsed = !self.todos_collapsed;
         self.todos_scroll = 0;
         self.todos_cursor = 0;
+        self.close_popover();
     }
 
     /// Flip the Comments collapse flag. Resets the section's scroll
@@ -551,6 +644,7 @@ impl TaskForm {
         self.comments_collapsed = !self.comments_collapsed;
         self.comments_scroll = 0;
         self.comments_cursor = 0;
+        self.close_popover();
     }
 
     /// Move the TODOs cursor by `delta` rows, clamped to `len`. The
@@ -1693,6 +1787,81 @@ mod tests {
     }
 
     #[test]
+    fn form_section_page_home_end_helpers_clamp_cursor() {
+        let mut form = TaskForm::new_add();
+        form.last_section_visible = 4;
+        form.page_form_section_cursor(1, PopoverKind::Todo, 7);
+        assert_eq!(form.todos_cursor, 4);
+        form.page_form_section_cursor(1, PopoverKind::Todo, 7);
+        assert_eq!(form.todos_cursor, 6);
+        form.page_form_section_cursor(-1, PopoverKind::Todo, 7);
+        assert_eq!(form.todos_cursor, 2);
+        form.jump_form_section_cursor(false, PopoverKind::Todo, 7);
+        assert_eq!(form.todos_cursor, 0);
+        form.jump_form_section_cursor(true, PopoverKind::Todo, 7);
+        assert_eq!(form.todos_cursor, 6);
+    }
+
+    #[test]
+    fn form_section_viewport_scroll_clamps_without_moving_cursor() {
+        let mut form = TaskForm::new_add();
+        form.last_section_visible = 4;
+        form.todos_cursor = 5;
+        form.scroll_form_section_viewport(-1, PopoverKind::Todo, 7);
+        assert_eq!(form.todos_scroll, 0);
+        form.scroll_form_section_viewport(999, PopoverKind::Todo, 7);
+        assert_eq!(form.todos_scroll, 3);
+        assert_eq!(form.todos_cursor, 5);
+    }
+
+    #[test]
+    fn popover_open_close_round_trip_resets_scroll() {
+        let mut form = TaskForm::new_add();
+        assert_eq!(form.popover_open, None);
+        form.open_popover(PopoverKind::Todo);
+        assert_eq!(form.popover_open, Some(PopoverKind::Todo));
+        form.popover_scroll = 4;
+        form.close_popover();
+        assert_eq!(form.popover_open, None);
+        assert_eq!(form.popover_scroll, 0);
+    }
+
+    #[test]
+    fn toggling_todos_section_closes_popover() {
+        let mut form = TaskForm::new_add();
+        form.open_popover(PopoverKind::Todo);
+        form.popover_scroll = 5;
+        form.toggle_todos_collapsed();
+        assert_eq!(form.popover_open, None);
+        assert_eq!(form.popover_scroll, 0);
+    }
+
+    #[test]
+    fn popover_scroll_clamps_to_zero_and_max() {
+        let mut form = TaskForm::new_add();
+        form.scroll_popover(-1, 10);
+        assert_eq!(form.popover_scroll, 0);
+        form.scroll_popover(999, 10);
+        assert_eq!(form.popover_scroll, 10);
+    }
+
+    #[test]
+    fn popover_kind_follows_focused_section_at_open_time() {
+        let mut form = TaskForm::new_add();
+        form.focused_field = FormField::Todos;
+        if form.focused_field == FormField::Todos {
+            form.open_popover(PopoverKind::Todo);
+        }
+        assert_eq!(form.popover_open, Some(PopoverKind::Todo));
+        form.close_popover();
+        form.focused_field = FormField::Comments;
+        if form.focused_field == FormField::Comments {
+            form.open_popover(PopoverKind::Comment);
+        }
+        assert_eq!(form.popover_open, Some(PopoverKind::Comment));
+    }
+
+    #[test]
     fn blocked_by_picker_filters_to_active_tasks() {
         let mut s = TaskStore::new();
         let a = s
@@ -1846,6 +2015,11 @@ mod tests {
                 comments_scroll: 0,
                 todos_cursor: 0,
                 comments_cursor: 0,
+                popover_open: None,
+                popover_scroll: 0,
+                last_section_visible: 0,
+                last_popover_body_height: 0,
+                last_popover_max_scroll: 0,
                 _button_sink: String::new(),
                 show_approval_buttons: false,
             }),
