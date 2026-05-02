@@ -93,12 +93,12 @@ manager-build: manager-frontend-build
 
 # Type-check the manager crate
 [group('manager')]
-manager-check:
+manager-check: manager-frontend-build
 	cargo check --manifest-path {{MANAGER_MANIFEST}} --all-targets
 
 # Lint the manager crate with warnings-as-errors
 [group('manager')]
-manager-lint:
+manager-lint: manager-frontend-build
 	cargo clippy --manifest-path {{MANAGER_MANIFEST}} --all-targets -- -D warnings
 
 # Format-check the manager crate
@@ -113,7 +113,7 @@ manager-fmt:
 
 # Run the manager's test suite
 [group('manager')]
-manager-test:
+manager-test: manager-frontend-build
 	cargo test --manifest-path {{MANAGER_MANIFEST}}
 
 # Launch the manager on 127.0.0.1:7000 with a deterministic test/test admin
