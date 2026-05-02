@@ -861,13 +861,11 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             let (k, s, b) = task_op_summary(&TaskCommand::Remove { id });
             ChatBlock::task_op(k, s, b)
         }
-        RequestCmd::TaskReject { id, reason } => {
-            ChatBlock::task_op(
-                crate::tui::blocks::TaskOpKind::Update,
-                format!("Reject: {}", short_id(id)),
-                reason,
-            )
-        }
+        RequestCmd::TaskReject { id, reason } => ChatBlock::task_op(
+            crate::tui::blocks::TaskOpKind::Update,
+            format!("Reject: {}", short_id(id)),
+            reason,
+        ),
         RequestCmd::TaskTake => {
             let (k, s, b) = task_op_summary(&TaskCommand::Take);
             ChatBlock::task_op(k, s, b)
@@ -1594,6 +1592,7 @@ pub struct AgentChat {
     /// Priority queue: user-typed prompts. Unbounded so a busy agent can
     /// never make the TUI drop keystrokes. Drained before `agent_tx`.
     pub user_tx: Option<mpsc::UnboundedSender<String>>,
+    pub(super) ever_prompted: bool,
     /// Inter-agent messages queued through the IPC socket. Bounded so a
     /// runaway sender can't exhaust memory; the socket handler awaits
     /// when full.
@@ -1839,11 +1838,7 @@ impl AgentChat {
     /// `system_prompt` is the value returned by the core's
     /// `system_prompt()` accessor. Empty / `None` skips the
     /// SystemPrompt line entirely.
-    pub(super) fn open_session_log(
-        &mut self,
-        cwd: &std::path::Path,
-        system_prompt: Option<&str>,
-    ) {
+    pub(super) fn open_session_log(&mut self, cwd: &std::path::Path, system_prompt: Option<&str>) {
         if self.session_hash.is_empty() {
             return;
         }
@@ -1866,9 +1861,7 @@ impl AgentChat {
         // Cache the system-prompt text so the roll path can re-emit
         // it at the head of every subsequent session file without
         // re-fetching it from the (already-moved) core.
-        let cached = system_prompt
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
+        let cached = system_prompt.filter(|s| !s.is_empty()).map(str::to_string);
         self.system_prompt_text = cached.clone();
         self.seed_log_with_initial_state(cached.as_deref());
     }
@@ -2617,6 +2610,7 @@ pub(super) fn make_agent_chat(config: &AciddogConfig, agent: &crate::config::Age
     AgentChat {
         blocks: vec![info],
         sticky_bottom: true,
+        ever_prompted: false,
         display_name: agent.id.clone(),
         context_window,
         context_usage_mode,
@@ -2679,6 +2673,7 @@ pub(super) fn make_automaton_chat(automaton: &crate::config::Automaton) -> Agent
     AgentChat {
         blocks: vec![info],
         sticky_bottom: true,
+        ever_prompted: false,
         display_name: automaton.id.clone(),
         kind: ChatKind::Automaton,
         session_started,
@@ -3074,6 +3069,7 @@ impl App {
         if let Some(tx) = &chat.user_tx {
             match tx.send(content) {
                 Ok(()) => {
+                    chat.ever_prompted = true;
                     chat.begin_working(pool_len);
                 }
                 Err(_closed) => {
@@ -4138,6 +4134,7 @@ impl App {
             blocks: vec![info_block],
             sticky_bottom: true,
             user_tx: Some(user_tx.clone()),
+            ever_prompted: false,
             agent_tx: Some(agent_tx),
             cancel_tx: Some(cancel_tx),
             session_id: Some(session_id),
@@ -4173,6 +4170,8 @@ impl App {
         if user_tx.send(task.clone()).is_err() {
             // Should not happen — we just created the channel.
             tracing::warn!(%display_name, "user_tx closed before initial task could be sent");
+        } else if let Some(chat) = self.chats.get_mut(new_idx) {
+            chat.ever_prompted = true;
         }
 
         // Workers never participate in channels. Give `run_core` a
@@ -5408,7 +5407,10 @@ impl App {
         };
         let who = sender_chat.display_name.clone();
 
-        let parsed_status = match status.as_deref().map(crate::tasks::TaskStatus::parse).transpose()
+        let parsed_status = match status
+            .as_deref()
+            .map(crate::tasks::TaskStatus::parse)
+            .transpose()
         {
             Ok(v) => v,
             Err(e) => {
@@ -5438,21 +5440,23 @@ impl App {
                 )));
                 return;
             }
-            let task_id = match self.tasks.add_planning(
-                title,
-                description,
-                target,
-                who.clone(),
-                blocked_by,
-            ) {
-                Ok(t) => t.id,
-                Err(e) => {
-                    let _ = reply.send(Response::err(e.to_string()));
-                    return;
-                }
-            };
+            let task_id =
+                match self
+                    .tasks
+                    .add_planning(title, description, target, who.clone(), blocked_by)
+                {
+                    Ok(t) => t.id,
+                    Err(e) => {
+                        let _ = reply.send(Response::err(e.to_string()));
+                        return;
+                    }
+                };
             // Notify the human approver via the user inbox.
-            let title_clone = self.tasks.get(task_id).map(|t| t.title.clone()).unwrap_or_default();
+            let title_clone = self
+                .tasks
+                .get(task_id)
+                .map(|t| t.title.clone())
+                .unwrap_or_default();
             let short = task_id.to_string();
             let short = short.get(..8).unwrap_or(&short);
             self.push_user_inbox(
@@ -5932,13 +5936,7 @@ impl App {
             if let Some(kind) = self.classify_assignee(&new_assignee) {
                 let title_clone = self.tasks.get(id).map(|t| t.title.clone());
                 if let Some(title_clone) = title_clone {
-                    self.dispatch_assignment_notice(
-                        kind,
-                        &new_assignee,
-                        id,
-                        &title_clone,
-                        &who,
-                    );
+                    self.dispatch_assignment_notice(kind, &new_assignee, id, &title_clone, &who);
                 }
             }
         }
@@ -7536,21 +7534,32 @@ impl App {
     /// task-assignment notifications stay on the passive
     /// `notify_assignee` path so we don't wake every sleeping worker
     /// on every reassignment.
-    pub(crate) fn deliver_active_user_message(
-        &mut self,
-        to: &str,
-        body: String,
-    ) -> bool {
+    pub(crate) fn deliver_active_user_message(&mut self, to: &str, body: String) -> bool {
         let Some(idx) = self.chats.iter().position(|c| c.display_name == to) else {
             return false;
         };
         if let Some(tx) = self.chats[idx].user_tx.clone() {
             if tx.send(body.clone()).is_ok() {
+                self.chats[idx].ever_prompted = true;
                 return true;
             }
         }
         self.chats[idx].push_block(ChatBlock::system_info(body));
         false
+    }
+
+    fn wake_via_user_tx(&mut self, idx: usize, body: String) -> bool {
+        if let Some(tx) = self.chats[idx].user_tx.clone() {
+            match tx.send(body) {
+                Ok(()) => {
+                    self.chats[idx].ever_prompted = true;
+                    true
+                }
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
     }
 
     /// Push a passive `system_info` block into the assignee's chat so
@@ -7568,12 +7577,19 @@ impl App {
         let short = task_id.to_string();
         let short = &short[..8.min(short.len())];
         let msg = format!("Task {short} {context}: {title}");
-        if let Some(chat) = self
+        if let Some(idx) = self
             .chats
-            .iter_mut()
-            .find(|c| c.display_name == assignee_display)
+            .iter()
+            .position(|c| c.display_name == assignee_display)
         {
-            chat.push_block(ChatBlock::system_info(msg));
+            let should_wake = {
+                let chat = &mut self.chats[idx];
+                chat.push_block(ChatBlock::system_info(msg.clone()));
+                chat.user_tx.is_some() && !chat.ever_prompted
+            };
+            if should_wake {
+                self.wake_via_user_tx(idx, msg);
+            }
         }
     }
 
@@ -7600,7 +7616,8 @@ impl App {
         let title = task.title.clone();
         let short = task_id.to_string();
         let short = short.get(..8).unwrap_or(&short).to_string();
-        let body = format!("Task {short} planning task got a comment from {comment_author}: {title}");
+        let body =
+            format!("Task {short} planning task got a comment from {comment_author}: {title}");
         if creator == crate::config::USER_INBOX_ID {
             // Edge case: user proposed the plan to themselves.
             self.push_user_inbox(comment_author.to_string(), body);
@@ -7622,7 +7639,11 @@ impl App {
         approver: &str,
     ) -> Result<String, crate::tasks::TaskError> {
         let target = self.tasks.approve(task_id, approver)?;
-        let title = self.tasks.get(task_id).map(|t| t.title.clone()).unwrap_or_default();
+        let title = self
+            .tasks
+            .get(task_id)
+            .map(|t| t.title.clone())
+            .unwrap_or_default();
         let short = task_id.to_string();
         let short = short.get(..8).unwrap_or(&short).to_string();
         let msg = format!(
@@ -7637,9 +7658,7 @@ impl App {
                     self.deliver_active_user_message(&target, msg);
                 }
                 AssigneeKind::Group => {
-                    if let Some(leader) =
-                        self.config.group_leader(&target).map(|s| s.to_string())
-                    {
+                    if let Some(leader) = self.config.group_leader(&target).map(|s| s.to_string()) {
                         self.deliver_active_user_message(&leader, msg);
                     } else {
                         tracing::warn!(
@@ -7670,7 +7689,9 @@ impl App {
         reason: String,
         rejecter: &str,
     ) -> Result<String, crate::tasks::TaskError> {
-        let creator = self.tasks.reject_planning(task_id, reason.clone(), rejecter)?;
+        let creator = self
+            .tasks
+            .reject_planning(task_id, reason.clone(), rejecter)?;
         let title = self
             .tasks
             .get(task_id)
@@ -7693,8 +7714,7 @@ impl App {
                     self.deliver_active_user_message(&creator, msg);
                 }
                 AssigneeKind::Group => {
-                    if let Some(leader) =
-                        self.config.group_leader(&creator).map(|s| s.to_string())
+                    if let Some(leader) = self.config.group_leader(&creator).map(|s| s.to_string())
                     {
                         self.deliver_active_user_message(&leader, msg);
                     }
@@ -7731,11 +7751,10 @@ impl App {
         // code path for "comment by user on a planning task fires a
         // notification". The footer/title in the renderer surfaces
         // the rejection framing while we're in this prompt.
-        self.tasks_screen.prompt =
-            Some(super::tasks_view::TasksPrompt::RejectPlan {
-                task_id,
-                body: String::new(),
-            });
+        self.tasks_screen.prompt = Some(super::tasks_view::TasksPrompt::RejectPlan {
+            task_id,
+            body: String::new(),
+        });
     }
 
     /// Resolve `name` against the live config. Order: chat display_name
@@ -10027,8 +10046,7 @@ impl App {
                 if self.inbox_screen.pane == super::inbox_view::InboxPane::Detail {
                     self.inbox_screen.detail_scroll =
                         self.inbox_screen.detail_scroll.saturating_add(1);
-                } else if !self.inbox.is_empty()
-                    && self.inbox_screen.cursor + 1 < self.inbox.len()
+                } else if !self.inbox.is_empty() && self.inbox_screen.cursor + 1 < self.inbox.len()
                 {
                     self.inbox_screen
                         .select(self.inbox_screen.cursor + 1, self.inbox.len());
@@ -10044,12 +10062,10 @@ impl App {
                 }
             }
             KeyCode::PageDown => {
-                self.inbox_screen.detail_scroll =
-                    self.inbox_screen.detail_scroll.saturating_add(5);
+                self.inbox_screen.detail_scroll = self.inbox_screen.detail_scroll.saturating_add(5);
             }
             KeyCode::PageUp => {
-                self.inbox_screen.detail_scroll =
-                    self.inbox_screen.detail_scroll.saturating_sub(5);
+                self.inbox_screen.detail_scroll = self.inbox_screen.detail_scroll.saturating_sub(5);
             }
             KeyCode::Char('r') => {
                 let Some(msg) = self.inbox.get(self.inbox_screen.cursor) else {
@@ -10119,6 +10135,7 @@ impl App {
             self.inbox_screen.status_msg = Some(format!("agent `{to}` is not receiving"));
             return false;
         }
+        self.chats[idx].ever_prompted = true;
         self.inbox_screen.status_msg = Some(format!("sent to {to}"));
         true
     }
@@ -11530,8 +11547,7 @@ impl App {
                         .get(id)
                         .map(|t| {
                             t.status == crate::tasks::TaskStatus::Planning
-                                && t.assignee.as_deref()
-                                    == Some(crate::config::USER_INBOX_ID)
+                                && t.assignee.as_deref() == Some(crate::config::USER_INBOX_ID)
                         })
                         .unwrap_or(false);
                     if !approvable {
@@ -11540,8 +11556,7 @@ impl App {
                     } else {
                         match self.approve_planning_task(id, OPERATOR) {
                             Ok(target) => {
-                                self.tasks_screen.status_msg =
-                                    Some(format!("approved → {target}"));
+                                self.tasks_screen.status_msg = Some(format!("approved → {target}"));
                             }
                             Err(e) => {
                                 self.tasks_screen.status_msg = Some(format!("error: {e}"));
@@ -12050,7 +12065,9 @@ impl App {
             _ => crate::tasks::TodoStatus::Completed,
         };
         let todo_id = td.id;
-        let _ = self.tasks.update_todo(task_id, todo_id, None, Some(next_status));
+        let _ = self
+            .tasks
+            .update_todo(task_id, todo_id, None, Some(next_status));
     }
 
     fn open_form_add_todo_prompt(&mut self) {
@@ -12266,12 +12283,10 @@ impl App {
                                 // Bump the form's cursor onto the
                                 // freshly-added todo so Space toggles
                                 // it without an extra j-walk.
-                                if let (Some(form), Some(t)) = (
-                                    self.tasks_screen.form.as_mut(),
-                                    self.tasks.get(id),
-                                ) {
-                                    if let Some(idx) =
-                                        t.todos.iter().position(|td| td.id == new_id)
+                                if let (Some(form), Some(t)) =
+                                    (self.tasks_screen.form.as_mut(), self.tasks.get(id))
+                                {
+                                    if let Some(idx) = t.todos.iter().position(|td| td.id == new_id)
                                     {
                                         form.todos_cursor = idx;
                                     }
@@ -12350,10 +12365,9 @@ impl App {
                                 // Drop the prompt and bump the cursor
                                 // to the freshly-added row.
                                 self.tasks_screen.prompt = None;
-                                if let (Some(form), Some(t)) = (
-                                    self.tasks_screen.form.as_mut(),
-                                    self.tasks.get(id),
-                                ) {
+                                if let (Some(form), Some(t)) =
+                                    (self.tasks_screen.form.as_mut(), self.tasks.get(id))
+                                {
                                     if let Some(idx) =
                                         t.comments.iter().position(|c| c.id == new_id)
                                     {
@@ -12428,10 +12442,9 @@ impl App {
                         }
                     }
                     // Snap the cursor back into range.
-                    if let (Some(form), Some(t)) = (
-                        self.tasks_screen.form.as_mut(),
-                        self.tasks.get(task_id),
-                    ) {
+                    if let (Some(form), Some(t)) =
+                        (self.tasks_screen.form.as_mut(), self.tasks.get(task_id))
+                    {
                         let len = t.comments.len();
                         if len == 0 {
                             form.comments_cursor = 0;
@@ -12730,8 +12743,7 @@ impl App {
                 }
                 let now = chrono::Utc::now();
                 let new_hash = super::channel_log::session_hash(&ch.id, now);
-                let cwd = std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 ch.log = None;
                 let log_msg = match super::channel_log::ChannelLog::open_session(
                     &cwd, &ch.id, &new_hash,
@@ -13197,9 +13209,7 @@ impl App {
                 }
             }
             MouseEventKind::ScrollUp => {
-                if self.active_view == ActiveView::Inbox
-                    && self.mouse_in_inbox_detail_zone(pos)
-                {
+                if self.active_view == ActiveView::Inbox && self.mouse_in_inbox_detail_zone(pos) {
                     self.inbox_screen.detail_scroll =
                         self.inbox_screen.detail_scroll.saturating_sub(3);
                     return;
@@ -13223,8 +13233,7 @@ impl App {
                     if let Some(rect) = self.layout.inbox_list_inner {
                         if rect_contains(rect, pos) {
                             if self.inbox_screen.cursor > 0 {
-                                self.inbox_screen
-                                    .set_cursor(self.inbox_screen.cursor - 1);
+                                self.inbox_screen.set_cursor(self.inbox_screen.cursor - 1);
                             }
                             return;
                         }
@@ -13235,15 +13244,10 @@ impl App {
                 }
             }
             MouseEventKind::ScrollDown => {
-                if self.active_view == ActiveView::Inbox
-                    && self.mouse_in_inbox_detail_zone(pos)
-                {
+                if self.active_view == ActiveView::Inbox && self.mouse_in_inbox_detail_zone(pos) {
                     let max = self.inbox_detail_max_scroll();
-                    self.inbox_screen.detail_scroll = self
-                        .inbox_screen
-                        .detail_scroll
-                        .saturating_add(3)
-                        .min(max);
+                    self.inbox_screen.detail_scroll =
+                        self.inbox_screen.detail_scroll.saturating_add(3).min(max);
                     return;
                 }
                 if self.active_view == ActiveView::Memory {
@@ -13267,8 +13271,7 @@ impl App {
                             if !self.inbox.is_empty()
                                 && self.inbox_screen.cursor + 1 < self.inbox.len()
                             {
-                                self.inbox_screen
-                                    .set_cursor(self.inbox_screen.cursor + 1);
+                                self.inbox_screen.set_cursor(self.inbox_screen.cursor + 1);
                             }
                             return;
                         }
@@ -13942,7 +13945,9 @@ impl App {
                         .get(task_id)
                         .and_then(|t| t.todos.iter().find(|td| td.id == todo_id))
                         .map(|td| match td.status {
-                            crate::tasks::TodoStatus::Completed => crate::tasks::TodoStatus::Pending,
+                            crate::tasks::TodoStatus::Completed => {
+                                crate::tasks::TodoStatus::Pending
+                            }
                             _ => crate::tasks::TodoStatus::Completed,
                         });
                     if let Some(next) = next {
@@ -15853,6 +15858,7 @@ mod tests {
     fn input_visual_rows_wraps_on_word_boundaries() {
         let chat = AgentChat {
             input: "aaa bbb ccc".to_string(),
+            ever_prompted: false,
             ..Default::default()
         };
         let rows = chat.input_visual_rows(5);
@@ -15879,6 +15885,7 @@ mod tests {
             input_visible_rows: 5,
             input_cursor: input.len(),
             input,
+            ever_prompted: false,
             ..Default::default()
         };
         clamp_input_scroll(&mut chat);
@@ -16297,8 +16304,7 @@ mod tests {
         let mut app = App::new(sample_config());
         app.layout.inbox_detail_inner = Some(Rect::new(0, 20, 80, 8));
         app.active_view = ActiveView::Inbox;
-        app.inbox
-            .push(InboxMessage::new("a", "line\n".repeat(50)));
+        app.inbox.push(InboxMessage::new("a", "line\n".repeat(50)));
         app.inbox_screen.cursor = 0;
         app.inbox_screen.detail_scroll = 0;
 
@@ -16320,8 +16326,7 @@ mod tests {
         let mut app = App::new(sample_config());
         app.layout.inbox_detail_inner = Some(Rect::new(0, 20, 80, 8));
         app.active_view = ActiveView::Inbox;
-        app.inbox
-            .push(InboxMessage::new("a", "line\n".repeat(50)));
+        app.inbox.push(InboxMessage::new("a", "line\n".repeat(50)));
         app.inbox_screen.cursor = 0;
         // Pre-stuff above any reasonable max; the .min() clamp must
         // pin detail_scroll to max_scroll on the next ScrollDown tick.
@@ -16347,8 +16352,7 @@ mod tests {
         let mut app = App::new(sample_config());
         app.layout.inbox_detail_inner = Some(Rect::new(0, 20, 80, 8));
         app.active_view = ActiveView::Inbox;
-        app.inbox
-            .push(InboxMessage::new("a", "line\n".repeat(50)));
+        app.inbox.push(InboxMessage::new("a", "line\n".repeat(50)));
         app.inbox_screen.cursor = 0;
         app.inbox_screen.detail_scroll = 0;
 
@@ -16372,8 +16376,7 @@ mod tests {
         let mut app = App::new(sample_config());
         app.layout.inbox_detail_inner = Some(Rect::new(0, 20, 80, 8));
         app.active_view = ActiveView::Inbox;
-        app.inbox
-            .push(InboxMessage::new("a", "line\n".repeat(50)));
+        app.inbox.push(InboxMessage::new("a", "line\n".repeat(50)));
         app.inbox_screen.cursor = 0;
         app.inbox_screen.detail_scroll = 5;
 
@@ -16563,6 +16566,52 @@ mod tests {
 
         let received = rx.try_recv().expect("prompt should be sent");
         assert_eq!(received, "hi there");
+    }
+
+    #[test]
+    fn notify_assignee_wakes_cold_chat_once() {
+        let mut app = App::new(sample_config());
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        app.chats[0].user_tx = Some(tx);
+        app.chats[0].ever_prompted = false;
+
+        let task_id = Uuid::parse_str("12345678-1234-5678-1234-567812345678").unwrap();
+        app.notify_assignee("a", task_id, "Fix bug", "assigned to you by planner");
+
+        let expected = "Task 12345678 assigned to you by planner: Fix bug";
+        assert!(app.chats[0].blocks.iter().any(|b| matches!(
+            b,
+            ChatBlock::System {
+                text,
+                kind: super::super::blocks::SystemKind::Info,
+            } if text == expected
+        )));
+        assert_eq!(rx.try_recv().unwrap(), expected);
+        assert!(app.chats[0].ever_prompted);
+    }
+
+    #[test]
+    fn notify_assignee_does_not_rewake_hot_chat() {
+        let mut app = App::new(sample_config());
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        app.chats[0].user_tx = Some(tx);
+        app.chats[0].ever_prompted = true;
+
+        let task_id = Uuid::parse_str("12345678-1234-5678-1234-567812345678").unwrap();
+        app.notify_assignee("a", task_id, "Fix bug", "assigned to you by planner");
+
+        let expected = "Task 12345678 assigned to you by planner: Fix bug";
+        assert!(app.chats[0].blocks.iter().any(|b| matches!(
+            b,
+            ChatBlock::System {
+                text,
+                kind: super::super::blocks::SystemKind::Info,
+            } if text == expected
+        )));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test]
@@ -18071,6 +18120,7 @@ mod tests {
             session_id: Some(session_id),
             status: AgentStatus::Working,
             agent_tx: Some(mpsc::channel::<String>(1).0),
+            ever_prompted: false,
             ..Default::default()
         };
         app.chats.push(worker_chat);
@@ -18113,6 +18163,7 @@ mod tests {
             session_id: Some(session_id),
             status: AgentStatus::Working,
             user_tx: Some(user_tx),
+            ever_prompted: false,
             agent_tx: Some(worker_agent_tx),
             ..Default::default()
         };
@@ -18174,6 +18225,7 @@ mod tests {
             session_id: Some(session_id),
             status: AgentStatus::Working,
             user_tx: Some(user_tx),
+            ever_prompted: false,
             agent_tx: Some(worker_agent_tx),
             ..Default::default()
         });
@@ -18209,6 +18261,7 @@ mod tests {
             session_id: Some(session_id),
             status: AgentStatus::Working,
             user_tx: Some(user_tx),
+            ever_prompted: false,
             agent_tx: Some(worker_agent_tx),
             ..Default::default()
         });
@@ -18678,6 +18731,7 @@ mod tests {
             status: AgentStatus::Working,
             agent_tx: Some(worker_agent_tx),
             user_tx: Some(mpsc::unbounded_channel::<String>().0),
+            ever_prompted: false,
             ..Default::default()
         };
         let worker_idx = app.chats.len();
@@ -18888,6 +18942,7 @@ mod tests {
             worker_template: Some("researcher".into()),
             session_id: Some(w1_id),
             status: AgentStatus::Working,
+            ever_prompted: false,
             ..Default::default()
         });
         let w1_idx = app.chats.len() - 1;
@@ -18897,6 +18952,7 @@ mod tests {
             worker_template: Some("fetcher".into()),
             session_id: Some(Uuid::new_v4()),
             status: AgentStatus::Working,
+            ever_prompted: false,
             ..Default::default()
         });
         let w2_idx = app.chats.len() - 1;
@@ -18907,6 +18963,7 @@ mod tests {
             worker_template: Some("jokester".into()),
             session_id: Some(Uuid::new_v4()),
             status: AgentStatus::Working,
+            ever_prompted: false,
             ..Default::default()
         });
         let w3_idx = app.chats.len() - 1;
@@ -19146,7 +19203,10 @@ mod tests {
             reply: tx,
         });
         let resp = rx.await.unwrap();
-        assert!(resp.ok, "task creation should succeed even without a leader");
+        assert!(
+            resp.ok,
+            "task creation should succeed even without a leader"
+        );
         assert_eq!(app.chats[1].blocks.len(), b_before);
         assert_eq!(app.chats[2].blocks.len(), c_before);
     }
@@ -19179,7 +19239,11 @@ mod tests {
         assert_eq!(app.inbox.len(), 1);
         let msg = &app.inbox[0];
         assert_eq!(msg.from, "a");
-        assert!(msg.body.contains("assigned to you by a"), "got: {}", msg.body);
+        assert!(
+            msg.body.contains("assigned to you by a"),
+            "got: {}",
+            msg.body
+        );
         assert!(msg.body.contains("review PR"), "got: {}", msg.body);
     }
 
