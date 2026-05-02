@@ -90,6 +90,12 @@ pub enum WireChatBlock {
         #[serde(rename = "level")]
         kind: WireSystemKind,
     },
+    /// Log-only block: the AI core's configured system prompt.
+    /// Mirrors the variant on the daemon side; the manager just
+    /// passes it through verbatim.
+    SystemPrompt {
+        text: String,
+    },
     Mail {
         direction: WireMailDirection,
         counterpart: String,

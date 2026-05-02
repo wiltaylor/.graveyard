@@ -86,6 +86,10 @@ export type WireChatBlock =
       context_cache_read_tokens?: number;
       context_cache_creation_tokens?: number;
       context_window?: number;
+      /// 12-char hex naming the on-disk transcript; rolls on
+      /// `/compact` and `/reset`. Empty/missing for instances that
+      /// predate session hashing.
+      session_hash?: string;
     }
   | { kind: "user_text"; text: string }
   | { kind: "ai_markdown"; raw: string }
@@ -142,6 +146,7 @@ export type WireChatBlock =
       pending: boolean;
     }
   | { kind: "system"; text: string; level: WireSystemLevel }
+  | { kind: "system_prompt"; text: string }
   | {
       kind: "mail";
       direction: WireMailDirection;
@@ -362,6 +367,13 @@ export interface WireChannelInfo {
   welcome?: string;
   members: string[];
   message_count: number;
+  /// 12-char hex hash naming the current session's JSONL file. Empty
+  /// when the daemon hasn't yet opened a session log (or pre-dates
+  /// session hashing).
+  session_hash?: string;
+  /// RFC3339 UTC timestamp of when the current session started.
+  /// Empty when no session has been opened yet.
+  session_started?: string;
 }
 
 export interface WireChannelMessage {

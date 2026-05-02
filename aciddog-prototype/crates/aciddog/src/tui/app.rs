@@ -1531,6 +1531,17 @@ pub struct ChannelState {
     /// Append-only writer for this channel's JSONL file. `None` only
     /// in tests — the real TUI always supplies one via `tui::run`.
     pub log: Option<super::channel_log::ChannelLog>,
+    /// Wall-clock UTC time the current session began. Combined with
+    /// `id` to derive `session_hash`. Refreshed on `/reset` so that
+    /// resetting a channel rolls onto a new hash + new on-disk file.
+    /// Defaults to `Utc::now()` for the unit-test path that builds a
+    /// `ChannelState` via `..Default::default()`.
+    pub session_started: chrono::DateTime<chrono::Utc>,
+    /// 12-char hex truncation of `sha256(id || start_time)`. Displayed
+    /// in the channel's TUI/web header and used as the JSONL filename
+    /// stem under `.aciddog/chat/<id>/`. Empty until the first session
+    /// is opened (TUI tests that don't open a log keep it empty).
+    pub session_hash: String,
     /// `true` when this channel was created at runtime (via `/meeting`
     /// or `channel create`). Only ephemeral channels can be torn down
     /// by `/leave` / `channel end`. Not persisted — `App::new`
@@ -1712,6 +1723,26 @@ pub struct AgentChat {
     /// tests and for chats built before the broadcaster is installed —
     /// a `None` sink is a no-op, not an error.
     pub chat_block_tx: Option<broadcast::Sender<crate::wire_chat::ChatBlockEvent>>,
+    /// Wall-clock UTC time the current chat session began. Combined
+    /// with `display_name` to derive `session_hash`. Refreshed (and
+    /// the JSONL file rolls) on `/compact` and `/reset`.
+    pub session_started: chrono::DateTime<chrono::Utc>,
+    /// 12-char hex hash naming the on-disk JSONL transcript at
+    /// `.aciddog/agent-chat/<sanitized display_name>/<session_hash>.jsonl`.
+    /// Mirrored into the seeded `AgentInfo` block so the renderer +
+    /// web UI can show it; rolls on `/compact` and `/reset`. Empty
+    /// for unit-test fixtures that bypass `make_*_chat`.
+    pub session_hash: String,
+    /// Append-only writer for this chat's session transcript. `None`
+    /// for in-memory test fixtures and for the brief window between
+    /// chat creation and the boot-time log open.
+    pub chat_log: Option<super::chat_log::ChatLog>,
+    /// Cached copy of the AI core's configured system prompt. Set
+    /// once at chat creation by reading `AICore::system_prompt()`;
+    /// re-emitted at the head of each rolled JSONL session so every
+    /// file is self-contained. `None` for cores without a
+    /// system-prompt concept (Copilot, Gemini, Codex, automatons).
+    pub system_prompt_text: Option<String>,
 }
 
 /// How an agent's running token total should incorporate each new
@@ -1734,19 +1765,28 @@ pub enum ContextUsageMode {
 impl AgentChat {
     pub(super) fn push_block(&mut self, block: ChatBlock) -> usize {
         let idx = self.blocks.len();
+        // Build the wire projection once: both the SSE broadcast and
+        // the JSONL log want it, and computing it twice would clone
+        // the heavy fields (prompt, raw markdown, tool stdout).
+        let wire = crate::wire_chat::WireChatBlock::from(&block);
         if let Some(tx) = &self.chat_block_tx {
-            // Skip the projection cost entirely when nobody is subscribed —
-            // the most common case for non-webservice sessions.
             if tx.receiver_count() > 0 {
                 let ev = crate::wire_chat::ChatBlockEvent {
                     agent: self.display_name.clone(),
-                    block: crate::wire_chat::WireChatBlock::from(&block),
+                    block: wire.clone(),
                     ts: chrono::Utc::now().to_rfc3339(),
                     seq: idx as u64,
                 };
-                // `Err` only when there are zero receivers — already gated
-                // above — or if the channel was closed. Drop silently.
                 let _ = tx.send(ev);
+            }
+        }
+        if let Some(log) = self.chat_log.as_mut() {
+            if let Err(e) = log.append(&wire) {
+                tracing::warn!(
+                    chat = %self.display_name,
+                    error = %e,
+                    "failed to append chat block to log",
+                );
             }
         }
         self.blocks.push(block);
@@ -1758,29 +1798,135 @@ impl AgentChat {
     /// the original `seq` (the block's index). Subscribers replace the
     /// block at that index, which is how in-place mutations like a tool
     /// result resolving the `pending` flag reach connected clients.
-    pub(super) fn emit_block_at(&self, pos: usize) {
-        let Some(tx) = &self.chat_block_tx else {
-            return;
-        };
-        if tx.receiver_count() == 0 {
-            return;
-        }
+    /// We also re-append the updated wire form to the JSONL log so the
+    /// transcript captures the post-mutation state — readers de-dup
+    /// by `seq` if they care, otherwise just take the last entry.
+    pub(super) fn emit_block_at(&mut self, pos: usize) {
         let Some(block) = self.blocks.get(pos) else {
             return;
         };
-        let ev = crate::wire_chat::ChatBlockEvent {
-            agent: self.display_name.clone(),
-            block: crate::wire_chat::WireChatBlock::from(block),
-            ts: chrono::Utc::now().to_rfc3339(),
-            seq: pos as u64,
+        let wire = crate::wire_chat::WireChatBlock::from(block);
+        if let Some(tx) = &self.chat_block_tx {
+            if tx.receiver_count() > 0 {
+                let ev = crate::wire_chat::ChatBlockEvent {
+                    agent: self.display_name.clone(),
+                    block: wire.clone(),
+                    ts: chrono::Utc::now().to_rfc3339(),
+                    seq: pos as u64,
+                };
+                let _ = tx.send(ev);
+            }
+        }
+        if let Some(log) = self.chat_log.as_mut() {
+            if let Err(e) = log.append(&wire) {
+                tracing::warn!(
+                    chat = %self.display_name,
+                    error = %e,
+                    "failed to append updated chat block to log",
+                );
+            }
+        }
+    }
+
+    /// Open the session JSONL log for this chat (if `session_hash` is
+    /// set) and seed it with the AgentInfo block currently in
+    /// `blocks[0]` plus an optional `SystemPrompt` line. Called once
+    /// per chat right after the AI core is built — at that point the
+    /// AgentInfo block has been mutated to carry the assembled
+    /// first-turn prompt, so the log captures exactly what the model
+    /// receives.
+    ///
+    /// `system_prompt` is the value returned by the core's
+    /// `system_prompt()` accessor. Empty / `None` skips the
+    /// SystemPrompt line entirely.
+    pub(super) fn open_session_log(
+        &mut self,
+        cwd: &std::path::Path,
+        system_prompt: Option<&str>,
+    ) {
+        if self.session_hash.is_empty() {
+            return;
+        }
+        let log = match super::chat_log::ChatLog::open_session(
+            cwd,
+            &self.display_name,
+            &self.session_hash,
+        ) {
+            Ok(log) => log,
+            Err(e) => {
+                tracing::warn!(
+                    chat = %self.display_name,
+                    error = %e,
+                    "failed to open chat log",
+                );
+                return;
+            }
         };
-        let _ = tx.send(ev);
+        self.chat_log = Some(log);
+        // Cache the system-prompt text so the roll path can re-emit
+        // it at the head of every subsequent session file without
+        // re-fetching it from the (already-moved) core.
+        let cached = system_prompt
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        self.system_prompt_text = cached.clone();
+        self.seed_log_with_initial_state(cached.as_deref());
+    }
+
+    /// Append the chat's existing in-memory blocks (just the AgentInfo
+    /// banner at chat-creation time) plus an optional core-level
+    /// `SystemPrompt` line to the log. Idempotent only if called once
+    /// per session — re-calling on an active log will duplicate the
+    /// header.
+    pub(super) fn seed_log_with_initial_state(&mut self, system_prompt: Option<&str>) {
+        if self.chat_log.is_none() {
+            return;
+        }
+        let wires: Vec<crate::wire_chat::WireChatBlock> = self
+            .blocks
+            .iter()
+            .map(crate::wire_chat::WireChatBlock::from)
+            .collect();
+        let log = self
+            .chat_log
+            .as_mut()
+            .expect("checked is_some at top of function");
+        for w in &wires {
+            if let Err(e) = log.append(w) {
+                tracing::warn!(
+                    chat = %self.display_name,
+                    error = %e,
+                    "failed to seed chat log header",
+                );
+                return;
+            }
+        }
+        if let Some(text) = system_prompt {
+            if !text.is_empty() {
+                let wire = crate::wire_chat::WireChatBlock::SystemPrompt {
+                    text: text.to_string(),
+                };
+                if let Err(e) = log.append(&wire) {
+                    tracing::warn!(
+                        chat = %self.display_name,
+                        error = %e,
+                        "failed to write system prompt header",
+                    );
+                }
+            }
+        }
     }
 
     /// Trim the chat back to the opening `AgentInfo` block (if any),
     /// append a `system_info` marker explaining the compaction, and
     /// reset scroll/selection so the user sees the fresh start. Used
     /// by every compaction strategy.
+    ///
+    /// Also rolls the JSONL session: closes the current file, opens a
+    /// new one under a fresh hash, and updates both the chat-level
+    /// `session_hash` / `session_started` fields and the AgentInfo
+    /// block's mirrored `session_hash` so the renderer + web UI pick
+    /// up the new value. The previous file is preserved on disk.
     pub(super) fn reset_to_init(&mut self, note: impl Into<String>) {
         let keep = self
             .blocks
@@ -1793,6 +1939,52 @@ impl AgentChat {
         self.selected_block = None;
         self.anchor_scratch = None;
         self.sticky_bottom = true;
+
+        // Roll the session hash + on-disk file. If the log isn't open
+        // (test fixtures), still refresh the in-memory hash so the
+        // top block reflects "this is a new session".
+        let now = chrono::Utc::now();
+        let new_hash = match self.chat_log.as_mut() {
+            Some(log) => match log.roll(now) {
+                Ok((_, h)) => h,
+                Err(e) => {
+                    tracing::warn!(
+                        chat = %self.display_name,
+                        error = %e,
+                        "failed to roll chat log on compaction; keeping previous file open",
+                    );
+                    super::chat_log::session_hash(&self.display_name, now)
+                }
+            },
+            None => super::chat_log::session_hash(&self.display_name, now),
+        };
+        self.session_started = now;
+        self.session_hash = new_hash.clone();
+        if let Some(ChatBlock::AgentInfo { session_hash, .. }) = self.blocks.first_mut() {
+            *session_hash = new_hash;
+        }
+        // Re-broadcast the updated AgentInfo so any connected web
+        // client sees the new hash without polling. `emit_block_at`
+        // also re-appends to the freshly opened JSONL file, putting
+        // the AgentInfo header back at the top of the new session.
+        self.emit_block_at(0);
+        // Re-emit the cached system prompt at the head of the new
+        // session file too. Log-only (no in-memory block, no SSE
+        // broadcast): future readers should see the prompt header on
+        // every session file, not just the initial one.
+        if let Some(text) = self.system_prompt_text.clone() {
+            if let Some(log) = self.chat_log.as_mut() {
+                let wire = crate::wire_chat::WireChatBlock::SystemPrompt { text };
+                if let Err(e) = log.append(&wire) {
+                    tracing::warn!(
+                        chat = %self.display_name,
+                        error = %e,
+                        "failed to write system prompt to rolled session",
+                    );
+                }
+            }
+        }
+
         self.push_block(ChatBlock::system_info(note.into()));
     }
 
@@ -2413,7 +2605,15 @@ pub(super) fn make_agent_chat(config: &AciddogConfig, agent: &crate::config::Age
     let context_usage_mode = core
         .map(|c| core_usage_mode(&c.kind))
         .unwrap_or(ContextUsageMode::Replace);
-    let info = ChatBlock::agent_info(label, tools, agent.instructions.clone(), context_window);
+    let session_started = chrono::Utc::now();
+    let session_hash = super::chat_log::session_hash(&agent.id, session_started);
+    let info = ChatBlock::agent_info(
+        label,
+        tools,
+        agent.instructions.clone(),
+        context_window,
+        session_hash.clone(),
+    );
     AgentChat {
         blocks: vec![info],
         sticky_bottom: true,
@@ -2421,6 +2621,8 @@ pub(super) fn make_agent_chat(config: &AciddogConfig, agent: &crate::config::Age
         context_window,
         context_usage_mode,
         kind: ChatKind::Agent,
+        session_started,
+        session_hash,
         ..Default::default()
     }
 }
@@ -2462,6 +2664,8 @@ pub(super) fn make_automaton_chat(automaton: &crate::config::Automaton) -> Agent
             }
         },
     };
+    let session_started = chrono::Utc::now();
+    let session_hash = super::chat_log::session_hash(&automaton.id, session_started);
     let info = ChatBlock::agent_info(
         label,
         Vec::new(),
@@ -2470,12 +2674,15 @@ pub(super) fn make_automaton_chat(automaton: &crate::config::Automaton) -> Agent
             .clone()
             .unwrap_or_else(|| automaton.role.clone()),
         None,
+        session_hash.clone(),
     );
     AgentChat {
         blocks: vec![info],
         sticky_bottom: true,
         display_name: automaton.id.clone(),
         kind: ChatKind::Automaton,
+        session_started,
+        session_hash,
         ..Default::default()
     }
 }
@@ -3915,8 +4122,16 @@ impl App {
             }
         };
         let assembled_prompt = built_core.first_turn_prompt();
-        let info_block =
-            ChatBlock::agent_info(core_label, tools.clone(), assembled_prompt, context_window);
+        let system_prompt_text = built_core.system_prompt().map(str::to_string);
+        let session_started = chrono::Utc::now();
+        let session_hash = super::chat_log::session_hash(&display_name, session_started);
+        let info_block = ChatBlock::agent_info(
+            core_label,
+            tools.clone(),
+            assembled_prompt,
+            context_window,
+            session_hash.clone(),
+        );
         let pool_len = self.config.thinking_messages.len();
         let (cancel_tx, cancel_rx) = mpsc::channel::<()>(1);
         let mut chat = AgentChat {
@@ -3937,8 +4152,15 @@ impl App {
             context_usage_mode,
             kind: ChatKind::Worker,
             chat_block_tx: Some(self.chat_block_tx.clone()),
+            session_started,
+            session_hash,
             ..Default::default()
         };
+        // Open the JSONL transcript with AgentInfo + optional
+        // SystemPrompt header so the worker's session file is
+        // self-contained from the first byte.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        chat.open_session_log(&cwd, system_prompt_text.as_deref());
         // Surface the initial task as a user message on the worker's
         // pane so its chat reads naturally.
         chat.push_block(ChatBlock::user(task.clone()));
@@ -4739,14 +4961,18 @@ impl App {
             welcome: None,
             members: Vec::new(),
         });
+        let now = chrono::Utc::now();
+        let hash = super::channel_log::session_hash(&id, now);
         let mut state = ChannelState {
             id: id.clone(),
             is_ephemeral: true,
             sticky_bottom: true,
+            session_started: now,
+            session_hash: hash.clone(),
             ..Default::default()
         };
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        match super::channel_log::ChannelLog::open(&cwd, &id) {
+        match super::channel_log::ChannelLog::open_session(&cwd, &id, &hash) {
             Ok(log) => state.log = Some(log),
             Err(e) => {
                 warn!(channel = %id, error = %e, "failed to open ephemeral channel log");
@@ -5420,12 +5646,26 @@ impl App {
                         .count()
                 })
                 .unwrap_or(0);
+            let (session_hash, session_started) = state
+                .map(|s| {
+                    (
+                        s.session_hash.clone(),
+                        if s.session_hash.is_empty() {
+                            String::new()
+                        } else {
+                            s.session_started.to_rfc3339()
+                        },
+                    )
+                })
+                .unwrap_or_default();
             infos.push(crate::wire_channel::WireChannelInfo {
                 id: cfg.id.clone(),
                 description: cfg.description.clone(),
                 welcome: cfg.welcome.clone(),
                 members: cfg.members.clone(),
                 message_count,
+                session_hash,
+                session_started,
             });
         }
         for state in &self.channels {
@@ -5445,12 +5685,19 @@ impl App {
                     )
                 })
                 .count();
+            let session_started = if state.session_hash.is_empty() {
+                String::new()
+            } else {
+                state.session_started.to_rfc3339()
+            };
             infos.push(crate::wire_channel::WireChannelInfo {
                 id: state.id.clone(),
                 description: None,
                 welcome: None,
                 members: state.members.clone(),
                 message_count,
+                session_hash: state.session_hash.clone(),
+                session_started,
             });
         }
         match serde_json::to_value(&infos) {
@@ -12465,9 +12712,10 @@ impl App {
             }
             CommandOutcome::Reset => {
                 // Keep only the welcome banner (which always lives
-                // at index 0 if present). Disk log is NOT truncated
-                // — the operator is clearing their own screen, not
-                // forgetting history.
+                // at index 0 if present). The previous session's
+                // JSONL is left in place under its old hash; the
+                // channel rolls onto a fresh `(start_time, hash)` so
+                // any subsequent appends land in a brand-new file.
                 let keep_welcome = matches!(
                     ch.blocks.first(),
                     Some(ChatBlock::ChannelMessage {
@@ -12480,9 +12728,30 @@ impl App {
                 } else {
                     ch.blocks.clear();
                 }
-                ch.blocks.push(ChatBlock::system_info(
-                    "channel cleared (disk log preserved)",
-                ));
+                let now = chrono::Utc::now();
+                let new_hash = super::channel_log::session_hash(&ch.id, now);
+                let cwd = std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                ch.log = None;
+                let log_msg = match super::channel_log::ChannelLog::open_session(
+                    &cwd, &ch.id, &new_hash,
+                ) {
+                    Ok(log) => {
+                        ch.log = Some(log);
+                        ch.session_started = now;
+                        ch.session_hash = new_hash.clone();
+                        format!(
+                            "channel cleared — new session [{new_hash}] (previous transcript preserved)"
+                        )
+                    }
+                    Err(e) => {
+                        warn!(channel = %ch.id, error = %e, "failed to open new session log on /reset");
+                        format!(
+                            "channel cleared — failed to roll session: {e} (previous transcript preserved)"
+                        )
+                    }
+                };
+                ch.blocks.push(ChatBlock::system_info(log_msg));
                 ch.selected_block = None;
                 ch.sticky_bottom = true;
             }

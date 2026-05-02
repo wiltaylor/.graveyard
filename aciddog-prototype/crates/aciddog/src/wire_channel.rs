@@ -20,6 +20,17 @@ pub struct WireChannelInfo {
     /// scope matches `ChannelState::blocks` minus any synthetic
     /// welcome banner.
     pub message_count: usize,
+    /// 12-char hex truncation of `sha256(id || session_started)`.
+    /// Identifies the on-disk JSONL file at
+    /// `.aciddog/chat/<id>/<session_hash>.jsonl` and is rendered in
+    /// the channel header. Empty for instances that predate session
+    /// hashing (web client should treat empty as "unknown").
+    #[serde(default)]
+    pub session_hash: String,
+    /// RFC3339 UTC timestamp of when the current session began.
+    /// Empty for instances that predate session hashing.
+    #[serde(default)]
+    pub session_started: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -164,6 +164,20 @@ export default function ChannelView(props: Props): JSX.Element {
                 Back
               </Button>
               <span>#{props.channel}</span>
+              <Show when={props.info?.session_hash}>
+                {(hash) => (
+                  <span
+                    class="font-mono text-xs text-fg-3"
+                    title={
+                      props.info?.session_started
+                        ? `session started ${props.info.session_started}`
+                        : undefined
+                    }
+                  >
+                    [{hash()}]
+                  </span>
+                )}
+              </Show>
             </>
           }
           meta={

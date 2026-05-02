@@ -292,6 +292,10 @@ impl AICore for OpenAiChatgptCore {
     fn first_turn_prompt(&self) -> String {
         crate::ai::openai_api::build_first_turn_prompt(&self.prompt_parts, &self.allowed_tools)
     }
+
+    fn system_prompt(&self) -> Option<&str> {
+        self.system_prompt.as_deref()
+    }
 }
 
 struct InnerCtx {

@@ -120,13 +120,37 @@ pub(crate) async fn boot_orchestrator(
     // any agent's `channel_tx` here — agents start fresh on each boot.
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     for ch in app.channels.iter_mut() {
-        match super::channel_log::ChannelLog::open(&cwd, &ch.id) {
+        // 1. One-shot migration of any pre-session flat
+        //    `.aciddog/chat/<id>.jsonl` into the new
+        //    `.aciddog/chat/<id>/<hash>.jsonl` layout.
+        if let Err(e) = super::channel_log::migrate_legacy(&cwd, &ch.id) {
+            warn!(channel = %ch.id, error = %e, "failed to migrate legacy channel log");
+        }
+        // 2. Pick the most recent session file if one exists; else
+        //    derive a fresh hash from `Utc::now()`. Either way, we end
+        //    up with a `(start_time, hash)` pair to record on the
+        //    state and a path to tail.
+        let (started, hash) = match super::channel_log::latest_session(&cwd, &ch.id) {
+            Some((_, h)) => (chrono::Utc::now(), h),
+            None => {
+                let now = chrono::Utc::now();
+                (now, super::channel_log::session_hash(&ch.id, now))
+            }
+        };
+        match super::channel_log::ChannelLog::open_session(&cwd, &ch.id, &hash) {
             Ok(log) => {
                 let log_path = log.path().to_path_buf();
+                ch.session_started = started;
+                ch.session_hash = hash;
                 ch.log = Some(log);
                 match super::channel_log::tail(&log_path, 500) {
                     Ok(lines) => {
-                        info!(channel = %ch.id, loaded = lines.len(), "loaded channel transcript");
+                        info!(
+                            channel = %ch.id,
+                            session = %ch.session_hash,
+                            loaded = lines.len(),
+                            "loaded channel transcript",
+                        );
                         for line in lines {
                             ch.blocks
                                 .push(ChatBlock::channel_message(line.sender, line.body));
@@ -142,6 +166,12 @@ pub(crate) async fn boot_orchestrator(
             }
         }
     }
+
+    // Note: per-chat JSONL logs are opened later by the spawn paths
+    // (`spawn_agent_core` / `spawn_automaton_core` / worker create)
+    // — they need the AgentInfo block to carry the assembled
+    // first-turn prompt, which only exists after the AI core is
+    // built.
 
     // Construct the semantic-memory registry rooted at `.aciddog/memory/`.
     // Banks open lazily on first use, so this is just a handle creation —
@@ -388,9 +418,18 @@ pub(super) fn spawn_agent_core(app: &mut App, idx: usize, agent: &Agent) -> Resu
     // block so the user can expand it and see exactly what the LLM
     // receives.
     let assembled = core.first_turn_prompt();
+    let system_prompt_text = core.system_prompt().map(str::to_string);
     if let Some(ChatBlock::AgentInfo { prompt, .. }) = app.chats[idx].blocks.first_mut() {
         *prompt = assembled;
     }
+
+    // Open the JSONL transcript now that AgentInfo is finalised. The
+    // log starts with the AgentInfo header (assembled prompt + tools
+    // + session hash) followed by an optional `system_prompt` line
+    // when the core has one configured — that way every session file
+    // is self-contained from the first byte.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    app.chats[idx].open_session_log(&cwd, system_prompt_text.as_deref());
 
     tokio::spawn(run_core(
         idx, core, user_rx, agent_rx, channel_rx, cancel_rx, ai_tx,
@@ -424,6 +463,11 @@ pub(super) fn spawn_automaton_core(app: &mut App, idx: usize, automaton: &Automa
     let session_id = Uuid::new_v4();
     app.chats[idx].session_id = Some(session_id);
     app.agent_ids.insert(session_id, automaton.id.clone());
+
+    // Open the JSONL transcript and write the AgentInfo header.
+    // Automatons have no AI core, hence no `system_prompt` line.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    app.chats[idx].open_session_log(&cwd, None);
 
     match &automaton.backend {
         crate::config::AutomatonBackend::Script { .. } => {
@@ -492,6 +536,9 @@ pub(super) fn add_agent_chat(app: &mut App, agent: &Agent) -> Result<usize> {
     chat.chat_block_tx = Some(app.chat_block_tx.clone());
     let idx = app.chats.len();
     app.chats.push(chat);
+    // Log opening + header seeding happens inside `spawn_agent_core`
+    // once the AI core has been built and the AgentInfo prompt is
+    // finalised.
     spawn_agent_core(app, idx, agent)?;
     Ok(idx)
 }
@@ -505,6 +552,8 @@ pub(super) fn add_automaton_chat(app: &mut App, automaton: &Automaton) -> usize 
     chat.chat_block_tx = Some(app.chat_block_tx.clone());
     let idx = app.chats.len();
     app.chats.push(chat);
+    // Log opening + header seeding happens inside
+    // `spawn_automaton_core` once the chat slot is fully wired up.
     spawn_automaton_core(app, idx, automaton);
     idx
 }

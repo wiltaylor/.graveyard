@@ -65,6 +65,7 @@ pub fn block_fingerprint(b: &ChatBlock) -> u64 {
             collapsed,
             context_used,
             context_window,
+            session_hash,
         } => {
             core.hash(&mut h);
             tools.hash(&mut h);
@@ -72,6 +73,7 @@ pub fn block_fingerprint(b: &ChatBlock) -> u64 {
             collapsed.hash(&mut h);
             hash_usage(&mut h, context_used);
             context_window.hash(&mut h);
+            session_hash.hash(&mut h);
         }
         ChatBlock::UserText { text } => text.hash(&mut h),
         ChatBlock::AiMarkdown { raw, .. } => raw.hash(&mut h),
@@ -346,6 +348,12 @@ pub enum ChatBlock {
         /// Maximum context window for the model in use, in tokens.
         /// `None` when unknown.
         context_window: Option<u32>,
+        /// 12-char hex truncation of `sha256(display_name || started)`,
+        /// matching the JSONL filename under
+        /// `.aciddog/agent-chat/<id>/<hash>.jsonl`. Rolls on
+        /// `/compact` and `/reset`. Empty for in-memory test fixtures
+        /// that never opened a session log.
+        session_hash: String,
     },
     UserText {
         text: String,
@@ -576,7 +584,7 @@ impl ChatBlock {
                 collapsed,
                 context_used,
                 context_window,
-                ..
+                session_hash,
             } => agent_info_height(
                 core,
                 tools,
@@ -584,6 +592,7 @@ impl ChatBlock {
                 *collapsed,
                 *context_used,
                 *context_window,
+                session_hash,
                 w,
             ),
             Self::UserText { text } => wrapped_rows(text, w.saturating_sub(2)).max(1),
@@ -728,6 +737,7 @@ impl ChatBlock {
                 collapsed,
                 context_used,
                 context_window,
+                session_hash,
             } => render_agent_info(
                 buf,
                 body_rect,
@@ -739,6 +749,7 @@ impl ChatBlock {
                 *collapsed,
                 *context_used,
                 *context_window,
+                session_hash,
             ),
             Self::UserText { text } => self.render_prefix_text(
                 buf,
@@ -1173,13 +1184,17 @@ impl ChatBlock {
 
 const COLLAPSED_PREVIEW_ROWS: u16 = 3;
 
-fn agent_info_detail_line(tools: &[String], core: &str) -> String {
+fn agent_info_detail_line(tools: &[String], core: &str, session_hash: &str) -> String {
     let tools_joined = if tools.is_empty() {
         "(none)".to_string()
     } else {
         tools.join(", ")
     };
-    format!("core: {core}   tools: {tools_joined}")
+    if session_hash.is_empty() {
+        format!("core: {core}   tools: {tools_joined}")
+    } else {
+        format!("core: {core}   tools: {tools_joined}   session: {session_hash}")
+    }
 }
 
 const CONTEXT_BAR_WIDTH: usize = 10;
@@ -1274,6 +1289,7 @@ fn agent_info_height(
     collapsed: bool,
     context_used: Option<crate::ai::TurnUsage>,
     context_window: Option<u32>,
+    session_hash: &str,
     width: u16,
 ) -> u16 {
     // Row budget: detail(1..wrapped) + context(1..wrapped) + prompt
@@ -1291,7 +1307,7 @@ fn agent_info_height(
     //   detail/context:   rect.x+2, width-2  → effective width-3
     //   prompt body:      Borders::LEFT inside rect.x+2, width-2
     //                     → effective width-4 (extra -1 for the border)
-    let detail_text = agent_info_detail_line(tools, core);
+    let detail_text = agent_info_detail_line(tools, core, session_hash);
     let detail_rows = wrapped_rows(&detail_text, width.saturating_sub(3)).max(1);
     let context_text = format_context_line(context_used, context_window);
     let context_rows = wrapped_rows(&context_text, width.saturating_sub(3)).max(1);
@@ -1315,6 +1331,7 @@ fn render_agent_info(
     collapsed: bool,
     context_used: Option<crate::ai::TurnUsage>,
     context_window: Option<u32>,
+    session_hash: &str,
 ) {
     if rect.width == 0 || rect.height == 0 {
         return;
@@ -1322,8 +1339,8 @@ fn render_agent_info(
     let mut y = rect.y;
     let end_y = rect.y.saturating_add(rect.height);
 
-    // Details row (core + tools), wrapped.
-    let detail = agent_info_detail_line(tools, core);
+    // Details row (core + tools + session), wrapped.
+    let detail = agent_info_detail_line(tools, core, session_hash);
     let detail_w = rect.width.saturating_sub(2);
     let detail_rows = wrapped_rows(&detail, detail_w).max(1);
     let available = end_y.saturating_sub(y);
@@ -1863,6 +1880,7 @@ impl ChatBlock {
         tools: Vec<String>,
         prompt: impl Into<String>,
         context_window: Option<u32>,
+        session_hash: impl Into<String>,
     ) -> Self {
         Self::AgentInfo {
             core: core.into(),
@@ -1871,6 +1889,7 @@ impl ChatBlock {
             collapsed: true,
             context_used: None,
             context_window,
+            session_hash: session_hash.into(),
         }
     }
 
@@ -2393,7 +2412,7 @@ mod tests {
     fn agent_info_height_grows_with_context_line() {
         // Same prompt + tools, just toggling the new context line; the
         // height should grow by exactly one row (the new "context:" row).
-        let h_no_ctx = agent_info_height("core", &["Bash".into()], "p", true, None, None, 80);
+        let h_no_ctx = agent_info_height("core", &["Bash".into()], "p", true, None, None, "", 80);
         let u = crate::ai::TurnUsage {
             input_tokens: 5000,
             ..Default::default()
@@ -2405,6 +2424,7 @@ mod tests {
             true,
             Some(u),
             Some(200_000),
+            "",
             80,
         );
         // The function always reserves a context row (1+), so they should
@@ -2775,6 +2795,7 @@ mod tests {
             context_used: None,
             context_window: Some(200_000),
             collapsed: false,
+            session_hash: String::new(),
         };
         // Sweep every width in a wide range so we catch the specific
         // column counts where word-wrap produces a row count that
@@ -2825,8 +2846,8 @@ mod tests {
         let tools: Vec<String> = vec!["Bash".into(), "Read".into(), "Edit".into()];
         let core = "anthropic-api (very-long-core-id)";
         let prompt = "short prompt";
-        let h_short = agent_info_height("cc", &tools, prompt, false, None, None, 40);
-        let h_long = agent_info_height(core, &tools, prompt, false, None, None, 40);
+        let h_short = agent_info_height("cc", &tools, prompt, false, None, None, "", 40);
+        let h_long = agent_info_height(core, &tools, prompt, false, None, None, "", 40);
         assert!(
             h_long > h_short,
             "long core label {core:?} should add at least one wrapped row \

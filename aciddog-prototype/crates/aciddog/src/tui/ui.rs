@@ -359,11 +359,16 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
 
     let title = match app.chats.get(selected_agent) {
         Some(chat) => {
+            let hash_suffix = if chat.session_hash.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", chat.session_hash)
+            };
             // Show role/model for configured agents; for workers,
             // fall back to "worker · <template>" since the chat
             // itself carries the display name and template, not the
             // role/model pair from an `agent` config block.
-            if chat.kind == ChatKind::Automaton {
+            let base = if chat.kind == ChatKind::Automaton {
                 let auto = app
                     .config
                     .automatons
@@ -425,7 +430,12 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
                 format!(" {} · {} · {} ", a.id, a.role, model)
             } else {
                 format!(" {} ", chat.display_name)
-            }
+            };
+            // Strip the trailing space so the hash sits flush with the
+            // last token, then re-add a single space at the end so the
+            // `Block::title` keeps the existing visual padding.
+            let trimmed = base.trim_end();
+            format!("{trimmed}{hash_suffix} ")
         }
         None => " chat ".to_string(),
     };
@@ -590,6 +600,9 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
 fn render_channel_chat(f: &mut Frame, area: Rect, app: &mut App, idx: usize) -> Rect {
     let focused = app.focus == Focus::Chat;
     let title = match app.channels.get(idx) {
+        Some(c) if !c.session_hash.is_empty() => {
+            format!(" #{}  [{}] ", c.id, c.session_hash)
+        }
         Some(c) => format!(" #{} ", c.id),
         None => " channel ".to_string(),
     };

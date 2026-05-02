@@ -304,6 +304,10 @@ impl AICore for OpenAiApiCore {
     fn first_turn_prompt(&self) -> String {
         build_first_turn_prompt(&self.prompt_parts, &self.allowed_tools)
     }
+
+    fn system_prompt(&self) -> Option<&str> {
+        self.system_prompt.as_deref()
+    }
 }
 
 struct InnerCtx {

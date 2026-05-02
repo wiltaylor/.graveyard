@@ -215,8 +215,22 @@ impl App {
                 ..Default::default()
             };
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            match super::channel_log::ChannelLog::open(&cwd, &ch.id) {
-                Ok(log) => state.log = Some(log),
+            if let Err(e) = super::channel_log::migrate_legacy(&cwd, &ch.id) {
+                tracing::warn!(channel = %ch.id, error = %e, "failed to migrate legacy channel log on reload");
+            }
+            let (started, hash) = match super::channel_log::latest_session(&cwd, &ch.id) {
+                Some((_, h)) => (chrono::Utc::now(), h),
+                None => {
+                    let now = chrono::Utc::now();
+                    (now, super::channel_log::session_hash(&ch.id, now))
+                }
+            };
+            match super::channel_log::ChannelLog::open_session(&cwd, &ch.id, &hash) {
+                Ok(log) => {
+                    state.session_started = started;
+                    state.session_hash = hash;
+                    state.log = Some(log);
+                }
                 Err(e) => {
                     tracing::warn!(channel = %ch.id, error = %e, "failed to open channel log on reload");
                 }

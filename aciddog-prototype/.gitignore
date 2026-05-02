@@ -5,7 +5,9 @@
 /demo/.aciddog/cron.json
 /demo/.aciddog/memory/
 /demo/.aciddog/chat/
+/demo/.aciddog/agent-chat/
 /demo-remote-*/.aciddog/
+/crates/aciddog/.aciddog/
 Cargo.lock
 
 # aciddog-manager

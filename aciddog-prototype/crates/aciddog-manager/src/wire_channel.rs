@@ -16,6 +16,10 @@ pub struct WireChannelInfo {
     #[serde(default)]
     pub members: Vec<String>,
     pub message_count: usize,
+    #[serde(default)]
+    pub session_hash: String,
+    #[serde(default)]
+    pub session_started: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

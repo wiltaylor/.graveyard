@@ -141,6 +141,18 @@ export default function ChatPane(props: Props): JSX.Element {
 
   const items = createMemo(() => blocksToChatItems(blocks(), props.agent));
 
+  // The seeded `agent_info` block carries the session hash and is
+  // always at `blocks[0]` (the backend updates it in place via the
+  // SSE stream when /compact or /reset rolls the hash).
+  const sessionHash = createMemo<string | undefined>(() => {
+    const head = blocks()[0];
+    if (head && head.kind === "agent_info") {
+      const h = head.session_hash;
+      return h && h.length > 0 ? h : undefined;
+    }
+    return undefined;
+  });
+
   return (
     <div class="flex flex-col h-[calc(100vh-3.5rem)]">
       <Show when={historyError()}>
@@ -162,6 +174,11 @@ export default function ChatPane(props: Props): JSX.Element {
                 Back
               </Button>
               <span>{props.agent}</span>
+              <Show when={sessionHash()}>
+                {(hash) => (
+                  <span class="font-mono text-xs text-fg-3">[{hash()}]</span>
+                )}
+              </Show>
             </>
           }
           meta={
@@ -380,6 +397,23 @@ function blockToItem(b: WireChatBlock, i: number, agent: string): ChatItem {
         evt: { kind, icon, summary: b.text },
       };
     }
+    case "system_prompt":
+      // Log-only block: the daemon writes it to the JSONL but never
+      // pushes it onto chat.blocks, so it doesn't reach the live SSE
+      // stream or the history endpoint. The case exists purely to
+      // keep the switch exhaustive — render it as a collapsed info
+      // event in case it ever does arrive (e.g. a future endpoint
+      // that replays a JSONL file verbatim).
+      return {
+        kind: "event",
+        id,
+        evt: {
+          kind: "info",
+          icon: "cpu",
+          summary: "system prompt",
+          details: <pre>{b.text}</pre>,
+        },
+      };
     case "mail":
       return {
         kind: "event",

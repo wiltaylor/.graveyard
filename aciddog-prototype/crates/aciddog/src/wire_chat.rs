@@ -39,6 +39,11 @@ pub enum WireChatBlock {
         context_cache_creation_tokens: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_window: Option<u32>,
+        /// 12-char hex naming the JSONL transcript on disk; rolls on
+        /// `/compact` and `/reset`. Empty for clients/instances that
+        /// predate session hashing.
+        #[serde(default)]
+        session_hash: String,
     },
     UserText {
         text: String,
@@ -98,6 +103,16 @@ pub enum WireChatBlock {
         text: String,
         #[serde(rename = "level")]
         kind: WireSystemKind,
+    },
+    /// Log-only block: the AI core's configured system prompt (the
+    /// `--system-prompt-file` content for Claude Code, the `system`
+    /// field for the API cores, etc.). Written once at the head of
+    /// each session's JSONL transcript so the on-disk record is
+    /// self-contained. Has no `ChatBlock` counterpart and is never
+    /// pushed to the in-memory chat — it would just clutter the TUI
+    /// view with duplicate prompt text.
+    SystemPrompt {
+        text: String,
     },
     Mail {
         direction: WireMailDirection,
@@ -232,6 +247,7 @@ impl From<&ChatBlock> for WireChatBlock {
                 prompt,
                 context_used,
                 context_window,
+                session_hash,
                 ..
             } => Self::AgentInfo {
                 core: core.clone(),
@@ -242,6 +258,7 @@ impl From<&ChatBlock> for WireChatBlock {
                 context_cache_read_tokens: context_used.map(|u| u.cache_read_input_tokens),
                 context_cache_creation_tokens: context_used.map(|u| u.cache_creation_input_tokens),
                 context_window: *context_window,
+                session_hash: session_hash.clone(),
             },
             ChatBlock::UserText { text } => Self::UserText { text: text.clone() },
             ChatBlock::AiMarkdown { raw, .. } => Self::AiMarkdown { raw: raw.clone() },

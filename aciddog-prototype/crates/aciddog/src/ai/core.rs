@@ -29,6 +29,16 @@ pub trait AICore: Send + Sync {
     fn first_turn_prompt(&self) -> String {
         String::new()
     }
+
+    /// Configured system-prompt content for cores that accept one
+    /// (Claude Code's `--system-prompt-file`, Anthropic API's `system`
+    /// field, OpenAI's `role: "system"` message, ChatGPT's developer
+    /// preamble). Cores without a system-prompt concept return
+    /// `None`. Used to record the prompt at the head of each
+    /// session's on-disk transcript so the log is self-contained.
+    fn system_prompt(&self) -> Option<&str> {
+        None
+    }
 }
 
 #[derive(Debug, Error)]

@@ -410,6 +410,10 @@ impl AICore for ClaudeCodeCore {
     fn first_turn_prompt(&self) -> String {
         self.build_first_turn_prompt()
     }
+
+    fn system_prompt(&self) -> Option<&str> {
+        self.system_prompt.as_deref()
+    }
 }
 
 /// Immutable per-turn snapshot used by the spawn task. Owning copies
