@@ -14,6 +14,7 @@ use super::cores_view::{agents_using_core, format_usage_cell, is_team_default, C
 use super::memory_view::{
     BankFocus, LinkPickerFocus, LinksOverlay, MemoryStage, NoteDetail, NoteField, NoteForm,
 };
+use super::repo_diff_view::render_repo_diff_screen;
 use super::tasks_view::{
     FormField, PopoverKind, TaskForm, TaskFormKind, TaskRow, TasksPrompt, TasksScreen,
 };
@@ -57,6 +58,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.layout.inbox_list_inner = None;
     app.layout.inbox_detail_inner = None;
     app.layout.cron_hotspots.clear();
+    app.layout.repo_diff_section = None;
 
     // Input height: in Chat and Channel views, grow from 3 to 7 rows
     // (1–5 usable + 2 for borders) based on the wrapped line count of
@@ -91,6 +93,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ActiveView::Cores => 3,
         ActiveView::Inbox => 3,
         ActiveView::Cron => 3,
+        ActiveView::RepoDiff { .. } => 3,
         ActiveView::WorkflowForm { .. } | ActiveView::WorkflowInstance { .. } => 3,
     };
 
@@ -180,6 +183,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ActiveView::Cores => render_cores_screen(f, main_area, app),
         ActiveView::Inbox => render_inbox_screen(f, main_area, app),
         ActiveView::Cron => render_cron_screen(f, main_area, app),
+        ActiveView::RepoDiff { .. } => render_repo_diff_screen(f, main_area, app),
         ActiveView::WorkflowForm { workflow_idx } => {
             render_workflow_form(f, main_area, app, workflow_idx)
         }
@@ -1451,6 +1455,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
         Focus::Cores => "cores",
         Focus::Inbox => "inbox",
         Focus::Cron => "cron",
+        Focus::RepoDiff => "repo diff",
     };
     let mut hint_spans: Vec<Span> = match app.focus {
         Focus::Agents => vec![
@@ -1558,6 +1563,22 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             Span::raw(" nav  "),
             Span::styled("tab", Style::default().fg(Color::Cyan)),
             Span::raw(" next panel"),
+        ],
+        Focus::RepoDiff => vec![
+            Span::styled(" focus: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                focus_label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("j/k", Style::default().fg(Color::Cyan)),
+            Span::raw(" scroll  "),
+            Span::styled("pgup/pgdn", Style::default().fg(Color::Cyan)),
+            Span::raw(" page  "),
+            Span::styled("esc/q", Style::default().fg(Color::Cyan)),
+            Span::raw(" close"),
         ],
         Focus::Memory => vec![
             Span::styled(" focus: ", Style::default().fg(Color::DarkGray)),
@@ -1672,6 +1693,16 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             Span::raw(" back"),
         ],
     };
+
+    if app.focus == Focus::Repos {
+        if let Some(msg) = &app.repo_status_msg {
+            hint_spans.push(Span::raw("   "));
+            hint_spans.push(Span::styled(
+                msg.clone(),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+    }
 
     if app.copied_recently() {
         hint_spans.push(Span::raw("   "));

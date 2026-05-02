@@ -60,6 +60,22 @@ pub enum RepoRefreshError {
     GitFailed { id: String, stderr: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffOutcome {
+    NoForwardChanges,
+    Diff {
+        lines: Vec<String>,
+        truncated_at: Option<usize>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("repository diff command failed: {command}: {stderr}")]
+pub struct RepoDiffError {
+    pub command: String,
+    pub stderr: String,
+}
+
 pub fn ensure_repo(decl: &Repository, base_dir: &Path) -> Result<RepoState, RepoStartupError> {
     let path = base_dir.join(&decl.id);
     if path.as_os_str().is_empty() {
@@ -173,6 +189,68 @@ pub fn refresh_worktrees(state: &mut RepoState) -> Result<(), RepoRefreshError> 
     state.worktrees = worktrees;
     state.last_worktree_scan = Some(Instant::now());
     Ok(())
+}
+
+pub fn compute_branch_diff(repo: &RepoState, branch: &str) -> Result<DiffOutcome, RepoDiffError> {
+    let Some(default_branch) = repo.default_branch.as_deref() else {
+        return Err(RepoDiffError {
+            command: diff_command_string(&repo.path, "<default>", branch),
+            stderr: "repo has no resolved default branch".to_string(),
+        });
+    };
+
+    if branch == default_branch {
+        return Ok(DiffOutcome::NoForwardChanges);
+    }
+
+    let command = diff_command_string(&repo.path, default_branch, branch);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&repo.path)
+        .arg("diff")
+        .arg("--no-color")
+        .arg(format!("{default_branch}...{branch}"))
+        .output()
+        .map_err(|e| RepoDiffError {
+            command: command.clone(),
+            stderr: e.to_string(),
+        })?;
+
+    if !output.status.success() {
+        return Err(RepoDiffError {
+            command,
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.is_empty() {
+        return Ok(DiffOutcome::NoForwardChanges);
+    }
+
+    let (lines, truncated_at) = truncate_diff_lines(&stdout, 10_000);
+    Ok(DiffOutcome::Diff {
+        lines,
+        truncated_at,
+    })
+}
+
+fn diff_command_string(path: &Path, default_branch: &str, branch: &str) -> String {
+    format!(
+        "git -C {} diff --no-color {default_branch}...{branch}",
+        path.display()
+    )
+}
+
+pub(crate) fn truncate_diff_lines(stdout: &str, cap: usize) -> (Vec<String>, Option<usize>) {
+    let mut lines: Vec<String> = stdout.split('\n').map(str::to_string).collect();
+    let original_len = lines.len();
+    if original_len > cap {
+        lines.truncate(cap);
+        (lines, Some(original_len))
+    } else {
+        (lines, None)
+    }
 }
 
 pub(crate) fn parse_worktree_porcelain(raw: &str) -> Vec<Worktree> {
@@ -318,6 +396,17 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
+    fn repo_state(path: PathBuf, default_branch: Option<&str>) -> RepoState {
+        RepoState {
+            id: "repo".to_string(),
+            url: "file:///repo".to_string(),
+            path,
+            default_branch: default_branch.map(str::to_string),
+            worktrees: vec![],
+            last_worktree_scan: None,
+        }
+    }
+
     #[test]
     fn parses_single_main_worktree() {
         let worktrees = parse_worktree_porcelain(
@@ -437,6 +526,65 @@ mod tests {
         assert_eq!(worktrees[1].path, PathBuf::from("/repo/detached-a"));
         assert_eq!(worktrees[2].branch, None);
         assert_eq!(worktrees[2].path, PathBuf::from("/repo/detached-z"));
+    }
+
+    #[test]
+    fn compute_branch_diff_short_circuits_default_branch() {
+        let repo = repo_state(PathBuf::from("/definitely/not/a/git/repo"), Some("main"));
+
+        let outcome = compute_branch_diff(&repo, "main").unwrap();
+
+        assert_eq!(outcome, DiffOutcome::NoForwardChanges);
+        // This test uses an invalid path; success proves the branch==default
+        // guard returns before the Command::new("git") call.
+    }
+
+    #[test]
+    fn compute_branch_diff_requires_default_branch() {
+        let repo = repo_state(PathBuf::from("/definitely/not/a/git/repo"), None);
+
+        let err = compute_branch_diff(&repo, "feature").unwrap_err();
+
+        assert_eq!(err.stderr, "repo has no resolved default branch");
+        assert!(err.command.contains("git -C "));
+        assert!(err.command.contains("<default>...feature"));
+    }
+
+    #[test]
+    fn compute_branch_diff_reports_git_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = repo_state(dir.path().to_path_buf(), Some("main"));
+
+        let err = compute_branch_diff(&repo, "feature").unwrap_err();
+
+        assert!(err.command.contains("git -C "));
+        assert!(err.command.contains("main...feature"));
+        assert!(!err.stderr.is_empty());
+    }
+
+    #[test]
+    fn truncate_diff_lines_reports_original_len_when_over_cap() {
+        let stdout = (0..10_500)
+            .map(|idx| format!("line {idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let (lines, truncated_at) = truncate_diff_lines(&stdout, 10_000);
+
+        assert_eq!(lines.len(), 10_000);
+        assert_eq!(truncated_at, Some(10_500));
+        assert_eq!(lines[0], "line 0");
+        assert_eq!(lines[9_999], "line 9999");
+    }
+
+    #[test]
+    fn truncate_diff_lines_keeps_short_output_unmarked() {
+        let stdout = "one\ntwo\nthree\nfour\nfive";
+
+        let (lines, truncated_at) = truncate_diff_lines(stdout, 10_000);
+
+        assert_eq!(lines, vec!["one", "two", "three", "four", "five"]);
+        assert_eq!(truncated_at, None);
     }
 
     #[test]

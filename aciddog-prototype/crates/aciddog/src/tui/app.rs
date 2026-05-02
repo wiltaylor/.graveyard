@@ -30,10 +30,12 @@ use crate::ai::{
 use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::{AciddogConfig, AiCore, AiCoreKind};
 use crate::memory::MemoryRegistry;
+use crate::repos::compute_branch_diff;
 use crate::tasks::{Task, TaskFilter, TaskPatch, TaskStatus, TaskStore, TodoStatus};
 use crate::usage;
 
 use super::cores_view::{CoresScreen, UsageEvent};
+use super::repo_diff_view::RepoDiffScreen;
 use super::tasks_view::{
     ChildOverlay, ChildPromptKind, FormField, PopoverKind, TaskForm, TaskFormKind, TasksPrompt,
     TasksScreen, OPERATOR,
@@ -1445,6 +1447,9 @@ pub enum Focus {
     /// goes to the cron-view handler (list navigation, add/edit
     /// modal, confirm-delete, toggle-enabled).
     Cron,
+    /// The main area while `active_view == RepoDiff` — keyboard input
+    /// scrolls the computed diff buffer and Esc/q closes it.
+    RepoDiff,
 }
 
 /// Which scrollable zone inside the Memory view the wheel cursor is
@@ -1478,6 +1483,12 @@ pub enum ActiveView {
     /// Cron jobs management — schedule, edit, and remove recurring or
     /// one-off payloads delivered to team members.
     Cron,
+    /// Read-only diff for a repository worktree against the repo's
+    /// resolved default branch.
+    RepoDiff {
+        repo_idx: usize,
+        worktree_idx: usize,
+    },
     Channel(usize),
     /// Property-entry form for the workflow at
     /// `config.workflows[workflow_idx]`.
@@ -1514,6 +1525,10 @@ pub struct LayoutRects {
     /// Inner rect of the "repos" panel on the right column.
     /// `None` if no repositories are declared in the config.
     pub repos_list_inner: Option<Rect>,
+    /// Inner rect of the full-screen repository diff view. Populated
+    /// by `render_repo_diff_screen` so mouse wheel scrolling only
+    /// applies while the cursor is over the diff body.
+    pub repo_diff_section: Option<Rect>,
     /// Inner rect of the "workflows" panel on the right column.
     /// `None` if no workflows are declared in the config.
     pub workflows_list_inner: Option<Rect>,
@@ -2711,6 +2726,11 @@ pub struct App {
     pub selected_channel: usize,
     /// Which row of the right-column Repos list is highlighted.
     pub selected_repo_row: usize,
+    /// UI-local state for the repository diff view. Created on open
+    /// and dropped on close so large diff buffers do not linger.
+    pub repo_diff_screen: Option<RepoDiffScreen>,
+    /// Transient status toast for the repos panel.
+    pub repo_status_msg: Option<String>,
     /// UI-local state for the Tasks screen: cursor, modals, prompts.
     pub tasks_screen: TasksScreen,
     /// UI-local state for the Memory view: bank list, search, modals.
@@ -3002,6 +3022,8 @@ impl App {
             channels,
             selected_channel: 0,
             selected_repo_row: 0,
+            repo_diff_screen: None,
+            repo_status_msg: None,
             tasks_screen: TasksScreen::default(),
             memory_screen: super::memory_view::MemoryScreen::default(),
             memory_event_tx: None,
@@ -9843,6 +9865,12 @@ impl App {
         let memory_modal_open = self.active_view == ActiveView::Memory
             && self.focus == Focus::Memory
             && self.memory_screen.has_active_modal();
+        if matches!(code, KeyCode::Tab)
+            && matches!(self.active_view, ActiveView::RepoDiff { .. })
+            && self.focus == Focus::RepoDiff
+        {
+            return;
+        }
         if matches!(code, KeyCode::Tab) && !tasks_modal_open && !memory_modal_open {
             // Inbox sub-pane Tab: when focused on the inbox list,
             // first Tab moves focus into the detail pane (still on
@@ -9871,6 +9899,7 @@ impl App {
                 ActiveView::Cores => Focus::Cores,
                 ActiveView::Inbox => Focus::Inbox,
                 ActiveView::Cron => Focus::Cron,
+                ActiveView::RepoDiff { .. } => Focus::RepoDiff,
                 ActiveView::WorkflowForm { .. } | ActiveView::WorkflowInstance { .. } => {
                     Focus::Workflow
                 }
@@ -9924,6 +9953,7 @@ impl App {
             Focus::Channels => self.handle_key_channels(code, mods),
             Focus::Repos => self.handle_key_repos(code, mods),
             Focus::Memory => self.handle_key_memory(code, mods),
+            Focus::RepoDiff => self.handle_key_repo_diff(code, mods),
             Focus::Workflows => self.handle_key_workflows(code, mods),
             Focus::Workflow => self.handle_key_workflow_view(code, mods),
             Focus::Cores => self.handle_key_cores(code, mods),
@@ -9979,6 +10009,10 @@ impl App {
             ActiveView::Cron => {
                 self.active_view = ActiveView::Chat;
                 self.cron_screen.mode = super::cron_view::CronMode::List;
+            }
+            ActiveView::RepoDiff { .. } => {
+                self.close_repo_diff();
+                self.focus = Focus::Chat;
             }
             ActiveView::Channel(_) => {
                 self.active_view = ActiveView::Chat;
@@ -11012,6 +11046,7 @@ impl App {
     }
 
     fn handle_key_repos(&mut self, code: KeyCode, _mods: KeyModifiers) {
+        self.repo_status_msg = None;
         if self.repos.is_empty() {
             self.focus = Focus::Agents;
             return;
@@ -11029,7 +11064,117 @@ impl App {
                 self.selected_repo_row = self.selected_repo_row.saturating_sub(1);
             }
             KeyCode::Enter => {
-                // TODO(983ab5e7-followup): future task-filter on selected worktree.
+                self.open_selected_repo_diff();
+            }
+            _ => {}
+        }
+    }
+
+    fn open_selected_repo_diff(&mut self) {
+        let Some(row) = super::ui::repo_rows(self)
+            .get(self.selected_repo_row)
+            .cloned()
+        else {
+            return;
+        };
+        if let super::ui::RepoRow::Worktree {
+            repo_idx,
+            worktree_idx,
+        } = row
+        {
+            self.open_repo_diff(repo_idx, worktree_idx);
+        }
+    }
+
+    pub(crate) fn open_repo_diff(&mut self, repo_idx: usize, worktree_idx: usize) {
+        let Some(repo) = self.repos.get(repo_idx) else {
+            return;
+        };
+        let Some(worktree) = repo.worktrees.get(worktree_idx) else {
+            return;
+        };
+        let Some(branch) = worktree.branch.clone() else {
+            self.repo_status_msg = Some("(detached) — no branch to diff".to_string());
+            return;
+        };
+
+        let default_branch = repo
+            .default_branch
+            .clone()
+            .unwrap_or_else(|| "<default>".to_string());
+        let screen = match compute_branch_diff(repo, &branch) {
+            Ok(outcome) => RepoDiffScreen::new(
+                repo_idx,
+                worktree_idx,
+                &repo.path,
+                &default_branch,
+                &branch,
+                outcome,
+            ),
+            Err(err) => RepoDiffScreen::error(repo_idx, worktree_idx, err.command, err.stderr),
+        };
+
+        self.repo_diff_screen = Some(screen);
+        self.repo_status_msg = None;
+        self.active_view = ActiveView::RepoDiff {
+            repo_idx,
+            worktree_idx,
+        };
+        self.focus = Focus::RepoDiff;
+    }
+
+    fn close_repo_diff(&mut self) {
+        self.active_view = ActiveView::Chat;
+        self.repo_diff_screen = None;
+        let max = super::ui::repo_rows(self).len().saturating_sub(1);
+        self.selected_repo_row = self.selected_repo_row.min(max);
+    }
+
+    fn scroll_repo_diff_by(&mut self, delta: i32) {
+        let Some(screen) = self.repo_diff_screen.as_mut() else {
+            return;
+        };
+        if delta < 0 {
+            screen.scroll = screen.scroll.saturating_sub(delta.unsigned_abs() as u16);
+        } else {
+            screen.scroll = screen
+                .scroll
+                .saturating_add(delta as u16)
+                .min(screen.last_max_scroll);
+        }
+    }
+
+    fn handle_key_repo_diff(&mut self, code: KeyCode, _mods: KeyModifiers) {
+        let Some(screen) = self.repo_diff_screen.as_mut() else {
+            self.close_repo_diff();
+            self.focus = Focus::Repos;
+            return;
+        };
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                screen.scroll = screen.scroll.saturating_add(1).min(screen.last_max_scroll);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                screen.scroll = screen.scroll.saturating_sub(1);
+            }
+            KeyCode::PageDown => {
+                screen.scroll = screen
+                    .scroll
+                    .saturating_add(screen.last_visible_lines)
+                    .min(screen.last_max_scroll);
+            }
+            KeyCode::PageUp => {
+                screen.scroll = screen.scroll.saturating_sub(screen.last_visible_lines);
+            }
+            KeyCode::Home => {
+                screen.scroll = 0;
+            }
+            KeyCode::End => {
+                screen.scroll = screen.last_max_scroll;
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.close_repo_diff();
+                self.focus = Focus::Repos;
             }
             _ => {}
         }
@@ -14033,10 +14178,22 @@ impl App {
                 if let Some(rect) = self.layout.repos_list_inner {
                     if rect_contains(rect, pos) {
                         let row_in_list = ev.row.saturating_sub(rect.y) as usize;
-                        if super::ui::repo_rows(self).get(row_in_list).is_some() {
-                            self.selected_repo_row = row_in_list;
+                        match super::ui::repo_rows(self).get(row_in_list).cloned() {
+                            Some(super::ui::RepoRow::Worktree {
+                                repo_idx,
+                                worktree_idx,
+                            }) => {
+                                self.selected_repo_row = row_in_list;
+                                self.open_repo_diff(repo_idx, worktree_idx);
+                            }
+                            Some(super::ui::RepoRow::Header { .. }) => {
+                                self.selected_repo_row = row_in_list;
+                                self.focus = Focus::Repos;
+                            }
+                            None => {
+                                self.focus = Focus::Repos;
+                            }
                         }
-                        self.focus = Focus::Repos;
                         return;
                     }
                 }
@@ -14079,6 +14236,7 @@ impl App {
                             ActiveView::Cores => Focus::Cores,
                             ActiveView::Inbox => Focus::Inbox,
                             ActiveView::Cron => Focus::Cron,
+                            ActiveView::RepoDiff { .. } => Focus::RepoDiff,
                             ActiveView::WorkflowForm { .. }
                             | ActiveView::WorkflowInstance { .. } => Focus::Workflow,
                         };
@@ -14157,6 +14315,7 @@ impl App {
                             ActiveView::Cores => Focus::Cores,
                             ActiveView::Inbox => Focus::Inbox,
                             ActiveView::Cron => Focus::Cron,
+                            ActiveView::RepoDiff { .. } => Focus::RepoDiff,
                             ActiveView::WorkflowForm { .. }
                             | ActiveView::WorkflowInstance { .. } => Focus::Workflow,
                         };
@@ -14164,6 +14323,16 @@ impl App {
                 }
             }
             MouseEventKind::ScrollUp => {
+                if matches!(self.active_view, ActiveView::RepoDiff { .. })
+                    && self
+                        .layout
+                        .repo_diff_section
+                        .map(|r| rect_contains(r, pos))
+                        .unwrap_or(false)
+                {
+                    self.scroll_repo_diff_by(-1);
+                    return;
+                }
                 if self.scroll_task_form_section_at(pos, -1) {
                     return;
                 }
@@ -14202,6 +14371,16 @@ impl App {
                 }
             }
             MouseEventKind::ScrollDown => {
+                if matches!(self.active_view, ActiveView::RepoDiff { .. })
+                    && self
+                        .layout
+                        .repo_diff_section
+                        .map(|r| rect_contains(r, pos))
+                        .unwrap_or(false)
+                {
+                    self.scroll_repo_diff_by(1);
+                    return;
+                }
                 if self.scroll_task_form_section_at(pos, 1) {
                     return;
                 }
@@ -16331,10 +16510,13 @@ async fn event_loop<B: ratatui::backend::Backend>(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::config::{
         AciddogConfig, Agent, Automaton, Compaction, CompactionStrategy, ReloadAction, Team,
     };
+    use crate::repos::{RepoState, Worktree};
     use serde_json::json;
 
     fn idle_predicate_agent(id: &str, idle_timeout: Option<Duration>) -> Agent {
@@ -16963,6 +17145,81 @@ mod tests {
             c.tool_index.clear();
         }
         app
+    }
+
+    fn repo_state_for_diff_tests(worktrees: Vec<Worktree>) -> RepoState {
+        RepoState {
+            id: "repo".into(),
+            url: "git@example.com/repo.git".into(),
+            path: PathBuf::from("/tmp/repo"),
+            default_branch: Some("main".into()),
+            worktrees,
+            last_worktree_scan: None,
+        }
+    }
+
+    #[test]
+    fn repo_diff_close_reclamps_selected_repo_row_and_drops_buffer() {
+        let mut app = fresh_app();
+        app.repos.push(repo_state_for_diff_tests(vec![]));
+        app.repo_diff_screen = Some(RepoDiffScreen::error(0, 0, "git diff", "failed"));
+        app.active_view = ActiveView::RepoDiff {
+            repo_idx: 0,
+            worktree_idx: 0,
+        };
+        app.focus = Focus::RepoDiff;
+        app.selected_repo_row = 99;
+
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+
+        assert_eq!(app.active_view, ActiveView::Chat);
+        assert_eq!(app.focus, Focus::Repos);
+        assert!(app.repo_diff_screen.is_none());
+        assert_eq!(app.selected_repo_row, 0);
+    }
+
+    #[test]
+    fn repo_diff_ctrl_d_and_ctrl_u_do_not_scroll() {
+        let mut app = fresh_app();
+        let mut screen = RepoDiffScreen::error(0, 0, "git diff", "failed");
+        screen.scroll = 5;
+        screen.last_visible_lines = 3;
+        screen.last_max_scroll = 10;
+        app.repo_diff_screen = Some(screen);
+        app.active_view = ActiveView::RepoDiff {
+            repo_idx: 0,
+            worktree_idx: 0,
+        };
+        app.focus = Focus::RepoDiff;
+
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(app.repo_diff_screen.as_ref().unwrap().scroll, 5);
+
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(app.repo_diff_screen.as_ref().unwrap().scroll, 5);
+    }
+
+    #[test]
+    fn repo_diff_is_not_in_tab_cycle() {
+        let mut app = fresh_app();
+        app.repo_diff_screen = Some(RepoDiffScreen::error(0, 0, "git diff", "failed"));
+        app.active_view = ActiveView::RepoDiff {
+            repo_idx: 0,
+            worktree_idx: 0,
+        };
+        app.focus = Focus::RepoDiff;
+
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+
+        assert_eq!(
+            app.active_view,
+            ActiveView::RepoDiff {
+                repo_idx: 0,
+                worktree_idx: 0
+            }
+        );
+        assert_eq!(app.focus, Focus::RepoDiff);
+        assert!(app.repo_diff_screen.is_some());
     }
 
     fn add_counted_task(app: &mut App, status: crate::tasks::TaskStatus, assignee: Option<&str>) {
