@@ -56,6 +56,13 @@ use super::ui;
 
 const COPIED_TOAST_MS: u64 = 1500;
 
+fn rendered_height_for_block(idx: usize, blocks: &[ChatBlock], width: u16) -> u16 {
+    blocks
+        .get(idx)
+        .map(|block| block.height(width).max(1))
+        .unwrap_or(1)
+}
+
 /// Capacity of the per-`App` chat-block broadcast channel. Larger than
 /// the webservice's mail-only `InboundEvent` backlog (256) because
 /// block events include every tool call and assistant-text chunk —
@@ -14792,6 +14799,11 @@ impl App {
     }
 
     fn scroll_up(&mut self, amount: u16) {
+        let width = self
+            .layout
+            .chat_history_inner
+            .map(|rect| rect.width.max(1))
+            .unwrap_or(1);
         let Some(chat) = self.current_chat_mut() else {
             return;
         };
@@ -14803,7 +14815,9 @@ impl App {
                 left -= 1;
             } else if chat.anchor.block_idx > 0 {
                 chat.anchor.block_idx -= 1;
-                chat.anchor.within = 0;
+                let h = rendered_height_for_block(chat.anchor.block_idx, &chat.blocks, width);
+                chat.anchor.within = h.saturating_sub(1);
+                left -= 1;
             } else {
                 break;
             }
@@ -16524,6 +16538,15 @@ mod tests {
         }
     }
 
+    fn flat_chat_anchor(blocks: &[ChatBlock], anchor: ScrollAnchor, width: u16) -> u32 {
+        let prefix: u32 = blocks
+            .iter()
+            .take(anchor.block_idx)
+            .map(|block| block.height(width) as u32)
+            .sum();
+        prefix + anchor.within as u32
+    }
+
     fn last_block(chat: &AgentChat) -> &ChatBlock {
         chat.blocks.last().expect("no blocks")
     }
@@ -17061,15 +17084,18 @@ mod tests {
 
     #[test]
     fn scroll_wheel_in_chat_history_clears_sticky_bottom() {
-        let mut app = App::new(sample_config());
+        let mut app = fresh_app();
         app.layout.chat_history_inner = Some(Rect::new(0, 20, 80, 10));
         let chat = app.current_chat_mut().unwrap();
-        chat.blocks.push(ChatBlock::user("first"));
+        chat.blocks.push(ChatBlock::user("first\n".repeat(5)));
         chat.blocks.push(ChatBlock::user("second"));
+        let block0_h = chat.blocks[0].height(80);
+        assert_eq!(block0_h, 5);
         chat.anchor = ScrollAnchor {
             block_idx: 1,
             within: 0,
         };
+        let before = flat_chat_anchor(&chat.blocks, chat.anchor, 80);
         chat.sticky_bottom = true;
 
         app.handle_mouse(MouseEvent {
@@ -17079,9 +17105,62 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert!(!app.current_chat().unwrap().sticky_bottom);
-        // Anchor moved toward the start.
+        // Anchor moved exactly one wheel tick toward the start.
         let a = app.current_chat().unwrap().anchor;
-        assert!(a.block_idx == 0 || a.within == 0);
+        assert_eq!(a.block_idx, 0);
+        assert_eq!(a.within, block0_h.saturating_sub(3));
+        assert_eq!(
+            flat_chat_anchor(&app.current_chat().unwrap().blocks, a, 80),
+            before.saturating_sub(3)
+        );
+    }
+
+    #[test]
+    fn scroll_up_across_multiple_blocks_consumes_exact_rows() {
+        use ratatui::backend::TestBackend;
+
+        let mut app = fresh_app();
+        let chat = app.current_chat_mut().unwrap();
+        for _ in 0..5 {
+            chat.blocks.push(ChatBlock::user("line\n".repeat(10)));
+        }
+        for (idx, block) in chat.blocks.iter().enumerate() {
+            assert_eq!(block.height(80), 10, "block {idx} height changed");
+        }
+        chat.anchor = ScrollAnchor::default();
+        chat.sticky_bottom = false;
+
+        app.scroll_down(45);
+        let backend = TestBackend::new(109, 17);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui::render(f, &mut app)).unwrap();
+        assert_eq!(app.layout.chat_history_inner.unwrap().width, 80);
+        assert_eq!(app.layout.chat_history_inner.unwrap().height, 10);
+        assert_eq!(
+            app.current_chat().unwrap().anchor,
+            ScrollAnchor {
+                block_idx: 4,
+                within: 5,
+            }
+        );
+
+        let scrolls = [1, 3, 7, 1, 3, 7, 1, 3, 7, 1, 3, 7, 1, 3, 7, 1];
+        for amount in scrolls {
+            let before_anchor = app.current_chat().unwrap().anchor;
+            let before = flat_chat_anchor(&app.current_chat().unwrap().blocks, before_anchor, 80);
+            app.scroll_up(amount);
+            let after_anchor = app.current_chat().unwrap().anchor;
+            let after = flat_chat_anchor(&app.current_chat().unwrap().blocks, after_anchor, 80);
+            assert_eq!(
+                after,
+                before.saturating_sub(amount as u32),
+                "scroll_up({amount}) from {before_anchor:?} landed at {after_anchor:?}"
+            );
+        }
+
+        assert_eq!(app.current_chat().unwrap().anchor, ScrollAnchor::default());
+        app.scroll_up(7);
+        assert_eq!(app.current_chat().unwrap().anchor, ScrollAnchor::default());
     }
 
     #[test]
