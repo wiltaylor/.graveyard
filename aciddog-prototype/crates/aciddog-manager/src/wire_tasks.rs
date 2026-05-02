@@ -24,6 +24,7 @@ pub enum TaskStatus {
     /// but distinguishes the provenance.
     Approved,
     InProgress,
+    Review,
     Done,
     Cancelled,
 }
@@ -74,6 +75,8 @@ pub struct Task {
     /// any other status.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planned_assignee: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_submitter: Option<String>,
     /// Filesystem worktree path bound to this task by the aciddog
     /// side. Used to set the cwd of workers spawned against this task.
     /// Read-only on the wire; aciddog task-board CLI is the canonical
@@ -131,6 +134,39 @@ mod tests {
         assert_eq!(t.worktree, None);
         let out = serde_json::to_string(&t).unwrap();
         assert!(!out.contains("\"worktree\""));
+    }
+
+    #[test]
+    fn task_round_trips_review_status_and_submitter() {
+        let absent_submitter = r#"{
+            "id":"00000000-0000-0000-0000-000000000001",
+            "title":"t",
+            "status":"review",
+            "created_by":"planner",
+            "created_at_secs":1,"updated_at_secs":2,
+            "notes":[], "blocked_by":[], "todos":[], "comments":[]
+        }"#;
+        let t: Task = serde_json::from_str(absent_submitter).unwrap();
+        assert_eq!(t.status, TaskStatus::Review);
+        assert_eq!(t.review_submitter, None);
+        let out = serde_json::to_string(&t).unwrap();
+        assert!(!out.contains("\"review_submitter\""));
+
+        let present_submitter = r#"{
+            "id":"00000000-0000-0000-0000-000000000001",
+            "title":"t",
+            "status":"review",
+            "review_submitter":"builder",
+            "created_by":"planner",
+            "created_at_secs":1,"updated_at_secs":2,
+            "notes":[], "blocked_by":[], "todos":[], "comments":[]
+        }"#;
+        let t: Task = serde_json::from_str(present_submitter).unwrap();
+        assert_eq!(t.status, TaskStatus::Review);
+        assert_eq!(t.review_submitter, Some("builder".to_string()));
+        let out = serde_json::to_value(&t).unwrap();
+        let expected: serde_json::Value = serde_json::from_str(present_submitter).unwrap();
+        assert_eq!(out, expected);
     }
 
     #[test]

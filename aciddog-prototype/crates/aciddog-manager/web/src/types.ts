@@ -217,6 +217,7 @@ export type TaskStatus =
   | "assigned"
   | "approved"
   | "in_progress"
+  | "review"
   | "done"
   | "cancelled";
 
@@ -253,6 +254,8 @@ export interface Task {
   /** Pre-stored handoff target for `planning` tasks; undefined for any
    *  other status. On approval the value moves into `assignee`. */
   planned_assignee?: string;
+  /** Original implementer parked while a task is assigned to review. */
+  review_submitter?: string;
   created_by: string;
   created_at_secs: number;
   updated_at_secs: number;

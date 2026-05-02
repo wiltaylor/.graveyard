@@ -24,6 +24,7 @@ const STATUS_ORDER: TaskStatus[] = [
   "assigned",
   "approved",
   "in_progress",
+  "review",
   "done",
   "cancelled",
 ];
@@ -34,8 +35,20 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
   assigned: "Assigned",
   approved: "Approved",
   in_progress: "In progress",
+  review: "Review",
   done: "Done",
   cancelled: "Cancelled",
+};
+
+const STATUS_ACCENT: Record<TaskStatus, string> = {
+  planning: "border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-200",
+  open: "border-border-subtle bg-bg-0/40 text-fg-1",
+  assigned: "border-sky-400/30 bg-sky-400/10 text-sky-200",
+  approved: "border-success/30 bg-success-bg text-success-fg",
+  in_progress: "border-accent/30 bg-accent-bg text-accent-fg",
+  review: "border-warning/30 bg-warning-bg text-warning-fg",
+  done: "border-success/20 bg-success-bg/50 text-success-fg",
+  cancelled: "border-danger/30 bg-danger-bg text-danger-fg",
 };
 
 const TODO_ORDER: TodoStatus[] = ["pending", "in_progress", "completed"];
@@ -140,11 +153,13 @@ export default function TasksView(props: Props): JSX.Element {
       assigned: [],
       approved: [],
       in_progress: [],
+      review: [],
       done: [],
       cancelled: [],
     };
     for (const t of tasks()) {
-      out[t.status].push(t);
+      const bucket = out[t.status];
+      if (bucket) bucket.push(t);
     }
     return out;
   });
@@ -208,7 +223,7 @@ export default function TasksView(props: Props): JSX.Element {
       </Show>
 
       <div class="flex-1 overflow-x-auto overflow-y-hidden px-4 py-3">
-        <div class="grid grid-cols-7 gap-3 h-full min-w-[84rem]">
+        <div class="grid grid-cols-8 gap-3 h-full min-w-[98rem]">
           <For each={STATUS_ORDER}>
             {(status) => (
               <KanbanColumn
@@ -270,11 +285,9 @@ function KanbanColumn(props: {
 
   return (
     <section
-      class="flex flex-col rounded border bg-bg-0/40 min-w-[14rem]"
-      classList={{
-        "border-border-subtle": !dragOver(),
-        "border-accent bg-accent-bg": dragOver(),
-      }}
+      class={`flex flex-col rounded border min-w-[14rem] ${
+        dragOver() ? "border-accent bg-accent-bg text-accent-fg" : STATUS_ACCENT[props.status]
+      }`}
       onDragOver={(e) => {
         e.preventDefault();
         setDragOver(true);
@@ -287,11 +300,11 @@ function KanbanColumn(props: {
         if (id) props.onDrop(id);
       }}
     >
-      <header class="px-2 py-1.5 border-b border-border-subtle flex items-center justify-between">
-        <h3 class="text-xs uppercase tracking-wider text-fg-1">
+      <header class="px-2 py-1.5 border-b border-current/20 flex items-center justify-between">
+        <h3 class="text-xs uppercase tracking-wider">
           {STATUS_LABEL[props.status]}
         </h3>
-        <span class="text-xs text-fg-3">{props.tasks.length}</span>
+        <span class="text-xs opacity-70">{props.tasks.length}</span>
       </header>
       <div class="flex-1 overflow-y-auto p-2 space-y-2">
         <For each={props.tasks}>

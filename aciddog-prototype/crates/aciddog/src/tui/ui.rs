@@ -756,6 +756,7 @@ mod task_form_render_tests {
             status: TaskStatus::Open,
             assignee: None,
             planned_assignee: None,
+            review_submitter: None,
             worktree: None,
             created_by: "seed".into(),
             created_at_secs: 0,
@@ -1341,6 +1342,30 @@ fn render_tasks_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
                     ),
                 ]),
             ),
+            TasksPrompt::ReviewPicker {
+                options, selected, ..
+            } => {
+                let body = if options.is_empty() {
+                    "no reviewers available".to_string()
+                } else {
+                    options
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, option)| {
+                            if idx == *selected {
+                                format!("[{option}]")
+                            } else {
+                                option.clone()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                };
+                (
+                    " reviewer ".to_string(),
+                    Line::from(Span::styled(body, Style::default().fg(Color::Yellow))),
+                )
+            }
         }
     } else if let Some(form) = app.tasks_screen.form.as_ref() {
         let hint = if form.popover_open.is_some() {
@@ -1383,6 +1408,12 @@ fn render_tasks_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
                     && t.assignee.as_deref() == Some(crate::config::USER_INBOX_ID) =>
             {
                 "y approve · a add · e/⏎ edit · d del · t take · n note · s status · esc back"
+            }
+            Some(t)
+                if t.status == crate::tasks::TaskStatus::InProgress
+                    && t.assignee.as_deref() == Some(super::tasks_view::OPERATOR) =>
+            {
+                "r submit-for-review · a add · e/⏎ edit · d del · t take · n note · s status · esc back"
             }
             _ => "a add · e/⏎ edit · d del · t take · n note · s status · esc back",
         };
@@ -2243,6 +2274,7 @@ fn status_header_color(status: crate::tasks::TaskStatus) -> Color {
     match status {
         Planning => Color::Magenta,
         Approved => Color::Green,
+        Review => Color::Yellow,
         _ => Color::Cyan,
     }
 }

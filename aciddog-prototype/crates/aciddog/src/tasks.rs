@@ -13,6 +13,11 @@
 //! glance, but the task board is otherwise pull-driven (via
 //! `task list` / `task take`).
 //!
+//! Core lifecycle: Planning -> Approved -> InProgress -> Review -> Done,
+//! with Open, Assigned, and Cancelled orthogonal to that spine. Review
+//! can only be entered via [`TaskStore::submit_for_review`] and left
+//! via [`TaskStore::review_approve`] or [`TaskStore::review_reject`].
+//!
 //! Persistence: when constructed via [`TaskStore::load_or_init`] with
 //! a path, every mutator persists atomically (write-tmp + rename).
 //! [`TaskStore::new`] yields an ephemeral store used by unit tests.
@@ -43,6 +48,10 @@ pub enum TaskStatus {
     /// handed off".
     Approved,
     InProgress,
+    /// Additive serde variant: old task files contain no `review`
+    /// rows, and new files with `review` intentionally do not load on
+    /// pre-feature binaries (same forward-compat posture as Planning).
+    Review,
     Done,
     Cancelled,
 }
@@ -55,6 +64,7 @@ impl TaskStatus {
             "assigned" => Ok(Self::Assigned),
             "approved" | "approve" => Ok(Self::Approved),
             "in_progress" | "in-progress" | "inprogress" => Ok(Self::InProgress),
+            "review" | "in_review" | "in-review" | "inreview" => Ok(Self::Review),
             "done" => Ok(Self::Done),
             "cancelled" | "canceled" => Ok(Self::Cancelled),
             _ => Err(TaskError::InvalidStatus(s.to_string())),
@@ -68,9 +78,16 @@ impl TaskStatus {
             Self::Assigned => "assigned",
             Self::Approved => "approved",
             Self::InProgress => "in_progress",
+            Self::Review => "review",
             Self::Done => "done",
             Self::Cancelled => "cancelled",
         }
+    }
+}
+
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -158,6 +175,11 @@ pub struct Task {
     /// files without this field still load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planned_assignee: Option<String>,
+    /// Original implementer while a task is assigned to a reviewer in
+    /// `Review`. `serde(default)` so older JSON files without this
+    /// additive field still load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_submitter: Option<String>,
     /// Filesystem worktree path used by spawned workers as their cwd.
     /// `serde(default)` so older JSON files without this field still
     /// load for forward-compat.
@@ -179,9 +201,36 @@ pub enum TaskError {
 
     #[error(
         "invalid status `{0}` \
-         (expected planning|open|assigned|approved|in_progress|done|cancelled)"
+         (expected planning|open|assigned|approved|in_progress|review|done|cancelled)"
     )]
     InvalidStatus(String),
+
+    #[error("task {0} is not in progress; only in-progress tasks can be submitted for review")]
+    NotInProgressForReview(Uuid),
+
+    #[error("task {0} is not in review")]
+    NotInReview(Uuid),
+
+    #[error("task {task} is assigned to reviewer `{expected}`, but caller was `{got}`")]
+    NotReviewer {
+        task: Uuid,
+        expected: String,
+        got: String,
+    },
+
+    #[error("reviewer `{0}` is a group; choose a single reviewer")]
+    ReviewerIsGroup(String),
+
+    #[error("task {0} is in review but has no review_submitter")]
+    ReviewSubmitterMissing(Uuid),
+
+    #[error("invalid status transition for task {task}: {from} -> {to}: {reason}")]
+    InvalidStatusTransition {
+        task: Uuid,
+        from: TaskStatus,
+        to: TaskStatus,
+        reason: &'static str,
+    },
 
     #[error("planning task requires assignee={0:?} and a planned_assignee")]
     PlanningRequiresUserAndTarget(&'static str),
@@ -281,11 +330,32 @@ pub struct TaskUpdateOutcome {
 pub struct TaskStore {
     tasks: Vec<Task>,
     path: Option<PathBuf>,
+    group_assignees: Vec<String>,
 }
 
 impl TaskStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Seed declared group labels for store-level reviewer
+    /// validation. The task store deliberately stores only labels, not
+    /// the full runtime config; callers that own config should refresh
+    /// this before review submission.
+    pub fn set_group_assignees<I, S>(&mut self, groups: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.group_assignees = groups
+            .into_iter()
+            .map(|s| s.into())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+
+    fn is_group_assignee(&self, name: &str) -> bool {
+        self.group_assignees.iter().any(|group| group == name)
     }
 
     /// Open the store backed by `path`. If the file exists it is
@@ -302,11 +372,13 @@ impl TaskStore {
                 Ok(Self {
                     tasks,
                     path: Some(path),
+                    group_assignees: Vec::new(),
                 })
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self {
                 tasks: Vec::new(),
                 path: Some(path),
+                group_assignees: Vec::new(),
             }),
             Err(e) => Err(TaskError::Io {
                 path: path.display().to_string(),
@@ -362,6 +434,7 @@ impl TaskStore {
             status,
             assignee,
             planned_assignee: None,
+            review_submitter: None,
             worktree,
             created_by,
             created_at_secs: now,
@@ -435,6 +508,7 @@ impl TaskStore {
             status: TaskStatus::Planning,
             assignee: Some(USER_INBOX_ID.to_string()),
             planned_assignee: Some(planned_assignee),
+            review_submitter: None,
             worktree,
             created_by,
             created_at_secs: now,
@@ -530,6 +604,147 @@ impl TaskStore {
         Ok(target)
     }
 
+    /// Submit an in-progress task for reviewer sign-off. The task is
+    /// reassigned to `reviewer`; the current implementer is parked in
+    /// `review_submitter` so approval/rejection can notify or restore
+    /// that owner. Returns the reviewer name.
+    pub fn submit_for_review(
+        &mut self,
+        id: Uuid,
+        reviewer: String,
+        submitter: String,
+    ) -> Result<String, TaskError> {
+        let reviewer = reviewer.trim().to_string();
+        if reviewer.is_empty() {
+            return Err(TaskError::EmptyTitle);
+        }
+        // bug_patterns/b6267406: group reviewer routing can choose a
+        // leaderless group, so require a concrete reviewer for now.
+        if self.is_group_assignee(&reviewer) {
+            return Err(TaskError::ReviewerIsGroup(reviewer));
+        }
+        let now = now_secs();
+        let pos = self
+            .tasks
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or(TaskError::NotFound(id))?;
+        if self.tasks[pos].status != TaskStatus::InProgress {
+            return Err(TaskError::NotInProgressForReview(id));
+        }
+        let prior_assignee = self.tasks[pos]
+            .assignee
+            .clone()
+            .unwrap_or_else(|| submitter.clone());
+        {
+            let t = &mut self.tasks[pos];
+            t.status = TaskStatus::Review;
+            t.review_submitter = Some(prior_assignee);
+            t.assignee = Some(reviewer.clone());
+            t.updated_at_secs = now;
+            t.notes.push(Note {
+                author: submitter.clone(),
+                timestamp_secs: now,
+                body: format!("submitted for review by {submitter}; routed to {reviewer}"),
+            });
+        }
+        self.persist()?;
+        Ok(reviewer)
+    }
+
+    /// Approve a task in review, advancing it to `Done`. Returns the
+    /// prior review submitter, or an empty string when older/manually
+    /// edited data lacked the optional field.
+    pub fn review_approve(&mut self, id: Uuid, approver: String) -> Result<String, TaskError> {
+        let now = now_secs();
+        let pos = self
+            .tasks
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or(TaskError::NotFound(id))?;
+        if self.tasks[pos].status != TaskStatus::Review {
+            return Err(TaskError::NotInReview(id));
+        }
+        let expected = self.tasks[pos].assignee.clone().unwrap_or_default();
+        if expected != approver {
+            return Err(TaskError::NotReviewer {
+                task: id,
+                expected,
+                got: approver,
+            });
+        }
+        let submitter = self.tasks[pos].review_submitter.clone().unwrap_or_default();
+        {
+            let t = &mut self.tasks[pos];
+            t.status = TaskStatus::Done;
+            t.review_submitter = None;
+            t.updated_at_secs = now;
+            t.notes.push(Note {
+                author: approver.clone(),
+                timestamp_secs: now,
+                body: format!("review approved by {approver}; marked done"),
+            });
+        }
+        self.persist()?;
+        Ok(submitter)
+    }
+
+    /// Reject a task in review, appending the reason as a comment and
+    /// returning it to the original implementer. Returns that
+    /// implementer name for caller-side wake/notification.
+    pub fn review_reject(
+        &mut self,
+        id: Uuid,
+        reason: String,
+        rejecter: String,
+    ) -> Result<String, TaskError> {
+        let reason = reason.trim().to_string();
+        if reason.is_empty() {
+            return Err(TaskError::EmptyCommentBody);
+        }
+        let now = now_secs();
+        let pos = self
+            .tasks
+            .iter()
+            .position(|t| t.id == id)
+            .ok_or(TaskError::NotFound(id))?;
+        if self.tasks[pos].status != TaskStatus::Review {
+            return Err(TaskError::NotInReview(id));
+        }
+        let expected = self.tasks[pos].assignee.clone().unwrap_or_default();
+        if expected != rejecter {
+            return Err(TaskError::NotReviewer {
+                task: id,
+                expected,
+                got: rejecter,
+            });
+        }
+        let implementer = self.tasks[pos]
+            .review_submitter
+            .clone()
+            .ok_or(TaskError::ReviewSubmitterMissing(id))?;
+        {
+            let t = &mut self.tasks[pos];
+            t.comments.push(Comment {
+                id: Uuid::new_v4(),
+                author: rejecter.clone(),
+                timestamp_secs: now,
+                body: format!("Review rejected: {reason}"),
+            });
+            t.assignee = Some(implementer.clone());
+            t.review_submitter = None;
+            t.status = TaskStatus::InProgress;
+            t.updated_at_secs = now;
+            t.notes.push(Note {
+                author: rejecter.clone(),
+                timestamp_secs: now,
+                body: format!("review rejected by {rejecter}; sent back to {implementer}"),
+            });
+        }
+        self.persist()?;
+        Ok(implementer)
+    }
+
     pub fn get(&self, id: Uuid) -> Option<&Task> {
         self.tasks.iter().find(|t| t.id == id)
     }
@@ -616,6 +831,41 @@ impl TaskStore {
             .position(|t| t.id == id)
             .ok_or(TaskError::NotFound(id))?;
 
+        let original_status = self.tasks[pos].status;
+        let mut clear_review_submitter = false;
+        if let Some(status) = patch.status {
+            if status == TaskStatus::Review {
+                return Err(TaskError::InvalidStatusTransition {
+                    task: id,
+                    from: original_status,
+                    to: status,
+                    reason: "use submit_for_review so the review submitter is recorded",
+                });
+            }
+            if original_status == TaskStatus::Review && status == TaskStatus::Done {
+                let expected = self.tasks[pos].assignee.clone().unwrap_or_default();
+                if expected != author {
+                    return Err(TaskError::NotReviewer {
+                        task: id,
+                        expected,
+                        got: author.to_string(),
+                    });
+                }
+                clear_review_submitter = true;
+            }
+            if original_status == TaskStatus::Review
+                && status != TaskStatus::Review
+                && status != TaskStatus::Done
+            {
+                return Err(TaskError::InvalidStatusTransition {
+                    task: id,
+                    from: original_status,
+                    to: status,
+                    reason: "use review_approve or review_reject to leave review",
+                });
+            }
+        }
+
         let mut reassigned_to: Option<String> = None;
 
         let t = &mut self.tasks[pos];
@@ -626,6 +876,9 @@ impl TaskStore {
             t.description = Some(desc);
         }
         if let Some(status) = patch.status {
+            if clear_review_submitter {
+                t.review_submitter = None;
+            }
             t.status = status;
         }
         if let Some(new_assignee) = patch.assignee {
@@ -1059,6 +1312,8 @@ mod tests {
             TaskStatus::parse("in-progress").unwrap(),
             TaskStatus::InProgress
         );
+        assert_eq!(TaskStatus::parse("review").unwrap(), TaskStatus::Review);
+        assert_eq!(TaskStatus::parse("in_review").unwrap(), TaskStatus::Review);
         assert_eq!(TaskStatus::parse("done").unwrap(), TaskStatus::Done);
         assert_eq!(
             TaskStatus::parse("cancelled").unwrap(),
@@ -1183,6 +1438,95 @@ mod tests {
         assert_eq!(t.description.as_deref(), Some("details"));
         assert_eq!(t.status, TaskStatus::InProgress);
         assert!(t.updated_at_secs >= before);
+    }
+
+    #[test]
+    fn update_rejects_direct_review_status() {
+        let mut s = mk_store();
+        let id = s
+            .add(
+                "t".into(),
+                None,
+                Some("implementer".into()),
+                "alice".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        s.update(
+            id,
+            TaskPatch {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
+            "implementer",
+        )
+        .unwrap();
+
+        let err = s
+            .update(
+                id,
+                TaskPatch {
+                    title: Some("should not apply".into()),
+                    status: Some(TaskStatus::Review),
+                    ..Default::default()
+                },
+                "implementer",
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            TaskError::InvalidStatusTransition {
+                to: TaskStatus::Review,
+                ..
+            }
+        ));
+        assert_eq!(s.get(id).unwrap().title, "t");
+    }
+
+    #[test]
+    fn update_rejects_review_to_done_by_non_reviewer() {
+        let mut s = mk_store();
+        let id = s
+            .add(
+                "t".into(),
+                None,
+                Some("implementer".into()),
+                "alice".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        s.update(
+            id,
+            TaskPatch {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
+            "implementer",
+        )
+        .unwrap();
+        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+            .unwrap();
+
+        let err = s
+            .update(
+                id,
+                TaskPatch {
+                    status: Some(TaskStatus::Done),
+                    ..Default::default()
+                },
+                "implementer",
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            TaskError::NotReviewer {
+                expected,
+                got,
+                ..
+            } if expected == "reviewer" && got == "implementer"
+        ));
     }
 
     #[test]
@@ -1313,6 +1657,34 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(s.take("w"), Err(TaskError::NoFreeTasks)));
+    }
+
+    #[test]
+    fn take_skips_review_tasks() {
+        let mut s = mk_store();
+        let id = s
+            .add(
+                "needs review".into(),
+                None,
+                Some("implementer".into()),
+                "alice".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        s.update(
+            id,
+            TaskPatch {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
+            "implementer",
+        )
+        .unwrap();
+        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+            .unwrap();
+
+        assert!(matches!(s.take("worker"), Err(TaskError::NoFreeTasks)));
     }
 
     #[test]
@@ -1597,6 +1969,49 @@ mod tests {
         .unwrap();
         let b = s.get(b_id).unwrap().clone();
         assert!(!s.is_blocked(&b));
+    }
+
+    #[test]
+    fn is_blocked_treats_review_as_blocking_until_done() {
+        let mut s = mk_store();
+        let blocker = s
+            .add(
+                "blocker".into(),
+                None,
+                Some("implementer".into()),
+                "alice".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        let dependent_id = s
+            .add(
+                "dependent".into(),
+                None,
+                None,
+                "alice".into(),
+                vec![blocker],
+            )
+            .unwrap()
+            .id;
+        s.update(
+            blocker,
+            TaskPatch {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
+            "implementer",
+        )
+        .unwrap();
+        s.submit_for_review(blocker, "reviewer".into(), "implementer".into())
+            .unwrap();
+
+        let dependent = s.get(dependent_id).unwrap().clone();
+        assert!(s.is_blocked(&dependent));
+
+        s.review_approve(blocker, "reviewer".into()).unwrap();
+        let dependent = s.get(dependent_id).unwrap().clone();
+        assert!(!s.is_blocked(&dependent));
     }
 
     #[test]
@@ -1922,11 +2337,234 @@ mod tests {
         ));
     }
 
+    // ----- Review -----
+
+    fn add_in_progress_task(s: &mut TaskStore) -> Uuid {
+        let id = s
+            .add(
+                "t".into(),
+                None,
+                Some("implementer".into()),
+                "alice".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        s.update(
+            id,
+            TaskPatch {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
+            "implementer",
+        )
+        .unwrap();
+        id
+    }
+
+    #[test]
+    fn submit_for_review_reassigns_to_reviewer_and_records_submitter() {
+        let mut s = mk_store();
+        let id = add_in_progress_task(&mut s);
+
+        let reviewer = s
+            .submit_for_review(id, "reviewer".into(), "implementer".into())
+            .unwrap();
+
+        assert_eq!(reviewer, "reviewer");
+        let t = s.get(id).unwrap();
+        assert_eq!(t.status, TaskStatus::Review);
+        assert_eq!(t.assignee.as_deref(), Some("reviewer"));
+        assert_eq!(t.review_submitter.as_deref(), Some("implementer"));
+        assert_eq!(t.notes.len(), 1);
+        assert!(t.notes[0].body.contains("submitted for review"));
+    }
+
+    #[test]
+    fn submit_for_review_uses_caller_when_task_unassigned() {
+        let mut s = mk_store();
+        let id = s
+            .add("t".into(), None, None, "alice".into(), Vec::new())
+            .unwrap()
+            .id;
+        s.update(
+            id,
+            TaskPatch {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
+            "implementer",
+        )
+        .unwrap();
+
+        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+            .unwrap();
+
+        assert_eq!(
+            s.get(id).unwrap().review_submitter.as_deref(),
+            Some("implementer")
+        );
+    }
+
+    #[test]
+    fn submit_for_review_rejects_open_tasks() {
+        let mut s = mk_store();
+        let id = s
+            .add("t".into(), None, None, "alice".into(), Vec::new())
+            .unwrap()
+            .id;
+
+        assert!(matches!(
+            s.submit_for_review(id, "reviewer".into(), "alice".into()),
+            Err(TaskError::NotInProgressForReview(_))
+        ));
+    }
+
+    #[test]
+    fn submit_for_review_rejects_group_reviewers() {
+        let mut s = mk_store();
+        s.set_group_assignees(["reviewers"]);
+        let id = add_in_progress_task(&mut s);
+
+        assert!(matches!(
+            s.submit_for_review(id, "reviewers".into(), "implementer".into()),
+            Err(TaskError::ReviewerIsGroup(group)) if group == "reviewers"
+        ));
+    }
+
+    #[test]
+    fn review_approve_marks_done_and_clears_submitter() {
+        let mut s = mk_store();
+        let id = add_in_progress_task(&mut s);
+        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+            .unwrap();
+
+        let submitter = s.review_approve(id, "reviewer".into()).unwrap();
+
+        assert_eq!(submitter, "implementer");
+        let t = s.get(id).unwrap();
+        assert_eq!(t.status, TaskStatus::Done);
+        assert_eq!(t.assignee.as_deref(), Some("reviewer"));
+        assert!(t.review_submitter.is_none());
+        assert!(t.notes[1].body.contains("review approved"));
+    }
+
+    #[test]
+    fn review_approve_returns_empty_submitter_when_missing() {
+        let mut s = mk_store();
+        let id = add_in_progress_task(&mut s);
+        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+            .unwrap();
+        s.tasks
+            .iter_mut()
+            .find(|t| t.id == id)
+            .unwrap()
+            .review_submitter = None;
+
+        let submitter = s.review_approve(id, "reviewer".into()).unwrap();
+
+        assert!(submitter.is_empty());
+        assert_eq!(s.get(id).unwrap().status, TaskStatus::Done);
+    }
+
+    #[test]
+    fn review_approve_rejects_wrong_caller() {
+        let mut s = mk_store();
+        let id = add_in_progress_task(&mut s);
+        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+            .unwrap();
+
+        assert!(matches!(
+            s.review_approve(id, "implementer".into()),
+            Err(TaskError::NotReviewer {
+                expected,
+                got,
+                ..
+            }) if expected == "reviewer" && got == "implementer"
+        ));
+    }
+
+    #[test]
+    fn review_approve_rejects_non_review_task() {
+        let mut s = mk_store();
+        let id = add_in_progress_task(&mut s);
+
+        assert!(matches!(
+            s.review_approve(id, "reviewer".into()),
+            Err(TaskError::NotInReview(_))
+        ));
+    }
+
+    #[test]
+    fn review_reject_restores_submitter_and_marks_in_progress() {
+        let mut s = mk_store();
+        let id = add_in_progress_task(&mut s);
+        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+            .unwrap();
+
+        let implementer = s
+            .review_reject(id, "needs tests".into(), "reviewer".into())
+            .unwrap();
+
+        assert_eq!(implementer, "implementer");
+        let t = s.get(id).unwrap();
+        assert_eq!(t.status, TaskStatus::InProgress);
+        assert_eq!(t.assignee.as_deref(), Some("implementer"));
+        assert!(t.review_submitter.is_none());
+        assert_eq!(t.comments.len(), 1);
+        assert!(t.comments[0].body.contains("needs tests"));
+        assert!(t.notes[1].body.contains("review rejected"));
+    }
+
+    #[test]
+    fn review_reject_requires_submitter() {
+        let mut s = mk_store();
+        let id = add_in_progress_task(&mut s);
+        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+            .unwrap();
+        s.tasks
+            .iter_mut()
+            .find(|t| t.id == id)
+            .unwrap()
+            .review_submitter = None;
+
+        assert!(matches!(
+            s.review_reject(id, "needs tests".into(), "reviewer".into()),
+            Err(TaskError::ReviewSubmitterMissing(_))
+        ));
+    }
+
+    #[test]
+    fn review_reject_rejects_empty_reason() {
+        let mut s = mk_store();
+        let id = add_in_progress_task(&mut s);
+        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+            .unwrap();
+
+        assert!(matches!(
+            s.review_reject(id, "   ".into(), "reviewer".into()),
+            Err(TaskError::EmptyCommentBody)
+        ));
+    }
+
+    #[test]
+    fn review_reject_rejects_non_review_task() {
+        let mut s = mk_store();
+        let id = add_in_progress_task(&mut s);
+
+        assert!(matches!(
+            s.review_reject(id, "no".into(), "reviewer".into()),
+            Err(TaskError::NotInReview(_))
+        ));
+    }
+
     #[test]
     fn parse_status_accepts_planning_and_approved() {
         assert_eq!(TaskStatus::parse("planning").unwrap(), TaskStatus::Planning);
         assert_eq!(TaskStatus::parse("plan").unwrap(), TaskStatus::Planning);
         assert_eq!(TaskStatus::parse("approved").unwrap(), TaskStatus::Approved);
+        assert_eq!(TaskStatus::parse("review").unwrap(), TaskStatus::Review);
+        assert_eq!(TaskStatus::parse("in_review").unwrap(), TaskStatus::Review);
     }
 
     #[test]
@@ -1958,8 +2596,64 @@ mod tests {
         let s = TaskStore::load_or_init(path).unwrap();
         let t = &s.all()[0];
         assert!(t.planned_assignee.is_none());
+        assert!(t.review_submitter.is_none());
         assert!(t.worktree.is_none());
         assert_eq!(t.status, TaskStatus::Open);
+    }
+
+    #[test]
+    fn task_status_review_round_trips_snake_case() {
+        let json = serde_json::to_string(&TaskStatus::Review).unwrap();
+        assert_eq!(json, r#""review""#);
+        let status: TaskStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(status, TaskStatus::Review);
+    }
+
+    #[test]
+    fn tasks_json_without_review_submitter_loads_with_none() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("tasks.json");
+        std::fs::write(
+            &path,
+            br#"[
+                {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "title": "legacy open",
+                    "description": null,
+                    "status": "open",
+                    "assignee": null,
+                    "created_by": "alice",
+                    "created_at_secs": 1,
+                    "updated_at_secs": 1,
+                    "notes": [],
+                    "blocked_by": [],
+                    "todos": [],
+                    "comments": []
+                },
+                {
+                    "id": "00000000-0000-0000-0000-000000000002",
+                    "title": "legacy done",
+                    "description": null,
+                    "status": "done",
+                    "assignee": "bob",
+                    "planned_assignee": null,
+                    "worktree": null,
+                    "created_by": "alice",
+                    "created_at_secs": 1,
+                    "updated_at_secs": 1,
+                    "notes": [],
+                    "blocked_by": [],
+                    "todos": [],
+                    "comments": []
+                }
+            ]"#,
+        )
+        .unwrap();
+
+        let s = TaskStore::load_or_init(path).unwrap();
+
+        assert_eq!(s.all().len(), 2);
+        assert!(s.all().iter().all(|t| t.review_submitter.is_none()));
     }
 
     #[test]

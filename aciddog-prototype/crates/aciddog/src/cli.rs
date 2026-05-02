@@ -460,7 +460,7 @@ pub enum TaskCommand {
         #[arg(long)]
         assignee: Option<String>,
         /// Only show tasks in this status
-        /// (open|assigned|in_progress|done|cancelled).
+        /// (planning|open|assigned|approved|in_progress|review|done|cancelled).
         #[arg(long)]
         status: Option<String>,
         /// Only show tasks assigned to the calling agent/worker.
@@ -480,6 +480,8 @@ pub enum TaskCommand {
         title: Option<String>,
         #[arg(long)]
         description: Option<String>,
+        /// New status
+        /// (planning|open|assigned|approved|in_progress|review|done|cancelled).
         #[arg(long)]
         status: Option<String>,
         #[arg(long)]
@@ -530,6 +532,30 @@ pub enum TaskCommand {
     /// Atomically claim the oldest unassigned task and move it to
     /// `in_progress` with the calling agent as assignee.
     Take,
+    /// Submit an in-progress task for reviewer sign-off.
+    Review {
+        #[arg(long)]
+        id: Uuid,
+        #[arg(long)]
+        reviewer: String,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Approve a task assigned to you for review.
+    ReviewApprove {
+        #[arg(long)]
+        id: Uuid,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Reject a task assigned to you for review and send it back to
+    /// the implementer.
+    ReviewReject {
+        #[arg(long)]
+        id: Uuid,
+        #[arg(long)]
+        reason: String,
+    },
     /// Append a note to a task.
     Note {
         #[arg(long)]
@@ -1357,6 +1383,86 @@ mod tests {
                 cmd: TaskCommand::Take
             }
         ));
+    }
+
+    #[test]
+    fn agent_args_parses_task_review() {
+        let id = Uuid::new_v4();
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "task",
+            "review",
+            "--id",
+            &id.to_string(),
+            "--reviewer",
+            "reviewer",
+            "--note",
+            "ready",
+        ])
+        .unwrap();
+        match args.cmd {
+            AgentCommand::Task {
+                cmd:
+                    TaskCommand::Review {
+                        id: parsed,
+                        reviewer,
+                        note,
+                    },
+            } => {
+                assert_eq!(parsed, id);
+                assert_eq!(reviewer, "reviewer");
+                assert_eq!(note.as_deref(), Some("ready"));
+            }
+            other => panic!("expected Task::Review, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_task_review_approve() {
+        let id = Uuid::new_v4();
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "task",
+            "review-approve",
+            "--id",
+            &id.to_string(),
+            "--note",
+            "ship it",
+        ])
+        .unwrap();
+        match args.cmd {
+            AgentCommand::Task {
+                cmd: TaskCommand::ReviewApprove { id: parsed, note },
+            } => {
+                assert_eq!(parsed, id);
+                assert_eq!(note.as_deref(), Some("ship it"));
+            }
+            other => panic!("expected Task::ReviewApprove, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_task_review_reject() {
+        let id = Uuid::new_v4();
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "task",
+            "review-reject",
+            "--id",
+            &id.to_string(),
+            "--reason",
+            "needs tests",
+        ])
+        .unwrap();
+        match args.cmd {
+            AgentCommand::Task {
+                cmd: TaskCommand::ReviewReject { id: parsed, reason },
+            } => {
+                assert_eq!(parsed, id);
+                assert_eq!(reason, "needs tests");
+            }
+            other => panic!("expected Task::ReviewReject, got {other:?}"),
+        }
     }
 
     #[test]

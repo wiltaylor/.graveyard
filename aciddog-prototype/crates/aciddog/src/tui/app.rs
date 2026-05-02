@@ -906,6 +906,18 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             let (k, s, b) = task_op_summary(&TaskCommand::Take);
             ChatBlock::task_op(k, s, b)
         }
+        RequestCmd::TaskReview { id, reviewer, note } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Review { id, reviewer, note });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskReviewApprove { id, note } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::ReviewApprove { id, note });
+            ChatBlock::task_op(k, s, b)
+        }
+        RequestCmd::TaskReviewReject { id, reason } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::ReviewReject { id, reason });
+            ChatBlock::task_op(k, s, b)
+        }
         RequestCmd::TaskNote { id, body } => {
             let (k, s, b) = task_op_summary(&TaskCommand::Note { id, body });
             ChatBlock::task_op(k, s, b)
@@ -3794,6 +3806,15 @@ impl App {
             RequestCmd::TaskTake => {
                 self.handle_task_take(idx, reply);
             }
+            RequestCmd::TaskReview { id, reviewer, note } => {
+                self.handle_task_review(idx, id, reviewer, note, reply);
+            }
+            RequestCmd::TaskReviewApprove { id, note } => {
+                self.handle_task_review_approve(idx, id, note, reply);
+            }
+            RequestCmd::TaskReviewReject { id, reason } => {
+                self.handle_task_review_reject(idx, id, reason, reply);
+            }
             RequestCmd::TaskNote { id, body } => {
                 self.handle_task_note(idx, id, body, reply);
             }
@@ -6413,6 +6434,80 @@ impl App {
         }
     }
 
+    fn handle_task_review(
+        &mut self,
+        sender_idx: usize,
+        id: Uuid,
+        reviewer: String,
+        note: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(sender) = self.chats.get(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        let who = sender.display_name.clone();
+        match self.submit_task_for_review(id, reviewer, note, &who) {
+            Ok(reviewer) => {
+                let _ = reply.send(Response::ok(format!("submitted for review to {reviewer}")));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
+    fn handle_task_review_approve(
+        &mut self,
+        sender_idx: usize,
+        id: Uuid,
+        note: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(sender) = self.chats.get(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        let who = sender.display_name.clone();
+        match self.approve_review_task(id, note, &who) {
+            Ok(implementer) if implementer.is_empty() => {
+                let _ = reply.send(Response::ok("review approved"));
+            }
+            Ok(implementer) => {
+                let _ = reply.send(Response::ok(format!(
+                    "review approved; notified {implementer}"
+                )));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
+    fn handle_task_review_reject(
+        &mut self,
+        sender_idx: usize,
+        id: Uuid,
+        reason: String,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(sender) = self.chats.get(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        let who = sender.display_name.clone();
+        match self.reject_review_task(id, reason, &who) {
+            Ok(implementer) => {
+                let _ = reply.send(Response::ok(format!(
+                    "review rejected; sent back to {implementer}"
+                )));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
     fn handle_info(&mut self, reply: tokio::sync::oneshot::Sender<Response>) {
         let body = crate::info::render(chrono::Utc::now());
         let _ = reply.send(Response::ok(body));
@@ -8054,6 +8149,59 @@ impl App {
         }
     }
 
+    fn seed_task_group_assignees(&mut self) {
+        let groups: Vec<String> = self
+            .config
+            .groups()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        self.tasks.set_group_assignees(groups);
+    }
+
+    fn push_review_boundary_message(&mut self, from: &str, to: &str, body: String) -> bool {
+        if to == crate::config::USER_INBOX_ID {
+            self.push_user_inbox(from.to_string(), body);
+            return true;
+        }
+        match self.classify_assignee(to) {
+            Some(AssigneeKind::Chat) => {
+                self.deliver_active_user_message(to, body);
+                true
+            }
+            Some(AssigneeKind::Group) => {
+                if let Some(leader) = self.config.group_leader(to).map(str::to_string) {
+                    self.deliver_active_user_message(&leader, body);
+                    true
+                } else {
+                    false
+                }
+            }
+            Some(AssigneeKind::User) => {
+                self.push_user_inbox(from.to_string(), body);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn add_review_note_if_present(
+        &mut self,
+        task_id: Uuid,
+        author: &str,
+        note: Option<String>,
+    ) -> Result<(), crate::tasks::TaskError> {
+        let Some(note) = note else {
+            return Ok(());
+        };
+        let note = note.trim().to_string();
+        if note.is_empty() {
+            return Ok(());
+        }
+        self.tasks.add_note(task_id, author.to_string(), note)?;
+        Ok(())
+    }
+
     /// Approve a `Planning` task: route it to its `planned_assignee`,
     /// flip status to `Approved`, and actively deliver a user-style
     /// message to the new assignee (or to a group's leader) so the
@@ -8151,6 +8299,159 @@ impl App {
             }
         }
         Ok(creator)
+    }
+
+    /// Submit an in-progress task for reviewer sign-off. The task
+    /// store performs the lifecycle mutation; the app owns runtime
+    /// recipient validation, group seeding, optional notes, and the
+    /// active wake to the reviewer.
+    pub(crate) fn submit_task_for_review(
+        &mut self,
+        task_id: Uuid,
+        reviewer: String,
+        note: Option<String>,
+        submitter: &str,
+    ) -> Result<String, String> {
+        if self.classify_assignee(&reviewer).is_none() {
+            return Err(format!(
+                "no agent / worker / group / user named `{reviewer}`"
+            ));
+        }
+        self.seed_task_group_assignees();
+        let reviewer = self
+            .tasks
+            .submit_for_review(task_id, reviewer, submitter.to_string())
+            .map_err(|e| e.to_string())?;
+        self.add_review_note_if_present(task_id, submitter, note)
+            .map_err(|e| e.to_string())?;
+
+        let title = self
+            .tasks
+            .get(task_id)
+            .map(|t| t.title.clone())
+            .unwrap_or_default();
+        let short = task_id.to_string();
+        let short = short.get(..8).unwrap_or(&short).to_string();
+        let msg = format!(
+            "Task {short} (\"{title}\") is ready for your review from {submitter}.\n\n\
+             Use `aciddog task review-approve --id {task_id}` to sign off, or \
+             `aciddog task review-reject --id {task_id} --reason <text>` to send it back."
+        );
+        self.push_review_boundary_message(submitter, &reviewer, msg);
+        Ok(reviewer)
+    }
+
+    /// Approve a review task, advance it to Done, and actively wake
+    /// the original implementer returned by the task store. If older
+    /// data or runtime drift makes that recipient unusable, fall back
+    /// to a best-effort passive notice to the prior assignee.
+    pub(crate) fn approve_review_task(
+        &mut self,
+        task_id: Uuid,
+        note: Option<String>,
+        approver: &str,
+    ) -> Result<String, String> {
+        let (title, prior_assignee, prior_submitter) = self
+            .tasks
+            .get(task_id)
+            .map(|t| {
+                (
+                    t.title.clone(),
+                    t.assignee.clone(),
+                    t.review_submitter.clone(),
+                )
+            })
+            .unwrap_or_default();
+        let implementer = self
+            .tasks
+            .review_approve(task_id, approver.to_string())
+            .map_err(|e| e.to_string())?;
+        self.add_review_note_if_present(task_id, approver, note)
+            .map_err(|e| e.to_string())?;
+
+        let recipient = if implementer.is_empty() {
+            prior_submitter.clone().unwrap_or_default()
+        } else {
+            implementer.clone()
+        };
+        let short = task_id.to_string();
+        let short = short.get(..8).unwrap_or(&short).to_string();
+        let msg = format!(
+            "Review approved for task {short} (\"{title}\") by {approver}.\n\n\
+             Status is now `done`."
+        );
+        if recipient.is_empty() || !self.push_review_boundary_message(approver, &recipient, msg) {
+            if let Some(fallback) = prior_assignee {
+                tracing::warn!(
+                    recipient = %recipient,
+                    fallback = %fallback,
+                    %task_id,
+                    "review approval recipient unresolved; falling back to prior assignee notice"
+                );
+                self.notify_assignee(&fallback, task_id, &title, "review approved");
+            } else {
+                tracing::warn!(
+                    recipient = %recipient,
+                    %task_id,
+                    "review approval recipient unresolved and no prior assignee fallback exists"
+                );
+            }
+        }
+        Ok(recipient)
+    }
+
+    /// Reject a review task, return it to the original implementer,
+    /// and actively wake that implementer with the rejection reason.
+    pub(crate) fn reject_review_task(
+        &mut self,
+        task_id: Uuid,
+        reason: String,
+        rejecter: &str,
+    ) -> Result<String, String> {
+        let (title, prior_assignee, prior_submitter) = self
+            .tasks
+            .get(task_id)
+            .map(|t| {
+                (
+                    t.title.clone(),
+                    t.assignee.clone(),
+                    t.review_submitter.clone(),
+                )
+            })
+            .unwrap_or_default();
+        let implementer = self
+            .tasks
+            .review_reject(task_id, reason.clone(), rejecter.to_string())
+            .map_err(|e| e.to_string())?;
+        let recipient = if implementer.is_empty() {
+            prior_submitter.clone().unwrap_or_default()
+        } else {
+            implementer.clone()
+        };
+        let short = task_id.to_string();
+        let short = short.get(..8).unwrap_or(&short).to_string();
+        let msg = format!(
+            "Review rejected for task {short} (\"{title}\") by {rejecter}. Reason: {reason}\n\n\
+             The task is back in your queue with status `in_progress`."
+        );
+        if recipient.is_empty() || !self.push_review_boundary_message(rejecter, &recipient, msg) {
+            if let Some(fallback) = prior_assignee {
+                tracing::warn!(
+                    recipient = %recipient,
+                    fallback = %fallback,
+                    %task_id,
+                    "review rejection recipient unresolved; falling back to prior assignee notice"
+                );
+                self.notify_assignee(&fallback, task_id, &title, "review rejected");
+            } else {
+                tracing::warn!(
+                    recipient = %recipient,
+                    %task_id,
+                    "review rejection recipient unresolved and no prior assignee fallback exists"
+                );
+            }
+        }
+        Ok(recipient)
     }
 
     /// Form-level Approve button: approve the planning task, surface a
@@ -12018,6 +12319,24 @@ impl App {
                     self.tasks_screen.reclamp(&rows);
                 }
             }
+            KeyCode::Char('r') => {
+                if let Some(id) = self.tasks_screen.selected_task_id(&rows) {
+                    let submittable = self
+                        .tasks
+                        .get(id)
+                        .map(|t| {
+                            t.status == crate::tasks::TaskStatus::InProgress
+                                && t.assignee.as_deref() == Some(OPERATOR)
+                        })
+                        .unwrap_or(false);
+                    if !submittable {
+                        self.tasks_screen.status_msg =
+                            Some("only your in-progress tasks can be submitted for review".into());
+                    } else {
+                        self.open_review_picker(id);
+                    }
+                }
+            }
             // Approve the selected planning task: route it to its
             // pre-stored `planned_assignee`, flip status to Approved,
             // and notify the new assignee. No-op (with a status msg)
@@ -12773,7 +13092,30 @@ impl App {
         }
     }
 
+    fn reviewer_options(&self) -> Vec<String> {
+        let mut options = Vec::new();
+        for c in &self.chats {
+            options.push(c.display_name.clone());
+        }
+        options.push(crate::config::USER_INBOX_ID.to_string());
+        options
+    }
+
+    fn open_review_picker(&mut self, task_id: Uuid) {
+        let options = self.reviewer_options();
+        if options.is_empty() {
+            self.tasks_screen.status_msg = Some("no reviewers available".into());
+            return;
+        }
+        self.tasks_screen.prompt = Some(TasksPrompt::ReviewPicker {
+            task_id,
+            options,
+            selected: 0,
+        });
+    }
+
     fn handle_task_prompt_key(&mut self, code: KeyCode) {
+        let mut submit_review: Option<(Uuid, String)> = None;
         let prompt = self.tasks_screen.prompt.as_mut();
         let Some(prompt) = prompt else { return };
         match prompt {
@@ -13054,6 +13396,51 @@ impl App {
                 KeyCode::Char(c) => body.push(c),
                 _ => {}
             },
+            TasksPrompt::ReviewPicker {
+                task_id,
+                options,
+                selected,
+            } => match code {
+                KeyCode::Esc => {
+                    self.tasks_screen.prompt = None;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if !options.is_empty() {
+                        *selected = (*selected + 1) % options.len();
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if !options.is_empty() {
+                        *selected = if *selected == 0 {
+                            options.len() - 1
+                        } else {
+                            *selected - 1
+                        };
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(reviewer) = options.get(*selected).cloned() {
+                        submit_review = Some((*task_id, reviewer));
+                    } else {
+                        self.tasks_screen.status_msg = Some("no reviewer selected".into());
+                        self.tasks_screen.prompt = None;
+                    }
+                }
+                _ => {}
+            },
+        }
+        if let Some((task_id, reviewer)) = submit_review {
+            match self.submit_task_for_review(task_id, reviewer, None, OPERATOR) {
+                Ok(reviewer) => {
+                    self.tasks_screen.status_msg = Some(format!("submitted → {reviewer}"));
+                }
+                Err(e) => {
+                    self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                }
+            }
+            self.tasks_screen.prompt = None;
+            let rows = TasksScreen::rows(&self.tasks);
+            self.tasks_screen.reclamp(&rows);
         }
     }
 
@@ -15263,6 +15650,21 @@ pub(crate) fn task_op_summary(
             String::new(),
         ),
         TaskCommand::Take => (TaskOpKind::Take, "Take".to_string(), String::new()),
+        TaskCommand::Review { id, reviewer, note } => (
+            TaskOpKind::Update,
+            format!("Review: {} -> {reviewer}", short_id(*id)),
+            note.clone().unwrap_or_default(),
+        ),
+        TaskCommand::ReviewApprove { id, note } => (
+            TaskOpKind::Update,
+            format!("Review approve: {}", short_id(*id)),
+            note.clone().unwrap_or_default(),
+        ),
+        TaskCommand::ReviewReject { id, reason } => (
+            TaskOpKind::Update,
+            format!("Review reject: {}", short_id(*id)),
+            reason.clone(),
+        ),
         TaskCommand::Note { id, body } => (
             TaskOpKind::Note,
             format!("Note on {}", short_id(*id)),
@@ -22486,6 +22888,49 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
             app.tasks.get(id).unwrap().status,
             crate::tasks::TaskStatus::Assigned
         );
+    }
+
+    #[test]
+    fn r_opens_reviewer_picker_and_submits_selected_task() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add(
+                "ready".into(),
+                None,
+                Some(OPERATOR.to_string()),
+                "seed".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        app.tasks
+            .update(
+                id,
+                TaskPatch {
+                    status: Some(crate::tasks::TaskStatus::InProgress),
+                    ..Default::default()
+                },
+                OPERATOR,
+            )
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert!(matches!(
+            app.tasks_screen.prompt,
+            Some(TasksPrompt::ReviewPicker { .. })
+        ));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        let t = app.tasks.get(id).unwrap();
+        assert_eq!(t.status, crate::tasks::TaskStatus::Review);
+        assert_eq!(t.assignee.as_deref(), Some("a"));
+        assert_eq!(t.review_submitter.as_deref(), Some(OPERATOR));
+        assert!(app.tasks_screen.prompt.is_none());
     }
 
     #[test]

@@ -240,6 +240,24 @@ pub enum RequestCmd {
     },
     /// Atomically claim the oldest unassigned task for the caller.
     TaskTake,
+    /// Submit an in-progress task for reviewer sign-off.
+    TaskReview {
+        id: Uuid,
+        reviewer: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// Approve a task assigned to the caller for review.
+    TaskReviewApprove {
+        id: Uuid,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// Reject a task assigned to the caller for review.
+    TaskReviewReject {
+        id: Uuid,
+        reason: String,
+    },
     /// Append a standalone note to a task.
     TaskNote {
         id: Uuid,
@@ -1124,6 +1142,78 @@ mod tests {
         assert!(s.contains("\"cmd\":\"task_take\""), "got: {s}");
         let back: Request = serde_json::from_str(&s).unwrap();
         assert!(matches!(back.cmd, RequestCmd::TaskTake));
+    }
+
+    #[test]
+    fn task_review_roundtrips() {
+        let id = Uuid::new_v4();
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::TaskReview {
+                id,
+                reviewer: "reviewer".into(),
+                note: Some("ready".into()),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"task_review\""), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::TaskReview {
+                id: parsed,
+                reviewer,
+                note,
+            } => {
+                assert_eq!(parsed, id);
+                assert_eq!(reviewer, "reviewer");
+                assert_eq!(note.as_deref(), Some("ready"));
+            }
+            other => panic!("expected TaskReview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_review_approve_roundtrips() {
+        let id = Uuid::new_v4();
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::TaskReviewApprove {
+                id,
+                note: Some("ship it".into()),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"task_review_approve\""), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::TaskReviewApprove { id: parsed, note } => {
+                assert_eq!(parsed, id);
+                assert_eq!(note.as_deref(), Some("ship it"));
+            }
+            other => panic!("expected TaskReviewApprove, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_review_reject_roundtrips() {
+        let id = Uuid::new_v4();
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::TaskReviewReject {
+                id,
+                reason: "needs tests".into(),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"task_review_reject\""), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::TaskReviewReject { id: parsed, reason } => {
+                assert_eq!(parsed, id);
+                assert_eq!(reason, "needs tests");
+            }
+            other => panic!("expected TaskReviewReject, got {other:?}"),
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! State and pure logic for the in-TUI Tasks screen.
 //!
 //! The screen presents tasks grouped by status (Open → Assigned →
-//! In-Progress → Done → Cancelled), a modal add/edit form, a detail
+//! In-Progress → Review → Done → Cancelled), a modal add/edit form, a detail
 //! modal, and one-line prompts (note body, delete-confirm) that
 //! piggy-back on the existing bottom input bar. `TasksScreen` owns
 //! all UI-local state; the `TaskStore` stays the single source of
@@ -38,12 +38,13 @@ pub fn decorate_assignee_label(name: &str, cfg: &crate::config::AciddogConfig) -
 /// in sync. `Planning` leads (it's pre-handoff); `Approved` sits
 /// between `Assigned` and `InProgress` because an approved plan is
 /// queued work that hasn't been started yet.
-pub const STATUS_ORDER: [TaskStatus; 7] = [
+pub const STATUS_ORDER: [TaskStatus; 8] = [
     TaskStatus::Planning,
     TaskStatus::Open,
     TaskStatus::Assigned,
     TaskStatus::Approved,
     TaskStatus::InProgress,
+    TaskStatus::Review,
     TaskStatus::Done,
     TaskStatus::Cancelled,
 ];
@@ -51,10 +52,11 @@ pub const STATUS_ORDER: [TaskStatus; 7] = [
 /// Statuses the operator can cycle through with the `s` key. Excludes
 /// `Planning` and `Approved` — those flow through the dedicated
 /// approval workflow rather than ad-hoc status edits.
-pub const CYCLE_STATUS_ORDER: [TaskStatus; 5] = [
+pub const CYCLE_STATUS_ORDER: [TaskStatus; 6] = [
     TaskStatus::Open,
     TaskStatus::Assigned,
     TaskStatus::InProgress,
+    TaskStatus::Review,
     TaskStatus::Done,
     TaskStatus::Cancelled,
 ];
@@ -946,6 +948,13 @@ pub enum TasksPrompt {
     /// `notify_planning_creator_of_comment`) and the task remains in
     /// `Planning` so the agent can revise.
     RejectPlan { task_id: Uuid, body: String },
+    /// Selecting a reviewer for an `InProgress` task before handing
+    /// it to the review lifecycle.
+    ReviewPicker {
+        task_id: Uuid,
+        options: Vec<String>,
+        selected: usize,
+    },
 }
 
 /// The two sub-entity overlays (TODOs and Comments) that sit on top
@@ -1143,6 +1152,14 @@ impl TasksScreen {
             .map(|t| t.status)
             .ok_or(TaskError::NotFound(task_id))?;
         let next = next_status(current);
+        if next == TaskStatus::Review {
+            store.submit_for_review(task_id, OPERATOR.to_string(), OPERATOR.to_string())?;
+            return Ok(());
+        }
+        if current == TaskStatus::Review && next == TaskStatus::Done {
+            store.review_approve(task_id, OPERATOR.to_string())?;
+            return Ok(());
+        }
         store.update(
             task_id,
             TaskPatch {
@@ -1552,8 +1569,8 @@ mod tests {
     fn rows_group_tasks_under_status_headers_in_order() {
         let s = seeded_store();
         let rows = TasksScreen::rows(&s);
-        // 7 headers + 2 tasks.
-        assert_eq!(rows.len(), 9);
+        // 8 headers + 2 tasks.
+        assert_eq!(rows.len(), 10);
         assert!(matches!(rows[0], TaskRow::Header(TaskStatus::Planning)));
         assert!(matches!(rows[1], TaskRow::Header(TaskStatus::Open)));
         assert!(matches!(rows[2], TaskRow::Task(_)));
@@ -1561,8 +1578,9 @@ mod tests {
         assert!(matches!(rows[4], TaskRow::Task(_)));
         assert!(matches!(rows[5], TaskRow::Header(TaskStatus::Approved)));
         assert!(matches!(rows[6], TaskRow::Header(TaskStatus::InProgress)));
-        assert!(matches!(rows[7], TaskRow::Header(TaskStatus::Done)));
-        assert!(matches!(rows[8], TaskRow::Header(TaskStatus::Cancelled)));
+        assert!(matches!(rows[7], TaskRow::Header(TaskStatus::Review)));
+        assert!(matches!(rows[8], TaskRow::Header(TaskStatus::Done)));
+        assert!(matches!(rows[9], TaskRow::Header(TaskStatus::Cancelled)));
     }
 
     #[test]
@@ -1981,7 +1999,8 @@ mod tests {
     fn next_status_cycles_through_all_and_wraps() {
         assert_eq!(next_status(TaskStatus::Open), TaskStatus::Assigned);
         assert_eq!(next_status(TaskStatus::Assigned), TaskStatus::InProgress);
-        assert_eq!(next_status(TaskStatus::InProgress), TaskStatus::Done);
+        assert_eq!(next_status(TaskStatus::InProgress), TaskStatus::Review);
+        assert_eq!(next_status(TaskStatus::Review), TaskStatus::Done);
         assert_eq!(next_status(TaskStatus::Done), TaskStatus::Cancelled);
         assert_eq!(next_status(TaskStatus::Cancelled), TaskStatus::Open);
     }
@@ -2086,6 +2105,7 @@ mod tests {
         for expected in [
             TaskStatus::Assigned,
             TaskStatus::InProgress,
+            TaskStatus::Review,
             TaskStatus::Done,
             TaskStatus::Cancelled,
             TaskStatus::Open,
@@ -2192,6 +2212,7 @@ mod tests {
             status: TaskStatus::Open,
             assignee: None,
             planned_assignee: None,
+            review_submitter: None,
             worktree: None,
             created_by: "a".into(),
             created_at_secs: 0,
