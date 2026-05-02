@@ -967,10 +967,7 @@ mod tests {
         };
         let s = serde_json::to_string(&req).unwrap();
         assert!(s.contains("\"status\":\"planning\""), "got: {s}");
-        assert!(
-            s.contains("\"planned_assignee\":\"builders\""),
-            "got: {s}"
-        );
+        assert!(s.contains("\"planned_assignee\":\"builders\""), "got: {s}");
         let back: Request = serde_json::from_str(&s).unwrap();
         match back.cmd {
             RequestCmd::TaskAdd {

@@ -490,10 +490,7 @@ pub enum TaskCommand {
         planned_assignee: Option<String>,
         /// Clear the planned assignee (mutually exclusive with
         /// `--planned-assignee`). Only meaningful on planning tasks.
-        #[arg(
-            long = "clear-planned-assignee",
-            conflicts_with = "planned_assignee"
-        )]
+        #[arg(long = "clear-planned-assignee", conflicts_with = "planned_assignee")]
         clear_planned_assignee: bool,
         /// Append a note to the task log. Recommended when
         /// reassigning.

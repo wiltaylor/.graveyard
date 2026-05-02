@@ -1740,13 +1740,7 @@ mod tests {
     fn add_planning_rejects_empty_planned_assignee() {
         let mut s = mk_store();
         assert!(matches!(
-            s.add_planning(
-                "t".into(),
-                None,
-                "   ".into(),
-                "planner".into(),
-                Vec::new()
-            ),
+            s.add_planning("t".into(), None, "   ".into(), "planner".into(), Vec::new()),
             Err(TaskError::PlanningRequiresUserAndTarget(_))
         ));
     }

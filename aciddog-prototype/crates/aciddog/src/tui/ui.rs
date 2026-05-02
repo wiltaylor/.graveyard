@@ -1192,7 +1192,10 @@ fn render_tasks_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
         // the `y` approve hint up-front; otherwise show the standard
         // shortcut row.
         let rows = TasksScreen::rows(&app.tasks);
-        let hint = match app.tasks_screen.selected_task_id(&rows).and_then(|id| app.tasks.get(id))
+        let hint = match app
+            .tasks_screen
+            .selected_task_id(&rows)
+            .and_then(|id| app.tasks.get(id))
         {
             Some(t)
                 if t.status == crate::tasks::TaskStatus::Planning
@@ -1946,8 +1949,8 @@ fn render_inbox_screen(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     // Detail pane / overlay
     match &app.inbox_screen.mode {
         InboxMode::List => {
-            let detail_focused = focused
-                && app.inbox_screen.pane == super::inbox_view::InboxPane::Detail;
+            let detail_focused =
+                focused && app.inbox_screen.pane == super::inbox_view::InboxPane::Detail;
             let detail_block = Block::default()
                 .borders(Borders::ALL)
                 .title(" detail ")
@@ -2708,9 +2711,7 @@ fn render_task_form(f: &mut Frame, area: Rect, app: &mut App) {
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default()
-                .fg(accent)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(accent).add_modifier(Modifier::BOLD)
         };
         let btn_w = label.chars().count() as u16 + 2; // brackets
         let btn_rect = Rect::new(bx, button_y, btn_w, 1);
@@ -3136,12 +3137,7 @@ fn render_form_section_box(
             let Some((item_id, line)) = rows.get(item_idx) else {
                 break;
             };
-            let row_rect = Rect::new(
-                box_inner.x,
-                box_inner.y + vrow as u16,
-                box_inner.width,
-                1,
-            );
+            let row_rect = Rect::new(box_inner.x, box_inner.y + vrow as u16, box_inner.width, 1);
             let is_cursor = focused && item_idx == cursor_idx;
             let style = if is_cursor {
                 Style::default()

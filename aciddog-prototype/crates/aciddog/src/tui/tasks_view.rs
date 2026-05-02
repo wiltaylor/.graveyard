@@ -132,10 +132,7 @@ impl FormField {
     }
 
     pub fn is_button(self) -> bool {
-        matches!(
-            self,
-            Self::Ok | Self::Cancel | Self::Approve | Self::Reject
-        )
+        matches!(self, Self::Ok | Self::Cancel | Self::Approve | Self::Reject)
     }
 }
 
@@ -1425,10 +1422,7 @@ pub fn next_status(s: TaskStatus) -> TaskStatus {
     // dedicated approval workflow. If we land on one of those (e.g.
     // an unapproved plan that someone manually status-edits), drop
     // back to the start of the cycle.
-    let pos = CYCLE_STATUS_ORDER
-        .iter()
-        .position(|x| *x == s)
-        .unwrap_or(0);
+    let pos = CYCLE_STATUS_ORDER.iter().position(|x| *x == s).unwrap_or(0);
     CYCLE_STATUS_ORDER[(pos + 1) % CYCLE_STATUS_ORDER.len()]
 }
 

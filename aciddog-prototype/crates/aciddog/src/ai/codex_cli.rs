@@ -186,7 +186,8 @@ impl CodexCliCore {
     }
 
     fn validate_tools(&self) -> Result<(), AIError> {
-        let allowed: std::collections::HashSet<&str> = CODEX_ALLOWED_TOOLS.iter().copied().collect();
+        let allowed: std::collections::HashSet<&str> =
+            CODEX_ALLOWED_TOOLS.iter().copied().collect();
         for tool in &self.allowed_tools {
             if tool.is_empty() || tool.contains(',') || tool.chars().any(char::is_whitespace) {
                 return Err(AIError::InvalidToolName(tool.clone()));
@@ -762,9 +763,7 @@ pub(crate) fn parse_codex_line(
             let thread_id_str = value.get("thread_id").and_then(Value::as_str);
             let thread_id = thread_id_str.and_then(|s| Uuid::parse_str(s).ok());
             if let Some(id) = thread_id {
-                let mut guard = codex_session_id
-                    .lock()
-                    .expect("codex_session_id poisoned");
+                let mut guard = codex_session_id.lock().expect("codex_session_id poisoned");
                 *guard = Some(id);
                 vec![AIEvent::SystemInit {
                     session_id: id,
@@ -1191,8 +1190,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_failure_surfaces_as_error_event_in_stream() {
-        let mut core =
-            fresh("i", vec![]).with_binary("/this/path/definitely/does/not/exist/codex");
+        let mut core = fresh("i", vec![]).with_binary("/this/path/definitely/does/not/exist/codex");
         let mut stream = core.turn("hi").await.expect("turn returns ok");
         let mut saw_error = false;
         while let Some(ev) = stream.next().await {
@@ -1228,7 +1226,8 @@ mod tests {
     #[test]
     fn parse_thread_started_emits_systeminit_and_captures_session_id() {
         let id = fresh_session_slot();
-        let line = r#"{"type":"thread.started","thread_id":"019de30c-c108-7b02-b492-63871c756f0a"}"#;
+        let line =
+            r#"{"type":"thread.started","thread_id":"019de30c-c108-7b02-b492-63871c756f0a"}"#;
         let evs = parse_codex_line(line, &id);
         assert_eq!(evs.len(), 1);
         match &evs[0] {
@@ -1333,7 +1332,8 @@ mod tests {
     #[test]
     fn parse_empty_agent_message_becomes_other() {
         let id = fresh_session_slot();
-        let line = r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":""}}"#;
+        let line =
+            r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":""}}"#;
         let evs = parse_codex_line(line, &id);
         assert_eq!(evs.len(), 1);
         assert!(matches!(evs[0], AIEvent::Other(_)));

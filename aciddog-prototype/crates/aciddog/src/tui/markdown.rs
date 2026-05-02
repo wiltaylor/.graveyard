@@ -118,17 +118,15 @@ impl Builder {
         // Newlines inside a table cell should never come from pulldown-cmark in
         // practice, but if they do, collapse them to a space (cells are
         // single-line in this renderer).
-        let in_cell = self
-            .current_table
-            .as_ref()
-            .is_some_and(|t| t.in_cell);
+        let in_cell = self.current_table.as_ref().is_some_and(|t| t.in_cell);
         let style = self.inline_style();
         // Text may contain newlines (e.g. inside code blocks elsewhere). For
         // regular prose, split on '\n' and start a new Line for each.
         let mut parts = text.split('\n');
         if let Some(first) = parts.next() {
             if !first.is_empty() {
-                self.target_spans().push(Span::styled(first.to_string(), style));
+                self.target_spans()
+                    .push(Span::styled(first.to_string(), style));
             }
         }
         for rest in parts {
@@ -138,14 +136,16 @@ impl Builder {
                 self.end_line();
             }
             if !rest.is_empty() {
-                self.target_spans().push(Span::styled(rest.to_string(), style));
+                self.target_spans()
+                    .push(Span::styled(rest.to_string(), style));
             }
         }
     }
 
     fn push_code(&mut self, text: &str) {
         let style = Style::default().fg(Color::LightMagenta).bg(Color::Black);
-        self.target_spans().push(Span::styled(text.to_string(), style));
+        self.target_spans()
+            .push(Span::styled(text.to_string(), style));
     }
 
     fn end_line(&mut self) {
@@ -225,37 +225,40 @@ impl Builder {
         // Pad a cell's spans out to `target_width` per `align`. Padding is
         // ASCII spaces appended as a raw span; existing inline styling on the
         // cell's spans is preserved (so e.g. inline-bold survives the pad).
-        let pad_cell =
-            |cell: Vec<Span<'static>>, width: usize, align: Alignment, bold: bool| -> Vec<Span<'static>> {
-                let content_w = cell
-                    .iter()
-                    .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
-                    .sum::<usize>();
-                let pad = width.saturating_sub(content_w);
-                let (left, right) = match align {
-                    Alignment::Right => (pad, 0),
-                    Alignment::Center => (pad / 2, pad - pad / 2),
-                    // pulldown-cmark's `Alignment::None` is treated as left,
-                    // matching GFM default.
-                    Alignment::Left | Alignment::None => (0, pad),
-                };
-                let mut out: Vec<Span<'static>> = Vec::with_capacity(cell.len() + 2);
-                if left > 0 {
-                    out.push(Span::raw(" ".repeat(left)));
-                }
-                if bold {
-                    for s in cell {
-                        let style = s.style.add_modifier(Modifier::BOLD);
-                        out.push(Span::styled(s.content, style));
-                    }
-                } else {
-                    out.extend(cell);
-                }
-                if right > 0 {
-                    out.push(Span::raw(" ".repeat(right)));
-                }
-                out
+        let pad_cell = |cell: Vec<Span<'static>>,
+                        width: usize,
+                        align: Alignment,
+                        bold: bool|
+         -> Vec<Span<'static>> {
+            let content_w = cell
+                .iter()
+                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                .sum::<usize>();
+            let pad = width.saturating_sub(content_w);
+            let (left, right) = match align {
+                Alignment::Right => (pad, 0),
+                Alignment::Center => (pad / 2, pad - pad / 2),
+                // pulldown-cmark's `Alignment::None` is treated as left,
+                // matching GFM default.
+                Alignment::Left | Alignment::None => (0, pad),
             };
+            let mut out: Vec<Span<'static>> = Vec::with_capacity(cell.len() + 2);
+            if left > 0 {
+                out.push(Span::raw(" ".repeat(left)));
+            }
+            if bold {
+                for s in cell {
+                    let style = s.style.add_modifier(Modifier::BOLD);
+                    out.push(Span::styled(s.content, style));
+                }
+            } else {
+                out.extend(cell);
+            }
+            if right > 0 {
+                out.push(Span::raw(" ".repeat(right)));
+            }
+            out
+        };
 
         // Header row.
         if !table.headers.is_empty() {
@@ -278,10 +281,7 @@ impl Builder {
             let mut spans: Vec<Span<'static>> = Vec::new();
             for (i, w) in col_widths.iter().enumerate() {
                 if i > 0 {
-                    spans.push(Span::styled(
-                        "─┼─".to_string(),
-                        sep_style,
-                    ));
+                    spans.push(Span::styled("─┼─".to_string(), sep_style));
                 }
                 spans.push(Span::styled("─".repeat(*w), sep_style));
             }
@@ -625,8 +625,14 @@ mod tests {
         // Body rows mention 1/2 and 3/4 respectively.
         let body1 = line_text(&lines[2]);
         let body2 = line_text(&lines[3]);
-        assert!(body1.contains('1') && body1.contains('2'), "body1: {body1:?}");
-        assert!(body2.contains('3') && body2.contains('4'), "body2: {body2:?}");
+        assert!(
+            body1.contains('1') && body1.contains('2'),
+            "body1: {body1:?}"
+        );
+        assert!(
+            body2.contains('3') && body2.contains('4'),
+            "body2: {body2:?}"
+        );
     }
 
     #[test]
@@ -663,9 +669,10 @@ mod tests {
         let lines = first_lines(&md);
         let header = &lines[0];
         // Header should contain a span with content "a" carrying BOLD.
-        let has_bold_a = header.spans.iter().any(|s| {
-            s.content == "a" && s.style.add_modifier.contains(Modifier::BOLD)
-        });
+        let has_bold_a = header
+            .spans
+            .iter()
+            .any(|s| s.content == "a" && s.style.add_modifier.contains(Modifier::BOLD));
         assert!(
             has_bold_a,
             "expected header to contain a bold span for 'a': {:?}",
