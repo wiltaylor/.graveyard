@@ -780,6 +780,7 @@ mod tests {
             memory_banks: vec![],
             compactions: vec![],
             channels: vec![],
+            repositories: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["t".into()],

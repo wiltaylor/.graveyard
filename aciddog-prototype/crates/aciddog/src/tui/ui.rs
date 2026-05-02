@@ -114,12 +114,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let right_col = body_cols[1];
 
     // Right column (top → bottom): Views list, Agents, Workflows (if
-    // any workflows are declared), Channels (if any channels are
-    // declared). Each list's height = border (2) + one line per entry;
-    // Agents takes whatever's left. When a channel / workflow is
-    // selected its members (or instances) nest beneath its row, so the
-    // panel can grow dynamically.
-    let views_height = (app.view_entries().len() as u16).saturating_add(2).max(3);
+    // any workflows are declared), Repos (if any repositories are
+    // declared), Channels (if any channels are declared). Each list's
+    // height = border (2) + one line per entry; Agents takes whatever's
+    // left. When a channel / workflow is selected its members (or
+    // instances) nest beneath its row, so the panel can grow
+    // dynamically.
     let channels_rows_len = channel_rows(app).len() as u16;
     let channels_height = if !app.channels.is_empty() {
         channels_rows_len.saturating_add(2).max(3)
@@ -132,16 +132,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
     } else {
         0
     };
+    let repos_height = if !app.repos.is_empty() {
+        repo_rows(app).len() as u16 + 2
+    } else {
+        0
+    };
 
-    let mut constraints: Vec<Constraint> = Vec::with_capacity(4);
-    constraints.push(Constraint::Length(views_height));
-    constraints.push(Constraint::Min(5));
-    if workflows_height > 0 {
-        constraints.push(Constraint::Length(workflows_height));
-    }
-    if channels_height > 0 {
-        constraints.push(Constraint::Length(channels_height));
-    }
+    let constraints = right_column_constraints(app);
     let right_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
@@ -150,6 +147,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let agents_area = right_rows[1];
     let mut next_idx = 2;
     let workflows_area = if workflows_height > 0 {
+        let r = right_rows[next_idx];
+        next_idx += 1;
+        Some(r)
+    } else {
+        None
+    };
+    let repos_area = if repos_height > 0 {
         let r = right_rows[next_idx];
         next_idx += 1;
         Some(r)
@@ -183,6 +187,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let views_inner = render_views_list(f, views_area, app);
     let list_inner = render_agent_list(f, agents_area, app);
     let workflows_inner = workflows_area.map(|a| render_workflows_list(f, a, app));
+    let repos_inner = repos_area.map(|a| render_repos_list(f, a, app));
     let channels_inner = channels_area.map(|a| render_channels_list(f, a, app));
     let input_inner = render_chat_input(f, chat_input_area, app);
     render_status(f, status_area, app);
@@ -211,7 +216,43 @@ pub fn render(f: &mut Frame, app: &mut App) {
     app.layout.chat_input_inner = Some(input_inner);
     app.layout.views_list_inner = Some(views_inner);
     app.layout.channels_list_inner = channels_inner;
+    app.layout.repos_list_inner = repos_inner;
     app.layout.workflows_list_inner = workflows_inner;
+}
+
+pub(super) fn right_column_constraints(app: &App) -> Vec<Constraint> {
+    let views_height = (app.view_entries().len() as u16).saturating_add(2).max(3);
+    let channels_rows_len = channel_rows(app).len() as u16;
+    let channels_height = if !app.channels.is_empty() {
+        channels_rows_len.saturating_add(2).max(3)
+    } else {
+        0
+    };
+    let workflows_rows_len = workflow_rows(app).len() as u16;
+    let workflows_height = if !app.config.workflows.is_empty() {
+        workflows_rows_len.saturating_add(2).max(3)
+    } else {
+        0
+    };
+    let repos_height = if !app.repos.is_empty() {
+        repo_rows(app).len() as u16 + 2
+    } else {
+        0
+    };
+
+    let mut constraints: Vec<Constraint> = Vec::with_capacity(5);
+    constraints.push(Constraint::Length(views_height));
+    constraints.push(Constraint::Min(5));
+    if workflows_height > 0 {
+        constraints.push(Constraint::Length(workflows_height));
+    }
+    if repos_height > 0 {
+        constraints.push(Constraint::Length(repos_height));
+    }
+    if channels_height > 0 {
+        constraints.push(Constraint::Length(channels_height));
+    }
+    constraints
 }
 
 fn focus_border_style(focused: bool) -> Style {
@@ -1229,6 +1270,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
         Focus::Views => "views",
         Focus::Tasks => "tasks",
         Focus::Channels => "channels",
+        Focus::Repos => "repos",
         Focus::Memory => "memory",
         Focus::Workflows => "workflows",
         Focus::Workflow => match app.active_view {
@@ -1329,6 +1371,20 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             Span::raw(" nav  "),
             Span::styled("⏎", Style::default().fg(Color::Cyan)),
             Span::raw(" open  "),
+            Span::styled("tab", Style::default().fg(Color::Cyan)),
+            Span::raw(" next panel"),
+        ],
+        Focus::Repos => vec![
+            Span::styled(" focus: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                focus_label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("j/k", Style::default().fg(Color::Cyan)),
+            Span::raw(" nav  "),
             Span::styled("tab", Style::default().fg(Color::Cyan)),
             Span::raw(" next panel"),
         ],
@@ -1555,6 +1611,355 @@ pub(super) fn channel_rows(app: &App) -> Vec<ChannelRow> {
         }
     }
     rows
+}
+
+/// A single renderable row in the repos panel. Every declared
+/// repository is always expanded so its known worktrees are visible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RepoRow {
+    Header {
+        repo_idx: usize,
+    },
+    Worktree {
+        repo_idx: usize,
+        worktree_idx: usize,
+    },
+}
+
+pub(super) fn repo_rows(app: &App) -> Vec<RepoRow> {
+    let worktree_count: usize = app.repos.iter().map(|repo| repo.worktrees.len()).sum();
+    let mut rows: Vec<RepoRow> = Vec::with_capacity(app.repos.len() + worktree_count);
+    for (repo_idx, repo) in app.repos.iter().enumerate() {
+        rows.push(RepoRow::Header { repo_idx });
+        for worktree_idx in 0..repo.worktrees.len() {
+            rows.push(RepoRow::Worktree {
+                repo_idx,
+                worktree_idx,
+            });
+        }
+    }
+    rows
+}
+
+fn render_repos_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
+    let focused = app.focus == Focus::Repos;
+    let title = if app.repos.is_empty() {
+        " repos ".to_string()
+    } else {
+        format!(" repos ({}) ", app.repos.len())
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(focus_border_style(focused));
+    let inner = block.inner(area);
+    let rows = repo_rows(app);
+    let mut selected_row: Option<usize> = None;
+    let items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .map(|(row_idx, row)| match row {
+            RepoRow::Header { repo_idx } => {
+                let repo = &app.repos[*repo_idx];
+                let style = if focused && row_idx == app.selected_repo_row {
+                    Style::default()
+                        .bg(Color::Cyan)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                if row_idx == app.selected_repo_row {
+                    selected_row = Some(row_idx);
+                }
+
+                let mut spans = vec![Span::styled(format!("📦 {}", repo.id), style)];
+                if let Some(default_branch) = &repo.default_branch {
+                    spans.push(Span::styled(
+                        format!(" (default: {default_branch})"),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+                ListItem::new(Line::from(spans))
+            }
+            RepoRow::Worktree {
+                repo_idx,
+                worktree_idx,
+            } => {
+                let repo = &app.repos[*repo_idx];
+                let worktree = &repo.worktrees[*worktree_idx];
+                let relative_path = worktree
+                    .path
+                    .strip_prefix(&repo.path)
+                    .unwrap_or(&worktree.path);
+                let style = if focused && row_idx == app.selected_repo_row {
+                    Style::default()
+                        .bg(Color::Cyan)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                if row_idx == app.selected_repo_row {
+                    selected_row = Some(row_idx);
+                }
+
+                let mut spans = vec![
+                    Span::raw("  "),
+                    Span::styled("↳ ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(relative_path.display().to_string(), style),
+                ];
+                if let Some(branch) = &worktree.branch {
+                    spans.push(Span::styled(
+                        format!(" [{branch}]"),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+                ListItem::new(Line::from(spans))
+            }
+        })
+        .collect();
+    let list = List::new(items).block(block);
+    let mut state = ListState::default();
+    if let Some(r) = selected_row {
+        state.select(Some(r));
+    }
+    f.render_stateful_widget(list, area, &mut state);
+    inner
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod repos_panel_tests {
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    use super::*;
+    use crate::config::{AciddogConfig, Channel, Team, Workflow};
+    use crate::repos::{RepoState, Worktree};
+
+    fn config_with(workflows: Vec<Workflow>, channels: Vec<Channel>) -> AciddogConfig {
+        AciddogConfig {
+            team: Team {
+                id: "t".into(),
+                description: "d".into(),
+                replace_thinking_messages: false,
+                default_ai_core: None,
+                default_idle_timeout: None,
+            },
+            agents: vec![],
+            workers: vec![],
+            automatons: vec![],
+            ai_cores: vec![],
+            memory_banks: vec![],
+            compactions: vec![],
+            channels,
+            repositories: vec![],
+            workflows,
+            webhooks: vec![],
+            thinking_messages: vec!["thinking".into()],
+        }
+    }
+
+    fn workflow(id: &str) -> Workflow {
+        Workflow {
+            id: id.into(),
+            description: "workflow".into(),
+            max_retries: 1,
+            properties: vec![],
+            steps: vec![],
+        }
+    }
+
+    fn channel(id: &str) -> Channel {
+        Channel {
+            id: id.into(),
+            description: None,
+            welcome: None,
+            members: vec![],
+        }
+    }
+
+    fn repo(id: &str, worktrees: Vec<(&str, Option<&str>)>) -> RepoState {
+        let path = PathBuf::from(format!("/repos/{id}"));
+        RepoState {
+            id: id.into(),
+            url: format!("https://example.test/{id}.git"),
+            path: path.clone(),
+            default_branch: Some("main".into()),
+            worktrees: worktrees
+                .into_iter()
+                .map(|(suffix, branch)| Worktree {
+                    path: path.join(suffix),
+                    branch: branch.map(str::to_string),
+                })
+                .collect(),
+            last_worktree_scan: Some(Instant::now()),
+        }
+    }
+
+    #[test]
+    fn repo_rows_include_every_declared_repo_and_worktree() {
+        let mut app = App::new(config_with(vec![], vec![]));
+        app.repos = vec![
+            repo(
+                "alpha",
+                vec![
+                    ("main", Some("main")),
+                    ("feature-a", Some("feature-a")),
+                    ("detached-a", None),
+                ],
+            ),
+            repo(
+                "beta",
+                vec![
+                    ("main", Some("main")),
+                    ("feature-b", Some("feature-b")),
+                    ("detached-b", None),
+                ],
+            ),
+        ];
+
+        assert_eq!(
+            repo_rows(&app),
+            vec![
+                RepoRow::Header { repo_idx: 0 },
+                RepoRow::Worktree {
+                    repo_idx: 0,
+                    worktree_idx: 0,
+                },
+                RepoRow::Worktree {
+                    repo_idx: 0,
+                    worktree_idx: 1,
+                },
+                RepoRow::Worktree {
+                    repo_idx: 0,
+                    worktree_idx: 2,
+                },
+                RepoRow::Header { repo_idx: 1 },
+                RepoRow::Worktree {
+                    repo_idx: 1,
+                    worktree_idx: 0,
+                },
+                RepoRow::Worktree {
+                    repo_idx: 1,
+                    worktree_idx: 1,
+                },
+                RepoRow::Worktree {
+                    repo_idx: 1,
+                    worktree_idx: 2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn right_column_constraints_include_repos_only_when_declared() {
+        let cases = [
+            (
+                false,
+                false,
+                vec![],
+                0,
+                vec![Constraint::Length(6), Constraint::Min(5)],
+            ),
+            (
+                false,
+                false,
+                vec![repo("alpha", vec![("main", Some("main"))])],
+                4,
+                vec![
+                    Constraint::Length(6),
+                    Constraint::Min(5),
+                    Constraint::Length(4),
+                ],
+            ),
+            (
+                false,
+                false,
+                vec![
+                    repo(
+                        "alpha",
+                        vec![("main", Some("main")), ("feature-a", Some("feature-a"))],
+                    ),
+                    repo(
+                        "beta",
+                        vec![("main", Some("main")), ("feature-b", Some("feature-b"))],
+                    ),
+                ],
+                8,
+                vec![
+                    Constraint::Length(6),
+                    Constraint::Min(5),
+                    Constraint::Length(8),
+                ],
+            ),
+            (
+                true,
+                false,
+                vec![repo("alpha", vec![("main", Some("main"))])],
+                4,
+                vec![
+                    Constraint::Length(6),
+                    Constraint::Min(5),
+                    Constraint::Length(3),
+                    Constraint::Length(4),
+                ],
+            ),
+            (
+                false,
+                true,
+                vec![repo("alpha", vec![("main", Some("main"))])],
+                4,
+                vec![
+                    Constraint::Length(6),
+                    Constraint::Min(5),
+                    Constraint::Length(4),
+                    Constraint::Length(3),
+                ],
+            ),
+            (
+                true,
+                true,
+                vec![repo("alpha", vec![("main", Some("main"))])],
+                4,
+                vec![
+                    Constraint::Length(6),
+                    Constraint::Min(5),
+                    Constraint::Length(3),
+                    Constraint::Length(4),
+                    Constraint::Length(3),
+                ],
+            ),
+        ];
+
+        for (has_workflow, has_channel, repos, expected_repos_height, expected) in cases {
+            let workflows = if has_workflow {
+                vec![workflow("build")]
+            } else {
+                vec![]
+            };
+            let channels = if has_channel {
+                vec![channel("dev")]
+            } else {
+                vec![]
+            };
+            let mut app = App::new(config_with(workflows, channels));
+            app.repos = repos;
+            let actual = right_column_constraints(&app);
+            assert_eq!(actual.len(), expected.len());
+            assert_eq!(actual, expected);
+
+            let repos_constraint = actual
+                .iter()
+                .find(|constraint| **constraint == Constraint::Length(expected_repos_height));
+            if expected_repos_height == 0 {
+                assert!(repos_constraint.is_none());
+            } else {
+                assert!(repos_constraint.is_some());
+            }
+        }
+    }
 }
 
 fn render_channels_list(f: &mut Frame, area: Rect, app: &App) -> Rect {

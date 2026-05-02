@@ -1399,6 +1399,10 @@ pub enum Focus {
     /// Up/Down moves the selection, Enter sets the main area to
     /// `ActiveView::Channel(idx)`.
     Channels,
+    /// The right-column "Repos" list (between workflows and channels).
+    /// Up/Down moves the selection; Enter is reserved for future
+    /// worktree filtering.
+    Repos,
     /// The right-column "Workflows" list (between agents and channels).
     /// Up/Down moves the selection, Enter on a header opens the
     /// property-entry form; Enter on an instance opens its progress
@@ -1488,6 +1492,9 @@ pub struct LayoutRects {
     /// Inner rect of the "channels" panel on the right column.
     /// `None` if no channels are declared in the config.
     pub channels_list_inner: Option<Rect>,
+    /// Inner rect of the "repos" panel on the right column.
+    /// `None` if no repositories are declared in the config.
+    pub repos_list_inner: Option<Rect>,
     /// Inner rect of the "workflows" panel on the right column.
     /// `None` if no workflows are declared in the config.
     pub workflows_list_inner: Option<Rect>,
@@ -2605,6 +2612,7 @@ fn clamp_input_scroll(input: &mut dyn TextInput) {
 
 pub struct App {
     pub config: AciddogConfig,
+    pub repos: Vec<crate::repos::RepoState>,
     /// Absolute path the live `config` was loaded from. Set by
     /// [`super::boot::boot_orchestrator`] (or, in unit tests, left at
     /// the default empty `PathBuf`). Read by `/reload` to re-parse the
@@ -2676,6 +2684,8 @@ pub struct App {
     /// Which row of the right-column Channels list is highlighted.
     /// Bounded to `0..channels.len()` (saturating).
     pub selected_channel: usize,
+    /// Which row of the right-column Repos list is highlighted.
+    pub selected_repo_row: usize,
     /// UI-local state for the Tasks screen: cursor, modals, prompts.
     pub tasks_screen: TasksScreen,
     /// UI-local state for the Memory view: bank list, search, modals.
@@ -2940,6 +2950,7 @@ impl App {
             broadcast::channel::<crate::cron::CronEvent>(CHAT_BLOCK_BROADCAST_CAPACITY);
         Self {
             config,
+            repos: Vec::new(),
             config_path: std::path::PathBuf::new(),
             selected: 0,
             should_quit: false,
@@ -2965,6 +2976,7 @@ impl App {
             selected_view: 0,
             channels,
             selected_channel: 0,
+            selected_repo_row: 0,
             tasks_screen: TasksScreen::default(),
             memory_screen: super::memory_view::MemoryScreen::default(),
             memory_event_tx: None,
@@ -2990,6 +3002,19 @@ impl App {
 
     pub fn current_chat_mut(&mut self) -> Option<&mut AgentChat> {
         self.chats.get_mut(self.selected)
+    }
+
+    pub fn refresh_repo_worktrees(&mut self) {
+        for state in &mut self.repos {
+            let id = state.id.clone();
+            if let Err(e) = crate::repos::refresh_worktrees(state) {
+                warn!(
+                    repository = %id,
+                    error = %e,
+                    "failed to refresh repository worktrees"
+                );
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -9544,6 +9569,8 @@ impl App {
                 Focus::Views => {
                     if has_workflows {
                         Focus::Workflows
+                    } else if !self.repos.is_empty() {
+                        Focus::Repos
                     } else if has_channels {
                         Focus::Channels
                     } else {
@@ -9551,6 +9578,15 @@ impl App {
                     }
                 }
                 Focus::Workflows => {
+                    if !self.repos.is_empty() {
+                        Focus::Repos
+                    } else if has_channels {
+                        Focus::Channels
+                    } else {
+                        main
+                    }
+                }
+                Focus::Repos => {
                     if has_channels {
                         Focus::Channels
                     } else {
@@ -9572,6 +9608,7 @@ impl App {
             Focus::Views => self.handle_key_views(code, mods),
             Focus::Tasks => self.handle_key_tasks(code, mods),
             Focus::Channels => self.handle_key_channels(code, mods),
+            Focus::Repos => self.handle_key_repos(code, mods),
             Focus::Memory => self.handle_key_memory(code, mods),
             Focus::Workflows => self.handle_key_workflows(code, mods),
             Focus::Workflow => self.handle_key_workflow_view(code, mods),
@@ -10655,6 +10692,30 @@ impl App {
             KeyCode::Enter => {
                 self.active_view = ActiveView::Channel(self.selected_channel);
                 self.focus = Focus::Chat;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_repos(&mut self, code: KeyCode, _mods: KeyModifiers) {
+        if self.repos.is_empty() {
+            self.focus = Focus::Agents;
+            return;
+        }
+        match code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.focus = Focus::Agents;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.selected_repo_row + 1 < super::ui::repo_rows(self).len() {
+                    self.selected_repo_row += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.selected_repo_row = self.selected_repo_row.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                // TODO(983ab5e7-followup): future task-filter on selected worktree.
             }
             _ => {}
         }
@@ -13494,6 +13555,17 @@ impl App {
                     }
                 }
 
+                if let Some(rect) = self.layout.repos_list_inner {
+                    if rect_contains(rect, pos) {
+                        let row_in_list = ev.row.saturating_sub(rect.y) as usize;
+                        if super::ui::repo_rows(self).get(row_in_list).is_some() {
+                            self.selected_repo_row = row_in_list;
+                        }
+                        self.focus = Focus::Repos;
+                        return;
+                    }
+                }
+
                 if let Some(rect) = self.layout.agent_list_inner {
                     if rect_contains(rect, pos) {
                         let row_in_list = ev.row.saturating_sub(rect.y) as usize;
@@ -15588,6 +15660,8 @@ async fn event_loop<B: ratatui::backend::Backend>(
     spinner_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut idle_check_tick = tokio::time::interval(Duration::from_secs(5));
     idle_check_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut worktree_refresh_tick = tokio::time::interval(Duration::from_secs(30));
+    worktree_refresh_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         // Recompute the next cron firing each iteration so a freshly-
@@ -15670,6 +15744,9 @@ async fn event_loop<B: ratatui::backend::Backend>(
             }
             _ = idle_check_tick.tick() => {
                 app.tick_idle_timers();
+            }
+            _ = worktree_refresh_tick.tick() => {
+                app.refresh_repo_worktrees();
             }
             _ = async move {
                 match next_cron_at {
@@ -15756,6 +15833,7 @@ mod tests {
             memory_banks: vec![],
             compactions: vec![],
             channels: vec![],
+            repositories: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["thinking".into()],
@@ -16060,6 +16138,7 @@ mod tests {
             memory_banks: vec![],
             compactions: vec![],
             channels: vec![],
+            repositories: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["t".into()],
@@ -16127,6 +16206,7 @@ mod tests {
             memory_banks: vec![],
             compactions: vec![],
             channels: vec![],
+            repositories: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["t".into()],
@@ -16152,6 +16232,7 @@ mod tests {
             memory_banks: vec![],
             compactions: vec![],
             channels: vec![],
+            repositories: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["t".into()],
@@ -16204,6 +16285,7 @@ mod tests {
             memory_banks: vec![],
             compactions: vec![],
             channels: vec![],
+            repositories: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["t".into()],
@@ -16307,6 +16389,7 @@ mod tests {
             memory_banks: vec![],
             compactions: vec![],
             channels: vec![],
+            repositories: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["thinking".into()],
@@ -18844,6 +18927,7 @@ mod tests {
             memory_banks: vec![],
             compactions: vec![],
             channels: vec![],
+            repositories: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["thinking".into()],
@@ -19905,6 +19989,7 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
             memory_banks: vec![],
             compactions: vec![],
             channels: vec![],
+            repositories: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["thinking".into()],

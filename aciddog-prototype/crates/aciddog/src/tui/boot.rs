@@ -68,8 +68,38 @@ pub(crate) async fn boot_orchestrator(
     config: AciddogConfig,
     config_path: std::path::PathBuf,
 ) -> Result<OrchestratorHandles> {
+    let repos_base_dir = config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("repos");
+    if !config.repositories.is_empty() {
+        std::fs::create_dir_all(&repos_base_dir).map_err(|e| {
+            anyhow!(
+                "failed to create repository base directory {}: {e}",
+                repos_base_dir.display()
+            )
+        })?;
+    }
+    let mut repos: Vec<crate::repos::RepoState> = Vec::new();
+    for decl in &config.repositories {
+        match crate::repos::ensure_repo(decl, &repos_base_dir) {
+            Ok(mut state) => {
+                if let Err(e) = crate::repos::refresh_worktrees(&mut state) {
+                    warn!(
+                        repository = %state.id,
+                        error = %e,
+                        "failed to refresh repository worktrees at boot"
+                    );
+                }
+                repos.push(state);
+            }
+            Err(e) => return Err(anyhow!("{e}")),
+        }
+    }
+
     let mut app = App::new(config);
     app.config_path = config_path;
+    app.repos = repos;
 
     // Load the disk-backed task store from `.aciddog/tasks.json` in the
     // cwd so tasks survive restarts. On I/O/parse error, warn and fall

@@ -9,6 +9,7 @@ pub mod init;
 pub mod memory;
 pub mod openai_auth;
 pub mod remote_automaton;
+pub mod repos;
 pub mod skills;
 pub mod tasks;
 pub mod tui;

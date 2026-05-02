@@ -415,6 +415,13 @@ pub struct Channel {
     pub members: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Repository {
+    pub id: String,
+    pub url: String,
+    pub branch: Option<String>,
+}
+
 /// A named, persistent memory bank. Declared at the fleet level and
 /// referenced by agents/workers via their `memory_banks` allowlist.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -956,6 +963,10 @@ pub struct AciddogConfig {
     /// participates in a channel iff its id appears in that channel's
     /// `members` list.
     pub channels: Vec<Channel>,
+    /// Git repositories declared at the fleet level. Boot ensures each
+    /// repository exists under `<config-dir>/repos/<id>` and refuses to
+    /// start on drift instead of clobbering local state.
+    pub repositories: Vec<Repository>,
     /// Named workflows declared at the fleet level. Agents opt in to
     /// trigger a workflow via their `can_run_workflows` allowlist.
     pub workflows: Vec<Workflow>,
@@ -1125,6 +1136,12 @@ pub enum ConfigError {
 
     #[error("duplicate channel id `{id}` — channel ids must be unique")]
     DuplicateChannelId { id: String },
+
+    #[error("duplicate {kind} id `{id}`")]
+    DuplicateId { kind: String, id: String },
+
+    #[error("repository id `{id}` is invalid: {reason}")]
+    InvalidRepositoryId { id: String, reason: String },
 
     #[error(
         "compaction `{id}` on `{actor}` uses strategy `harness`, but that \
@@ -1358,6 +1375,15 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
             .map(|d| format!("  {}: {}", d.code.as_deref().unwrap_or("?"), d.message,))
             .collect::<Vec<_>>()
             .join("\n");
+        if details.contains("duplicate id") {
+            let repositories = doc.blocks_of_type_resolved("repository");
+            if let Some(id) = duplicate_repository_id(&repositories) {
+                return Err(ConfigError::DuplicateId {
+                    kind: "repository".to_string(),
+                    id,
+                });
+            }
+        }
         return Err(ConfigError::Parse {
             path: origin.display().to_string(),
             details,
@@ -1624,6 +1650,17 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
 
+    let repositories: Vec<Repository> = doc
+        .blocks_of_type_resolved("repository")
+        .iter()
+        .map(|b| -> Result<Repository, ConfigError> {
+            let id = require_repository_id(b)?;
+            let url = require_string(b, "url")?;
+            let branch = optional_string(b, "branch");
+            Ok(Repository { id, url, branch })
+        })
+        .collect::<Result<_, _>>()?;
+
     let workflows = doc
         .blocks_of_type_resolved("workflow")
         .iter()
@@ -1639,6 +1676,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
     validate_skill_names(&agents, &workers)?;
     validate_compaction_refs(&team, &agents, &workers, &ai_cores, &compactions)?;
     validate_channel_refs(&agents, &automatons, &channels)?;
+    validate_repository_names(&repositories)?;
     validate_workflow_refs(&workflows, &workers)?;
     validate_workflow_allowlists(&agents, &workers, &workflows)?;
     validate_automaton_refs(&agents, &automatons)?;
@@ -1688,6 +1726,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         memory_banks,
         compactions,
         channels,
+        repositories,
         workflows,
         webhooks,
         thinking_messages,
@@ -2179,6 +2218,37 @@ fn validate_reserved_ids(
     }
     for w in webhooks {
         check("webhook", &w.id)?;
+    }
+    Ok(())
+}
+
+fn validate_repository_names(repositories: &[Repository]) -> Result<(), ConfigError> {
+    let mut seen = std::collections::HashSet::new();
+    for repo in repositories {
+        if !seen.insert(repo.id.as_str()) {
+            return Err(ConfigError::DuplicateId {
+                kind: "repository".to_string(),
+                id: repo.id.clone(),
+            });
+        }
+        if repo.id.contains('/') {
+            return Err(ConfigError::InvalidRepositoryId {
+                id: repo.id.clone(),
+                reason: "must not contain `/`".to_string(),
+            });
+        }
+        if repo.id.contains('\\') {
+            return Err(ConfigError::InvalidRepositoryId {
+                id: repo.id.clone(),
+                reason: "must not contain `\\`".to_string(),
+            });
+        }
+        if repo.id.contains("..") {
+            return Err(ConfigError::InvalidRepositoryId {
+                id: repo.id.clone(),
+                reason: "must not contain `..`".to_string(),
+            });
+        }
     }
     Ok(())
 }
@@ -3224,6 +3294,32 @@ fn require_id(id: &Option<String>, kind: &str) -> Result<String, ConfigError> {
     })
 }
 
+fn require_repository_id(block: &wcl_lang::BlockRef) -> Result<String, ConfigError> {
+    if let Some(id) = &block.id {
+        return Ok(id.clone());
+    }
+    match block.get("_args") {
+        Some(Value::List(args)) => match args.first() {
+            Some(Value::String(id)) | Some(Value::Identifier(id)) => Ok(id.clone()),
+            _ => require_id(&block.id, &block.kind),
+        },
+        _ => require_id(&block.id, &block.kind),
+    }
+}
+
+fn duplicate_repository_id(blocks: &[wcl_lang::BlockRef]) -> Option<String> {
+    let mut seen = std::collections::HashSet::new();
+    for block in blocks {
+        let Ok(id) = require_repository_id(block) else {
+            continue;
+        };
+        if !seen.insert(id.clone()) {
+            return Some(id);
+        }
+    }
+    None
+}
+
 fn require_string(block: &wcl_lang::BlockRef, attr: &str) -> Result<String, ConfigError> {
     match block.get(attr) {
         Some(Value::String(s)) => Ok(s.clone()),
@@ -3407,6 +3503,100 @@ mod tests {
         assert_eq!(cfg.agents[0].id, "alpha");
         assert_eq!(cfg.agents[0].role, "planner");
         assert_eq!(cfg.agents[0].instructions, "plan things");
+    }
+
+    #[test]
+    fn parses_repository_with_branch() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha { role = "x" instructions = "y" }
+            repository "aciddog" {
+                url = "git@github.com:wiltaylor/aciddog.git"
+                branch = "main"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.repositories,
+            vec![Repository {
+                id: "aciddog".to_string(),
+                url: "git@github.com:wiltaylor/aciddog.git".to_string(),
+                branch: Some("main".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_repository_without_branch() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha { role = "x" instructions = "y" }
+            repository foo {
+                url = "https://example.com/foo.git"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.repositories[0].id, "foo");
+        assert_eq!(cfg.repositories[0].url, "https://example.com/foo.git");
+        assert_eq!(cfg.repositories[0].branch, None);
+    }
+
+    #[test]
+    fn rejects_duplicate_repository_ids() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha { role = "x" instructions = "y" }
+            repository foo { url = "https://example.com/foo.git" }
+            repository foo { url = "https://example.com/bar.git" }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::DuplicateId { kind, id } if kind == "repository" && id == "foo"
+        ));
+    }
+
+    #[test]
+    fn rejects_repository_ids_with_path_separators() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha { role = "x" instructions = "y" }
+            repository "a/b" { url = "https://example.com/foo.git" }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::InvalidRepositoryId { id, .. } if id == "a/b"
+        ));
+    }
+
+    #[test]
+    fn rejects_repository_ids_with_dot_dot() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha { role = "x" instructions = "y" }
+            repository ".." { url = "https://example.com/foo.git" }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::InvalidRepositoryId { id, .. } if id == ".."
+        ));
+    }
+
+    #[test]
+    fn rejects_repository_without_url() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha { role = "x" instructions = "y" }
+            repository foo { }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::MissingAttribute { kind, attr }
+                if kind == "repository" && attr == "url"
+        ));
     }
 
     #[test]
