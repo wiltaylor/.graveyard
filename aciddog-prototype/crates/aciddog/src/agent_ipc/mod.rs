@@ -84,6 +84,8 @@ pub enum RequestCmd {
         template: String,
         task: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         properties: Option<serde_json::Value>,
     },
     /// Deliver a final report to the parent and hibernate the calling
@@ -153,6 +155,9 @@ pub enum RequestCmd {
         /// (and only meaningful) when `status = "planning"`.
         #[serde(skip_serializing_if = "Option::is_none")]
         planned_assignee: Option<String>,
+        /// Filesystem worktree path used as spawned workers' cwd.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        worktree: Option<String>,
     },
     /// List tasks, optionally filtered.
     TaskList {
@@ -199,10 +204,16 @@ pub enum RequestCmd {
         /// Revise the pre-stored handoff target on a planning task.
         #[serde(skip_serializing_if = "Option::is_none")]
         planned_assignee: Option<String>,
+        /// Set the filesystem worktree path for spawned workers.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        worktree: Option<String>,
         /// Clear `planned_assignee` (mutually exclusive with
         /// `planned_assignee`).
         #[serde(default)]
         clear_planned_assignee: bool,
+        /// Clear `worktree` (mutually exclusive with `worktree`).
+        #[serde(default)]
+        clear_worktree: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         note: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -808,6 +819,7 @@ mod tests {
             cmd: RequestCmd::WorkerCreate {
                 template: "researcher".into(),
                 task: "find FOO".into(),
+                cwd: None,
                 properties: None,
             },
         };
@@ -828,6 +840,7 @@ mod tests {
             cmd: RequestCmd::WorkerCreate {
                 template: "jules_refactor".into(),
                 task: "refactor foo".into(),
+                cwd: None,
                 properties: Some(serde_json::json!({"repo":"acme/foo","branch":"main"})),
             },
         };
@@ -856,6 +869,7 @@ mod tests {
             cmd: RequestCmd::WorkerCreate {
                 template: "r".into(),
                 task: "t".into(),
+                cwd: None,
                 properties: None,
             },
         };
@@ -864,10 +878,12 @@ mod tests {
             RequestCmd::WorkerCreate {
                 template,
                 task,
+                cwd,
                 properties,
             } => {
                 assert_eq!(template, "r");
                 assert_eq!(task, "t");
+                assert!(cwd.is_none());
                 assert!(properties.is_none());
             }
             other => panic!("expected WorkerCreate, got {other:?}"),
@@ -905,6 +921,7 @@ mod tests {
                 blocked_by: vec![dep],
                 status: None,
                 planned_assignee: None,
+                worktree: Some("/repo".into()),
             },
         };
         let s = serde_json::to_string(&req).unwrap();
@@ -920,6 +937,7 @@ mod tests {
                 blocked_by,
                 status,
                 planned_assignee,
+                worktree,
             } => {
                 assert_eq!(title, "fix bug");
                 assert_eq!(description.as_deref(), Some("details"));
@@ -927,6 +945,7 @@ mod tests {
                 assert_eq!(blocked_by, vec![dep]);
                 assert!(status.is_none());
                 assert!(planned_assignee.is_none());
+                assert_eq!(worktree.as_deref(), Some("/repo"));
             }
             other => panic!("expected TaskAdd, got {other:?}"),
         }
@@ -943,6 +962,7 @@ mod tests {
                 blocked_by: vec![],
                 status: None,
                 planned_assignee: None,
+                worktree: None,
             },
         };
         let s = serde_json::to_string(&req).unwrap();
@@ -963,6 +983,7 @@ mod tests {
                 blocked_by: vec![],
                 status: Some("planning".into()),
                 planned_assignee: Some("builders".into()),
+                worktree: None,
             },
         };
         let s = serde_json::to_string(&req).unwrap();
@@ -973,10 +994,12 @@ mod tests {
             RequestCmd::TaskAdd {
                 status,
                 planned_assignee,
+                worktree,
                 ..
             } => {
                 assert_eq!(status.as_deref(), Some("planning"));
                 assert_eq!(planned_assignee.as_deref(), Some("builders"));
+                assert!(worktree.is_none());
             }
             other => panic!("expected TaskAdd, got {other:?}"),
         }
@@ -1020,7 +1043,9 @@ mod tests {
                 assignee: Some("coder".into()),
                 unassign: false,
                 planned_assignee: None,
+                worktree: Some("/repo".into()),
                 clear_planned_assignee: false,
+                clear_worktree: false,
                 note: Some("ready".into()),
                 add_blocked_by: vec![dep],
                 remove_blocked_by: vec![],
@@ -1037,6 +1062,8 @@ mod tests {
                 assignee,
                 note,
                 unassign,
+                worktree,
+                clear_worktree,
                 add_blocked_by,
                 remove_blocked_by,
                 ..
@@ -1046,6 +1073,8 @@ mod tests {
                 assert_eq!(assignee.as_deref(), Some("coder"));
                 assert_eq!(note.as_deref(), Some("ready"));
                 assert!(!unassign);
+                assert_eq!(worktree.as_deref(), Some("/repo"));
+                assert!(!clear_worktree);
                 assert_eq!(add_blocked_by, vec![dep]);
                 assert!(remove_blocked_by.is_empty());
             }

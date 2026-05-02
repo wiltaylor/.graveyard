@@ -98,6 +98,7 @@ pub struct CopilotCliCore {
     /// exits with an "is not available" error.
     model: Option<String>,
     env: Vec<(String, String)>,
+    cwd: Option<std::path::PathBuf>,
     /// Set to `Some` only when the agent lacks a shell tool and must
     /// coordinate through inline `<aciddog-call>` tags. When present,
     /// `turn` runs the tag-chain loop; otherwise it runs the child once
@@ -120,6 +121,7 @@ impl CopilotCliCore {
             allowed_tools,
             model: None,
             env: Vec::new(),
+            cwd: None,
             socket_tx: None,
             started: false,
         }
@@ -137,6 +139,7 @@ impl CopilotCliCore {
             allowed_tools,
             model: None,
             env: Vec::new(),
+            cwd: None,
             socket_tx: None,
             started: true,
         }
@@ -162,6 +165,12 @@ impl CopilotCliCore {
     /// agent can call back into aciddog via the IPC socket.
     pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
         self.env = env;
+        self
+    }
+
+    /// Working directory for the spawned copilot process.
+    pub fn with_cwd(mut self, cwd: std::path::PathBuf) -> Self {
+        self.cwd = Some(cwd);
         self
     }
 
@@ -335,6 +344,7 @@ impl AICore for CopilotCliCore {
             allowed_tools: self.allowed_tools.clone(),
             model: self.model.clone(),
             env: self.env.clone(),
+            cwd: self.cwd.clone(),
         });
 
         let (tx, rx) = mpsc::channel::<AIEvent>(64);
@@ -395,6 +405,7 @@ struct RoundCtx {
     /// See `CopilotCliCore::model`.
     model: Option<String>,
     env: Vec<(String, String)>,
+    cwd: Option<std::path::PathBuf>,
 }
 
 /// Spawn one copilot child, forward every parsed `AIEvent` from stdout
@@ -453,6 +464,9 @@ async fn run_round(
 
     if !ctx.env.is_empty() {
         cmd.envs(ctx.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    }
+    if let Some(cwd) = &ctx.cwd {
+        cmd.current_dir(cwd);
     }
 
     cmd.stdin(Stdio::null())

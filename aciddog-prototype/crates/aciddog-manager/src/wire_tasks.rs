@@ -74,6 +74,12 @@ pub struct Task {
     /// any other status.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planned_assignee: Option<String>,
+    /// Filesystem worktree path bound to this task by the aciddog
+    /// side. Used to set the cwd of workers spawned against this task.
+    /// Read-only on the wire; aciddog task-board CLI is the canonical
+    /// editor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
     pub created_by: String,
     pub created_at_secs: u64,
     pub updated_at_secs: u64,
@@ -97,6 +103,7 @@ mod tests {
             "id":"00000000-0000-0000-0000-000000000001",
             "title":"t",
             "status":"in_progress",
+            "worktree":"/tmp/wt",
             "created_by":"planner",
             "created_at_secs":1,"updated_at_secs":2,
             "notes":[], "blocked_by":[], "todos":[], "comments":[]
@@ -105,6 +112,43 @@ mod tests {
         assert_eq!(t.title, "t");
         assert_eq!(t.status, TaskStatus::InProgress);
         assert!(t.assignee.is_none());
+        assert_eq!(t.worktree, Some("/tmp/wt".to_string()));
+        let out = serde_json::to_value(&t).unwrap();
+        assert_eq!(out["worktree"], "/tmp/wt");
+    }
+
+    #[test]
+    fn task_round_trips_omits_worktree_when_absent() {
+        let wire = r#"{
+            "id":"00000000-0000-0000-0000-000000000001",
+            "title":"t",
+            "status":"in_progress",
+            "created_by":"planner",
+            "created_at_secs":1,"updated_at_secs":2,
+            "notes":[], "blocked_by":[], "todos":[], "comments":[]
+        }"#;
+        let t: Task = serde_json::from_str(wire).unwrap();
+        assert_eq!(t.worktree, None);
+        let out = serde_json::to_string(&t).unwrap();
+        assert!(!out.contains("\"worktree\""));
+    }
+
+    #[test]
+    fn task_round_trips_with_worktree() {
+        let wire = r#"{
+            "id":"00000000-0000-0000-0000-000000000001",
+            "title":"t",
+            "status":"in_progress",
+            "worktree":"/tmp/wt",
+            "created_by":"planner",
+            "created_at_secs":1,"updated_at_secs":2,
+            "notes":[], "blocked_by":[], "todos":[], "comments":[]
+        }"#;
+        let t: Task = serde_json::from_str(wire).unwrap();
+        assert_eq!(t.worktree, Some("/tmp/wt".to_string()));
+        let out = serde_json::to_value(&t).unwrap();
+        let expected: serde_json::Value = serde_json::from_str(wire).unwrap();
+        assert_eq!(out, expected);
     }
 
     #[test]

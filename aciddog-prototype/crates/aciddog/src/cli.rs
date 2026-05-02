@@ -448,6 +448,11 @@ pub enum TaskCommand {
         /// meaningful) when `--status planning` is supplied.
         #[arg(long = "planned-assignee")]
         planned_assignee: Option<String>,
+        /// Bind this task to a filesystem path used to set spawned
+        /// workers' cwd. Must be an existing directory inside a git
+        /// repo; validated at task-add time.
+        #[arg(long)]
+        worktree: Option<String>,
     },
     /// List tasks, optionally filtered.
     List {
@@ -488,10 +493,18 @@ pub enum TaskCommand {
         /// approval.
         #[arg(long = "planned-assignee")]
         planned_assignee: Option<String>,
+        /// Bind this task to a filesystem path used to set spawned
+        /// workers' cwd.
+        #[arg(long)]
+        worktree: Option<String>,
         /// Clear the planned assignee (mutually exclusive with
         /// `--planned-assignee`). Only meaningful on planning tasks.
         #[arg(long = "clear-planned-assignee", conflicts_with = "planned_assignee")]
         clear_planned_assignee: bool,
+        /// Clear the worktree path (mutually exclusive with
+        /// `--worktree`).
+        #[arg(long = "clear-worktree", conflicts_with = "worktree")]
+        clear_worktree: bool,
         /// Append a note to the task log. Recommended when
         /// reassigning.
         #[arg(long)]
@@ -715,6 +728,12 @@ pub enum WorkerCommand {
         /// after the auto-injected worker preamble.
         #[arg(long)]
         task: String,
+        /// Working directory for the spawned worker process. Highest
+        /// precedence: overrides the task.worktree of the assigned task
+        /// AND any per-template default. The path must exist and be a
+        /// directory at spawn time; otherwise creation fails loudly.
+        #[arg(long)]
+        cwd: Option<String>,
         /// Optional JSON object of per-spawn properties, consumed by
         /// remote-worker cores that need extra context. Example for
         /// a Jules worker:
@@ -928,11 +947,13 @@ mod tests {
                     WorkerCommand::Create {
                         template,
                         task,
+                        cwd,
                         properties,
                     },
             } => {
                 assert_eq!(template, "researcher");
                 assert_eq!(task, "find FOO");
+                assert!(cwd.is_none());
                 assert!(properties.is_none());
             }
             other => panic!("expected Worker::Create, got {other:?}"),
@@ -1021,6 +1042,7 @@ mod tests {
                         blocked_by,
                         status,
                         planned_assignee,
+                        worktree,
                     },
             } => {
                 assert_eq!(title, "fix bug");
@@ -1029,6 +1051,7 @@ mod tests {
                 assert!(blocked_by.is_empty());
                 assert!(status.is_none());
                 assert!(planned_assignee.is_none());
+                assert!(worktree.is_none());
             }
             other => panic!("expected Task::Add, got {other:?}"),
         }
@@ -1046,6 +1069,8 @@ mod tests {
             "details here",
             "--assignee",
             "tester",
+            "--worktree",
+            "/repo",
         ])
         .unwrap();
         match args.cmd {
@@ -1058,6 +1083,7 @@ mod tests {
                         blocked_by,
                         status,
                         planned_assignee,
+                        worktree,
                     },
             } => {
                 assert_eq!(title, "fix bug");
@@ -1066,6 +1092,7 @@ mod tests {
                 assert!(blocked_by.is_empty());
                 assert!(status.is_none());
                 assert!(planned_assignee.is_none());
+                assert_eq!(worktree.as_deref(), Some("/repo"));
             }
             other => panic!("expected Task::Add, got {other:?}"),
         }
@@ -1093,11 +1120,13 @@ mod tests {
                     TaskCommand::Add {
                         status,
                         planned_assignee,
+                        worktree,
                         ..
                     },
             } => {
                 assert_eq!(status.as_deref(), Some("planning"));
                 assert_eq!(planned_assignee.as_deref(), Some("builders"));
+                assert!(worktree.is_none());
             }
             other => panic!("expected Task::Add, got {other:?}"),
         }
@@ -1197,6 +1226,8 @@ mod tests {
             "done",
             "--note",
             "finished",
+            "--worktree",
+            "/repo",
         ])
         .unwrap();
         match args.cmd {
@@ -1207,6 +1238,8 @@ mod tests {
                         status,
                         note,
                         unassign,
+                        worktree,
+                        clear_worktree,
                         add_blocked_by,
                         remove_blocked_by,
                         ..
@@ -1216,6 +1249,8 @@ mod tests {
                 assert_eq!(status.as_deref(), Some("done"));
                 assert_eq!(note.as_deref(), Some("finished"));
                 assert!(!unassign);
+                assert_eq!(worktree.as_deref(), Some("/repo"));
+                assert!(!clear_worktree);
                 assert!(add_blocked_by.is_empty());
                 assert!(remove_blocked_by.is_empty());
             }

@@ -354,6 +354,7 @@ impl App {
                 false,
                 None,
                 None,
+                None,
             ) {
                 Ok(c) => c,
                 Err(e) => {
@@ -567,6 +568,7 @@ impl App {
             socket_tx,
             false,
             agent.model.as_deref(),
+            None,
             // Compaction only runs on configured agents, never on
             // workers — so per-spawn properties are never applicable.
             None,

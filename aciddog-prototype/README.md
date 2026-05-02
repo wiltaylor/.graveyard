@@ -61,7 +61,13 @@ Agents can spawn ephemeral **workers** to handle sub-tasks. Workers are
 declared in `aciddog.wcl` as `worker <id> { ... }` blocks and are
 opt-in per agent via `can_create_workers = ["<worker-id>"]`. An agent
 spawns one by running `aciddog worker create --template <id> --task
-"<what to do>"`. The worker reports back with
+"<what to do>"`; pass `--cwd <path>` to override a task worktree or
+template cwd for that spawn. Tasks can bind a worker cwd with
+`aciddog task add ... --worktree <path>` and revise or clear it with
+`aciddog task update ... --worktree <path>` /
+`--clear-worktree`. Cwd precedence is `--cwd > task.worktree >
+template default > orchestrator current_dir`; explicit paths must
+exist and be directories. The worker reports back with
 `aciddog worker complete --body "<findings>"`, which delivers its
 report to the parent and hibernates it. Hibernated workers keep their
 pane and history — sending them another message resumes the session.

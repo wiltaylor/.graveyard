@@ -239,6 +239,7 @@ pub(super) fn build_core(
     socket_tx: Option<mpsc::Sender<AgentSocketEvent>>,
     resume: bool,
     agent_model: Option<&str>,
+    cwd_override: Option<std::path::PathBuf>,
     properties: Option<&serde_json::Value>,
 ) -> Result<Box<dyn AICore>, String> {
     build_core_with_extras(
@@ -251,6 +252,7 @@ pub(super) fn build_core(
         resume,
         Vec::new(),
         agent_model,
+        cwd_override,
         properties,
     )
 }
@@ -276,6 +278,7 @@ pub(super) fn build_core_with_extras(
     resume: bool,
     extra_tools: Vec<std::sync::Arc<dyn crate::ai::tools::Tool>>,
     agent_model: Option<&str>,
+    cwd_override: Option<std::path::PathBuf>,
     properties: Option<&serde_json::Value>,
 ) -> Result<Box<dyn AICore>, String> {
     match &core_cfg.kind {
@@ -290,6 +293,9 @@ pub(super) fn build_core_with_extras(
                 ClaudeCodeCore::new(session_id, parts, tools, system_prompt.clone())
             }
             .with_env(env);
+            if let Some(cwd) = cwd_override.clone() {
+                cc = cc.with_cwd(cwd);
+            }
             if let Some(m) = agent_model.map(str::to_string).or_else(|| model.clone()) {
                 cc = cc.with_model(m);
             }
@@ -393,6 +399,9 @@ pub(super) fn build_core_with_extras(
                 CopilotCliCore::new(session_id, parts, tools)
             }
             .with_env(env);
+            if let Some(cwd) = cwd_override.clone() {
+                c = c.with_cwd(cwd);
+            }
             if let Some(m) = agent_model.map(str::to_string).or_else(|| model.clone()) {
                 c = c.with_model(m);
             }
@@ -414,6 +423,9 @@ pub(super) fn build_core_with_extras(
                 GeminiCliCore::new(session_id, parts, tools)
             }
             .with_env(env);
+            if let Some(cwd) = cwd_override.clone() {
+                c = c.with_cwd(cwd);
+            }
             if let Some(m) = agent_model.map(str::to_string).or_else(|| model.clone()) {
                 c = c.with_model(m);
             }
@@ -434,6 +446,9 @@ pub(super) fn build_core_with_extras(
                 CodexCliCore::new(session_id, parts, tools)
             }
             .with_env(env);
+            if let Some(cwd) = cwd_override {
+                c = c.with_cwd(cwd);
+            }
             if let Some(m) = agent_model.map(str::to_string).or_else(|| model.clone()) {
                 c = c.with_model(m);
             }
@@ -751,6 +766,7 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
         RequestCmd::WorkerCreate {
             template,
             task,
+            cwd: _,
             properties: _,
         } => ChatBlock::worker_spawn(template, task),
         RequestCmd::WorkerComplete { body } => ChatBlock::worker_complete(body),
@@ -793,6 +809,7 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             blocked_by,
             status,
             planned_assignee,
+            worktree,
         } => {
             let (k, s, b) = task_op_summary(&TaskCommand::Add {
                 title,
@@ -801,6 +818,7 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
                 blocked_by,
                 status,
                 planned_assignee,
+                worktree,
             });
             ChatBlock::task_op(k, s, b)
         }
@@ -844,7 +862,9 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             assignee,
             unassign,
             planned_assignee,
+            worktree,
             clear_planned_assignee,
+            clear_worktree,
             note,
             add_blocked_by,
             remove_blocked_by,
@@ -857,7 +877,9 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
                 assignee,
                 unassign,
                 planned_assignee,
+                worktree,
                 clear_planned_assignee,
+                clear_worktree,
                 note,
                 add_blocked_by,
                 remove_blocked_by,
@@ -1033,6 +1055,100 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             ChatBlock::from_tool_use(&format!("aciddog skills remove --id {name}"), input)
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkerCwdSource {
+    Explicit,
+    TaskWorktree,
+    TemplateDefault,
+}
+
+impl WorkerCwdSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Explicit => "--cwd",
+            Self::TaskWorktree => "task.worktree",
+            Self::TemplateDefault => "template default cwd",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ResolveCwdError {
+    task_id: Option<Uuid>,
+    resolved_cwd: std::path::PathBuf,
+    source: WorkerCwdSource,
+}
+
+impl std::fmt::Display for ResolveCwdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.task_id {
+            Some(task_id) => write!(
+                f,
+                "worker cwd from {} for task {} is not an existing directory: {}",
+                self.source.label(),
+                task_id,
+                self.resolved_cwd.display()
+            ),
+            None => write!(
+                f,
+                "worker cwd from {} is not an existing directory: {}",
+                self.source.label(),
+                self.resolved_cwd.display()
+            ),
+        }
+    }
+}
+
+fn resolve_worker_cwd(
+    explicit: Option<&str>,
+    initial_task: &str,
+    tasks_store: &TaskStore,
+    template: &crate::config::Worker,
+) -> Result<Option<std::path::PathBuf>, ResolveCwdError> {
+    let parsed_task_id = Uuid::parse_str(initial_task).ok();
+    let selected = if let Some(path) = explicit {
+        Some((
+            std::path::PathBuf::from(path),
+            WorkerCwdSource::Explicit,
+            parsed_task_id,
+        ))
+    } else {
+        let task_worktree = parsed_task_id.and_then(|task_id| {
+            tasks_store
+                .get(task_id)
+                .and_then(|task| task.worktree.as_deref())
+                .map(|path| {
+                    (
+                        std::path::PathBuf::from(path),
+                        WorkerCwdSource::TaskWorktree,
+                        Some(task_id),
+                    )
+                })
+        });
+        task_worktree.or_else(|| {
+            worker_template_default_cwd(template)
+                .map(|path| (path, WorkerCwdSource::TemplateDefault, parsed_task_id))
+        })
+    };
+
+    let Some((resolved_cwd, source, task_id)) = selected else {
+        return Ok(None);
+    };
+    if resolved_cwd.exists() && resolved_cwd.is_dir() {
+        Ok(Some(resolved_cwd))
+    } else {
+        Err(ResolveCwdError {
+            task_id,
+            resolved_cwd,
+            source,
+        })
+    }
+}
+
+fn worker_template_default_cwd(_template: &crate::config::Worker) -> Option<std::path::PathBuf> {
+    None
 }
 
 /// Stable tag for a `ChatBlock` variant, used by the supervisor
@@ -3529,9 +3645,10 @@ impl App {
             RequestCmd::WorkerCreate {
                 template,
                 task,
+                cwd,
                 properties,
             } => {
-                self.handle_worker_create(idx, template, task, properties, reply);
+                self.handle_worker_create(idx, template, task, cwd, properties, reply);
             }
             RequestCmd::WorkerComplete { body } => {
                 self.handle_worker_complete(idx, body, reply);
@@ -3567,6 +3684,7 @@ impl App {
                 blocked_by,
                 status,
                 planned_assignee,
+                worktree,
             } => {
                 self.handle_task_add(
                     idx,
@@ -3576,6 +3694,7 @@ impl App {
                     blocked_by,
                     status,
                     planned_assignee,
+                    worktree,
                     reply,
                 );
             }
@@ -3603,7 +3722,9 @@ impl App {
                 assignee,
                 unassign,
                 planned_assignee,
+                worktree,
                 clear_planned_assignee,
+                clear_worktree,
                 note,
                 add_blocked_by,
                 remove_blocked_by,
@@ -3617,7 +3738,9 @@ impl App {
                     assignee,
                     unassign,
                     planned_assignee,
+                    worktree,
                     clear_planned_assignee,
+                    clear_worktree,
                     note,
                     add_blocked_by,
                     remove_blocked_by,
@@ -4169,6 +4292,7 @@ impl App {
         sender_idx: usize,
         template: String,
         task: String,
+        cwd: Option<String>,
         properties: Option<serde_json::Value>,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
@@ -4209,6 +4333,14 @@ impl App {
             Some(w) => w,
             None => {
                 let _ = reply.send(Response::err(format!("no worker template `{template}`")));
+                return;
+            }
+        };
+
+        let cwd_override = match resolve_worker_cwd(cwd.as_deref(), &task, &self.tasks, &worker) {
+            Ok(cwd) => cwd,
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
                 return;
             }
         };
@@ -4325,6 +4457,7 @@ impl App {
             socket_tx_for_core,
             false,
             worker.model.as_deref(),
+            cwd_override.clone(),
             properties.as_ref(),
         ) {
             Ok(c) => c,
@@ -4718,6 +4851,7 @@ impl App {
             socket_tx_for_core,
             true,
             worker.model.as_deref(),
+            None,
             None,
         )
         .map_err(|e| format!("build_core failed during resurrection: {e}"))?;
@@ -5618,6 +5752,7 @@ impl App {
         blocked_by: Vec<Uuid>,
         status: Option<String>,
         planned_assignee: Option<String>,
+        worktree: Option<String>,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
         let Some(sender_chat) = self.chats.get(sender_idx) else {
@@ -5659,17 +5794,26 @@ impl App {
                 )));
                 return;
             }
-            let task_id =
-                match self
-                    .tasks
-                    .add_planning(title, description, target, who.clone(), blocked_by)
-                {
-                    Ok(t) => t.id,
-                    Err(e) => {
-                        let _ = reply.send(Response::err(e.to_string()));
-                        return;
-                    }
-                };
+            if let Some(path) = worktree.as_deref() {
+                if let Err(e) = crate::tasks::validate_worktree(path) {
+                    let _ = reply.send(Response::err(e.to_string()));
+                    return;
+                }
+            }
+            let task_id = match self.tasks.add_planning_with_worktree(
+                title,
+                description,
+                target,
+                who.clone(),
+                blocked_by,
+                worktree,
+            ) {
+                Ok(t) => t.id,
+                Err(e) => {
+                    let _ = reply.send(Response::err(e.to_string()));
+                    return;
+                }
+            };
             // Notify the human approver via the user inbox.
             let title_clone = self
                 .tasks
@@ -5684,6 +5828,13 @@ impl App {
             );
             let _ = reply.send(Response::ok(format!("planning task created: {task_id}")));
             return;
+        }
+
+        if let Some(path) = worktree.as_deref() {
+            if let Err(e) = crate::tasks::validate_worktree(path) {
+                let _ = reply.send(Response::err(e.to_string()));
+                return;
+            }
         }
 
         if planned_assignee.is_some() && parsed_status != Some(crate::tasks::TaskStatus::Planning) {
@@ -5707,12 +5858,13 @@ impl App {
             None
         };
 
-        let (task_id, title_clone, assignee_clone) = match self.tasks.add(
+        let (task_id, title_clone, assignee_clone) = match self.tasks.add_with_worktree(
             title,
             description,
             assignee.clone(),
             who.clone(),
             blocked_by,
+            worktree,
         ) {
             Ok(t) => (t.id, t.title.clone(), t.assignee.clone()),
             Err(e) => {
@@ -6084,7 +6236,9 @@ impl App {
         assignee: Option<String>,
         unassign: bool,
         planned_assignee: Option<String>,
+        worktree: Option<String>,
         clear_planned_assignee: bool,
+        clear_worktree: bool,
         note: Option<String>,
         add_blocked_by: Vec<Uuid>,
         remove_blocked_by: Vec<Uuid>,
@@ -6132,12 +6286,25 @@ impl App {
             None
         };
 
+        let worktree_patch: Option<Option<String>> = if clear_worktree {
+            Some(None)
+        } else if let Some(path) = worktree {
+            if let Err(e) = crate::tasks::validate_worktree(&path) {
+                let _ = reply.send(Response::err(e.to_string()));
+                return;
+            }
+            Some(Some(path))
+        } else {
+            None
+        };
+
         let patch = TaskPatch {
             title,
             description,
             status: parsed_status,
             assignee: assignee_patch,
             planned_assignee: planned_patch,
+            worktree: worktree_patch,
             note,
             add_blocked_by,
             remove_blocked_by,
@@ -14529,6 +14696,9 @@ pub(crate) fn format_task_detail(t: &Task, store: &TaskStore, now: u64) -> Strin
         "Assignee: {}\n",
         t.assignee.as_deref().unwrap_or("-")
     ));
+    if let Some(worktree) = &t.worktree {
+        out.push_str(&format!("worktree: {worktree}\n"));
+    }
     out.push_str(&format!("Created by: {}\n", t.created_by));
     out.push_str(&format!(
         "Created: {} (unix {})\n",
@@ -14680,6 +14850,7 @@ fn try_parse_aciddog_worker_create(cmd: &str, binary: &str) -> Option<(String, S
                     task,
                     // `--properties` is captured at IPC construction time;
                     // the bash-parsed shortcut ignores it.
+                    cwd: _,
                     properties: _,
                 },
         } => Some((template, task)),
@@ -14763,6 +14934,7 @@ pub(crate) fn task_op_summary(
             blocked_by,
             status,
             planned_assignee,
+            worktree,
         } => {
             let mut subj = format!("Add: {title}");
             let mut notes: Vec<String> = Vec::new();
@@ -14774,6 +14946,9 @@ pub(crate) fn task_op_summary(
             }
             if let Some(p) = planned_assignee {
                 notes.push(format!("planned: {p}"));
+            }
+            if let Some(w) = worktree {
+                notes.push(format!("worktree: {w}"));
             }
             if !blocked_by.is_empty() {
                 notes.push(format!("{} deps", blocked_by.len()));
@@ -14823,7 +14998,9 @@ pub(crate) fn task_op_summary(
             assignee,
             unassign,
             planned_assignee,
+            worktree,
             clear_planned_assignee,
+            clear_worktree,
             note,
             add_blocked_by,
             remove_blocked_by,
@@ -14844,8 +15021,14 @@ pub(crate) fn task_op_summary(
             if let Some(p) = planned_assignee {
                 changes.push(format!("planned: {p}"));
             }
+            if let Some(w) = worktree {
+                changes.push(format!("worktree: {w}"));
+            }
             if *clear_planned_assignee {
                 changes.push("clear-planned".into());
+            }
+            if *clear_worktree {
+                changes.push("clear-worktree".into());
             }
             if !add_blocked_by.is_empty() {
                 changes.push(format!("+{} deps", add_blocked_by.len()));
@@ -15167,6 +15350,7 @@ fn strip_outer_tag<'a>(wrapper: &'a str, tag: &str) -> &'a str {
 pub(super) async fn run_automaton_core(
     idx: usize,
     automaton: crate::config::Automaton,
+    cwd_override: Option<std::path::PathBuf>,
     session_id: Uuid,
     socket_path: String,
     mut user_rx: mpsc::UnboundedReceiver<String>,
@@ -15182,7 +15366,7 @@ pub(super) async fn run_automaton_core(
     // here — webservice-backed automatons go to `run_webservice_core`.
     // Destructure once so the existing body reads like the old struct
     // shape.
-    let (command, args, cwd, env, timeout_seconds) = match automaton.backend.clone() {
+    let (command, args, template_cwd, env, timeout_seconds) = match automaton.backend.clone() {
         crate::config::AutomatonBackend::Script {
             command,
             args,
@@ -15193,6 +15377,7 @@ pub(super) async fn run_automaton_core(
         crate::config::AutomatonBackend::Webservice { .. }
         | crate::config::AutomatonBackend::Remote { .. } => return,
     };
+    let cwd = cwd_override.or_else(|| template_cwd.map(std::path::PathBuf::from));
 
     loop {
         // Priority: user > agent > channel. Cancel sits first so any
@@ -18697,6 +18882,7 @@ mod tests {
                 cmd: RequestCmd::WorkerCreate {
                     template: "ghost".into(),
                     task: "anything".into(),
+                    cwd: None,
                     properties: None,
                 },
             },
@@ -18723,6 +18909,7 @@ mod tests {
                 cmd: RequestCmd::WorkerCreate {
                     template: "researcher".into(),
                     task: "t".into(),
+                    cwd: None,
                     properties: None,
                 },
             },
@@ -18746,6 +18933,7 @@ mod tests {
                 cmd: RequestCmd::WorkerCreate {
                     template: "researcher".into(),
                     task: "find FOO".into(),
+                    cwd: None,
                     properties: None,
                 },
             },
@@ -18771,6 +18959,232 @@ mod tests {
             .iter()
             .any(|b| matches!(b, ChatBlock::WorkerSpawn { .. }));
         assert!(parent_has_spawn_block, "missing WorkerSpawn on parent");
+    }
+
+    static WORKER_CWD_TEST_PATH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn git_init(path: &std::path::Path) {
+        let status = std::process::Command::new("git")
+            .arg("init")
+            .arg("--quiet")
+            .arg(path)
+            .status()
+            .expect("run git init");
+        assert!(status.success(), "git init failed: {status}");
+    }
+
+    fn install_fake_claude(bin_dir: &std::path::Path) {
+        std::fs::create_dir_all(bin_dir).expect("create fake bin dir");
+        let script = bin_dir.join("claude");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+printf '{"type":"system","subtype":"init","session_id":"550e8400-e29b-41d4-a716-446655440000","tools":[],"model":"fake"}\n'
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"}]}}\n' "$(pwd)"
+"#,
+        )
+        .expect("write fake claude");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+        }
+    }
+
+    async fn create_worker_and_capture_cwd(
+        app: &mut App,
+        rx: &mut mpsc::Receiver<(usize, AIEvent)>,
+        task: String,
+        cwd: Option<String>,
+    ) -> String {
+        let coder_uuid = app.chats[0].session_id.unwrap();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: coder_uuid,
+                cmd: RequestCmd::WorkerCreate {
+                    template: "researcher".into(),
+                    task,
+                    cwd,
+                    properties: None,
+                },
+            },
+            reply: reply_tx,
+        });
+        let resp = reply_rx.await.unwrap();
+        assert!(resp.ok, "worker create failed: {resp:?}");
+
+        let deadline = std::time::Duration::from_secs(5);
+        loop {
+            match tokio::time::timeout(deadline, rx.recv()).await {
+                Ok(Some((_idx, AIEvent::AssistantText { text, .. })))
+                    if text.starts_with("cwd:") =>
+                {
+                    return text.trim_start_matches("cwd:").trim().to_string();
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) => panic!("ai event channel closed before cwd output"),
+                Err(_) => panic!("timed out waiting for fake claude cwd output"),
+            }
+        }
+    }
+
+    async fn with_fake_claude_path<F, Fut>(f: F)
+    where
+        F: FnOnce(std::path::PathBuf) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let _guard = WORKER_CWD_TEST_PATH_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = tmp.path().join("bin");
+        install_fake_claude(&bin_dir);
+        let old_path = std::env::var_os("PATH");
+        let new_path = match old_path.as_ref() {
+            Some(path) => {
+                let mut paths = vec![bin_dir.clone()];
+                paths.extend(std::env::split_paths(path));
+                std::env::join_paths(paths).expect("join PATH")
+            }
+            None => bin_dir.clone().into_os_string(),
+        };
+        std::env::set_var("PATH", new_path);
+        f(bin_dir).await;
+        match old_path {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_create_inherits_task_worktree() {
+        with_fake_claude_path(|_bin_dir| async {
+            let worktree = tempfile::tempdir().expect("worktree");
+            git_init(worktree.path());
+            let (mut app, mut rx) = prime_worker_app(worker_config());
+            let task_id = app
+                .tasks
+                .add_with_worktree(
+                    "task".into(),
+                    None,
+                    None,
+                    "test".into(),
+                    Vec::new(),
+                    Some(worktree.path().display().to_string()),
+                )
+                .unwrap()
+                .id;
+
+            let cwd =
+                create_worker_and_capture_cwd(&mut app, &mut rx, task_id.to_string(), None).await;
+            assert_eq!(cwd, worktree.path().display().to_string());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn worker_create_explicit_cwd_overrides_task_worktree() {
+        with_fake_claude_path(|_bin_dir| async {
+            let worktree = tempfile::tempdir().expect("worktree");
+            let other = tempfile::tempdir().expect("other cwd");
+            git_init(worktree.path());
+            git_init(other.path());
+            let (mut app, mut rx) = prime_worker_app(worker_config());
+            let task_id = app
+                .tasks
+                .add_with_worktree(
+                    "task".into(),
+                    None,
+                    None,
+                    "test".into(),
+                    Vec::new(),
+                    Some(worktree.path().display().to_string()),
+                )
+                .unwrap()
+                .id;
+
+            let cwd = create_worker_and_capture_cwd(
+                &mut app,
+                &mut rx,
+                task_id.to_string(),
+                Some(other.path().display().to_string()),
+            )
+            .await;
+            assert_eq!(cwd, other.path().display().to_string());
+            assert_ne!(cwd, worktree.path().display().to_string());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn worker_create_fails_loudly_on_pruned_worktree() {
+        let worktree = tempfile::tempdir().expect("worktree");
+        let worktree_path = worktree.path().to_path_buf();
+        git_init(&worktree_path);
+        let (mut app, mut rx) = prime_worker_app(worker_config());
+        let task_id = app
+            .tasks
+            .add_with_worktree(
+                "task".into(),
+                None,
+                None,
+                "test".into(),
+                Vec::new(),
+                Some(worktree_path.display().to_string()),
+            )
+            .unwrap()
+            .id;
+        drop(worktree);
+
+        let coder_uuid = app.chats[0].session_id.unwrap();
+        let chats_before = app.chats.len();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: coder_uuid,
+                cmd: RequestCmd::WorkerCreate {
+                    template: "researcher".into(),
+                    task: task_id.to_string(),
+                    cwd: None,
+                    properties: None,
+                },
+            },
+            reply: reply_tx,
+        });
+        let resp = reply_rx.await.unwrap();
+        assert!(!resp.ok, "unexpected success: {resp:?}");
+        let err = resp.error.unwrap();
+        assert!(err.contains(&task_id.to_string()), "missing task id: {err}");
+        assert!(
+            err.contains(&worktree_path.display().to_string()),
+            "missing path: {err}"
+        );
+        assert_eq!(app.chats.len(), chats_before);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
+                .await
+                .is_err(),
+            "unexpected subprocess event"
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_create_without_worktree_uses_template_or_cwd_unchanged() {
+        with_fake_claude_path(|_bin_dir| async {
+            let (mut app, mut rx) = prime_worker_app(worker_config());
+            let task_id = app
+                .tasks
+                .add("task".into(), None, None, "test".into(), Vec::new())
+                .unwrap()
+                .id;
+            let expected = std::env::current_dir().unwrap();
+
+            let cwd =
+                create_worker_and_capture_cwd(&mut app, &mut rx, task_id.to_string(), None).await;
+            assert_eq!(cwd, expected.display().to_string());
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -19700,6 +20114,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx,
@@ -19731,6 +20146,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx,
@@ -19768,6 +20184,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx,
@@ -19807,6 +20224,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx,
@@ -19866,6 +20284,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx,
@@ -19897,6 +20316,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx,
@@ -19933,6 +20353,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx1,
@@ -19953,7 +20374,9 @@ mod tests {
                     assignee: Some("engineering".into()),
                     unassign: false,
                     planned_assignee: None,
+                    worktree: None,
                     clear_planned_assignee: false,
+                    clear_worktree: false,
                     note: None,
                     add_blocked_by: vec![],
                     remove_blocked_by: vec![],
@@ -19991,6 +20414,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx1,
@@ -20011,7 +20435,9 @@ mod tests {
                     assignee: Some(crate::config::USER_INBOX_ID.into()),
                     unassign: false,
                     planned_assignee: None,
+                    worktree: None,
                     clear_planned_assignee: false,
+                    clear_worktree: false,
                     note: None,
                     add_blocked_by: vec![],
                     remove_blocked_by: vec![],
@@ -20043,6 +20469,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx1,
@@ -20106,6 +20533,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx1,
@@ -20126,7 +20554,9 @@ mod tests {
                     assignee: Some("b".into()),
                     unassign: false,
                     planned_assignee: None,
+                    worktree: None,
                     clear_planned_assignee: false,
+                    clear_worktree: false,
                     note: Some("ready for test, see PR #1".into()),
                     add_blocked_by: vec![],
                     remove_blocked_by: vec![],
@@ -20165,7 +20595,9 @@ mod tests {
                     assignee: Some("a".into()),
                     unassign: false,
                     planned_assignee: None,
+                    worktree: None,
                     clear_planned_assignee: false,
+                    clear_worktree: false,
                     note: Some("bug in edge case X".into()),
                     add_blocked_by: vec![],
                     remove_blocked_by: vec![],
@@ -20205,6 +20637,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx1,
@@ -20223,7 +20656,9 @@ mod tests {
                     assignee: None,
                     unassign: false,
                     planned_assignee: None,
+                    worktree: None,
                     clear_planned_assignee: false,
+                    clear_worktree: false,
                     note: None,
                     add_blocked_by: vec![],
                     remove_blocked_by: vec![],
@@ -20256,6 +20691,7 @@ mod tests {
                         blocked_by: vec![],
                         status: None,
                         planned_assignee: None,
+                        worktree: None,
                     },
                 },
                 reply: tx,
@@ -20301,6 +20737,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx1,
@@ -20336,6 +20773,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx1,
@@ -20379,6 +20817,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx1,
@@ -20467,6 +20906,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx1,
@@ -20904,6 +21344,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx0,
@@ -20921,6 +21362,7 @@ mod tests {
                     blocked_by: vec![prereq],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx1,
@@ -21005,6 +21447,38 @@ mod tests {
         assert!(resp.error.unwrap().contains("not found"));
     }
 
+    #[test]
+    fn format_task_detail_prints_worktree_only_when_present() {
+        let mut store = crate::tasks::TaskStore::new();
+        let no_worktree = store
+            .add(
+                "plain".into(),
+                None,
+                Some("b".into()),
+                "a".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        let with_worktree = store
+            .add_with_worktree(
+                "bound".into(),
+                None,
+                Some("b".into()),
+                "a".into(),
+                Vec::new(),
+                Some("/repo".into()),
+            )
+            .unwrap()
+            .id;
+
+        let plain = format_task_detail(store.get(no_worktree).unwrap(), &store, 1);
+        assert!(!plain.contains("worktree:"));
+
+        let bound = format_task_detail(store.get(with_worktree).unwrap(), &store, 1);
+        assert!(bound.contains("Assignee: b\nworktree: /repo\nCreated by: a"));
+    }
+
     #[tokio::test]
     async fn task_take_skips_blocked_tasks_and_claims_them_when_dep_done() {
         let mut app = App::new(sample_config());
@@ -21024,6 +21498,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx1,
@@ -21042,6 +21517,7 @@ mod tests {
                     blocked_by: vec![prereq_id],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx2,
@@ -21079,7 +21555,9 @@ mod tests {
                     assignee: None,
                     unassign: false,
                     planned_assignee: None,
+                    worktree: None,
                     clear_planned_assignee: false,
+                    clear_worktree: false,
                     note: None,
                     add_blocked_by: vec![],
                     remove_blocked_by: vec![],
@@ -21122,6 +21600,7 @@ mod tests {
                     blocked_by: vec![Uuid::new_v4()],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx,
@@ -21149,6 +21628,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx1,
@@ -21166,6 +21646,7 @@ mod tests {
                     blocked_by: vec![x],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx2,
@@ -21185,7 +21666,9 @@ mod tests {
                     assignee: None,
                     unassign: false,
                     planned_assignee: None,
+                    worktree: None,
                     clear_planned_assignee: false,
+                    clear_worktree: false,
                     note: None,
                     add_blocked_by: vec![y],
                     remove_blocked_by: vec![],
@@ -21215,6 +21698,7 @@ mod tests {
                     blocked_by: vec![],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx1,
@@ -21232,6 +21716,7 @@ mod tests {
                     blocked_by: vec![prereq],
                     status: None,
                     planned_assignee: None,
+                    worktree: None,
                 },
             },
             reply: tx2,
@@ -21275,6 +21760,7 @@ mod tests {
                         blocked_by: vec![],
                         status: None,
                         planned_assignee: None,
+                        worktree: None,
                     },
                 },
                 reply: tx,

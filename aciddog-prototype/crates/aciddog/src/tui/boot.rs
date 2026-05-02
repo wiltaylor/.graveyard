@@ -411,6 +411,7 @@ pub(super) fn spawn_agent_core(app: &mut App, idx: usize, agent: &Agent) -> Resu
         false,
         agent.model.as_deref(),
         None,
+        None,
     )
     .map_err(|e| anyhow!("agent `{}` core build failed: {e}", agent.id))?;
 
@@ -474,6 +475,7 @@ pub(super) fn spawn_automaton_core(app: &mut App, idx: usize, automaton: &Automa
             tokio::spawn(run_automaton_core(
                 idx,
                 automaton.clone(),
+                None,
                 session_id,
                 app.socket_path.clone(),
                 user_rx,

@@ -218,10 +218,11 @@ pub fn cli_preamble(
                 Row {
                     cmd: "worker create",
                     params:
-                        "`--template <id>` `--task \"<initial task>\"` [`--properties '<json>'`]",
+                        "`--template <id>` `--task \"<initial task>\"` [`--cwd <dir>`] [`--properties '<json>'`]",
                     desc: "Spawn an ephemeral worker. Response carries the new \
                            worker's display id (use with `send --to`) and session \
                            UUID (retain to resume if it hibernates). \
+                           `--cwd` overrides task worktree and template cwd defaults. \
                            `--properties` is a JSON object required by \
                            remote-worker templates (e.g. Jules needs \
                            `{\"repo\":\"owner/repo\",\"branch\":\"main\"}`); \
@@ -713,9 +714,10 @@ pub fn tag_preamble(
             &[
                 Row {
                     cmd: "worker_create",
-                    params: "`\"template\":\"<id>\"`, `\"task\":\"<initial task>\"`, [`\"properties\":{…}`]",
+                    params: "`\"template\":\"<id>\"`, `\"task\":\"<initial task>\"`, [`\"cwd\":\"<dir>\"`], [`\"properties\":{…}`]",
                     desc: "Spawn an ephemeral worker. Response carries display id \
                            (use in `send_message.to`) and session UUID. \
+                           `cwd` overrides task worktree and template cwd defaults. \
                            `properties` is required for remote-worker templates \
                            (e.g. Jules needs `{\"repo\":\"owner/repo\",\"branch\":\"main\"}`); \
                            ignored by local templates.",
@@ -755,7 +757,7 @@ pub fn tag_preamble(
         &[
             Row {
                 cmd: "task_add",
-                params: "`\"title\":\"<t>\"`, [`\"description\":\"…\"`], [`\"assignee\":\"<id>\"`], [`\"blocked_by\":[\"<uuid>\"…]`], [`\"status\":\"planning\"` `\"assignee\":\"user\"` `\"planned_assignee\":\"<id>\"`]",
+                params: "`\"title\":\"<t>\"`, [`\"description\":\"…\"`], [`\"assignee\":\"<id>\"`], [`\"worktree\":\"<path>\"`], [`\"blocked_by\":[\"<uuid>\"…]`], [`\"status\":\"planning\"` `\"assignee\":\"user\"` `\"planned_assignee\":\"<id>\"`]",
                 desc: "Create work. For a user-approval workflow, propose a plan with `\"status\":\"planning\"`, `\"assignee\":\"user\"`, and `\"planned_assignee\":\"<target>\"`; the user approves and the task is routed to `<target>` (status flips to `approved`).",
             },
             Row {
@@ -770,7 +772,7 @@ pub fn tag_preamble(
             },
             Row {
                 cmd: "task_update",
-                params: "`\"id\":\"<uuid>\"` + any of: `\"title\"`, `\"description\"`, `\"status\":\"open\\|assigned\\|in_progress\\|done\\|cancelled\"`, `\"assignee\"` \\| `\"unassign\":true`, `\"planned_assignee\"` \\| `\"clear_planned_assignee\":true`, `\"note\"`, `\"add_blocked_by\":[…]`, `\"remove_blocked_by\":[…]`",
+                params: "`\"id\":\"<uuid>\"` + any of: `\"title\"`, `\"description\"`, `\"status\":\"open\\|assigned\\|in_progress\\|done\\|cancelled\"`, `\"assignee\"` \\| `\"unassign\":true`, `\"planned_assignee\"` \\| `\"clear_planned_assignee\":true`, `\"worktree\"` \\| `\"clear_worktree\":true`, `\"note\"`, `\"add_blocked_by\":[…]`, `\"remove_blocked_by\":[…]`",
                 desc: "Omit fields you don't want to change. Always include `\"note\"` when reassigning. On a `planning` task, set `\"planned_assignee\"` to revise the post-approval handoff target after the user comments.",
             },
             Row {

@@ -261,6 +261,7 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
                 WorkerCommand::Create {
                     template,
                     task,
+                    cwd,
                     properties,
                 },
         } => {
@@ -274,6 +275,7 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
             RequestCmd::WorkerCreate {
                 template,
                 task,
+                cwd,
                 properties: parsed,
             }
         }
@@ -292,6 +294,7 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
                     blocked_by,
                     status,
                     planned_assignee,
+                    worktree,
                 },
         } => RequestCmd::TaskAdd {
             title,
@@ -300,6 +303,7 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
             blocked_by,
             status,
             planned_assignee,
+            worktree,
         },
         AgentCommand::Task {
             cmd:
@@ -325,7 +329,9 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
                     assignee,
                     unassign,
                     planned_assignee,
+                    worktree,
                     clear_planned_assignee,
+                    clear_worktree,
                     note,
                     add_blocked_by,
                     remove_blocked_by,
@@ -338,7 +344,9 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
             assignee,
             unassign,
             planned_assignee,
+            worktree,
             clear_planned_assignee,
+            clear_worktree,
             note,
             add_blocked_by,
             remove_blocked_by,

@@ -118,6 +118,7 @@ pub struct ClaudeCodeCore {
     /// every turn. `None` lets claude pick its own default.
     model: Option<String>,
     env: Vec<(String, String)>,
+    cwd: Option<std::path::PathBuf>,
     /// Set to `Some` only when the agent lacks a shell tool and must
     /// coordinate through inline `<aciddog-call>` tags. When present,
     /// `turn` runs the tag-chain loop; otherwise it runs the child once
@@ -144,6 +145,7 @@ impl ClaudeCodeCore {
             system_prompt,
             model: None,
             env: Vec::new(),
+            cwd: None,
             socket_tx: None,
             started: false,
         }
@@ -166,6 +168,7 @@ impl ClaudeCodeCore {
             system_prompt,
             model: None,
             env: Vec::new(),
+            cwd: None,
             socket_tx: None,
             started: true,
         }
@@ -182,6 +185,12 @@ impl ClaudeCodeCore {
     /// agent can call back into aciddog via the IPC socket.
     pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
         self.env = env;
+        self
+    }
+
+    /// Working directory for the spawned claude process.
+    pub fn with_cwd(mut self, cwd: std::path::PathBuf) -> Self {
+        self.cwd = Some(cwd);
         self
     }
 
@@ -375,6 +384,7 @@ impl AICore for ClaudeCodeCore {
             allowed_tools: self.allowed_tools.clone(),
             model: self.model.clone(),
             env: self.env.clone(),
+            cwd: self.cwd.clone(),
             system_prompt_path: system_prompt_file.as_ref().map(|t| t.path().to_path_buf()),
         });
 
@@ -425,6 +435,7 @@ struct RoundCtx {
     allowed_tools: Vec<String>,
     model: Option<String>,
     env: Vec<(String, String)>,
+    cwd: Option<std::path::PathBuf>,
     system_prompt_path: Option<std::path::PathBuf>,
 }
 
@@ -484,6 +495,9 @@ async fn run_round(
 
     if !ctx.env.is_empty() {
         cmd.envs(ctx.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    }
+    if let Some(cwd) = &ctx.cwd {
+        cmd.current_dir(cwd);
     }
 
     cmd.stdin(Stdio::piped())

@@ -82,7 +82,7 @@ Direct-API cores (`:anthropicApi`, `:openAiApi`, `:openAiChatgpt`) require a `mo
 ## Agents vs workers
 
 - **Agent**: declared at config-load time, runs forever, has a mailbox + chat pane, can join channels, can be a supervisor or sysadmin, has an `on_reload` policy.
-- **Worker**: a *template* — instances are spawned by `aciddog worker create --template <id> --task "..."` from within an agent that lists this template in `can_create_workers`. Workers cannot join channels, cannot be supervisors, and have no `on_reload` field.
+- **Worker**: a *template* — instances are spawned by `aciddog worker create --template <id> --task "..."` from within an agent that lists this template in `can_create_workers`. Pass `--cwd <path>` to set an explicit cwd for the spawned worker; it must exist and be a directory at spawn time or creation fails. Workers cannot join channels, cannot be supervisors, and have no `on_reload` field.
 
 Field overlap: both accept `role`, `role_description`, `model`, `instructions`, `tools`, `ai_core`, `memory_banks`, `skills`, `compaction`, `can_create_workers`, `can_run_workflows`, `group`. Only agents accept `can_message`, `supervisor`, `sysadmin`, `leader`, `on_reload`.
 
@@ -101,6 +101,10 @@ Optional free-form section label on `agent`, `automaton`, and `worker` blocks. R
 ## Task assignees beyond agents (`group`, `user`)
 
 The `assignee` field on a task accepts three flavours of bare-string identifier, resolved at validation time in this order: chat `display_name` (configured agents, automatons, and spawned workers) → declared group label → reserved `user` id. The `user` value routes the task notification to the operator's inbox (Views → Inbox in the TUI; the inbox endpoint in the web manager).
+
+## Task worktrees and worker cwd
+
+Use `aciddog task add ... --worktree <path>` to bind a filesystem path to a task; the path must already exist, be a directory, and sit inside a git repo. Spawned workers assigned to that task inherit it as their cwd unless `worker create ... --cwd <path>` overrides it. Use `aciddog task update ... --worktree <path>` to revise the binding or `aciddog task update ... --clear-worktree` to clear it. Cwd precedence is `--cwd > task.worktree > template default > orchestrator current_dir`; an explicit `--cwd` must exist and be a directory at spawn time or worker creation fails loudly.
 
 ## Task statuses
 

@@ -17,7 +17,8 @@
 //! a path, every mutator persists atomically (write-tmp + rename).
 //! [`TaskStore::new`] yields an ephemeral store used by unit tests.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -157,6 +158,11 @@ pub struct Task {
     /// files without this field still load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planned_assignee: Option<String>,
+    /// Filesystem worktree path used by spawned workers as their cwd.
+    /// `serde(default)` so older JSON files without this field still
+    /// load for forward-compat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
     pub created_by: String,
     pub created_at_secs: u64,
     pub updated_at_secs: u64,
@@ -216,6 +222,9 @@ pub enum TaskError {
     #[error("comment body must not be empty")]
     EmptyCommentBody,
 
+    #[error("invalid worktree path {path}: {reason}")]
+    InvalidWorktree { path: String, reason: String },
+
     #[error("task store I/O error at {path}: {source}")]
     Io {
         path: String,
@@ -245,6 +254,9 @@ pub struct TaskPatch {
     /// `Planning` task). Agents revise plans by patching this field
     /// in response to user comments.
     pub planned_assignee: Option<Option<String>>,
+    /// Same three-state shape as the assignee field, for the
+    /// worktree path used as the cwd for spawned workers.
+    pub worktree: Option<Option<String>>,
     pub note: Option<String>,
     /// Dependency ids to add to `blocked_by` on this update.
     pub add_blocked_by: Vec<Uuid>,
@@ -311,6 +323,18 @@ impl TaskStore {
         created_by: String,
         blocked_by: Vec<Uuid>,
     ) -> Result<&Task, TaskError> {
+        self.add_with_worktree(title, description, assignee, created_by, blocked_by, None)
+    }
+
+    pub fn add_with_worktree(
+        &mut self,
+        title: String,
+        description: Option<String>,
+        assignee: Option<String>,
+        created_by: String,
+        blocked_by: Vec<Uuid>,
+        worktree: Option<String>,
+    ) -> Result<&Task, TaskError> {
         let title = title.trim().to_string();
         if title.is_empty() {
             return Err(TaskError::EmptyTitle);
@@ -338,6 +362,7 @@ impl TaskStore {
             status,
             assignee,
             planned_assignee: None,
+            worktree,
             created_by,
             created_at_secs: now,
             updated_at_secs: now,
@@ -366,6 +391,25 @@ impl TaskStore {
         created_by: String,
         blocked_by: Vec<Uuid>,
     ) -> Result<&Task, TaskError> {
+        self.add_planning_with_worktree(
+            title,
+            description,
+            planned_assignee,
+            created_by,
+            blocked_by,
+            None,
+        )
+    }
+
+    pub fn add_planning_with_worktree(
+        &mut self,
+        title: String,
+        description: Option<String>,
+        planned_assignee: String,
+        created_by: String,
+        blocked_by: Vec<Uuid>,
+        worktree: Option<String>,
+    ) -> Result<&Task, TaskError> {
         let title = title.trim().to_string();
         if title.is_empty() {
             return Err(TaskError::EmptyTitle);
@@ -391,6 +435,7 @@ impl TaskStore {
             status: TaskStatus::Planning,
             assignee: Some(USER_INBOX_ID.to_string()),
             planned_assignee: Some(planned_assignee),
+            worktree,
             created_by,
             created_at_secs: now,
             updated_at_secs: now,
@@ -600,6 +645,9 @@ impl TaskStore {
         }
         if let Some(new_planned) = patch.planned_assignee {
             t.planned_assignee = new_planned;
+        }
+        if let Some(new_worktree) = patch.worktree {
+            t.worktree = new_worktree;
         }
         for dep in patch.add_blocked_by {
             if !t.blocked_by.contains(&dep) {
@@ -959,6 +1007,35 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+pub fn validate_worktree(path: &str) -> Result<(), TaskError> {
+    let p = Path::new(path);
+    if !p.exists() {
+        return Err(TaskError::InvalidWorktree {
+            path: path.to_string(),
+            reason: "path does not exist".to_string(),
+        });
+    }
+    if !p.is_dir() {
+        return Err(TaskError::InvalidWorktree {
+            path: path.to_string(),
+            reason: "path is not a directory".to_string(),
+        });
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output();
+    match output {
+        Ok(o) if o.status.success() => Ok(()),
+        _ => Err(TaskError::InvalidWorktree {
+            path: path.to_string(),
+            reason: "path is not inside a git repo".to_string(),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -1881,7 +1958,90 @@ mod tests {
         let s = TaskStore::load_or_init(path).unwrap();
         let t = &s.all()[0];
         assert!(t.planned_assignee.is_none());
+        assert!(t.worktree.is_none());
         assert_eq!(t.status, TaskStatus::Open);
+    }
+
+    #[test]
+    fn task_serializes_without_worktree_when_none() {
+        let mut s = mk_store();
+        let t = s
+            .add("t".into(), None, None, "alice".into(), Vec::new())
+            .unwrap();
+        let value = serde_json::to_value(t).unwrap();
+        assert!(value.get("worktree").is_none());
+    }
+
+    #[test]
+    fn task_worktree_round_trips_across_reload() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("tasks.json");
+        let tid;
+        {
+            let mut s = TaskStore::load_or_init(path.clone()).unwrap();
+            tid = s
+                .add_with_worktree(
+                    "t".into(),
+                    None,
+                    None,
+                    "alice".into(),
+                    Vec::new(),
+                    Some("/p".into()),
+                )
+                .unwrap()
+                .id;
+        }
+        let s2 = TaskStore::load_or_init(path).unwrap();
+        let t = s2.get(tid).unwrap();
+        assert_eq!(t.worktree.as_deref(), Some("/p"));
+    }
+
+    #[test]
+    fn task_patch_worktree_three_state() {
+        let mut s = mk_store();
+        let id = s
+            .add_with_worktree(
+                "t".into(),
+                None,
+                None,
+                "alice".into(),
+                Vec::new(),
+                Some("/old".into()),
+            )
+            .unwrap()
+            .id;
+        s.update(
+            id,
+            TaskPatch {
+                note: Some("no worktree change".into()),
+                ..Default::default()
+            },
+            "alice",
+        )
+        .unwrap();
+        assert_eq!(s.get(id).unwrap().worktree.as_deref(), Some("/old"));
+
+        s.update(
+            id,
+            TaskPatch {
+                worktree: Some(Some("/p".into())),
+                ..Default::default()
+            },
+            "alice",
+        )
+        .unwrap();
+        assert_eq!(s.get(id).unwrap().worktree.as_deref(), Some("/p"));
+
+        s.update(
+            id,
+            TaskPatch {
+                worktree: Some(None),
+                ..Default::default()
+            },
+            "alice",
+        )
+        .unwrap();
+        assert!(s.get(id).unwrap().worktree.is_none());
     }
 
     #[test]
@@ -1907,5 +2067,48 @@ mod tests {
         assert_eq!(t.status, TaskStatus::Planning);
         assert_eq!(t.planned_assignee.as_deref(), Some("builders"));
         assert_eq!(t.assignee.as_deref(), Some(USER_INBOX_ID));
+    }
+
+    fn expect_invalid_worktree(err: TaskError, expected_reason: &str) {
+        match err {
+            TaskError::InvalidWorktree { reason, .. } => assert_eq!(reason, expected_reason),
+            other => panic!("expected InvalidWorktree, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_worktree_accepts_git_repo() {
+        let tmp = TempDir::new().unwrap();
+        let status = Command::new("git")
+            .arg("init")
+            .arg(tmp.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        validate_worktree(tmp.path().to_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn validate_worktree_rejects_missing_dir() {
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("missing");
+        let err = validate_worktree(missing.to_str().unwrap()).unwrap_err();
+        expect_invalid_worktree(err, "path does not exist");
+    }
+
+    #[test]
+    fn validate_worktree_rejects_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("file");
+        std::fs::write(&path, b"x").unwrap();
+        let err = validate_worktree(path.to_str().unwrap()).unwrap_err();
+        expect_invalid_worktree(err, "path is not a directory");
+    }
+
+    #[test]
+    fn validate_worktree_rejects_non_git_dir() {
+        let tmp = TempDir::new().unwrap();
+        let err = validate_worktree(tmp.path().to_str().unwrap()).unwrap_err();
+        expect_invalid_worktree(err, "path is not inside a git repo");
     }
 }

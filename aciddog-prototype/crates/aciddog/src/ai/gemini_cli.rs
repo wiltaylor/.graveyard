@@ -134,6 +134,7 @@ pub struct GeminiCliCore {
     /// gemini picks its own default.
     model: Option<String>,
     env: Vec<(String, String)>,
+    cwd: Option<std::path::PathBuf>,
     /// Set to `Some` only when the agent lacks a shell tool and must
     /// coordinate through inline `<aciddog-call>` tags. When present,
     /// `turn` runs the tag-chain loop; otherwise it runs the child once
@@ -156,6 +157,7 @@ impl GeminiCliCore {
             allowed_tools,
             model: None,
             env: Vec::new(),
+            cwd: None,
             socket_tx: None,
             started: false,
         }
@@ -180,6 +182,7 @@ impl GeminiCliCore {
             allowed_tools,
             model: None,
             env: Vec::new(),
+            cwd: None,
             socket_tx: None,
             started: true,
         }
@@ -204,6 +207,12 @@ impl GeminiCliCore {
     /// agent can call back into aciddog via the IPC socket.
     pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
         self.env = env;
+        self
+    }
+
+    /// Working directory for the spawned gemini process.
+    pub fn with_cwd(mut self, cwd: std::path::PathBuf) -> Self {
+        self.cwd = Some(cwd);
         self
     }
 
@@ -388,6 +397,7 @@ impl AICore for GeminiCliCore {
             aciddog_session_id: self.aciddog_session_id,
             model: self.model.clone(),
             env: self.env.clone(),
+            cwd: self.cwd.clone(),
             policy_path: policy_file.as_ref().map(|t| t.path().to_path_buf()),
             system_settings_path: settings_file.path().to_path_buf(),
             gemini_session_id: self.gemini_session_id.clone(),
@@ -454,6 +464,7 @@ struct RoundCtx {
     aciddog_session_id: Uuid,
     model: Option<String>,
     env: Vec<(String, String)>,
+    cwd: Option<std::path::PathBuf>,
     /// Path to the per-turn policy TOML file passed via `--policy`.
     /// `None` means the caller chose not to emit one (today only
     /// happens when `allowed_tools` is empty *and* no unmapped
@@ -585,6 +596,9 @@ async fn run_round(
 
     if !ctx.env.is_empty() {
         cmd.envs(ctx.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    }
+    if let Some(cwd) = &ctx.cwd {
+        cmd.current_dir(cwd);
     }
 
     cmd.stdin(Stdio::null())
