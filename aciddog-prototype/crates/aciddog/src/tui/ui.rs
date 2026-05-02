@@ -1494,9 +1494,13 @@ fn render_views_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
             };
             // Inbox shows the total-message count suffix so the
             // operator sees there's unread mail without opening
-            // the view. Empty inbox keeps the plain label.
+            // the view. Tasks follows the same idiom for active
+            // user-assigned work. Empty inbox/tasks keeps the plain
+            // label.
             let label = if *name == "Inbox" && !app.inbox.is_empty() {
                 format!("Inbox ({})", app.inbox.len())
+            } else if *name == "Tasks" && app.user_task_count() > 0 {
+                format!("Tasks ({})", app.user_task_count())
             } else {
                 (*name).to_string()
             };

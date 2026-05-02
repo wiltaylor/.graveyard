@@ -9562,6 +9562,25 @@ impl App {
             .collect()
     }
 
+    /// Count of tasks assigned to the user that are still active -
+    /// i.e. not Done and not Cancelled. Used by the Views-list
+    /// badge 'Tasks (N)' to surface plan-approval and in-flight
+    /// work without opening the Tasks view. Inverse phrasing keeps
+    /// the count correct if a new active TaskStatus variant lands.
+    pub(crate) fn user_task_count(&self) -> usize {
+        self.tasks
+            .all()
+            .iter()
+            .filter(|t| {
+                t.assignee.as_deref() == Some(crate::config::USER_INBOX_ID)
+                    && !matches!(
+                        t.status,
+                        crate::tasks::TaskStatus::Done | crate::tasks::TaskStatus::Cancelled
+                    )
+            })
+            .count()
+    }
+
     fn handle_key_views(&mut self, code: KeyCode, _mods: KeyModifiers) {
         let entries = self.view_entries();
         match code {
@@ -15592,6 +15611,119 @@ mod tests {
             c.tool_index.clear();
         }
         app
+    }
+
+    fn add_counted_task(app: &mut App, status: crate::tasks::TaskStatus, assignee: Option<&str>) {
+        let task_id = app
+            .tasks
+            .add(
+                format!("task {}", app.tasks.len()),
+                None,
+                assignee.map(str::to_string),
+                "author".to_string(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        if app.tasks.get(task_id).unwrap().status != status {
+            app.tasks
+                .update(
+                    task_id,
+                    TaskPatch {
+                        status: Some(status),
+                        ..TaskPatch::default()
+                    },
+                    "author",
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn user_task_count_counts_only_user_assigned_active_tasks() {
+        let cases = [
+            (None, crate::tasks::TaskStatus::Open, 0),
+            (
+                Some(crate::config::USER_INBOX_ID),
+                crate::tasks::TaskStatus::Open,
+                1,
+            ),
+            (
+                Some(crate::config::USER_INBOX_ID),
+                crate::tasks::TaskStatus::Done,
+                0,
+            ),
+            (
+                Some(crate::config::USER_INBOX_ID),
+                crate::tasks::TaskStatus::Cancelled,
+                0,
+            ),
+            (
+                Some(crate::config::USER_INBOX_ID),
+                crate::tasks::TaskStatus::Planning,
+                1,
+            ),
+            (
+                Some(crate::config::USER_INBOX_ID),
+                crate::tasks::TaskStatus::Approved,
+                1,
+            ),
+            (
+                Some(crate::config::USER_INBOX_ID),
+                crate::tasks::TaskStatus::Assigned,
+                1,
+            ),
+            (
+                Some(crate::config::USER_INBOX_ID),
+                crate::tasks::TaskStatus::InProgress,
+                1,
+            ),
+            (Some("other-agent"), crate::tasks::TaskStatus::Open, 0),
+        ];
+
+        for (assignee, status, expected) in cases {
+            let mut app = App::new(sample_config());
+            add_counted_task(&mut app, status, assignee);
+            assert_eq!(
+                app.user_task_count(),
+                expected,
+                "assignee={assignee:?}, status={status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn user_task_count_handles_empty_and_mixed_task_stores() {
+        let mut app = App::new(sample_config());
+        assert_eq!(app.user_task_count(), 0);
+
+        add_counted_task(
+            &mut app,
+            crate::tasks::TaskStatus::Open,
+            Some(crate::config::USER_INBOX_ID),
+        );
+        add_counted_task(
+            &mut app,
+            crate::tasks::TaskStatus::InProgress,
+            Some(crate::config::USER_INBOX_ID),
+        );
+        add_counted_task(
+            &mut app,
+            crate::tasks::TaskStatus::Done,
+            Some(crate::config::USER_INBOX_ID),
+        );
+        add_counted_task(
+            &mut app,
+            crate::tasks::TaskStatus::Cancelled,
+            Some(crate::config::USER_INBOX_ID),
+        );
+        add_counted_task(
+            &mut app,
+            crate::tasks::TaskStatus::InProgress,
+            Some("other-agent"),
+        );
+
+        assert_eq!(app.user_task_count(), 2);
     }
 
     #[test]
