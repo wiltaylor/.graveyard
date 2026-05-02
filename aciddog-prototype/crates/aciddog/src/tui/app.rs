@@ -4599,12 +4599,8 @@ impl App {
         self.agent_ids.insert(session_id, display_name.clone());
 
         // Feed the task as the first prompt.
-        if user_tx.send(task.clone()).is_err() {
-            // Should not happen — we just created the channel.
-            tracing::warn!(%display_name, "user_tx closed before initial task could be sent");
-        } else if let Some(chat) = self.chats.get_mut(new_idx) {
-            chat.ever_prompted = true;
-            chat.last_active_at = Instant::now();
+        if let Some(chat) = self.chats.get_mut(new_idx) {
+            feed_worker_initial_task(&user_tx, chat, &task, &display_name);
         }
 
         // Workers never participate in channels. Give `run_core` a
@@ -8072,9 +8068,11 @@ impl App {
     ///
     /// Used by the interactive planning flows (approve / reject)
     /// where the user genuinely expects the AI to react. Routine
-    /// task-assignment notifications stay on the passive
-    /// `notify_assignee` path so we don't wake every sleeping worker
-    /// on every reassignment.
+    /// task-assignment notifications use `notify_assignee`, which
+    /// wakes the assignee on every fresh handoff where assignee !=
+    /// actor; self-assignment via `task_take` does not wake. See
+    /// decisions/ee147130-0452-4a4e-9cf3-83921851f428 (supersedes
+    /// decisions/f7e0ea0a).
     pub(crate) fn deliver_active_user_message(&mut self, to: &str, body: String) -> bool {
         let Some(idx) = self.chats.iter().position(|c| c.display_name == to) else {
             return false;
@@ -8105,11 +8103,11 @@ impl App {
         }
     }
 
-    /// Push a passive `system_info` block into the assignee's chat so
-    /// they see the new work next time they look at the pane. Does
-    /// NOT resurrect hibernated workers — tasks are pull-driven, so
-    /// waking a sleeping worker every time someone assigns a task
-    /// would undo the point of hibernation.
+    /// Push a `system_info` block into the assignee's chat and wake
+    /// the assignee on every fresh handoff where assignee != actor;
+    /// self-assignment via `task_take` does not wake. See
+    /// decisions/ee147130-0452-4a4e-9cf3-83921851f428 (supersedes
+    /// decisions/f7e0ea0a).
     fn notify_assignee(
         &mut self,
         assignee_display: &str,
@@ -8128,7 +8126,7 @@ impl App {
             let should_wake = {
                 let chat = &mut self.chats[idx];
                 chat.push_block(ChatBlock::system_info(msg.clone()));
-                chat.user_tx.is_some() && !chat.ever_prompted
+                chat.user_tx.is_some()
             };
             if should_wake {
                 self.wake_via_user_tx(idx, msg);
@@ -16363,6 +16361,23 @@ pub(super) async fn run_automaton_core(
     }
 }
 
+fn feed_worker_initial_task(
+    user_tx: &mpsc::UnboundedSender<String>,
+    chat: &mut AgentChat,
+    task: &str,
+    display_name: &str,
+) -> bool {
+    if user_tx.send(task.to_string()).is_err() {
+        // Should not happen — we just created the channel.
+        tracing::warn!(%display_name, "user_tx closed before initial task could be sent");
+        false
+    } else {
+        chat.ever_prompted = true;
+        chat.last_active_at = Instant::now();
+        true
+    }
+}
+
 async fn event_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -18421,7 +18436,7 @@ mod tests {
     }
 
     #[test]
-    fn notify_assignee_does_not_rewake_hot_chat() {
+    fn notify_assignee_wakes_hot_chat_on_handoff() {
         let mut app = App::new(sample_config());
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         app.chats[0].user_tx = Some(tx);
@@ -18438,10 +18453,25 @@ mod tests {
                 kind: super::super::blocks::SystemKind::Info,
             } if text == expected
         )));
+        assert_eq!(rx.try_recv().unwrap(), expected);
+    }
+
+    #[test]
+    fn notify_assignee_skips_wake_on_self_assign() {
+        let mut app = App::new(sample_config());
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        app.chats[0].user_tx = Some(tx);
+        app.chats[0].ever_prompted = true;
+        let blocks_before = app.chats[0].blocks.len();
+
+        let task_id = Uuid::parse_str("12345678-1234-5678-1234-567812345678").unwrap();
+        app.dispatch_assignment_notice(AssigneeKind::Chat, "a", task_id, "Fix bug", "a");
+
         assert!(matches!(
             rx.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
+        assert_eq!(app.chats[0].blocks.len(), blocks_before);
     }
 
     #[tokio::test]
@@ -19854,6 +19884,30 @@ mod tests {
         (app, ai_rx)
     }
 
+    #[test]
+    fn worker_create_initial_task_dispatch_independent_of_wake_policy() {
+        // Focused helper test: the full worker_create path immediately
+        // hands the receiver to run_core, so this pins the explicit
+        // initial-task user_tx send used by handle_worker_create.
+        for ever_prompted in [false, true] {
+            let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+            let mut chat = AgentChat {
+                ever_prompted,
+                ..Default::default()
+            };
+
+            assert!(feed_worker_initial_task(
+                &tx,
+                &mut chat,
+                "find FOO",
+                "researcher#12345678",
+            ));
+
+            assert_eq!(rx.try_recv().unwrap(), "find FOO");
+            assert!(chat.ever_prompted);
+        }
+    }
+
     #[tokio::test]
     async fn worker_create_rejects_unknown_template() {
         let (mut app, _rx) = prime_worker_app(worker_config());
@@ -21243,6 +21297,27 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
             }
             other => panic!("expected System block, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn dispatch_assignment_notice_wakes_group_leader_on_handoff() {
+        let mut app = App::new(sample_config_with_engineering_group());
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        app.chats[1].user_tx = Some(tx);
+        app.chats[1].ever_prompted = true;
+
+        let task_id = Uuid::parse_str("12345678-1234-5678-1234-567812345678").unwrap();
+        app.dispatch_assignment_notice(AssigneeKind::Group, "engineering", task_id, "Fix bug", "a");
+
+        let expected = "Task 12345678 assigned to group engineering by a: Fix bug";
+        assert_eq!(rx.try_recv().unwrap(), expected);
+        assert!(app.chats[1].blocks.iter().any(|b| matches!(
+            b,
+            ChatBlock::System {
+                text,
+                kind: super::super::blocks::SystemKind::Info,
+            } if text == expected
+        )));
     }
 
     #[tokio::test]
