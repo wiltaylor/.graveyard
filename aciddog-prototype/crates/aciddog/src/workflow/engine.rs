@@ -771,6 +771,7 @@ mod tests {
                 description: "d".into(),
                 replace_thinking_messages: false,
                 default_ai_core: None,
+                default_idle_timeout: None,
             },
             agents: vec![],
             workers: vec![],

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -20,6 +21,10 @@ pub struct Team {
     /// don't declare `ai_core`. Must resolve to a declared `ai_core`
     /// block id.
     pub default_ai_core: Option<String>,
+    /// Fleet-wide default idle timeout for agents. Phase 2 wires this
+    /// to WCL parsing; absent means idle timers are disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_idle_timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,6 +76,10 @@ pub struct Agent {
     /// for this agent. `None` ⇒ `/compact` falls back to the built-in
     /// `drop` strategy.
     pub compaction: Option<String>,
+    /// Per-agent idle timeout override. Phase 2 wires this to WCL
+    /// parsing; absent falls back to `Team::default_idle_timeout`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout: Option<Duration>,
     /// Grants fleet-management capabilities: observe (`agent list`,
     /// `agent status`, `agent history`, `worker list`), control
     /// (`agent stop`, `agent sleep`, `agent wake`, `agent send-as-user`,
@@ -1036,6 +1045,24 @@ pub enum ConfigError {
     #[error("block `{kind}` attribute `{attr}` is not a string")]
     BadAttributeType { kind: String, attr: String },
 
+    #[error("block `{kind}` attribute `{field}` must be a duration string such as \"10m\"")]
+    BadDurationType { kind: String, field: String },
+
+    #[error("`{field}` value `{value}` is not a valid duration")]
+    BadDuration {
+        field: String,
+        value: String,
+        #[source]
+        source: humantime::DurationError,
+    },
+
+    #[error("`{field}` value `{value}` is too short (minimum {minimum})")]
+    IdleTimeoutTooShort {
+        field: String,
+        value: String,
+        minimum: &'static str,
+    },
+
     #[error("block `{kind}` is missing an id (expected `{kind} <id> {{ ... }}`)")]
     MissingId { kind: String },
 
@@ -1345,6 +1372,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         replace_thinking_messages: optional_bool(team_block, "replace_thinking_messages")?
             .unwrap_or(false),
         default_ai_core: optional_string(team_block, "default_ai_core"),
+        default_idle_timeout: optional_idle_timeout(team_block, "default_idle_timeout")?,
     };
 
     let agents = doc
@@ -1380,6 +1408,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
                 memory_banks: optional_string_list(b, "memory_banks")?,
                 skills: optional_string_list(b, "skills")?,
                 compaction: optional_string(b, "compaction"),
+                idle_timeout: optional_idle_timeout(b, "idle_timeout")?,
                 supervisor: optional_bool(b, "supervisor")?.unwrap_or(false),
                 sysadmin: optional_bool(b, "sysadmin")?.unwrap_or(false),
                 leader: optional_bool(b, "leader")?.unwrap_or(false),
@@ -1614,7 +1643,14 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
     validate_workflow_allowlists(&agents, &workers, &workflows)?;
     validate_automaton_refs(&agents, &automatons)?;
     validate_webhooks(&agents, &automatons, &webhooks)?;
-    validate_group_names(&agents, &automatons, &workers, &channels, &webhooks, &workflows)?;
+    validate_group_names(
+        &agents,
+        &automatons,
+        &workers,
+        &channels,
+        &webhooks,
+        &workflows,
+    )?;
     warn_groups_without_leaders(&agents, &automatons);
 
     let mut user_messages: Vec<String> = Vec::new();
@@ -3210,6 +3246,34 @@ fn optional_string(block: &wcl_lang::BlockRef, attr: &str) -> Option<String> {
     }
 }
 
+fn optional_idle_timeout(
+    block: &wcl_lang::BlockRef,
+    field: &'static str,
+) -> Result<Option<Duration>, ConfigError> {
+    let Some(value) = block.get(field) else {
+        return Ok(None);
+    };
+    let Value::String(raw) = value else {
+        return Err(ConfigError::BadDurationType {
+            kind: block.kind.clone(),
+            field: field.to_string(),
+        });
+    };
+    let duration = humantime::parse_duration(raw).map_err(|source| ConfigError::BadDuration {
+        field: field.to_string(),
+        value: raw.clone(),
+        source,
+    })?;
+    if duration < Duration::from_secs(5) {
+        return Err(ConfigError::IdleTimeoutTooShort {
+            field: field.to_string(),
+            value: raw.clone(),
+            minimum: "5s",
+        });
+    }
+    Ok(Some(duration))
+}
+
 fn require_symbol(block: &wcl_lang::BlockRef, attr: &str) -> Result<String, ConfigError> {
     match block.get(attr) {
         Some(Value::Symbol(s)) => Ok(s.clone()),
@@ -3378,6 +3442,114 @@ mod tests {
     fn on_reload_defaults_to_ignore() {
         let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
         assert_eq!(cfg.agents[0].on_reload, ReloadAction::Ignore);
+    }
+
+    #[test]
+    fn idle_timeout_fields_default_to_none() {
+        let cfg = parse_config(MINIMAL, &dummy_path()).unwrap();
+        assert_eq!(cfg.team.default_idle_timeout, None);
+        assert_eq!(cfg.agents[0].idle_timeout, None);
+    }
+
+    #[test]
+    fn parses_agent_idle_timeout() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                idle_timeout = "10m"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.agents[0].idle_timeout, Some(Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn parses_team_default_idle_timeout() {
+        let src = r#"
+            team default {
+                description = "t"
+                default_idle_timeout = "1h"
+            }
+            agent alpha { role = "a" instructions = "b" }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(
+            cfg.team.default_idle_timeout,
+            Some(Duration::from_secs(3600))
+        );
+    }
+
+    #[test]
+    fn rejects_sub_minimum_idle_timeout() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                idle_timeout = "1s"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::IdleTimeoutTooShort { field, value, minimum }
+                if field == "idle_timeout" && value == "1s" && minimum == "5s"
+        ));
+    }
+
+    #[test]
+    fn rejects_bad_idle_timeout_string() {
+        let src = r#"
+            team default {
+                description = "t"
+                default_idle_timeout = "not-a-duration"
+            }
+            agent alpha { role = "a" instructions = "b" }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::BadDuration { field, value, .. }
+                if field == "default_idle_timeout" && value == "not-a-duration"
+        ));
+    }
+
+    #[test]
+    fn rejects_numeric_idle_timeout() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                idle_timeout = 600
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::BadDurationType { ref field, .. } if field == "idle_timeout"
+        ));
+        assert!(err.to_string().contains("\"10m\""));
+    }
+
+    #[test]
+    fn agent_idle_timeout_override_wins_over_team_default() {
+        let src = r#"
+            team default {
+                description = "t"
+                default_idle_timeout = "1h"
+            }
+            agent alpha {
+                role = "a"
+                instructions = "b"
+                idle_timeout = "10m"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        let resolved = cfg.agents[0].idle_timeout.or(cfg.team.default_idle_timeout);
+        assert_eq!(resolved, Some(Duration::from_secs(600)));
     }
 
     #[test]

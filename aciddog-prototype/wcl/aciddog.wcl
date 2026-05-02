@@ -10,6 +10,10 @@ schema "team" {
   description: string
   replace_thinking_messages: bool @optional @default(false)
   default_ai_core: string @optional
+  // Opt-in fleet-wide idle timer for agents. Omit to disable automatic
+  // idle nudges/compaction by default. Duration strings accept forms
+  // like "10m", "30s", or "2h"; minimum is "5s".
+  default_idle_timeout: string @optional
 }
 
 schema "thinking_messages" {
@@ -77,6 +81,11 @@ schema "agent" {
   // - `:compact`: run the agent's compaction strategy immediately.
   // - `:reset`: drop and re-seed the session immediately.
   on_reload: symbol @optional
+  // Opt-in per-agent idle timer override. Omit to inherit
+  // `team.default_idle_timeout` (or stay disabled if the team default
+  // is omitted). Duration strings accept forms like "10m", "30s", or
+  // "2h"; minimum is "5s".
+  idle_timeout: string @optional
 }
 
 schema "worker" {

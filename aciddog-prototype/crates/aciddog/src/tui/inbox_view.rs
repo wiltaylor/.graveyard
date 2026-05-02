@@ -245,6 +245,7 @@ mod tests {
                 description: "d".into(),
                 replace_thinking_messages: false,
                 default_ai_core: None,
+                default_idle_timeout: None,
             },
             agents: vec![Agent {
                 id: "planner".into(),
@@ -260,6 +261,7 @@ mod tests {
                 memory_banks: None,
                 skills: None,
                 compaction: None,
+                idle_timeout: None,
                 supervisor: false,
                 sysadmin: false,
                 leader: false,

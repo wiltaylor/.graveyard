@@ -48,6 +48,7 @@ subtle = "2"
 hex = "0.4"
 dirs = "5"
 urlencoding = "2"
+humantime = "2"
 axum = { version = "0.7", features = ["macros"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 hyper = { version = "1", features = ["server", "http1", "client"] }
@@ -58,6 +59,7 @@ rustls = "0.23"
 rustls-pemfile = "2"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 wiremock = "0.6"
 
 [lints]

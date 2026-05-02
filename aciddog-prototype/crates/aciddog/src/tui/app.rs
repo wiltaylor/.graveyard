@@ -66,6 +66,13 @@ const COPIED_TOAST_MS: u64 = 1500;
 /// history.
 const CHAT_BLOCK_BROADCAST_CAPACITY: usize = 1024;
 
+fn idle_nudge_body(worker_count: usize, duration: Duration) -> String {
+    let dur = humantime::format_duration(duration).to_string();
+    format!(
+        "[idle-timeout/nudge] Idle for {dur}; you have {worker_count} active worker(s). Options: assign more work, archive idle workers, or stay idle (this nudge re-fires every {dur})."
+    )
+}
+
 /// Short label for the AgentInfo chat block. Format is
 /// `<variant> (<wcl-id>)` so the user can see both the runtime kind
 /// and which specific `ai_core` block in aciddog.wcl is backing this
@@ -1581,7 +1588,7 @@ pub enum AgentListVisualRow {
     Chat { idx: usize, depth: usize },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AgentChat {
     pub blocks: Vec<ChatBlock>,
     pub tool_index: HashMap<String, usize>,
@@ -1593,6 +1600,12 @@ pub struct AgentChat {
     /// never make the TUI drop keystrokes. Drained before `agent_tx`.
     pub user_tx: Option<mpsc::UnboundedSender<String>>,
     pub(super) ever_prompted: bool,
+    /// Last time the chat received work or entered a running turn.
+    pub(super) last_active_at: Instant,
+    /// Last idle-timeout action fired for this chat. Used by Phase 2
+    /// to rate-limit automatic nudges/compactions.
+    #[allow(dead_code)]
+    pub(super) last_idle_action_at: Option<Instant>,
     /// Inter-agent messages queued through the IPC socket. Bounded so a
     /// runaway sender can't exhaust memory; the socket handler awaits
     /// when full.
@@ -1759,6 +1772,53 @@ pub enum ContextUsageMode {
     /// Each new TurnResult carries the delta for that round; add to
     /// the running total. Used by Anthropic API and OpenAI API cores.
     Add,
+}
+
+impl Default for AgentChat {
+    fn default() -> Self {
+        Self {
+            blocks: Vec::new(),
+            tool_index: HashMap::new(),
+            input: String::new(),
+            anchor: ScrollAnchor::default(),
+            sticky_bottom: false,
+            selected_block: None,
+            user_tx: None,
+            ever_prompted: false,
+            last_active_at: Instant::now(),
+            last_idle_action_at: None,
+            agent_tx: None,
+            channel_tx: None,
+            status: AgentStatus::default(),
+            session_id: None,
+            parent_idx: None,
+            worker_template: None,
+            display_name: String::new(),
+            kind: ChatKind::default(),
+            automaton_last_exit: None,
+            ai_core_id: None,
+            hibernated: false,
+            remote_terminal: false,
+            remote_session_name: None,
+            asleep: false,
+            cancel_tx: None,
+            input_cursor: 0,
+            input_scroll: 0,
+            input_wrap_width: 0,
+            input_visible_rows: 0,
+            thinking_message_idx: None,
+            context_used: None,
+            context_usage_mode: ContextUsageMode::default(),
+            context_window: None,
+            anchor_scratch: None,
+            pending_compaction: None,
+            chat_block_tx: None,
+            session_started: chrono::DateTime::default(),
+            session_hash: String::new(),
+            chat_log: None,
+            system_prompt_text: None,
+        }
+    }
 }
 
 impl AgentChat {
@@ -2059,6 +2119,7 @@ impl AgentChat {
     /// the chat is already `Working`, so the message stays stable for
     /// the whole turn.
     pub fn begin_working(&mut self, pool_len: usize) {
+        self.last_active_at = Instant::now();
         if self.status != AgentStatus::Working {
             self.thinking_message_idx = Some(pseudo_random(pool_len));
         }
@@ -2815,6 +2876,162 @@ impl App {
         self.chats.get_mut(self.selected)
     }
 
+    #[allow(dead_code)]
+    fn idle_timeout_for(&self, idx: usize) -> Option<Duration> {
+        let chat = self.chats.get(idx)?;
+        self.config
+            .agents
+            .iter()
+            .find(|agent| agent.id == chat.display_name)
+            .and_then(|agent| agent.idle_timeout)
+            .or(self.config.team.default_idle_timeout)
+    }
+
+    /// Returns whether this leader has any non-hibernated direct
+    /// workers. Asleep workers count as live; hibernated-only children
+    /// make the leader take the COMPACT branch in Phase 2.
+    #[allow(dead_code)]
+    fn has_live_workers(&self, idx: usize) -> bool {
+        self.chats
+            .iter()
+            .any(|chat| chat.parent_idx == Some(idx) && chat.status != AgentStatus::Hibernated)
+    }
+
+    #[allow(dead_code)]
+    fn agent_tree_active(&self, idx: usize) -> bool {
+        self.chats
+            .get(idx)
+            .map(|chat| chat.status == AgentStatus::Working)
+            .unwrap_or(false)
+            || self
+                .chats
+                .iter()
+                .any(|chat| chat.parent_idx == Some(idx) && chat.status == AgentStatus::Working)
+    }
+
+    #[allow(dead_code)]
+    fn is_idle_eligible(&self, idx: usize) -> bool {
+        let Some(chat) = self.chats.get(idx) else {
+            return false;
+        };
+        chat.parent_idx.is_none()
+            && self.idle_timeout_for(idx).is_some()
+            && chat.ever_prompted
+            && !matches!(
+                chat.status,
+                AgentStatus::Hibernated | AgentStatus::Asleep | AgentStatus::Error
+            )
+    }
+
+    fn tick_idle_timers(&mut self) {
+        enum IdleAction {
+            ResetActive,
+            Nudge {
+                worker_count: usize,
+                duration: Duration,
+            },
+            Compact {
+                duration: Duration,
+            },
+        }
+
+        let now = Instant::now();
+        let actions: Vec<(usize, IdleAction)> = self
+            .chats
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, chat)| {
+                if chat.parent_idx.is_some() {
+                    return None;
+                }
+                let idle_timeout = self.idle_timeout_for(idx)?;
+                if matches!(
+                    chat.status,
+                    AgentStatus::Hibernated | AgentStatus::Asleep | AgentStatus::Error
+                ) {
+                    return None;
+                }
+                if !chat.ever_prompted {
+                    return None;
+                }
+                if self.agent_tree_active(idx) {
+                    return Some((idx, IdleAction::ResetActive));
+                }
+                if chat.status != AgentStatus::Ready {
+                    return None;
+                }
+                if now.duration_since(chat.last_active_at) < idle_timeout {
+                    return None;
+                }
+                if chat
+                    .last_idle_action_at
+                    .map(|t| now.duration_since(t) < idle_timeout / 2)
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                if self.has_live_workers(idx) {
+                    let worker_count = self
+                        .chats
+                        .iter()
+                        .filter(|worker| {
+                            worker.parent_idx == Some(idx)
+                                && worker.status != AgentStatus::Hibernated
+                        })
+                        .count();
+                    Some((
+                        idx,
+                        IdleAction::Nudge {
+                            worker_count,
+                            duration: idle_timeout,
+                        },
+                    ))
+                } else if chat.pending_compaction.is_none() {
+                    Some((
+                        idx,
+                        IdleAction::Compact {
+                            duration: idle_timeout,
+                        },
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (idx, action) in actions {
+            match action {
+                IdleAction::ResetActive => {
+                    if let Some(chat) = self.chats.get_mut(idx) {
+                        chat.last_active_at = Instant::now();
+                    }
+                }
+                IdleAction::Nudge {
+                    worker_count,
+                    duration,
+                } => {
+                    let body = idle_nudge_body(worker_count, duration);
+                    self.wake_via_user_tx(idx, body);
+                    if let Some(chat) = self.chats.get_mut(idx) {
+                        chat.last_idle_action_at = Some(Instant::now());
+                    }
+                }
+                IdleAction::Compact { duration } => {
+                    let dur = humantime::format_duration(duration).to_string();
+                    if let Some(chat) = self.chats.get_mut(idx) {
+                        chat.push_block(ChatBlock::system_info(format!(
+                            "[idle-timeout/compact] Idle for {dur}; running automatic /compact."
+                        )));
+                    }
+                    self.begin_compaction(idx, false);
+                    if let Some(chat) = self.chats.get_mut(idx) {
+                        chat.last_idle_action_at = Some(Instant::now());
+                    }
+                }
+            }
+        }
+    }
+
     pub fn copied_recently(&self) -> bool {
         self.copied_at
             .map(|t| t.elapsed() < Duration::from_millis(COPIED_TOAST_MS))
@@ -3070,6 +3287,7 @@ impl App {
             match tx.send(content) {
                 Ok(()) => {
                     chat.ever_prompted = true;
+                    chat.last_active_at = Instant::now();
                     chat.begin_working(pool_len);
                 }
                 Err(_closed) => {
@@ -4172,6 +4390,7 @@ impl App {
             tracing::warn!(%display_name, "user_tx closed before initial task could be sent");
         } else if let Some(chat) = self.chats.get_mut(new_idx) {
             chat.ever_prompted = true;
+            chat.last_active_at = Instant::now();
         }
 
         // Workers never participate in channels. Give `run_core` a
@@ -7541,6 +7760,7 @@ impl App {
         if let Some(tx) = self.chats[idx].user_tx.clone() {
             if tx.send(body.clone()).is_ok() {
                 self.chats[idx].ever_prompted = true;
+                self.chats[idx].last_active_at = Instant::now();
                 return true;
             }
         }
@@ -7553,6 +7773,7 @@ impl App {
             match tx.send(body) {
                 Ok(()) => {
                     self.chats[idx].ever_prompted = true;
+                    self.chats[idx].last_active_at = Instant::now();
                     true
                 }
                 Err(_) => false,
@@ -10155,6 +10376,7 @@ impl App {
             return false;
         }
         self.chats[idx].ever_prompted = true;
+        self.chats[idx].last_active_at = Instant::now();
         self.inbox_screen.status_msg = Some(format!("sent to {to}"));
         true
     }
@@ -15179,6 +15401,8 @@ async fn event_loop<B: ratatui::backend::Backend>(
     // draws.
     let mut spinner_tick = tokio::time::interval(Duration::from_millis(100));
     spinner_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut idle_check_tick = tokio::time::interval(Duration::from_secs(5));
+    idle_check_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         // Recompute the next cron firing each iteration so a freshly-
@@ -15259,6 +15483,9 @@ async fn event_loop<B: ratatui::backend::Backend>(
                 // else: a workflow is running out its linger timer —
                 // redraw once per tick so the countdown advances.
             }
+            _ = idle_check_tick.tick() => {
+                app.tick_idle_timers();
+            }
             _ = async move {
                 match next_cron_at {
                     Some(at) => {
@@ -15299,8 +15526,301 @@ async fn event_loop<B: ratatui::backend::Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AciddogConfig, Agent, Automaton, ReloadAction, Team};
+    use crate::config::{
+        AciddogConfig, Agent, Automaton, Compaction, CompactionStrategy, ReloadAction, Team,
+    };
     use serde_json::json;
+
+    fn idle_predicate_agent(id: &str, idle_timeout: Option<Duration>) -> Agent {
+        Agent {
+            id: id.into(),
+            role: "r".into(),
+            role_description: None,
+            model: None,
+            instructions: "i".into(),
+            can_message: None,
+            can_create_workers: None,
+            can_run_workflows: None,
+            tools: None,
+            ai_core: None,
+            memory_banks: None,
+            skills: None,
+            compaction: None,
+            idle_timeout,
+            supervisor: false,
+            sysadmin: false,
+            leader: false,
+            group: None,
+            on_reload: ReloadAction::Ignore,
+        }
+    }
+
+    fn idle_predicate_app(agent_idle_timeout: Option<Duration>) -> App {
+        App::new(AciddogConfig {
+            team: Team {
+                id: "t".into(),
+                description: "d".into(),
+                replace_thinking_messages: false,
+                default_ai_core: None,
+                default_idle_timeout: None,
+            },
+            agents: vec![idle_predicate_agent("leader", agent_idle_timeout)],
+            workers: vec![],
+            automatons: vec![],
+            ai_cores: vec![],
+            memory_banks: vec![],
+            compactions: vec![],
+            channels: vec![],
+            workflows: vec![],
+            webhooks: vec![],
+            thinking_messages: vec!["thinking".into()],
+        })
+    }
+
+    fn idle_predicate_worker(parent_idx: usize, status: AgentStatus) -> AgentChat {
+        AgentChat {
+            display_name: "worker#test".into(),
+            parent_idx: Some(parent_idx),
+            worker_template: Some("worker".into()),
+            status,
+            ever_prompted: true,
+            ..Default::default()
+        }
+    }
+
+    fn idle_timer_app(
+        default_idle_timeout: Option<Duration>,
+        leader_idle_timeout: Option<Duration>,
+        leaf_idle_timeout: Option<Duration>,
+    ) -> App {
+        let mut cfg = sample_config();
+        cfg.team.default_idle_timeout = default_idle_timeout;
+        cfg.agents.truncate(2);
+        cfg.agents[0].idle_timeout = leader_idle_timeout;
+        cfg.agents[1].idle_timeout = leaf_idle_timeout;
+        cfg.agents[1].compaction = Some("idle_compact".into());
+        cfg.compactions = vec![Compaction {
+            id: "idle_compact".into(),
+            strategy: CompactionStrategy::PromptAndDrop {
+                prompt: "summarise before compaction".into(),
+            },
+        }];
+        let mut app = App::new(cfg);
+        for chat in &mut app.chats {
+            chat.blocks.clear();
+            chat.tool_index.clear();
+            chat.status = AgentStatus::Ready;
+        }
+        app
+    }
+
+    fn make_idle(chat: &mut AgentChat, idle_timeout: Duration) {
+        chat.ever_prompted = true;
+        chat.last_active_at = Instant::now() - idle_timeout - Duration::from_secs(1);
+    }
+
+    #[test]
+    fn idle_eligibility_rejects_cold_and_terminal_or_paused_agents() {
+        let timeout = Some(Duration::from_secs(60));
+        let mut app = idle_predicate_app(timeout);
+        assert!(!app.is_idle_eligible(0));
+
+        app.chats[0].ever_prompted = true;
+        app.chats[0].status = AgentStatus::Hibernated;
+        assert!(!app.is_idle_eligible(0));
+
+        app.chats[0].status = AgentStatus::Asleep;
+        assert!(!app.is_idle_eligible(0));
+
+        app.chats[0].status = AgentStatus::Error;
+        assert!(!app.is_idle_eligible(0));
+    }
+
+    #[test]
+    fn idle_worker_liveness_counts_asleep_but_not_hibernated_children() {
+        let mut app = idle_predicate_app(Some(Duration::from_secs(60)));
+        app.chats
+            .push(idle_predicate_worker(0, AgentStatus::Hibernated));
+        assert!(!app.has_live_workers(0));
+
+        app.chats
+            .push(idle_predicate_worker(0, AgentStatus::Asleep));
+        assert!(app.has_live_workers(0));
+    }
+
+    #[test]
+    fn idle_tree_active_tracks_leader_or_direct_working_child() {
+        let mut app = idle_predicate_app(Some(Duration::from_secs(60)));
+        assert!(!app.agent_tree_active(0));
+
+        app.chats[0].status = AgentStatus::Working;
+        assert!(app.agent_tree_active(0));
+
+        app.chats[0].status = AgentStatus::Ready;
+        app.chats
+            .push(idle_predicate_worker(0, AgentStatus::Working));
+        assert!(app.agent_tree_active(0));
+    }
+
+    #[test]
+    fn idle_eligibility_rejects_workers_and_accepts_configured_ready_leader() {
+        let mut app = idle_predicate_app(Some(Duration::from_secs(60)));
+        app.chats[0].ever_prompted = true;
+        app.chats[0].status = AgentStatus::Ready;
+        assert!(app.is_idle_eligible(0));
+
+        app.chats.push(idle_predicate_worker(0, AgentStatus::Ready));
+        let worker_idx = app.chats.len() - 1;
+        assert!(!app.is_idle_eligible(worker_idx));
+    }
+
+    #[tokio::test]
+    async fn idle_tick_suppresses_cold_inbox() {
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let timeout = Duration::from_secs(10);
+        let mut app = idle_timer_app(None, Some(timeout), None);
+        app.chats[0].last_active_at = Instant::now() - timeout - Duration::from_secs(1);
+        let blocks = app.chats[0].blocks.len();
+
+        app.tick_idle_timers();
+
+        assert_eq!(app.chats[0].blocks.len(), blocks);
+        assert!(app.chats[0].last_idle_action_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn idle_tick_skips_hibernated_asleep_and_error_agents() {
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_millis(1)).await;
+        for status in [
+            AgentStatus::Hibernated,
+            AgentStatus::Asleep,
+            AgentStatus::Error,
+        ] {
+            let timeout = Duration::from_secs(10);
+            let mut app = idle_timer_app(None, Some(timeout), None);
+            make_idle(&mut app.chats[0], timeout);
+            app.chats[0].status = status;
+
+            app.tick_idle_timers();
+
+            assert!(app.chats[0].blocks.is_empty());
+            assert!(app.chats[0].last_idle_action_at.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_tick_nudges_leader_with_live_worker() {
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let timeout = Duration::from_secs(10);
+        let mut app = idle_timer_app(None, Some(timeout), None);
+        make_idle(&mut app.chats[0], timeout);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        app.chats[0].user_tx = Some(tx);
+        app.chats.push(idle_predicate_worker(0, AgentStatus::Ready));
+
+        app.tick_idle_timers();
+
+        let body = rx.try_recv().expect("nudge delivered");
+        assert!(body.starts_with("[idle-timeout/nudge]"));
+        assert_eq!(body, idle_nudge_body(1, timeout));
+        assert!(app.chats[0].last_idle_action_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn idle_tick_compacts_idle_leaf_without_live_workers() {
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let timeout = Duration::from_secs(10);
+        let mut app = idle_timer_app(None, None, Some(timeout));
+        make_idle(&mut app.chats[1], timeout);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        app.chats[1].user_tx = Some(tx);
+
+        app.tick_idle_timers();
+
+        assert_eq!(rx.try_recv().unwrap(), "summarise before compaction");
+        assert!(app.chats[1].pending_compaction.is_some());
+        assert!(app.chats[1].blocks.iter().any(|b| matches!(
+            b,
+            ChatBlock::System {
+                text,
+                kind: super::super::blocks::SystemKind::Info,
+            } if text.starts_with("[idle-timeout/compact]")
+        )));
+        assert!(app.chats[1].last_idle_action_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn idle_tick_active_tree_resets_timer_without_dispatch() {
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let timeout = Duration::from_secs(10);
+        let mut app = idle_timer_app(None, Some(timeout), None);
+        make_idle(&mut app.chats[0], timeout);
+        let old = app.chats[0].last_active_at;
+        app.chats
+            .push(idle_predicate_worker(0, AgentStatus::Working));
+
+        app.tick_idle_timers();
+
+        assert!(app.chats[0].last_active_at > old);
+        assert!(app.chats[0].blocks.is_empty());
+        assert!(app.chats[0].last_idle_action_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn idle_tick_compaction_is_idempotent_while_pending() {
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let timeout = Duration::from_secs(10);
+        let mut app = idle_timer_app(None, None, Some(timeout));
+        make_idle(&mut app.chats[1], timeout);
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        app.chats[1].user_tx = Some(tx);
+
+        app.tick_idle_timers();
+        let blocks_after_first = app.chats[1].blocks.len();
+        let first_action = app.chats[1].last_idle_action_at;
+        app.tick_idle_timers();
+
+        assert_eq!(rx.try_recv().unwrap(), "summarise before compaction");
+        assert!(rx.try_recv().is_err());
+        assert_eq!(app.chats[1].blocks.len(), blocks_after_first);
+        assert_eq!(app.chats[1].last_idle_action_at, first_action);
+    }
+
+    #[tokio::test]
+    async fn idle_tick_is_noop_when_disabled_by_default() {
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let timeout = Duration::from_secs(10);
+        let mut app = idle_timer_app(None, None, None);
+        make_idle(&mut app.chats[0], timeout);
+        let block_counts: Vec<usize> = app.chats.iter().map(|c| c.blocks.len()).collect();
+
+        app.tick_idle_timers();
+
+        assert_eq!(
+            app.chats.iter().map(|c| c.blocks.len()).collect::<Vec<_>>(),
+            block_counts
+        );
+        assert!(app.chats.iter().all(|c| c.last_idle_action_at.is_none()));
+    }
+
+    #[test]
+    fn worker_chats_only_have_static_agents_as_parents() {
+        let mut app = idle_timer_app(None, None, None);
+        app.chats.push(idle_predicate_worker(0, AgentStatus::Ready));
+
+        for chat in &app.chats {
+            if let Some(parent_idx) = chat.parent_idx {
+                assert!(app.chats[parent_idx].parent_idx.is_none());
+            }
+        }
+    }
 
     #[test]
     fn team_block_splits_agents_and_automatons_into_labelled_sections() {
@@ -15310,6 +15830,7 @@ mod tests {
                 description: "the team".into(),
                 replace_thinking_messages: false,
                 default_ai_core: None,
+                default_idle_timeout: None,
             },
             agents: vec![Agent {
                 id: "planner".into(),
@@ -15325,6 +15846,7 @@ mod tests {
                 memory_banks: None,
                 skills: None,
                 compaction: None,
+                idle_timeout: None,
                 supervisor: false,
                 sysadmin: false,
                 leader: false,
@@ -15391,6 +15913,7 @@ mod tests {
                 description: "d".into(),
                 replace_thinking_messages: false,
                 default_ai_core: None,
+                default_idle_timeout: None,
             },
             agents: vec![Agent {
                 id: "a".into(),
@@ -15406,6 +15929,7 @@ mod tests {
                 memory_banks: None,
                 skills: None,
                 compaction: None,
+                idle_timeout: None,
                 supervisor: false,
                 sysadmin: false,
                 leader: false,
@@ -15434,6 +15958,7 @@ mod tests {
                 description: "d".into(),
                 replace_thinking_messages: false,
                 default_ai_core: None,
+                default_idle_timeout: None,
             },
             agents: vec![],
             workers: vec![],
@@ -15465,6 +15990,7 @@ mod tests {
                 description: "d".into(),
                 replace_thinking_messages: false,
                 default_ai_core: None,
+                default_idle_timeout: None,
             },
             agents: vec![Agent {
                 id: "parent".into(),
@@ -15480,6 +16006,7 @@ mod tests {
                 memory_banks: None,
                 skills: None,
                 compaction: None,
+                idle_timeout: None,
                 supervisor: false,
                 sysadmin: false,
                 leader: false,
@@ -15514,6 +16041,7 @@ mod tests {
                 description: "d".into(),
                 replace_thinking_messages: false,
                 default_ai_core: Some("default".into()),
+                default_idle_timeout: None,
             },
             agents: vec![
                 Agent {
@@ -15530,6 +16058,7 @@ mod tests {
                     memory_banks: None,
                     skills: None,
                     compaction: None,
+                    idle_timeout: None,
                     supervisor: false,
                     sysadmin: false,
                     leader: false,
@@ -15550,6 +16079,7 @@ mod tests {
                     memory_banks: None,
                     skills: None,
                     compaction: None,
+                    idle_timeout: None,
                     supervisor: false,
                     sysadmin: false,
                     leader: false,
@@ -15570,6 +16100,7 @@ mod tests {
                     memory_banks: None,
                     skills: None,
                     compaction: None,
+                    idle_timeout: None,
                     supervisor: false,
                     sysadmin: false,
                     leader: false,
@@ -18037,6 +18568,7 @@ mod tests {
                 description: "d".into(),
                 replace_thinking_messages: false,
                 default_ai_core: Some("default".into()),
+                default_idle_timeout: None,
             },
             agents: vec![
                 Agent {
@@ -18053,6 +18585,7 @@ mod tests {
                     memory_banks: None,
                     skills: None,
                     compaction: None,
+                    idle_timeout: None,
                     supervisor: false,
                     sysadmin: false,
                     leader: false,
@@ -18073,6 +18606,7 @@ mod tests {
                     memory_banks: None,
                     skills: None,
                     compaction: None,
+                    idle_timeout: None,
                     supervisor: false,
                     sysadmin: false,
                     leader: false,
@@ -18924,6 +19458,7 @@ mod tests {
             memory_banks: None,
             skills: None,
             compaction: None,
+            idle_timeout: None,
             supervisor: false,
             sysadmin: false,
             leader: false,
@@ -18939,6 +19474,7 @@ mod tests {
                 description: "d".into(),
                 replace_thinking_messages: false,
                 default_ai_core: Some("default".into()),
+                default_idle_timeout: None,
             },
             agents,
             workers: vec![],

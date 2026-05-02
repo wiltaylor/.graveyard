@@ -43,6 +43,18 @@ agent planner {
 }
 ```
 
+Idle timeout is per-agent and opt-in. Set `idle_timeout = "<dur>"` on an
+`agent` block, or `default_idle_timeout = "<dur>"` on the `team` block, to
+auto-act on agents that have been Ready for that duration; durations parse via
+`humantime` (`"30s"`, `"10m"`, `"2h"`), values below `5s` are rejected at
+config load, and omitting both fields keeps the default disabled behavior.
+
+- Leaders with at least one non-Hibernated direct child worker receive a
+  synthetic user prompt (`NUDGE`) so their run loop can decide what to do.
+- Leaf agents with no live workers get an automatic `/compact`.
+- Cold inbox agents (`ever_prompted == false`) are never auto-nudged.
+  Hibernated, Asleep, and Errored agents are skipped.
+
 ## Workers
 
 Agents can spawn ephemeral **workers** to handle sub-tasks. Workers are
