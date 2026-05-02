@@ -213,14 +213,18 @@ fn push_worktree_block(worktrees: &mut Vec<Worktree>, block: &[&str]) {
 }
 
 fn sort_worktrees(worktrees: &mut [Worktree], default_branch: Option<&str>) {
-    worktrees.sort_by(|a, b| {
-        let a_default = default_branch.is_some_and(|branch| a.branch.as_deref() == Some(branch));
-        let b_default = default_branch.is_some_and(|branch| b.branch.as_deref() == Some(branch));
-        match (a_default, b_default) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.path.to_string_lossy().cmp(&b.path.to_string_lossy()),
-        }
+    worktrees.sort_by_key(|worktree| {
+        let bucket = match worktree.branch.as_deref() {
+            Some(branch) if Some(branch) == default_branch => 0,
+            Some(_) => 1,
+            None => 2,
+        };
+        let key = worktree.branch.as_deref().map_or_else(
+            || worktree.path.to_string_lossy().into_owned(),
+            str::to_string,
+        );
+        let path = worktree.path.to_string_lossy().into_owned();
+        (bucket, key, path)
     });
 }
 
@@ -369,6 +373,70 @@ mod tests {
         assert_eq!(worktrees[0].branch.as_deref(), Some("main"));
         assert_eq!(worktrees[1].path, PathBuf::from("/repo-wt/dev"));
         assert_eq!(worktrees[1].branch.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn sort_worktrees_puts_default_branch_first() {
+        let mut worktrees = vec![
+            Worktree {
+                path: PathBuf::from("/repo/alpha"),
+                branch: Some("alpha".to_string()),
+            },
+            Worktree {
+                path: PathBuf::from("/repo/main"),
+                branch: Some("main".to_string()),
+            },
+        ];
+
+        sort_worktrees(&mut worktrees, Some("main"));
+
+        assert_eq!(worktrees[0].branch.as_deref(), Some("main"));
+        assert_eq!(worktrees[1].branch.as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn sort_worktrees_orders_non_default_branches_by_branch_name() {
+        let mut worktrees = vec![
+            Worktree {
+                path: PathBuf::from("/a/y"),
+                branch: Some("zeta".to_string()),
+            },
+            Worktree {
+                path: PathBuf::from("/z/x"),
+                branch: Some("alpha".to_string()),
+            },
+        ];
+
+        sort_worktrees(&mut worktrees, Some("main"));
+
+        assert_eq!(worktrees[0].branch.as_deref(), Some("alpha"));
+        assert_eq!(worktrees[1].branch.as_deref(), Some("zeta"));
+    }
+
+    #[test]
+    fn sort_worktrees_sinks_detached_entries_and_orders_them_by_path() {
+        let mut worktrees = vec![
+            Worktree {
+                path: PathBuf::from("/repo/detached-z"),
+                branch: None,
+            },
+            Worktree {
+                path: PathBuf::from("/repo/feature"),
+                branch: Some("feature".to_string()),
+            },
+            Worktree {
+                path: PathBuf::from("/repo/detached-a"),
+                branch: None,
+            },
+        ];
+
+        sort_worktrees(&mut worktrees, Some("main"));
+
+        assert_eq!(worktrees[0].branch.as_deref(), Some("feature"));
+        assert_eq!(worktrees[1].branch, None);
+        assert_eq!(worktrees[1].path, PathBuf::from("/repo/detached-a"));
+        assert_eq!(worktrees[2].branch, None);
+        assert_eq!(worktrees[2].path, PathBuf::from("/repo/detached-z"));
     }
 
     #[test]

@@ -1641,6 +1641,67 @@ pub(super) fn repo_rows(app: &App) -> Vec<RepoRow> {
     rows
 }
 
+fn repo_row_line(row_idx: usize, row: &RepoRow, app: &App, focused: bool) -> Line<'static> {
+    match row {
+        RepoRow::Header { repo_idx } => {
+            let repo = &app.repos[*repo_idx];
+            let style = if focused && row_idx == app.selected_repo_row {
+                Style::default()
+                    .bg(Color::Cyan)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            let mut spans = vec![Span::styled(format!("📦 {}", repo.id), style)];
+            if let Some(default_branch) = &repo.default_branch {
+                spans.push(Span::styled(
+                    format!(" (default: {default_branch})"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            Line::from(spans)
+        }
+        RepoRow::Worktree {
+            repo_idx,
+            worktree_idx,
+        } => {
+            let worktree = &app.repos[*repo_idx].worktrees[*worktree_idx];
+            let style = if focused && row_idx == app.selected_repo_row {
+                Style::default()
+                    .bg(Color::Cyan)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            let branch_span = match worktree.branch.as_deref() {
+                Some(branch) => Span::styled(branch.to_string(), style),
+                None => {
+                    let detached_style = if focused && row_idx == app.selected_repo_row {
+                        Style::default()
+                            .bg(Color::Cyan)
+                            .fg(Color::Black)
+                            .add_modifier(Modifier::BOLD | Modifier::ITALIC)
+                    } else {
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC)
+                    };
+                    Span::styled("(detached)", detached_style)
+                }
+            };
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled("↳ ", Style::default().fg(Color::DarkGray)),
+                branch_span,
+            ])
+        }
+    }
+}
+
 fn render_repos_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
     let focused = app.focus == Focus::Repos;
     let title = if app.repos.is_empty() {
@@ -1658,65 +1719,11 @@ fn render_repos_list(f: &mut Frame, area: Rect, app: &App) -> Rect {
     let items: Vec<ListItem> = rows
         .iter()
         .enumerate()
-        .map(|(row_idx, row)| match row {
-            RepoRow::Header { repo_idx } => {
-                let repo = &app.repos[*repo_idx];
-                let style = if focused && row_idx == app.selected_repo_row {
-                    Style::default()
-                        .bg(Color::Cyan)
-                        .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                if row_idx == app.selected_repo_row {
-                    selected_row = Some(row_idx);
-                }
-
-                let mut spans = vec![Span::styled(format!("📦 {}", repo.id), style)];
-                if let Some(default_branch) = &repo.default_branch {
-                    spans.push(Span::styled(
-                        format!(" (default: {default_branch})"),
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
-                ListItem::new(Line::from(spans))
+        .map(|(row_idx, row)| {
+            if row_idx == app.selected_repo_row {
+                selected_row = Some(row_idx);
             }
-            RepoRow::Worktree {
-                repo_idx,
-                worktree_idx,
-            } => {
-                let repo = &app.repos[*repo_idx];
-                let worktree = &repo.worktrees[*worktree_idx];
-                let relative_path = worktree
-                    .path
-                    .strip_prefix(&repo.path)
-                    .unwrap_or(&worktree.path);
-                let style = if focused && row_idx == app.selected_repo_row {
-                    Style::default()
-                        .bg(Color::Cyan)
-                        .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                if row_idx == app.selected_repo_row {
-                    selected_row = Some(row_idx);
-                }
-
-                let mut spans = vec![
-                    Span::raw("  "),
-                    Span::styled("↳ ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(relative_path.display().to_string(), style),
-                ];
-                if let Some(branch) = &worktree.branch {
-                    spans.push(Span::styled(
-                        format!(" [{branch}]"),
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
-                ListItem::new(Line::from(spans))
-            }
+            ListItem::new(repo_row_line(row_idx, row, app, focused))
         })
         .collect();
     let list = List::new(items).block(block);
@@ -1798,6 +1805,13 @@ mod repos_panel_tests {
         }
     }
 
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
     #[test]
     fn repo_rows_include_every_declared_repo_and_worktree() {
         let mut app = App::new(config_with(vec![], vec![]));
@@ -1851,6 +1865,47 @@ mod repos_panel_tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn repo_worktree_rows_render_branch_labels_without_paths_or_suffixes() {
+        let mut app = App::new(config_with(vec![], vec![]));
+        app.repos = vec![repo(
+            "alpha",
+            vec![
+                ("main", Some("main")),
+                ("wt-feat", Some("feature-x")),
+                ("wt-detached", None),
+            ],
+        )];
+
+        let rows = repo_rows(&app);
+        let worktree_lines: Vec<Line<'static>> = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(row_idx, row)| match row {
+                RepoRow::Worktree { .. } => Some(repo_row_line(row_idx, row, &app, false)),
+                RepoRow::Header { .. } => None,
+            })
+            .collect();
+
+        assert_eq!(worktree_lines.len(), 3);
+
+        let main_text = line_text(&worktree_lines[0]);
+        assert!(main_text.contains("main"));
+        assert!(!main_text.contains('/'));
+        assert!(!main_text.contains(" [main]"));
+
+        let feature_text = line_text(&worktree_lines[1]);
+        assert!(feature_text.contains("feature-x"));
+        assert!(!feature_text.contains('/'));
+        assert!(!feature_text.contains("wt-feat"));
+        assert!(!feature_text.contains(" [feature-x]"));
+
+        let detached_text = line_text(&worktree_lines[2]);
+        assert!(!detached_text.contains('/'));
+        assert!(!detached_text.contains("wt-detached"));
+        assert_eq!(worktree_lines[2].spans[2].content.as_ref(), "(detached)");
     }
 
     #[test]
