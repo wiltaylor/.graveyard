@@ -5,6 +5,8 @@
 // changes via `/reload` in the TUI, the "Reload config" button in the
 // web manager, or `kill -HUP <pid>` for the daemon.
 //
+// The :webservice automaton at the bottom wires the web manager by default.
+//
 // For the full annotated reference see
 // .aciddog/skills/aciddog/reference/example-team.wcl
 
@@ -54,4 +56,24 @@ agent setup {
   supervisor = true
   sysadmin   = true
   // group = "admin"  // Optional — clusters this row under a "── {group} ──" header in the TUI sidebar / web list. Free-form label.
+}
+
+// ─── Manager bridge ────────────────────────────────────────────────
+// The web manager (aciddog-manager) connects to your daemon over this
+// Unix socket via Client::Unix. The daemon auto-creates `.aciddog/` on
+// first bind (parent 0o700, socket 0o660 — filesystem permissions are
+// the trust boundary, so no api_key_env is needed or accepted here).
+// `supervisor = true` powers the manager's chat-history + SSE endpoints;
+// `sysadmin = true` enables its "Reload config" button (ServerReload
+// RPC); `can_message = ["setup"]` lets the portal's send-as-user UI
+// reach the setup agent above.
+
+automaton local_api {
+  type             = :webservice
+  role             = "local control plane"
+  role_description = "Unix-socket bridge for the aciddog-manager portal and local scripts."
+  socket_path      = ".aciddog/daemon.sock"
+  supervisor       = true
+  sysadmin         = true
+  can_message      = ["setup"]
 }

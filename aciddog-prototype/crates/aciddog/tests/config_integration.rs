@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use aciddog::config::{
     load_config, parse_config, AiCoreKind, AutomatonBackend, ConfigError, RemoteTransport,
+    WebserviceBind,
 };
 
 fn repo_root() -> PathBuf {
@@ -484,5 +485,56 @@ fn script_automaton_rejects_remote_fields() {
             ConfigError::ScriptUnexpectedWebserviceField { ref field, .. } if field == "remote_target"
         ),
         "got {err:?}"
+    );
+}
+
+#[test]
+fn init_team_scaffold_parses_with_webservice_automaton() {
+    // Pin the init-team scaffold (re-embedded by `include_dir!` at
+    // crates/aciddog/src/init.rs:7) so `aciddog init` keeps shipping a
+    // :webservice automaton the aciddog-manager portal can dial via
+    // Client::Unix out of the box.
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../init-team/aciddog.wcl"
+    ));
+    let cfg = parse_config(source, Path::new("init-team/aciddog.wcl"))
+        .expect("init scaffold should parse");
+
+    assert_eq!(cfg.team.id, "default");
+
+    let webservices: Vec<_> = cfg
+        .automatons
+        .iter()
+        .filter(|a| matches!(a.backend, AutomatonBackend::Webservice { .. }))
+        .collect();
+    assert_eq!(
+        webservices.len(),
+        1,
+        "expected exactly one :webservice automaton in init scaffold"
+    );
+    let automaton = webservices[0];
+    assert_eq!(automaton.id, "local_api");
+
+    let AutomatonBackend::Webservice { bind, api_key_env } = &automaton.backend else {
+        panic!("expected Webservice backend");
+    };
+    let WebserviceBind::UnixSocket { path } = bind else {
+        panic!("expected UnixSocket bind, got {bind:?}");
+    };
+    assert_eq!(path, &PathBuf::from(".aciddog/daemon.sock"));
+    assert!(
+        api_key_env.is_none(),
+        "api_key_env must be absent on the Unix-socket bridge (filesystem perms are the trust boundary)"
+    );
+
+    assert!(
+        automaton.supervisor && automaton.sysadmin,
+        "manager bridge needs supervisor (chat-history + SSE) and sysadmin (/reload) RPCs"
+    );
+    assert_eq!(
+        automaton.can_message.as_deref(),
+        Some(&["setup".to_string()][..]),
+        "manager send-as-user UI should be allowed to reach the bundled setup agent"
     );
 }
