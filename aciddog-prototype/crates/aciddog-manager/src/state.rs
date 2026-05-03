@@ -10,14 +10,26 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub auth: AuthConfig,
     pub data_dir: Arc<PathBuf>,
+    /// ADR-0005 daemon-runner capability gate. When false, the
+    /// /api/managed-daemons router is not registered at all (404
+    /// capability-literally-absent) and the reconciler/daemon_runner
+    /// subsystem is not started. Driven by `--enable-daemon-runner`
+    /// / `ACIDDOG_MANAGER_ENABLE_DAEMON_RUNNER`. Default OFF.
+    pub is_daemon_runner_enabled: bool,
 }
 
 impl AppState {
-    pub fn new(pool: SqlitePool, auth: AuthConfig, data_dir: PathBuf) -> Self {
+    pub fn new(
+        pool: SqlitePool,
+        auth: AuthConfig,
+        data_dir: PathBuf,
+        is_daemon_runner_enabled: bool,
+    ) -> Self {
         Self {
             pool,
             auth,
             data_dir: Arc::new(data_dir),
+            is_daemon_runner_enabled,
         }
     }
 

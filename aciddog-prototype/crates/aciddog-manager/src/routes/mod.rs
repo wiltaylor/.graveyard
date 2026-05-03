@@ -6,6 +6,7 @@ pub mod cron;
 pub mod health;
 pub mod inbox;
 pub mod instances;
+pub mod managed_daemons;
 pub mod memory;
 pub mod repos;
 pub mod skills;
@@ -177,6 +178,17 @@ pub fn build_router(state: AppState) -> Router {
         .merge(public_auth)
         .merge(protected)
         .merge(skills);
+
+    // ADR-0005 daemon-runner capability gate. When OFF, the
+    // /managed-daemons subtree is not registered at all (404, not
+    // 403 — capability literally absent). When ON, an empty router
+    // with require_admin baked in at the group root is mounted;
+    // sibling b91e9691 will register concrete handlers on top.
+    let api = if state.is_daemon_runner_enabled {
+        api.nest("/managed-daemons", managed_daemons::routes(state.clone()))
+    } else {
+        api
+    };
 
     Router::new()
         .nest("/api", api)

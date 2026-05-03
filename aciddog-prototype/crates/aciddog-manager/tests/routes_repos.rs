@@ -21,7 +21,7 @@ async fn router_with_pool(pool: SqlitePool) -> axum::Router {
     user::insert(&pool, TEST_USERNAME, TEST_PASSWORD)
         .await
         .unwrap();
-    let state = AppState::new(pool, AuthConfig::default(), PathBuf::from("."));
+    let state = AppState::new(pool, AuthConfig::default(), PathBuf::from("."), false);
     routes::build_router(state)
 }
 

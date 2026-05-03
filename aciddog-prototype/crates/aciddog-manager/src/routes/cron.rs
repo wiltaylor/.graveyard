@@ -321,7 +321,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let state = AppState::new(pool, AuthConfig::default(), ".".into());
+        let state = AppState::new(pool, AuthConfig::default(), ".".into(), false);
 
         let Json(resp) = list(State(state), Path(instance.id)).await.unwrap();
 

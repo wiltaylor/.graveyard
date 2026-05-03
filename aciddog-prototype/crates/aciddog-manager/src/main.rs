@@ -36,8 +36,14 @@ async fn main() -> Result<()> {
             cookie_secure: args.cookie_secure,
         },
         args.data_dir.clone(),
+        args.enable_daemon_runner,
     );
-    let router = routes::build_router(state);
+    let router = routes::build_router(state.clone());
+
+    if state.is_daemon_runner_enabled {
+        tracing::info!("daemon-runner enabled");
+        // TODO(799b7b92): start reconciler / daemon_runner subsystem here
+    }
 
     let addr: SocketAddr = args
         .bind

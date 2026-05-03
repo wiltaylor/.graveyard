@@ -20,6 +20,17 @@ pub struct AuthUser {
     pub username: String,
 }
 
+impl AuthUser {
+    /// v1 stand-in until proper RBAC lands (users.role column +
+    /// migration are deliberately out of scope for ADR-0005's
+    /// foundation slice). Do not promote `username == "admin"`
+    /// checks elsewhere in the codebase — this predicate is the
+    /// single chokepoint we will replace when RBAC arrives.
+    pub fn is_admin(&self) -> bool {
+        self.username == "admin"
+    }
+}
+
 /// Caller of a route protected by `require_user_or_instance`. Either a
 /// logged-in human (session cookie) or a registered aciddog instance
 /// presenting its `api_key` as a bearer token. Routes log the principal
@@ -89,6 +100,40 @@ pub async fn require_auth(State(state): State<AppState>, mut req: Request, next:
         user_id: user.id,
         username: user.username,
     });
+    next.run(req).await
+}
+
+/// Axum middleware: enforce a valid session cookie AND that the
+/// authenticated user is an admin (per `AuthUser::is_admin`). Used
+/// at the group root of the ADR-0005 daemon-runner routes so every
+/// future handler under `/api/managed-daemons` inherits both auth
+/// and admin enforcement. Mirrors `require_auth`'s shape; the only
+/// addition is the admin gate after the session lookup. Missing or
+/// expired session → 401; authenticated-but-not-admin → 403.
+pub async fn require_admin(
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let token = match extract_session_cookie(&req) {
+        Some(t) => t,
+        None => return AppError::Unauthenticated.into_response(),
+    };
+    let lookup = match session::lookup(&state.pool, &token).await {
+        Ok(opt) => opt,
+        Err(e) => return e.into_response(),
+    };
+    let Some((user, _)) = lookup else {
+        return AppError::Unauthenticated.into_response();
+    };
+    let auth_user = AuthUser {
+        user_id: user.id,
+        username: user.username,
+    };
+    if !auth_user.is_admin() {
+        return AppError::Forbidden.into_response();
+    }
+    req.extensions_mut().insert(auth_user);
     next.run(req).await
 }
 

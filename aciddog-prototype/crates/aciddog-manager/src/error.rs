@@ -17,6 +17,9 @@ pub enum AppError {
     #[error("unauthenticated")]
     Unauthenticated,
 
+    #[error("forbidden")]
+    Forbidden,
+
     #[error("invalid username or password")]
     BadCredentials,
 
@@ -34,6 +37,7 @@ impl IntoResponse for AppError {
             AppError::Validation(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             AppError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
             AppError::Unauthenticated => (StatusCode::UNAUTHORIZED, self.to_string()),
+            AppError::Forbidden => (StatusCode::FORBIDDEN, self.to_string()),
             AppError::BadCredentials => (StatusCode::UNAUTHORIZED, self.to_string()),
             AppError::Db(e) => {
                 tracing::error!(error = %e, "database error");
