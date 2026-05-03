@@ -229,7 +229,11 @@ export default function Tree(props: TreeProps): JSX.Element {
       const row = root.querySelector<HTMLElement>(`[data-id="${cssEscape(id)}"]`);
       if (!row) return;
       row.focus({ preventScroll: true });
-      row.scrollIntoView({ block: "nearest" });
+      // scrollIntoView is missing in some test environments (e.g. jsdom);
+      // guard so headless test suites don't see uncaught exceptions.
+      if (typeof row.scrollIntoView === "function") {
+        row.scrollIntoView({ block: "nearest" });
+      }
     });
   });
 

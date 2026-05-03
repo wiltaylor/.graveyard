@@ -116,6 +116,16 @@ manager-fmt:
 manager-test: manager-frontend-build
 	cargo test --manifest-path {{MANAGER_MANIFEST}}
 
+# Run the manager frontend Vitest suite
+[group('manager')]
+manager-frontend-test: manager-frontend-install
+	cd crates/aciddog-manager/web && npm test
+
+# Opt-in browser smoke suite; see docs/mobile.md for seed/admin setup.
+[group('manager')]
+manager-frontend-e2e: manager-frontend-build
+	cd crates/aciddog-manager/web && npm run test:e2e:install && npm run test:e2e
+
 # Launch the manager on 127.0.0.1:7000 with a deterministic test/test admin
 [group('run')]
 run-manager: manager-frontend-build
@@ -142,7 +152,7 @@ install: manager-frontend-install manager-frontend-build app-install manager-ins
 
 # Run every test
 [group('test')]
-test: manager-frontend-install app-test manager-test
+test: manager-frontend-install app-test manager-test manager-frontend-test
 
 # Full CI pipeline: fmt check, lint, tests (app + manager)
 [group('ci')]

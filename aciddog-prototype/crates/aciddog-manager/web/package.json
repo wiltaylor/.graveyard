@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "vitest run --environment jsdom",
+    "test": "vitest run --environment jsdom --exclude \"e2e/**\"",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install --with-deps chromium webkit",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -18,6 +20,7 @@
     "wcl_wasm": "^0.9.0-alpha"
   },
   "devDependencies": {
+    "@playwright/test": "^1.49.0",
     "@solidjs/testing-library": "^0.8.10",
     "autoprefixer": "^10.4.20",
     "jsdom": "^25.0.1",

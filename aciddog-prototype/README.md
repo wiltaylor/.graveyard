@@ -19,6 +19,8 @@ just run        # launch the TUI in demo/
 just ci         # fmt check + clippy + tests
 ```
 
+Mobile review checklist: see [`docs/mobile.md`](docs/mobile.md).
+
 ## Config
 
 The TUI loads `aciddog.wcl` from the current working directory. See
