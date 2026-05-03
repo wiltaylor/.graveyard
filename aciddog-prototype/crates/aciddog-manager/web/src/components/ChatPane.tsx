@@ -74,6 +74,18 @@ export default function ChatPane(props: Props): JSX.Element {
   createEffect(() => {
     const instId = props.instanceId;
     const agentId = props.agent;
+
+    // Closure-local race shield. The SSE subscription and the history
+    // fetch start in the same tick, so a live `ChatBlockEvent` can
+    // land BEFORE `chatHistory` resolves; if we apply it then, the
+    // upcoming `setBlocks(resp.blocks)` will clobber it. We instead
+    // buffer live events while history is in flight and drain them
+    // through the same apply path once the canonical state lands.
+    // Intentionally NOT `createSignal` — promoting either binding to
+    // a signal would re-trigger the effect, re-creating the race.
+    let historyReady = false;
+    const pendingEvents: ChatBlockEvent[] = [];
+
     // Reset BEFORE the new EventSource subscribes so a stale
     // `working` from the previously-viewed pane can't leak across
     // the boundary if the new daemon never sends a `status` event.
@@ -81,31 +93,92 @@ export default function ChatPane(props: Props): JSX.Element {
     setBlocks([]);
     setDroppedCount(0);
     setStreamStatus("connecting");
-    void loadHistory();
+
+    // Apply a single ChatBlockEvent to the blocks signal. `seq` is
+    // the block's zero-based index in the agent chat at emit time
+    // (see `aciddog::wire_chat` doc-comment), so:
+    //   - `seq < length`  → mutation in place (e.g. tool pending
+    //                       → completed). Preserves prior behaviour.
+    //   - `seq === length`→ append into next slot (steady-state).
+    //   - `seq > length`  → real gap. Loud-warn (loud-failure ethos),
+    //                       buffer the event, and trigger a re-sync.
+    // Side effects (warn / push / reload) happen OUTSIDE the
+    // setBlocks updater so the updater stays pure.
+    const applyEvent = (parsed: ChatBlockEvent): void => {
+      let gap = false;
+      let curLength = 0;
+      setBlocks((prev) => {
+        const seq = Number(parsed.seq);
+        if (Number.isFinite(seq) && seq < prev.length) {
+          const next = prev.slice();
+          next[seq] = parsed.block;
+          return next;
+        }
+        if (Number.isFinite(seq) && seq === prev.length) {
+          return [...prev, parsed.block];
+        }
+        gap = true;
+        curLength = prev.length;
+        return prev;
+      });
+      if (gap) {
+        console.warn("[ChatPane] gap detected", {
+          agent: agentId,
+          seq: parsed.seq,
+          length: curLength,
+        });
+        pendingEvents.push(parsed);
+        void reload();
+      }
+    };
+
+    // Closure-local re-fetch + drain. Used on initial mount, on a
+    // `lagged` re-sync, and on a detected gap. The outer
+    // `loadHistory` (still wired to the Refresh button) is a simpler
+    // user-initiated reload that doesn't participate in the buffer
+    // path; live events arriving during that window are governed by
+    // `historyReady` here through the SSE handlers.
+    const reload = async (): Promise<void> => {
+      historyReady = false;
+      setHistoryError(null);
+      try {
+        const resp = await api.chatHistory(instId, agentId);
+        if (!resp.ok) {
+          setHistoryError(resp.error ?? "remote returned no data");
+          setBlocks([]);
+        } else {
+          setBlocks(resp.blocks);
+          // Drain in arrival order so a string of buffered events
+          // applies left-to-right (replace-or-append semantics).
+          const drained = pendingEvents.splice(0);
+          for (const ev of drained) applyEvent(ev);
+        }
+      } catch (err) {
+        setHistoryError(err instanceof Error ? err.message : String(err));
+      } finally {
+        // Always flip ready back on — even on error — so the SSE
+        // stream isn't permanently buffered into oblivion.
+        historyReady = true;
+      }
+    };
+
+    void reload();
 
     const es = new EventSource(chatEventsUrl(instId, agentId));
     es.onopen = () => setStreamStatus("live");
     es.onmessage = (ev) => {
+      let parsed: ChatBlockEvent;
       try {
-        const parsed = JSON.parse(ev.data) as ChatBlockEvent;
-        // `seq` is the block's zero-based index in the agent chat at
-        // emit time, so a repeat seq is the backend telling us a block
-        // mutated in place (e.g. a tool result clearing `pending`).
-        // Replace at that index when we already have it; otherwise
-        // append. Gaps (`seq > length`) shouldn't happen on an in-order
-        // stream, but if they do, the lagged handler re-syncs history.
-        setBlocks((prev) => {
-          const seq = Number(parsed.seq);
-          if (Number.isFinite(seq) && seq < prev.length) {
-            const next = prev.slice();
-            next[seq] = parsed.block;
-            return next;
-          }
-          return [...prev, parsed.block];
-        });
-      } catch {
-        // Malformed event — ignore rather than tearing down the stream.
+        parsed = JSON.parse(ev.data) as ChatBlockEvent;
+      } catch (err) {
+        console.warn("[ChatPane] malformed chat block event", err);
+        return;
       }
+      if (!historyReady) {
+        pendingEvents.push(parsed);
+        return;
+      }
+      applyEvent(parsed);
     };
     es.addEventListener("status", (ev) => {
       try {
@@ -131,9 +204,12 @@ export default function ChatPane(props: Props): JSX.Element {
       } catch {
         // Ignore payload parse errors — the count stays as-is.
       }
-      // The browser will keep delivering subsequent events; re-sync
-      // history so the user's view is whole again.
-      void loadHistory();
+      // Re-sync. Anything currently buffered is stale by definition
+      // — the upcoming `chatHistory` snapshot is the canonical state
+      // — so clear pendingEvents before flipping `historyReady` off.
+      historyReady = false;
+      pendingEvents.length = 0;
+      void reload();
     });
     es.onerror = () => {
       setStreamStatus("closed");

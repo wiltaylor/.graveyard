@@ -2,6 +2,37 @@ import { cleanup, render, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ChatPane from "../ChatPane";
+import type { ChatBlockEvent, WireChatBlock } from "../../types";
+
+/// Promise + external resolver pair, used to interleave SSE
+/// dispatches between the moment `chatHistory()` is invoked and the
+/// moment its response actually lands. Vitest's `mockResolvedValue`
+/// resolves on the next tick, which is too eager to reproduce the
+/// initial-load race.
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (v: T) => void;
+  reject: (e: unknown) => void;
+} {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/// Tiny factory: a `user_text` block renders as a chat message whose
+/// `text` shows up verbatim in the DOM, making it trivially queryable.
+function userText(text: string): WireChatBlock {
+  return { kind: "user_text", text };
+}
+
+/// Wrap a block as a `ChatBlockEvent` with the provided `seq`.
+function blockEvent(agent: string, seq: number, block: WireChatBlock): ChatBlockEvent {
+  return { agent, block, ts: new Date().toISOString(), seq };
+}
 
 const apiMock = vi.hoisted(() => ({
   chatHistory: vi.fn(),
@@ -62,6 +93,14 @@ class MockEventSource {
     for (const listener of set) {
       listener(ev);
     }
+  }
+
+  /// Fire a default-named (`message`) SSE event at the `onmessage`
+  /// slot. Mirrors the wire shape: a single JSON-serialised payload
+  /// in `MessageEvent.data`. Pairs with `dispatch` for named events.
+  dispatchMessage(data: unknown): void {
+    const ev = new MessageEvent("message", { data: JSON.stringify(data) });
+    this.onmessage?.(ev);
   }
 
   static latest(): MockEventSource {
@@ -143,5 +182,171 @@ describe("ChatPane animated thinking indicator", () => {
     // Allow Solid a tick to re-render before asserting absence.
     await new Promise((r) => setTimeout(r, 10));
     expect(queryByText(/thinking…/)).toBeNull();
+  });
+});
+
+describe("ChatPane initial-load / lagged-resync race", () => {
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", MockEventSource);
+    MockEventSource.reset();
+    apiMock.sendAsUser.mockResolvedValue({ ok: true });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+    MockEventSource.reset();
+  });
+
+  it("buffers live events until initial history resolves", async () => {
+    // chatHistory hangs until we explicitly resolve. This reproduces
+    // the window where the SSE subscription is live but the initial
+    // /history fetch is still in flight — a live event in this gap
+    // used to be appended at the wrong index and clobbered by the
+    // upcoming setBlocks(resp.blocks).
+    const initial = deferred<{ ok: true; blocks: WireChatBlock[] }>();
+    apiMock.chatHistory.mockReturnValueOnce(initial.promise);
+
+    const history: WireChatBlock[] = [
+      userText("history-zero"),
+      userText("history-one"),
+    ];
+
+    const { queryByText } = render(() => (
+      <ChatPane instanceId="inst-1" agent="planner" onClose={() => {}} />
+    ));
+
+    const es = await waitFor(() => MockEventSource.latest());
+
+    // Live event arriving BEFORE history lands. seq === eventual
+    // history length, so once history applies the buffered event
+    // appends at slot 2.
+    es.dispatchMessage(blockEvent("planner", history.length, userText("live-buffered")));
+
+    // Pre-resolve assertion: nothing rendered yet (blocks were
+    // initialised to `[]` and the live event is buffered, not
+    // applied — so it must NOT be visible).
+    expect(queryByText(/live-buffered/)).toBeNull();
+
+    initial.resolve({ ok: true, blocks: history });
+
+    await waitFor(() => {
+      expect(queryByText(/history-zero/)).not.toBeNull();
+      expect(queryByText(/history-one/)).not.toBeNull();
+      expect(queryByText(/live-buffered/)).not.toBeNull();
+    });
+  });
+
+  it("detects a gap and triggers a re-sync", async () => {
+    // First chatHistory resolves immediately with N=2 blocks.
+    const history0: WireChatBlock[] = [
+      userText("h0"),
+      userText("h1"),
+    ];
+    // After the gap re-sync, the daemon catches us up with N+3
+    // blocks — including the missed gap-block at slot 2 and a
+    // placeholder at slot 4 that the buffered live event will then
+    // replace via the pendingEvents drain. Sized so the buffered
+    // event's seq (4) is within bounds (length 5) → REPLACE branch,
+    // not another gap loop.
+    const history1: WireChatBlock[] = [
+      userText("h0"),
+      userText("h1"),
+      userText("gap-block"),
+      userText("filler-3"),
+      userText("placeholder-4"),
+    ];
+
+    // First call: immediate resolve. Second call: deferred — we want
+    // to verify the buffered live event survives the resync drain.
+    const second = deferred<{ ok: true; blocks: WireChatBlock[] }>();
+    apiMock.chatHistory
+      .mockResolvedValueOnce({ ok: true, blocks: history0 })
+      .mockReturnValueOnce(second.promise);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { queryByText } = render(() => (
+      <ChatPane instanceId="inst-1" agent="planner" onClose={() => {}} />
+    ));
+
+    const es = await waitFor(() => MockEventSource.latest());
+
+    // Wait for the initial history to render.
+    await waitFor(() => {
+      expect(queryByText(/h0/)).not.toBeNull();
+      expect(queryByText(/h1/)).not.toBeNull();
+    });
+
+    // Real gap: seq = N + 2 (length is 2, so we'd expect seq 2 next).
+    const gapSeq = history0.length + 2;
+    es.dispatchMessage(blockEvent("planner", gapSeq, userText("future-live")));
+
+    // Gap path must call chatHistory a second time (re-sync) and
+    // log a loud warning (decisions/59ff479f loud-failure ethos).
+    await waitFor(() => {
+      expect(apiMock.chatHistory).toHaveBeenCalledTimes(2);
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "[ChatPane] gap detected",
+      expect.objectContaining({ agent: "planner", seq: gapSeq, length: 2 }),
+    );
+
+    // Second history brings the gap-block plus a placeholder at the
+    // buffered event's seq. After history lands, the pendingEvents
+    // drain re-applies the buffered future-live block at slot 4
+    // (REPLACE), and the placeholder is gone.
+    second.resolve({ ok: true, blocks: history1 });
+
+    await waitFor(() => {
+      expect(queryByText(/gap-block/)).not.toBeNull();
+      expect(queryByText(/future-live/)).not.toBeNull();
+    });
+    // The placeholder at slot 4 must have been replaced by the
+    // drained live event — confirms the drain actually fired.
+    expect(queryByText(/placeholder-4/)).toBeNull();
+
+    warn.mockRestore();
+  });
+
+  it("buffers live events across a lagged re-sync", async () => {
+    // Initial history is empty; the lagged re-sync arrives later.
+    const second = deferred<{ ok: true; blocks: WireChatBlock[] }>();
+    apiMock.chatHistory
+      .mockResolvedValueOnce({ ok: true, blocks: [] })
+      .mockReturnValueOnce(second.promise);
+
+    const { queryByText } = render(() => (
+      <ChatPane instanceId="inst-1" agent="planner" onClose={() => {}} />
+    ));
+
+    const es = await waitFor(() => MockEventSource.latest());
+
+    // Let initial history settle (historyReady flips true).
+    await waitFor(() => {
+      expect(apiMock.chatHistory).toHaveBeenCalledTimes(1);
+    });
+
+    // Lagged → triggers a second chatHistory call. historyReady flips
+    // back to false; pendingEvents is cleared.
+    es.dispatch("lagged", { dropped: 3 });
+    await waitFor(() => {
+      expect(apiMock.chatHistory).toHaveBeenCalledTimes(2);
+    });
+
+    // Live event arriving DURING the resync window — must be
+    // buffered (not applied at the wrong index) so that when the
+    // post-lagged history lands, it doesn't clobber the live event.
+    es.dispatchMessage(blockEvent("planner", 1, userText("post-lagged-live")));
+
+    expect(queryByText(/post-lagged-live/)).toBeNull();
+
+    second.resolve({ ok: true, blocks: [userText("after-lagged")] });
+
+    await waitFor(() => {
+      expect(queryByText(/after-lagged/)).not.toBeNull();
+      expect(queryByText(/post-lagged-live/)).not.toBeNull();
+    });
   });
 });
