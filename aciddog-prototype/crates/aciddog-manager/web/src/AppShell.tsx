@@ -180,13 +180,7 @@ export default function AppShell(props: Props): JSX.Element {
   };
 
   return (
-    <div
-      class="app-shell"
-      style={{
-        "grid-template-columns": "280px 1fr",
-        "grid-template-rows": "48px 1fr",
-      }}
-    >
+    <div class="app-shell">
       {/* Skip-link must remain OUTSIDE T2 drawer portal so Tab from <body> hits it before any focus trap */}
       <a class="skip-link" href="#app-main-content">
         Skip to main content

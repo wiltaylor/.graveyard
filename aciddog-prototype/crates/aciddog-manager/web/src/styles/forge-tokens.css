@@ -114,6 +114,17 @@
   --h-md: 32px;
   --h-lg: 36px;
   --h-xl: 40px;
+
+  /* --- Breakpoints --- */
+  /*
+   * Team-wide breakpoint contract for sibling mobile tickets.
+   * CSS custom properties cannot be interpolated into @media (max-width: ...)
+   * queries, so consuming media rules must use literal pixel values.
+   * The app shell's canonical collapse threshold is 768px, intentionally
+   * between --bp-sm and --bp-md.
+   */
+  --bp-sm: 640px;
+  --bp-md: 1024px;
 }
 
 /* -------- LIGHT ----------------------------------------------------------- */

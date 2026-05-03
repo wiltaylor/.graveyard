@@ -10,7 +10,8 @@
 
 .app-shell {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  /* Promoted from inline AppShell.tsx style; sidebar fixed width matches drawer (T2). */
+  grid-template-columns: 280px 1fr;
   grid-template-rows: 48px 1fr;
   grid-template-areas:
     "topbar topbar"
@@ -111,6 +112,14 @@
 .fsidebar-drawer-backdrop { display: none; }
 
 @media (max-width: 768px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: 48px 1fr;
+    grid-template-areas:
+      "topbar"
+      "main";
+  }
+
   .ftopbar-hamburger { display: inline-flex; }
   .fsidebar {
     position: fixed;
