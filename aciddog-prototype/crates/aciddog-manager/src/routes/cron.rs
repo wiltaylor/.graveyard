@@ -256,8 +256,7 @@ mod tests {
     use crate::wire_cron::{WireCronPayload, WireCronSchedule, WireCronTz};
 
     fn wcl_cron_id(block_id: &str) -> Uuid {
-        const NAMESPACE_CRON_WCL: Uuid =
-            Uuid::from_u128(0x61842da1_8d65_4f99_9d56_fa64d84833b5);
+        const NAMESPACE_CRON_WCL: Uuid = Uuid::from_u128(0x61842da1_8d65_4f99_9d56_fa64d84833b5);
         Uuid::new_v5(&NAMESPACE_CRON_WCL, block_id.as_bytes())
     }
 
