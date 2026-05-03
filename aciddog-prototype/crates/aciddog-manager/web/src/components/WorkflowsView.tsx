@@ -543,9 +543,9 @@ export default function WorkflowsView(props: Props): JSX.Element {
       </Show>
 
       {/* Main three-pane */}
-      <div class="flex-1 flex min-h-0">
+      <div class="flex-1 flex min-h-0 max-md:flex-col max-md:overflow-y-auto">
         {/* Templates sidebar */}
-        <aside class="w-56 border-r border-border-subtle overflow-y-auto">
+        <aside class="w-56 min-w-0 border-r border-border-subtle overflow-y-auto max-md:w-full max-md:border-r-0 max-md:border-b max-md:overflow-y-visible max-md:max-h-none">
           <div class="px-3 py-2 text-xs uppercase tracking-wide text-fg-3">
             Templates
           </div>
@@ -588,7 +588,7 @@ export default function WorkflowsView(props: Props): JSX.Element {
         </aside>
 
         {/* Property form */}
-        <section class="w-80 border-r border-border-subtle overflow-y-auto">
+        <section class="w-80 min-w-0 border-r border-border-subtle overflow-y-auto max-md:w-full max-md:border-r-0 max-md:border-b max-md:overflow-y-visible max-md:max-h-none">
           <div class="px-3 py-2 text-xs uppercase tracking-wide text-fg-3">
             Run
           </div>
@@ -648,7 +648,7 @@ export default function WorkflowsView(props: Props): JSX.Element {
         </section>
 
         {/* Instance detail — or template preview when no instance is selected */}
-        <section class="flex-1 min-w-0 overflow-y-auto">
+        <section class="flex-1 min-w-0 overflow-y-auto max-md:flex-none max-md:overflow-y-visible">
           <Show
             when={selectedInstance()}
             fallback={
