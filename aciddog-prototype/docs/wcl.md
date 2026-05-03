@@ -34,6 +34,9 @@ incompatible with the prune-after-fire one-off lifecycle that
 `catchup_on_startup` expects. For exactly-once-ever catchup semantics, use the
 imperative path: `aciddog cron add --oneoff --catchup-on-startup ...`.
 
-Live SSE subscribers receive `CronEvent::{Created, Updated, Removed}` for
-WCL-driven cron mutations on boot and `/reload`, so open Cron tabs in the
-manager portal stay in sync without manual refresh.
+WCL-managed cron jobs appear in the manager portal Cron view identically to
+imperative jobs; the manager treats them uniformly for display, edit, and
+remove. Edits made through the portal live only until the next `/reload`, which
+re-derives WCL-managed jobs from `aciddog.wcl`. Live SSE subscribers receive
+`CronEvent::{Created, Updated, Removed}` for WCL mutations on boot and
+`/reload`, so open Cron tabs stay in sync without manual refresh.

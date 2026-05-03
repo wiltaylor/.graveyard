@@ -22,7 +22,7 @@ use crate::routes::tasks::MutationResponse;
 use crate::state::AppState;
 use crate::wire_cron::WireCronJob;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronListResponse {
     pub ok: bool,
     pub jobs: Vec<WireCronJob>,
@@ -240,4 +240,128 @@ pub async fn events(State(state): State<AppState>, Path(id): Path<Uuid>) -> AppR
     resp.headers_mut()
         .insert("x-accel-buffering", HeaderValue::from_static("no"));
     Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use chrono::{TimeZone, Utc};
+    use serde_json::{json, Value};
+    use tokio::net::TcpListener;
+
+    use crate::auth::AuthConfig;
+    use crate::db;
+    use crate::model::instance::{self, CreateInstance, Transport};
+    use crate::wire_cron::{WireCronPayload, WireCronSchedule, WireCronTz};
+
+    fn wcl_cron_id(block_id: &str) -> Uuid {
+        const NAMESPACE_CRON_WCL: Uuid =
+            Uuid::from_u128(0x61842da1_8d65_4f99_9d56_fa64d84833b5);
+        Uuid::new_v5(&NAMESPACE_CRON_WCL, block_id.as_bytes())
+    }
+
+    fn fixture_job(id: Uuid) -> WireCronJob {
+        WireCronJob {
+            id,
+            target_agent: "nightly-maintainer".into(),
+            payload: WireCronPayload::SlashCommand {
+                command: "/maintain --dry-run".into(),
+            },
+            schedule: WireCronSchedule::Recurring {
+                expression: "15 3 * * *".into(),
+            },
+            timezone: WireCronTz::Utc,
+            catchup_on_startup: false,
+            enabled: true,
+            created_by: "operator".into(),
+            created_at: Utc.with_ymd_and_hms(2026, 5, 3, 1, 2, 3).unwrap(),
+            last_run: Some(Utc.with_ymd_and_hms(2026, 5, 3, 3, 15, 0).unwrap()),
+            next_run: Some(Utc.with_ymd_and_hms(2026, 5, 4, 3, 15, 0).unwrap()),
+        }
+    }
+
+    async fn cron_rpc_stub(Json(req): Json<Value>) -> Json<Value> {
+        assert_eq!(req["cmd"], "cron_list_json");
+        assert_eq!(req["target"], Value::Null);
+        assert_eq!(req["include_disabled"], true);
+        assert_eq!(req["mine"], false);
+
+        let wcl_job = fixture_job(wcl_cron_id("nightly_maintenance"));
+        let imperative_job = fixture_job(Uuid::new_v4());
+        Json(json!({
+            "ok": true,
+            "data": [wcl_job, imperative_job],
+        }))
+    }
+
+    async fn spawn_stub_daemon() -> String {
+        let app = axum::Router::new().route("/v1/rpc", axum::routing::post(cron_rpc_stub));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn list_returns_wcl_v5_and_imperative_v4_jobs_with_identical_schema() {
+        let pool = db::connect_memory().await.unwrap();
+        let base_url = spawn_stub_daemon().await;
+        let instance = instance::insert(
+            &pool,
+            CreateInstance {
+                name: "stub".into(),
+                transport: Transport::Https,
+                url: Some(base_url),
+                socket_path: None,
+                api_key: Some("test-token".into()),
+                tls_ca_path: None,
+            },
+        )
+        .await
+        .unwrap();
+        let state = AppState::new(pool, AuthConfig::default(), ".".into());
+
+        let Json(resp) = list(State(state), Path(instance.id)).await.unwrap();
+
+        assert!(resp.ok);
+        assert!(resp.error.is_none());
+        assert_eq!(resp.jobs.len(), 2);
+        assert_eq!(resp.jobs[0].id, wcl_cron_id("nightly_maintenance"));
+        assert_ne!(resp.jobs[1].id, resp.jobs[0].id);
+
+        for job in &resp.jobs {
+            assert_eq!(job.target_agent, "nightly-maintainer");
+            assert_eq!(
+                job.payload,
+                WireCronPayload::SlashCommand {
+                    command: "/maintain --dry-run".into()
+                }
+            );
+            assert_eq!(
+                job.schedule,
+                WireCronSchedule::Recurring {
+                    expression: "15 3 * * *".into()
+                }
+            );
+            assert_eq!(job.timezone, WireCronTz::Utc);
+            assert!(!job.catchup_on_startup);
+            assert!(job.enabled);
+            assert_eq!(job.created_by, "operator");
+            assert!(job.last_run.is_some());
+            assert!(job.next_run.is_some());
+        }
+
+        let round_tripped: CronListResponse =
+            serde_json::from_value(serde_json::to_value(&resp).unwrap()).unwrap();
+        assert_eq!(round_tripped.jobs, resp.jobs);
+
+        let mut wcl_shape = serde_json::to_value(&resp.jobs[0]).unwrap();
+        let mut v4_shape = serde_json::to_value(&resp.jobs[1]).unwrap();
+        wcl_shape["id"] = json!("<uuid>");
+        v4_shape["id"] = json!("<uuid>");
+        assert_eq!(wcl_shape, v4_shape);
+    }
 }
