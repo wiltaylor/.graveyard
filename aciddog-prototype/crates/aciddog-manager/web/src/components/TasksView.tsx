@@ -1077,11 +1077,11 @@ function TaskDetailModal(props: {
               </For>
             </ul>
           </Show>
-          <div class="mt-2 flex gap-2">
+          <div class="mt-2 flex gap-2 min-w-0">
             <select
               value={blockedBySelect()}
               onInput={(e) => setBlockedBySelect(e.currentTarget.value)}
-              class="flex-1 rounded border border-border bg-bg-0 px-2 py-1 text-sm"
+              class="flex-1 min-w-0 rounded border border-border bg-bg-0 px-2 py-1 text-sm"
             >
               <option value="">(select task to block on)</option>
               <For
