@@ -423,6 +423,40 @@
     display: inline-flex; align-items: center; gap: 6px;
     padding-right: 4px;
   }
+
+  @media (max-width: 768px) {
+    .tabs.icon-only-md:not(.pill):not(.vertical) .tab > span:not(.ico):not(.count):not(.dot) {
+      display: none;
+    }
+    .tabs.icon-only-md:not(.pill):not(.vertical) .tab {
+      /* T5: enlarge to 44px hit area */
+      padding: 0 10px;
+      gap: 0;
+      min-width: 36px;
+    }
+    .tabs:not(.pill):not(.vertical) .tablist[data-overflow='left'] {
+      mask-image: linear-gradient(to right, transparent 0, black 16px, black 100%);
+      -webkit-mask-image: linear-gradient(to right, transparent 0, black 16px, black 100%);
+    }
+    .tabs:not(.pill):not(.vertical) .tablist[data-overflow='right'] {
+      mask-image: linear-gradient(to right, black 0, black calc(100% - 16px), transparent 100%);
+      -webkit-mask-image: linear-gradient(to right, black 0, black calc(100% - 16px), transparent 100%);
+    }
+    .tabs:not(.pill):not(.vertical) .tablist[data-overflow='both'] {
+      mask-image: linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
+      -webkit-mask-image: linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
+    }
+    .tabs:not(.pill):not(.vertical) .tablist[data-overflow='none'] {
+      mask-image: none;
+      -webkit-mask-image: none;
+    }
+    .tabs.pill .tablist,
+    .tabs.vertical .tablist {
+      mask-image: none;
+      -webkit-mask-image: none;
+    }
+  }
+
   .icon-btn {
     width: 26px; height: 26px;
     display: inline-flex; align-items: center; justify-content: center;

@@ -380,6 +380,7 @@ export default function AppShell(props: Props): JSX.Element {
                 <Tabs
                   items={TABS}
                   active={activeTab()}
+                  iconOnlyOnMobile
                   onChange={(id) => {
                     setActiveTab(id);
                     if (id !== "agents") {
