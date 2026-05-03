@@ -23,7 +23,6 @@ import TeamView from "./components/TeamView";
 import UsersView from "./components/UsersView";
 import WorkflowsView from "./components/WorkflowsView";
 import {
-  Button,
   Drawer,
   Empty,
   Icon,
@@ -32,6 +31,7 @@ import {
   Tabs,
   ToastHost,
 } from "./components/ui";
+import Menu from "./components/ui/Menu";
 import type { TabItem } from "./components/ui";
 import { api } from "./api";
 import { authApi } from "./auth";
@@ -217,26 +217,42 @@ export default function AppShell(props: Props): JSX.Element {
             <span>Settings · {settingsSelection()}</span>
           </Show>
         </div>
-        <div
-          style={{
-            "margin-left": "auto",
-            display: "flex",
-            "align-items": "center",
-            gap: "12px",
-          }}
-        >
-          <span style={{ "font-size": "12px", color: "var(--fg-2)" }}>
+        <div class="ftopbar-account">
+          <span class="ftopbar-account-label">
             Signed in as{" "}
             <span style={{ color: "var(--fg-0)" }}>{props.username}</span>
           </span>
-          <Button
-            size="sm"
-            variant="secondary"
-            icon="log-out"
-            onClick={handleLogout}
-          >
-            Log out
-          </Button>
+          <Menu
+            align="end"
+            sections={[
+              {
+                title: `Signed in as ${props.username}`,
+                items: [
+                  {
+                    id: "logout",
+                    label: "Log out",
+                    icon: "log-out",
+                    danger: true,
+                    onSelect: handleLogout,
+                  },
+                ],
+              },
+            ]}
+            trigger={(api) => (
+              <button
+                type="button"
+                class="ftopbar-avatar-btn"
+                aria-label={`Account menu — ${props.username}`}
+                aria-haspopup="menu"
+                aria-expanded={api.isOpen()}
+                onClick={api.toggle}
+              >
+                {(props.username?.[0] ?? "").toUpperCase() || (
+                  <Icon name="user" size={16} />
+                )}
+              </button>
+            )}
+          />
         </div>
       </header>
 

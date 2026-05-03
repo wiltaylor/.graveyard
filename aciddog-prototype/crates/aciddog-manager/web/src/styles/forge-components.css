@@ -64,10 +64,16 @@
   padding: 0 16px; gap: 14px;
   position: sticky; top: 0; z-index: 10;
 }
-.ftopbar-brand { display: flex; align-items: center; gap: 10px; color: var(--fg-0); }
+.ftopbar-brand { display: flex; align-items: center; flex-shrink: 0; gap: 10px; color: var(--fg-0); }
 .ftopbar-brand img { height: 22px; }
-.ftopbar-crumbs { display: flex; align-items: center; gap: 6px; color: var(--fg-1); font-size: 13px; }
+.ftopbar-crumbs { display: flex; align-items: center; min-width: 0; overflow: hidden; gap: 6px; color: var(--fg-1); font-size: 13px; }
 .ftopbar-crumbs .sep { color: var(--fg-3); }
+.ftopbar-crumbs > span:not(.sep) {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  min-width: 0;
+}
 .ftopbar-search {
   margin-left: auto;
   display: flex; align-items: center; gap: 8px;
@@ -85,6 +91,31 @@
   background: transparent; border: 0; border-radius: 4px; color: var(--fg-1); cursor: pointer;
 }
 .ftopbar-icon-btn:hover { background: var(--bg-2); color: var(--fg-0); }
+/* Avatar pinned 32px desktop; T5 (48d16c8a) bumps to >=44px under @media (max-width:768px). */
+.ftopbar-account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.ftopbar-account-label {
+  color: var(--fg-2);
+  font-size: 12px;
+}
+.ftopbar-avatar-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-0);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  border: 0;
+  cursor: pointer;
+}
 .ftopbar-hamburger {
   display: none;
   width: 32px;
@@ -121,6 +152,9 @@
   }
 
   .ftopbar-hamburger { display: inline-flex; }
+  /* T3: hide signed-in label and brand wordmark; logo + avatar Menu carry the row. */
+  .ftopbar-account-label { display: none; }
+  .ftopbar-brand span { display: none; }
   .fsidebar {
     position: fixed;
     top: 48px;
