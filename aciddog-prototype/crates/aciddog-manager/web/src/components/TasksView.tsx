@@ -85,7 +85,11 @@ function distinctGroups(agents: AgentRow[]): string[] {
 function buildAssigneeOptions(agents: AgentRow[]): AssigneeOption[] {
   const out: AssigneeOption[] = [];
   for (const a of agents) {
-    if (a.kind === "agent" || a.kind === "automaton") {
+    if (
+      (a.kind === "agent" || a.kind === "automaton") &&
+      // :webservice automatons receive HTTP requests, not task assignments.
+      a.automaton_backend !== "webservice"
+    ) {
       out.push({
         value: a.id,
         label: `${a.id} (${a.kind})`,

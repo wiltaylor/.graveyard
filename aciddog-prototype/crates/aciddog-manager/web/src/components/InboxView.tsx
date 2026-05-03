@@ -79,7 +79,10 @@ export default function InboxView(props: Props): JSX.Element {
   });
 
   const forwardCandidates = () =>
-    props.agents.filter((a) => a.kind === "agent" || a.kind === "automaton");
+    props.agents
+      .filter((a) => a.kind === "agent" || a.kind === "automaton")
+      // :webservice automatons receive HTTP requests, not DM forwards.
+      .filter((a) => a.automaton_backend !== "webservice");
 
   const openReply = (idx: number) => {
     setRowModes({ ...rowModes(), [idx]: { kind: "reply", body: "" } });

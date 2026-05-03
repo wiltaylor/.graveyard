@@ -8948,6 +8948,27 @@ impl App {
         }
     }
 
+    fn backend_label(&self, idx: usize) -> &'static str {
+        let Some(chat) = self.chats.get(idx) else {
+            return "none";
+        };
+        if chat.kind != ChatKind::Automaton {
+            return "none";
+        }
+        match self
+            .config
+            .automatons
+            .iter()
+            .find(|a| a.id == chat.display_name)
+            .map(|a| &a.backend)
+        {
+            Some(crate::config::AutomatonBackend::Script { .. }) => "script",
+            Some(crate::config::AutomatonBackend::Webservice { .. }) => "webservice",
+            Some(crate::config::AutomatonBackend::Remote { .. }) => "remote",
+            None => "none",
+        }
+    }
+
     fn handle_admin_agent_list(
         &mut self,
         sender_idx: usize,
@@ -8970,7 +8991,7 @@ impl App {
         // top of the prior `leader` column. The manager parser is
         // tolerant — 5/6-column legacy headers parse with the missing
         // columns defaulted (leader=false, group=None).
-        out.push_str("id\tkind\tstatus\tparent\tai_core\tleader\tgroup\n");
+        out.push_str("id\tkind\tstatus\tparent\tai_core\tleader\tgroup\tautomaton_backend\n");
         for &i in &indices {
             let chat = &self.chats[i];
             let parent = chat
@@ -8981,8 +9002,9 @@ impl App {
             let core = chat.ai_core_id.as_deref().unwrap_or("-");
             let leader = self.is_leader(i);
             let group = self.chat_group(i).unwrap_or("-");
+            let backend = self.backend_label(i);
             out.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 chat.display_name,
                 Self::kind_label(chat),
                 Self::status_label(chat),
@@ -8990,6 +9012,7 @@ impl App {
                 core,
                 leader,
                 group,
+                backend,
             ));
         }
         let _ = reply.send(Response::ok(out.trim_end().to_string()));
@@ -25457,6 +25480,51 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         assert!(msg.contains("\na\t"), "agent a row missing: {msg}");
         assert!(msg.contains("\nb\t"), "agent b row missing: {msg}");
         assert!(msg.contains("\nc\t"), "agent c row missing: {msg}");
+    }
+
+    #[tokio::test]
+    async fn agent_list_emits_automaton_backend_per_row() {
+        let mut cfg = sample_config();
+        cfg.agents.truncate(1);
+        cfg.agents[0].supervisor = true;
+        cfg.workers = vec![worker_template("worker")];
+        cfg.automatons = vec![
+            script_automaton("script-auto"),
+            webservice_automaton("web-auto"),
+            remote_automaton("remote-auto"),
+        ];
+        let mut app = App::new(cfg);
+        app.chats.push(AgentChat {
+            display_name: "worker#test".into(),
+            parent_idx: Some(0),
+            worker_template: Some("worker".into()),
+            kind: ChatKind::Worker,
+            ..Default::default()
+        });
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+
+        let resp = admin_send(&mut app, sender, RequestCmd::AgentList);
+        assert!(resp.ok, "err={:?}", resp.error);
+        let msg = resp.message.unwrap();
+        assert!(
+            msg.starts_with(
+                "id\tkind\tstatus\tparent\tai_core\tleader\tgroup\tautomaton_backend\n"
+            ),
+            "header missing backend column: {msg}"
+        );
+
+        let row = |id: &str| {
+            msg.lines()
+                .find(|line| line.starts_with(&format!("{id}\t")))
+                .unwrap_or_else(|| panic!("row {id} missing from table: {msg}"))
+                .to_string()
+        };
+        assert!(row("a").ends_with("\tnone"));
+        assert!(row("worker#test").ends_with("\tnone"));
+        assert!(row("script-auto").ends_with("\tscript"));
+        assert!(row("web-auto").ends_with("\twebservice"));
+        assert!(row("remote-auto").ends_with("\tremote"));
     }
 
     #[tokio::test]

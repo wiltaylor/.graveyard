@@ -33,6 +33,10 @@ export interface AgentRow {
    * `group` set, or when the upstream daemon speaks the 5/6-column
    * legacy header (no `group` column). */
   group: string | null;
+  /** Optional backend tag for automaton rows. Missing when the daemon
+   * speaks a 5/6/7-column legacy header; modern daemons emit `none`
+   * for non-automaton rows and missing automaton config. */
+  automaton_backend?: "script" | "webservice" | "remote" | "none" | string;
 }
 
 export interface AgentListResponse {

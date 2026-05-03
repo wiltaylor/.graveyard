@@ -28,6 +28,12 @@ pub struct AgentRow {
     /// block has no `group` set.
     #[serde(default)]
     pub group: Option<String>,
+    /// Optional backend tag for automaton rows. `None` when the daemon
+    /// speaks a 5-, 6-, or 7-column legacy header (no
+    /// `automaton_backend` column emitted); modern daemons emit
+    /// `none` for non-automaton rows and missing automaton config.
+    #[serde(default)]
+    pub automaton_backend: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,6 +88,9 @@ pub async fn list(
 ///   - 7-column: `id\tkind\tstatus\tparent\tai_core\tleader\tgroup` —
 ///     the trailing `group` cell uses the same `-`-means-None
 ///     convention as the `parent` and `ai_core` columns.
+///   - 8-column:
+///     `id\tkind\tstatus\tparent\tai_core\tleader\tgroup\tautomaton_backend`
+///     — the trailing backend tag is preserved verbatim.
 ///
 /// Empty input yields an empty Vec. Rows whose column count doesn't
 /// match the chosen header shape are skipped.
@@ -95,6 +104,7 @@ pub(crate) fn parse_agent_table(raw: &str) -> Vec<AgentRow> {
         "id\tkind\tstatus\tparent\tai_core" => 5,
         "id\tkind\tstatus\tparent\tai_core\tleader" => 6,
         "id\tkind\tstatus\tparent\tai_core\tleader\tgroup" => 7,
+        "id\tkind\tstatus\tparent\tai_core\tleader\tgroup\tautomaton_backend" => 8,
         _ => return Vec::new(),
     };
     let mut out = Vec::new();
@@ -114,6 +124,11 @@ pub(crate) fn parse_agent_table(raw: &str) -> Vec<AgentRow> {
         } else {
             None
         };
+        let automaton_backend = if expected_cols >= 8 {
+            nullable(parts[7])
+        } else {
+            None
+        };
         out.push(AgentRow {
             id: parts[0].to_string(),
             kind: parts[1].to_string(),
@@ -122,6 +137,7 @@ pub(crate) fn parse_agent_table(raw: &str) -> Vec<AgentRow> {
             ai_core: nullable(parts[4]),
             leader,
             group,
+            automaton_backend,
         });
     }
     out
@@ -144,8 +160,10 @@ mod tests {
         assert_eq!(rows[0].parent, None);
         assert_eq!(rows[0].ai_core.as_deref(), Some("claude_code"));
         assert!(!rows[0].leader);
+        assert!(rows[0].automaton_backend.is_none());
         assert_eq!(rows[1].parent.as_deref(), Some("supervisor"));
         assert!(!rows[1].leader);
+        assert!(rows[1].automaton_backend.is_none());
     }
 
     #[test]
@@ -166,6 +184,7 @@ mod tests {
         assert_eq!(rows[2].id, "worker-1");
         assert!(!rows[2].leader);
         assert_eq!(rows[2].parent.as_deref(), Some("coder"));
+        assert!(rows.iter().all(|row| row.automaton_backend.is_none()));
     }
 
     #[test]
@@ -199,6 +218,7 @@ mod tests {
         assert!(rows[2].group.is_none(), "`-` cell must parse as None");
         assert_eq!(rows[3].group.as_deref(), Some("engineering"));
         assert_eq!(rows[3].parent.as_deref(), Some("coder"));
+        assert!(rows.iter().all(|row| row.automaton_backend.is_none()));
     }
 
     #[test]
@@ -212,5 +232,35 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].leader);
         assert!(rows[0].group.is_none());
+    }
+
+    #[test]
+    fn parses_canonical_table_with_automaton_backend() {
+        let raw = "id\tkind\tstatus\tparent\tai_core\tleader\tgroup\tautomaton_backend\n\
+                   admin\tagent\tready\t-\tclaude_code\ttrue\tadmin\tnone\n\
+                   script-auto\tautomaton\tready\t-\t-\tfalse\tbots\tscript\n\
+                   web-auto\tautomaton\tready\t-\t-\tfalse\tbots\twebservice\n\
+                   remote-auto\tautomaton\tready\t-\t-\tfalse\tbots\tremote\n\
+                   worker-1\tworker\tworking\tadmin\tgemini_cli\tfalse\tadmin\tnone";
+        let rows = parse_agent_table(raw);
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].id, "admin");
+        assert_eq!(rows[0].automaton_backend.as_deref(), Some("none"));
+        assert_eq!(rows[1].automaton_backend.as_deref(), Some("script"));
+        assert_eq!(rows[2].automaton_backend.as_deref(), Some("webservice"));
+        assert_eq!(rows[3].automaton_backend.as_deref(), Some("remote"));
+        assert_eq!(rows[4].id, "worker-1");
+        assert_eq!(rows[4].automaton_backend.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn legacy_seven_col_header_yields_no_backend() {
+        let raw = "id\tkind\tstatus\tparent\tai_core\tleader\tgroup\n\
+                   admin\tagent\tidle\t-\tclaude_code\ttrue\tadmin";
+        let rows = parse_agent_table(raw);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].leader);
+        assert_eq!(rows[0].group.as_deref(), Some("admin"));
+        assert!(rows[0].automaton_backend.is_none());
     }
 }

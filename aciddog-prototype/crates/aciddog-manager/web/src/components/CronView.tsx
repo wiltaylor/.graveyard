@@ -555,6 +555,7 @@ function CronFormModal(props: FormProps): JSX.Element {
             onChange={(v) => update({ target: v })}
             options={(props.agents ?? [])
               .filter((a) => a.kind === "agent" || a.kind === "automaton")
+              .filter((a) => a.automaton_backend !== "webservice")
               .map((a) => ({
                 value: a.id,
                 label: a.id,
