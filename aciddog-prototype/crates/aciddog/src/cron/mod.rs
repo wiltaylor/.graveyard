@@ -994,7 +994,7 @@ mod tests {
     fn reapply_wcl_crons_creates_missing_job() {
         let mut s = mk_store();
         let block = wcl_block("idle_sweep", "tick", "*/5 * * * *");
-        let ids = reapply_wcl_crons(&mut s, &[block.clone()], &HashSet::new())
+        let ids = reapply_wcl_crons(&mut s, std::slice::from_ref(&block), &HashSet::new())
             .unwrap()
             .ids;
         let id = wcl_cron_id("idle_sweep");
@@ -1009,7 +1009,7 @@ mod tests {
     fn reapply_wcl_crons_matching_job_is_noop() {
         let mut s = mk_store();
         let block = wcl_block("idle_sweep", "tick", "*/5 * * * *");
-        let ids = reapply_wcl_crons(&mut s, &[block.clone()], &HashSet::new())
+        let ids = reapply_wcl_crons(&mut s, std::slice::from_ref(&block), &HashSet::new())
             .unwrap()
             .ids;
         let id = wcl_cron_id("idle_sweep");

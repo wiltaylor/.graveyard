@@ -1,10 +1,18 @@
 use serde_json::Value;
 use uuid::Uuid;
 
-/// Token usage reported by a core for a single turn (or, where the core
-/// only reports cumulative totals, the running totals at end of turn).
-/// All counts are absolute — the consumer decides whether to add or
-/// replace based on what the core promises.
+/// Token usage in aciddog's canonical accounting shape.
+///
+/// `input_tokens` excludes cache reads. Providers that report cache
+/// reads as a subset of input tokens, such as OpenAI/Codex, must
+/// subtract that cached portion at the parser before constructing this
+/// value. `cache_read_input_tokens` and `cache_creation_input_tokens`
+/// remain separate because they still occupy context and are included
+/// in [`TurnUsage::total_tokens`].
+///
+/// A core may emit this as a single-turn delta or as a cumulative
+/// session total; consumers choose add-vs-replace based on the core's
+/// documented reporting style.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TurnUsage {
     pub input_tokens: u64,

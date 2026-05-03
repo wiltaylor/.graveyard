@@ -75,6 +75,24 @@ pub fn model_context_window(model: &str) -> Option<u32> {
     None
 }
 
+/// Return the effective context window Codex CLI exposes for a model.
+///
+/// Codex reserves part of the provider window for its own harness,
+/// tools, and reasoning headroom. Keep this helper Codex-specific so
+/// OpenAI API cores continue to use the public model limits above.
+pub fn codex_model_context_window(model: &str) -> Option<u32> {
+    let m = model.trim().to_ascii_lowercase();
+    if m.is_empty() {
+        return None;
+    }
+
+    if m.starts_with("gpt-5") || m.starts_with("openai/gpt-5") {
+        return Some(258_400);
+    }
+
+    model_context_window(model)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +137,12 @@ mod tests {
     fn case_insensitive() {
         assert_eq!(model_context_window("CLAUDE-OPUS-4-7"), Some(200_000));
         assert_eq!(model_context_window("Claude-Opus-4-7[1M]"), Some(1_000_000));
+    }
+
+    #[test]
+    fn codex_gpt5_uses_effective_window_without_changing_api_window() {
+        assert_eq!(model_context_window("gpt-5"), Some(400_000));
+        assert_eq!(codex_model_context_window("gpt-5"), Some(258_400));
+        assert_eq!(codex_model_context_window("openai/gpt-5"), Some(258_400));
     }
 }

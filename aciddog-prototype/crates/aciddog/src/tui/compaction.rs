@@ -18,8 +18,8 @@ use crate::ai::{AICore, AIEvent, AciddogCliCtx, PromptParts};
 use crate::config::{AiCore, CompactionStrategy};
 
 use super::app::{
-    build_core, build_memory_block, build_team_block, core_display_label, core_usage_mode,
-    run_core, uses_tag_ipc, AgentChat, AgentStatus, App,
+    build_core, build_memory_block, build_team_block, context_window_for_core, core_display_label,
+    core_usage_mode, run_core, uses_tag_ipc, AgentChat, AgentStatus, App,
 };
 use super::blocks::ChatBlock;
 
@@ -599,10 +599,11 @@ impl App {
         let pool_len = self.config.thinking_messages.len();
         let new_label = core_display_label(&ai_core);
         let new_usage_mode = core_usage_mode(&ai_core.kind);
-        let new_context_window = self
-            .config
-            .effective_model(agent.model.as_deref(), Some(&ai_core))
-            .and_then(crate::ai::model_context_window);
+        let new_context_window = context_window_for_core(
+            self.config
+                .effective_model(agent.model.as_deref(), Some(&ai_core)),
+            Some(&ai_core),
+        );
 
         // Remove the old session id from the routing map *before* we
         // stamp the new one so a stray inbound socket request can't

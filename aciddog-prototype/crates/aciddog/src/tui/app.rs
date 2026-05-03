@@ -102,18 +102,26 @@ pub(super) fn core_usage_mode(kind: &AiCoreKind) -> ContextUsageMode {
     match kind {
         AiCoreKind::AnthropicApi { .. }
         | AiCoreKind::OpenAiApi { .. }
-        | AiCoreKind::OpenAiChatgpt { .. } => ContextUsageMode::Add,
+        | AiCoreKind::OpenAiChatgpt { .. }
+        // Codex reports session-cumulative usage on `turn.completed`;
+        // the Codex core snapshots and subtracts those cumulatives
+        // before emitting `TurnResult`, so the TUI sums it like the
+        // API cores.
+        | AiCoreKind::CodexCli { .. } => ContextUsageMode::Add,
         AiCoreKind::ClaudeCode { .. }
         | AiCoreKind::CopilotCli { .. }
         | AiCoreKind::GeminiCli { .. }
-        // Codex's `turn.completed.usage.input_tokens` is the full
-        // context-window input for that turn (includes prior history),
-        // so we overwrite rather than sum across turns. Same shape as
-        // claude/copilot/gemini.
-        | AiCoreKind::CodexCli { .. }
         // Jules doesn't report token usage — `Replace` keeps any
         // stray event from accumulating forever (none are expected).
         | AiCoreKind::Jules { .. } => ContextUsageMode::Replace,
+    }
+}
+
+pub(super) fn context_window_for_core(model: Option<&str>, core: Option<&AiCore>) -> Option<u32> {
+    let model = model?;
+    match core.map(|c| &c.kind) {
+        Some(AiCoreKind::CodexCli { .. }) => crate::ai::codex_model_context_window(model),
+        _ => crate::ai::model_context_window(model),
     }
 }
 
@@ -1943,7 +1951,8 @@ pub enum ContextUsageMode {
     #[default]
     Replace,
     /// Each new TurnResult carries the delta for that round; add to
-    /// the running total. Used by Anthropic API and OpenAI API cores.
+    /// the running total. Used by Anthropic API, OpenAI API, and
+    /// Codex CLI after its parser converts cumulative usage to deltas.
     Add,
 }
 
@@ -2848,7 +2857,7 @@ pub(super) fn make_agent_chat(config: &AciddogConfig, agent: &crate::config::Age
         .map(core_display_label)
         .unwrap_or_else(|| "claude-code".to_string());
     let model = config.effective_model(agent.model.as_deref(), core);
-    let context_window = model.and_then(crate::ai::model_context_window);
+    let context_window = context_window_for_core(model, core);
     let context_usage_mode = core
         .map(|c| core_usage_mode(&c.kind))
         .unwrap_or(ContextUsageMode::Replace);
@@ -4603,7 +4612,7 @@ impl App {
         let effective_model = self
             .config
             .effective_model(worker.model.as_deref(), Some(core));
-        let context_window = effective_model.and_then(crate::ai::model_context_window);
+        let context_window = context_window_for_core(effective_model, Some(core));
         let context_usage_mode = core_usage_mode(&core.kind);
         let built_core: Box<dyn AICore> = match build_core(
             core,
@@ -17385,6 +17394,78 @@ mod tests {
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["thinking".into()],
+        }
+    }
+
+    #[test]
+    fn codex_gpt5_agent_uses_codex_effective_context_window() {
+        let mut config = sample_config();
+        config.team.default_ai_core = Some("codex".into());
+        config.agents[0].model = Some("gpt-5".into());
+        config.ai_cores = vec![crate::config::AiCore {
+            id: "codex".into(),
+            kind: crate::config::AiCoreKind::CodexCli {
+                model: None,
+                default_tools: None,
+            },
+            usage_provider: None,
+        }];
+
+        let chat = make_agent_chat(&config, &config.agents[0]);
+
+        assert_eq!(chat.context_window, Some(258_400));
+        match chat.blocks.first() {
+            Some(ChatBlock::AgentInfo { context_window, .. }) => {
+                assert_eq!(*context_window, Some(258_400));
+            }
+            other => panic!("expected AgentInfo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codex_delta_usage_adds_to_latest_cumulative_total() {
+        let mut chat = AgentChat {
+            context_usage_mode: ContextUsageMode::Add,
+            ..Default::default()
+        };
+        let session = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let prev = std::sync::Arc::new(std::sync::Mutex::new(crate::ai::TurnUsage::default()));
+        let lines = [
+            r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":20,"reasoning_output_tokens":5}}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":1500,"cached_input_tokens":250,"output_tokens":30,"reasoning_output_tokens":10}}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":2000,"cached_input_tokens":500,"output_tokens":45,"reasoning_output_tokens":15}}"#,
+        ];
+        let expected_cumulative = [
+            crate::ai::TurnUsage {
+                input_tokens: 900,
+                output_tokens: 25,
+                cache_read_input_tokens: 100,
+                cache_creation_input_tokens: 0,
+            },
+            crate::ai::TurnUsage {
+                input_tokens: 1250,
+                output_tokens: 40,
+                cache_read_input_tokens: 250,
+                cache_creation_input_tokens: 0,
+            },
+            crate::ai::TurnUsage {
+                input_tokens: 1500,
+                output_tokens: 60,
+                cache_read_input_tokens: 500,
+                cache_creation_input_tokens: 0,
+            },
+        ];
+
+        for (line, expected) in lines.into_iter().zip(expected_cumulative) {
+            for event in crate::ai::codex_cli::parse_codex_line(line, &session, &prev) {
+                if let AIEvent::TurnResult {
+                    usage: Some(usage), ..
+                } = event
+                {
+                    chat.apply_turn_usage(usage);
+                }
+            }
+            assert_eq!(chat.context_used, Some(expected));
         }
     }
 

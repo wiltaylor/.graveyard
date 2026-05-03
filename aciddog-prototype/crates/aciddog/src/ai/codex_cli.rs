@@ -89,6 +89,13 @@ pub struct CodexCliCore {
     /// spawned inside `turn()` needs to write here while the outer
     /// core keeps `&mut self` ownership.
     codex_session_id: Arc<Mutex<Option<Uuid>>>,
+    /// Previous cumulative usage reported by Codex's `turn.completed`
+    /// event. Codex's `--json` stream does not emit `context_compacted`;
+    /// compaction appears only in Codex's rollout JSONL side channel,
+    /// and its cumulative token counters keep rising through compaction.
+    /// We snapshot-and-subtract here so the rest of aciddog receives
+    /// normal per-turn deltas.
+    prev_codex_usage: Arc<Mutex<TurnUsage>>,
     /// Structured first-turn prompt sources. Composed into the actual
     /// XML-tagged prompt by `build_first_turn_prompt` on the first turn.
     /// Ignored when `started` is true (resumed sessions).
@@ -121,6 +128,7 @@ impl CodexCliCore {
             binary: DEFAULT_BINARY.to_string(),
             aciddog_session_id: session_id,
             codex_session_id: Arc::new(Mutex::new(None)),
+            prev_codex_usage: Arc::new(Mutex::new(TurnUsage::default())),
             prompt_parts,
             allowed_tools,
             model: None,
@@ -145,6 +153,7 @@ impl CodexCliCore {
             binary: DEFAULT_BINARY.to_string(),
             aciddog_session_id: session_id,
             codex_session_id: Arc::new(Mutex::new(None)),
+            prev_codex_usage: Arc::new(Mutex::new(TurnUsage::default())),
             prompt_parts: PromptParts::default(),
             allowed_tools,
             model: None,
@@ -357,6 +366,7 @@ impl AICore for CodexCliCore {
             env: self.env.clone(),
             cwd: self.cwd.clone(),
             codex_session_id: self.codex_session_id.clone(),
+            prev_codex_usage: self.prev_codex_usage.clone(),
         });
 
         let (tx, rx) = mpsc::channel::<AIEvent>(64);
@@ -421,6 +431,9 @@ struct RoundCtx {
     /// when it sees codex's `thread.started` event; subsequent rounds
     /// read it to build `exec resume <uuid>`.
     codex_session_id: Arc<Mutex<Option<Uuid>>>,
+    /// Shared with the owning `CodexCliCore` so `run_round` can turn
+    /// Codex's session-cumulative usage into per-turn deltas.
+    prev_codex_usage: Arc<Mutex<TurnUsage>>,
 }
 
 /// Spawn one codex child, forward every parsed `AIEvent` from stdout
@@ -549,7 +562,7 @@ async fn run_round(
     loop {
         match reader.next_line().await {
             Ok(Some(line)) => {
-                for ev in parse_codex_line(&line, &ctx.codex_session_id) {
+                for ev in parse_codex_line(&line, &ctx.codex_session_id, &ctx.prev_codex_usage) {
                     if let Some(buf) = collect_text.as_ref() {
                         if let AIEvent::AssistantText { text, .. } = &ev {
                             let mut guard = buf.lock().expect("collect_text poisoned");
@@ -749,11 +762,16 @@ async fn dispatch_call(
 ///   `file_edit`, `web_search`, etc.) → `Other(raw)`. New mappings can
 ///   be added if/when those item types start appearing in agent runs.
 /// - `turn.completed` → `TurnResult { stop_reason: None,
-///   total_cost_usd: None, usage: <parsed>, raw }`.
+///   total_cost_usd: None, usage: <delta>, raw }`. Codex reports
+///   session-cumulative usage on this event, so the parser subtracts
+///   the previous snapshot before emitting. The `--json` exec stream
+///   does not include Codex's `context_compacted` event; that event is
+///   only present in the rollout JSONL side channel.
 /// - Everything else → `Other(raw)`.
 pub(crate) fn parse_codex_line(
     line: &str,
     codex_session_id: &Arc<Mutex<Option<Uuid>>>,
+    prev_codex_usage: &Arc<Mutex<TurnUsage>>,
 ) -> Vec<AIEvent> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -779,6 +797,8 @@ pub(crate) fn parse_codex_line(
             if let Some(id) = thread_id {
                 let mut guard = codex_session_id.lock().expect("codex_session_id poisoned");
                 *guard = Some(id);
+                let mut prev = prev_codex_usage.lock().expect("prev_codex_usage poisoned");
+                *prev = TurnUsage::default();
                 vec![AIEvent::SystemInit {
                     session_id: id,
                     tools: Vec::new(),
@@ -795,7 +815,12 @@ pub(crate) fn parse_codex_line(
         "item.started" => parse_item(value, /* completed = */ false),
         "item.completed" => parse_item(value, /* completed = */ true),
         "turn.completed" => {
-            let usage = parse_codex_usage(value.get("usage"));
+            let usage = parse_codex_usage(value.get("usage")).and_then(|cumulative| {
+                let mut prev = prev_codex_usage.lock().expect("prev_codex_usage poisoned");
+                let delta = subtract_usage(cumulative, *prev);
+                *prev = cumulative;
+                (!delta.is_zero()).then_some(delta)
+            });
             vec![AIEvent::TurnResult {
                 stop_reason: None,
                 total_cost_usd: None,
@@ -807,40 +832,63 @@ pub(crate) fn parse_codex_line(
     }
 }
 
-/// Best-effort token-usage extraction from a codex `turn.completed`
-/// event. Codex reports per-turn deltas with `input_tokens`,
-/// `cached_input_tokens`, `output_tokens`, and `reasoning_output_tokens`;
-/// reasoning tokens are folded into output for accounting since aciddog
-/// has no separate slot. Returns `None` when no recognised numeric
-/// field is present.
+fn subtract_usage(current: TurnUsage, previous: TurnUsage) -> TurnUsage {
+    TurnUsage {
+        input_tokens: current.input_tokens.saturating_sub(previous.input_tokens),
+        output_tokens: current.output_tokens.saturating_sub(previous.output_tokens),
+        cache_read_input_tokens: current
+            .cache_read_input_tokens
+            .saturating_sub(previous.cache_read_input_tokens),
+        cache_creation_input_tokens: current
+            .cache_creation_input_tokens
+            .saturating_sub(previous.cache_creation_input_tokens),
+    }
+}
+
+/// Best-effort token-usage extraction from a Codex `turn.completed`
+/// event. Codex reports session-cumulative totals with `input_tokens`,
+/// `cached_input_tokens`, `output_tokens`, and `reasoning_output_tokens`.
+/// Reasoning tokens are folded into output for accounting since aciddog
+/// has no separate slot. `cached_input_tokens` is a subset of Codex's
+/// `input_tokens`, so we subtract it before storing to preserve
+/// [`TurnUsage`]'s "input excludes cache reads" contract. Returns
+/// `None` when no recognised numeric field is present.
 fn parse_codex_usage(usage: Option<&Value>) -> Option<TurnUsage> {
     let obj = usage?.as_object()?;
-    let mut u = TurnUsage::default();
+    let mut input_tokens = None;
+    let mut cached_input_tokens = None;
+    let mut output_tokens = 0_u64;
     let mut any = false;
     for (k, v) in obj {
         let Some(n) = v.as_u64() else { continue };
         match k.as_str() {
             "input_tokens" => {
-                u.input_tokens = n;
+                input_tokens = Some(n);
                 any = true;
             }
             "output_tokens" => {
-                u.output_tokens = u.output_tokens.saturating_add(n);
+                output_tokens = output_tokens.saturating_add(n);
                 any = true;
             }
             "reasoning_output_tokens" => {
-                u.output_tokens = u.output_tokens.saturating_add(n);
+                output_tokens = output_tokens.saturating_add(n);
                 any = true;
             }
             "cached_input_tokens" => {
-                u.cache_read_input_tokens = n;
+                cached_input_tokens = Some(n);
                 any = true;
             }
             _ => {}
         }
     }
     if any {
-        Some(u)
+        let cached = cached_input_tokens.unwrap_or_default();
+        Some(TurnUsage {
+            input_tokens: input_tokens.unwrap_or_default().saturating_sub(cached),
+            output_tokens,
+            cache_read_input_tokens: cached,
+            cache_creation_input_tokens: 0,
+        })
     } else {
         None
     }
@@ -1222,17 +1270,28 @@ mod tests {
         Arc::new(Mutex::new(None))
     }
 
+    fn fresh_usage_slot() -> Arc<Mutex<TurnUsage>> {
+        Arc::new(Mutex::new(TurnUsage::default()))
+    }
+
+    fn turn_usage(evs: &[AIEvent]) -> Option<TurnUsage> {
+        match evs.first() {
+            Some(AIEvent::TurnResult { usage, .. }) => *usage,
+            other => panic!("expected TurnResult, got {other:?}"),
+        }
+    }
+
     #[test]
     fn parse_empty_and_whitespace_lines_are_noop() {
         let id = fresh_session_slot();
-        assert!(parse_codex_line("", &id).is_empty());
-        assert!(parse_codex_line("   \n", &id).is_empty());
+        assert!(parse_codex_line("", &id, &fresh_usage_slot()).is_empty());
+        assert!(parse_codex_line("   \n", &id, &fresh_usage_slot()).is_empty());
     }
 
     #[test]
     fn parse_malformed_json_becomes_error_event() {
         let id = fresh_session_slot();
-        let evs = parse_codex_line("{not json", &id);
+        let evs = parse_codex_line("{not json", &id, &fresh_usage_slot());
         assert_eq!(evs.len(), 1);
         assert!(matches!(evs[0], AIEvent::Error { .. }));
     }
@@ -1242,7 +1301,7 @@ mod tests {
         let id = fresh_session_slot();
         let line =
             r#"{"type":"thread.started","thread_id":"019de30c-c108-7b02-b492-63871c756f0a"}"#;
-        let evs = parse_codex_line(line, &id);
+        let evs = parse_codex_line(line, &id, &fresh_usage_slot());
         assert_eq!(evs.len(), 1);
         match &evs[0] {
             AIEvent::SystemInit { session_id, .. } => {
@@ -1264,7 +1323,7 @@ mod tests {
     fn parse_thread_started_with_bad_id_becomes_other_event() {
         let id = fresh_session_slot();
         let line = r#"{"type":"thread.started","thread_id":"not-a-uuid"}"#;
-        let evs = parse_codex_line(line, &id);
+        let evs = parse_codex_line(line, &id, &fresh_usage_slot());
         assert_eq!(evs.len(), 1);
         assert!(matches!(evs[0], AIEvent::Other(_)));
         assert!(id.lock().unwrap().is_none(), "bad id should not be stored");
@@ -1273,7 +1332,7 @@ mod tests {
     #[test]
     fn parse_turn_started_becomes_other() {
         let id = fresh_session_slot();
-        let evs = parse_codex_line(r#"{"type":"turn.started"}"#, &id);
+        let evs = parse_codex_line(r#"{"type":"turn.started"}"#, &id, &fresh_usage_slot());
         assert_eq!(evs.len(), 1);
         assert!(matches!(evs[0], AIEvent::Other(_)));
     }
@@ -1282,7 +1341,7 @@ mod tests {
     fn parse_command_execution_started_emits_tool_use() {
         let id = fresh_session_slot();
         let line = r#"{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/usr/bin/bash -lc ls","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#;
-        let evs = parse_codex_line(line, &id);
+        let evs = parse_codex_line(line, &id, &fresh_usage_slot());
         assert_eq!(evs.len(), 1);
         match &evs[0] {
             AIEvent::ToolUse {
@@ -1303,7 +1362,7 @@ mod tests {
     fn parse_command_execution_completed_success_emits_tool_result() {
         let id = fresh_session_slot();
         let line = r#"{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"ls","aggregated_output":"a\nb\n","exit_code":0,"status":"completed"}}"#;
-        let evs = parse_codex_line(line, &id);
+        let evs = parse_codex_line(line, &id, &fresh_usage_slot());
         assert_eq!(evs.len(), 1);
         match &evs[0] {
             AIEvent::ToolResult {
@@ -1324,7 +1383,7 @@ mod tests {
     fn parse_command_execution_completed_failure_sets_is_error() {
         let id = fresh_session_slot();
         let line = r#"{"type":"item.completed","item":{"id":"item_0","type":"command_execution","aggregated_output":"boom","exit_code":1,"status":"completed"}}"#;
-        let evs = parse_codex_line(line, &id);
+        let evs = parse_codex_line(line, &id, &fresh_usage_slot());
         match &evs[0] {
             AIEvent::ToolResult { is_error, .. } => assert!(is_error),
             other => panic!("expected ToolResult, got {other:?}"),
@@ -1335,7 +1394,7 @@ mod tests {
     fn parse_agent_message_completed_emits_assistant_text() {
         let id = fresh_session_slot();
         let line = r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Done!"}}"#;
-        let evs = parse_codex_line(line, &id);
+        let evs = parse_codex_line(line, &id, &fresh_usage_slot());
         assert_eq!(evs.len(), 1);
         match &evs[0] {
             AIEvent::AssistantText { text, .. } => assert_eq!(text, "Done!"),
@@ -1348,7 +1407,7 @@ mod tests {
         let id = fresh_session_slot();
         let line =
             r#"{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":""}}"#;
-        let evs = parse_codex_line(line, &id);
+        let evs = parse_codex_line(line, &id, &fresh_usage_slot());
         assert_eq!(evs.len(), 1);
         assert!(matches!(evs[0], AIEvent::Other(_)));
     }
@@ -1357,7 +1416,7 @@ mod tests {
     fn parse_unknown_item_type_becomes_other() {
         let id = fresh_session_slot();
         let line = r#"{"type":"item.completed","item":{"id":"item_2","type":"reasoning","text":"thinking..."}}"#;
-        let evs = parse_codex_line(line, &id);
+        let evs = parse_codex_line(line, &id, &fresh_usage_slot());
         assert_eq!(evs.len(), 1);
         assert!(matches!(evs[0], AIEvent::Other(_)));
     }
@@ -1366,14 +1425,15 @@ mod tests {
     fn parse_turn_completed_emits_turn_result_with_usage() {
         let id = fresh_session_slot();
         let line = r#"{"type":"turn.completed","usage":{"input_tokens":13259,"cached_input_tokens":11648,"output_tokens":11,"reasoning_output_tokens":0}}"#;
-        let evs = parse_codex_line(line, &id);
+        let evs = parse_codex_line(line, &id, &fresh_usage_slot());
         assert_eq!(evs.len(), 1);
         match &evs[0] {
             AIEvent::TurnResult { usage, .. } => {
                 let u = usage.as_ref().expect("usage parsed");
-                assert_eq!(u.input_tokens, 13259);
+                assert_eq!(u.input_tokens, 1611);
                 assert_eq!(u.output_tokens, 11);
                 assert_eq!(u.cache_read_input_tokens, 11648);
+                assert_eq!(u.total_tokens(), 13270);
             }
             other => panic!("expected TurnResult, got {other:?}"),
         }
@@ -1383,7 +1443,7 @@ mod tests {
     fn parse_turn_completed_folds_reasoning_into_output_tokens() {
         let id = fresh_session_slot();
         let line = r#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":40,"reasoning_output_tokens":60}}"#;
-        let evs = parse_codex_line(line, &id);
+        let evs = parse_codex_line(line, &id, &fresh_usage_slot());
         match &evs[0] {
             AIEvent::TurnResult { usage, .. } => {
                 let u = usage.as_ref().expect("usage parsed");
@@ -1394,10 +1454,111 @@ mod tests {
     }
 
     #[test]
+    fn parse_turn_completed_converts_rising_cumulatives_to_deltas() {
+        let id = fresh_session_slot();
+        let prev = fresh_usage_slot();
+        let first = parse_codex_line(
+            r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":20,"reasoning_output_tokens":5}}"#,
+            &id,
+            &prev,
+        );
+        let second = parse_codex_line(
+            r#"{"type":"turn.completed","usage":{"input_tokens":1500,"cached_input_tokens":250,"output_tokens":30,"reasoning_output_tokens":10}}"#,
+            &id,
+            &prev,
+        );
+
+        let first = turn_usage(&first).expect("first usage");
+        let second = turn_usage(&second).expect("second usage");
+        assert_eq!(
+            first,
+            TurnUsage {
+                input_tokens: 900,
+                output_tokens: 25,
+                cache_read_input_tokens: 100,
+                cache_creation_input_tokens: 0,
+            }
+        );
+        assert_eq!(
+            second,
+            TurnUsage {
+                input_tokens: 350,
+                output_tokens: 15,
+                cache_read_input_tokens: 150,
+                cache_creation_input_tokens: 0,
+            }
+        );
+        assert_eq!(
+            TurnUsage {
+                input_tokens: first.input_tokens + second.input_tokens,
+                output_tokens: first.output_tokens + second.output_tokens,
+                cache_read_input_tokens: first.cache_read_input_tokens
+                    + second.cache_read_input_tokens,
+                cache_creation_input_tokens: 0,
+            },
+            TurnUsage {
+                input_tokens: 1250,
+                output_tokens: 40,
+                cache_read_input_tokens: 250,
+                cache_creation_input_tokens: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_thread_started_resets_usage_snapshot() {
+        let id = fresh_session_slot();
+        let prev = fresh_usage_slot();
+        let _ = parse_codex_line(
+            r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":10}}"#,
+            &id,
+            &prev,
+        );
+        let _ = parse_codex_line(
+            r#"{"type":"thread.started","thread_id":"019de30c-c108-7b02-b492-63871c756f0a"}"#,
+            &id,
+            &prev,
+        );
+        let after_reset = parse_codex_line(
+            r#"{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":200,"output_tokens":12}}"#,
+            &id,
+            &prev,
+        );
+
+        assert_eq!(
+            turn_usage(&after_reset),
+            Some(TurnUsage {
+                input_tokens: 1000,
+                output_tokens: 12,
+                cache_read_input_tokens: 200,
+                cache_creation_input_tokens: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_turn_completed_with_identical_cumulative_emits_no_usage() {
+        let id = fresh_session_slot();
+        let prev = fresh_usage_slot();
+        let _ = parse_codex_line(
+            r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":10}}"#,
+            &id,
+            &prev,
+        );
+        let identical = parse_codex_line(
+            r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":100,"output_tokens":10}}"#,
+            &id,
+            &prev,
+        );
+
+        assert_eq!(turn_usage(&identical), None);
+    }
+
+    #[test]
     fn parse_unknown_type_becomes_other() {
         let id = fresh_session_slot();
         let line = r#"{"type":"mystery","data":1}"#;
-        let evs = parse_codex_line(line, &id);
+        let evs = parse_codex_line(line, &id, &fresh_usage_slot());
         assert_eq!(evs.len(), 1);
         assert!(matches!(evs[0], AIEvent::Other(_)));
     }
