@@ -20,6 +20,7 @@ just ci         # fmt check + clippy + tests
 ```
 
 Mobile review checklist: see [`docs/mobile.md`](docs/mobile.md).
+Architecture decision records: see [`docs/adr/`](docs/adr/).
 
 ## Config
 
