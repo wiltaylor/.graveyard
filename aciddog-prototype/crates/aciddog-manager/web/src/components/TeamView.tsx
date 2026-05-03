@@ -248,10 +248,8 @@ export default function TeamView(props: Props): JSX.Element {
               >
                 Fleet
               </h3>
-              <div
-                class="kpi-row"
-                style={{ "grid-template-columns": "repeat(5, 1fr)" }}
-              >
+              {/* Default .kpi-row repeat(4, 1fr) wraps the 5th tile to row 2, keeping labels readable across widths. */}
+              <div class="kpi-row">
                 <Card padded={true}>
                   <Stat label="Agents" value={v().fleet.agents} />
                 </Card>
@@ -390,15 +388,7 @@ function CoreCard(props: { core: WireAiCore }): JSX.Element {
           <Badge tone="info">usage: {props.core.usage_provider}</Badge>
         </Show>
       </header>
-      <dl
-        class="form-row-2"
-        style={{
-          "margin-top": "12px",
-          "row-gap": "8px",
-          "column-gap": "16px",
-          "font-size": "13px",
-        }}
-      >
+      <dl class="core-card-dl">
         <Show when={props.core.model}>
           <div>
             <Eyebrow>Model</Eyebrow>

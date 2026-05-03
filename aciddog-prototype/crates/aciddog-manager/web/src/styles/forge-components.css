@@ -269,6 +269,58 @@
 }
 .fcard-title { font-size: 13px; font-weight: 600; }
 .fcard-body { padding: 16px; }
+.fcard-body-flush { padding: 0; }
+/* Card scrollX opt-in: lets a wide table inner-scroll horizontally without losing card chrome. */
+.fcard.is-scroll-x { overflow: visible; }
+.fcard.is-scroll-x .fcard-body { overflow-x: auto; min-width: 0; }
+
+/* CoreCard <dl>: 2-col like .form-row-2 (locked at the same 640px breakpoint per shared contract) plus child wrapping so long mono values stay inside the card. */
+.core-card-dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  font-size: 13px;
+  margin-top: 12px;
+}
+.core-card-dl > * { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .core-card-dl { grid-template-columns: 1fr; }
+}
+
+/*
+ * Shared responsive form rows. T1 defines --bp-sm = 640px in
+ * decisions/0b98c841; CSS custom properties cannot be used in @media
+ * queries, so the literal 640px is canonical here.
+ *
+ * TeamView.tsx:397 applies .form-row-2 to a <dl>, not a <form>, because its
+ * layout requirement is identical. Sibling task 1ab393af consumes these same
+ * classes; keep one definition in this file.
+ */
+.form-row-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.form-row-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 640px) {
+  .settings-row {
+    grid-template-columns: 1fr;
+  }
+
+  .form-row-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .form-row-3 {
+    grid-template-columns: 1fr;
+  }
+}
 
 /* ---------------- Stat ----------------------------------------------------- */
 .fstat { display: flex; flex-direction: column; gap: 6px; }
@@ -350,41 +402,6 @@
 .settings-section h2 { font-size: 16px; margin-bottom: 4px; }
 .settings-section .sub { color: var(--fg-2); font-size: 13px; margin-bottom: 16px; }
 .settings-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 12px; }
-
-/*
- * Shared responsive form rows. T1 defines --bp-sm = 640px in
- * decisions/0b98c841; CSS custom properties cannot be used in @media
- * queries, so the literal 640px is canonical here.
- *
- * TeamView.tsx:397 applies .form-row-2 to a <dl>, not a <form>, because its
- * layout requirement is identical. Sibling task 1ab393af consumes these same
- * classes; keep one definition in this file.
- */
-.form-row-2 {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.form-row-3 {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-@media (max-width: 640px) {
-  .settings-row {
-    grid-template-columns: 1fr;
-  }
-
-  .form-row-2 {
-    grid-template-columns: 1fr;
-  }
-
-  .form-row-3 {
-    grid-template-columns: 1fr;
-  }
-}
 
 /* ---------------- Misc ----------------------------------------------------- */
 .eyebrow {

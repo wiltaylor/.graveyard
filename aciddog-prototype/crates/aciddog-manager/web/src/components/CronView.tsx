@@ -442,7 +442,6 @@ export default function CronView(props: Props): JSX.Element {
                       <td
                         style={{
                           color: "var(--fg-2)",
-                          "max-width": "300px",
                           overflow: "hidden",
                           "text-overflow": "ellipsis",
                           "white-space": "nowrap",

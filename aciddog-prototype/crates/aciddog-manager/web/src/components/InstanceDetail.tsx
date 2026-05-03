@@ -147,6 +147,7 @@ export default function InstanceDetail(props: Props): JSX.Element {
           </Button>
         }
         padded={false}
+        scrollX
       >
         <Show
           when={props.agents}
