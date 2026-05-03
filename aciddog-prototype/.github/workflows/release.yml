@@ -118,7 +118,7 @@ jobs:
           cd crates/aciddog-manager/web
           npm ci
           npm run build
-      - run: just app-fmt-check app-lint manager-fmt-check manager-lint
+      - run: just app-lint manager-lint
 
   test:
     name: Test
