@@ -539,6 +539,7 @@ pub(super) fn spawn_automaton_core(app: &mut App, idx: usize, automaton: &Automa
             let channel_message_tx = app.channel_message_tx.clone();
             let workflow_event_tx = app.workflow_event_tx.clone();
             let cron_event_tx = app.cron_event_tx.clone();
+            let agent_status_tx = app.agent_status_tx.clone();
             tokio::spawn(crate::webservice::run_webservice_core(
                 idx,
                 automaton.clone(),
@@ -554,6 +555,7 @@ pub(super) fn spawn_automaton_core(app: &mut App, idx: usize, automaton: &Automa
                 channel_message_tx,
                 workflow_event_tx,
                 cron_event_tx,
+                agent_status_tx,
             ));
         }
         crate::config::AutomatonBackend::Remote { .. } => {
@@ -578,6 +580,7 @@ pub(super) fn spawn_automaton_core(app: &mut App, idx: usize, automaton: &Automa
 pub(super) fn add_agent_chat(app: &mut App, agent: &Agent) -> Result<usize> {
     let mut chat = make_agent_chat(&app.config, agent);
     chat.chat_block_tx = Some(app.chat_block_tx.clone());
+    chat.agent_status_tx = Some(app.agent_status_tx.clone());
     let idx = app.chats.len();
     app.chats.push(chat);
     // Log opening + header seeding happens inside `spawn_agent_core`
@@ -594,6 +597,7 @@ pub(super) fn add_agent_chat(app: &mut App, agent: &Agent) -> Result<usize> {
 pub(super) fn add_automaton_chat(app: &mut App, automaton: &Automaton) -> usize {
     let mut chat = make_automaton_chat(automaton);
     chat.chat_block_tx = Some(app.chat_block_tx.clone());
+    chat.agent_status_tx = Some(app.agent_status_tx.clone());
     let idx = app.chats.len();
     app.chats.push(chat);
     // Log opening + header seeding happens inside

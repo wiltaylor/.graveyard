@@ -19,18 +19,21 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 fn fake_state(api_key: Option<&str>) -> (WebserviceState, mpsc::Receiver<AgentSocketEvent>) {
-    fake_state_with(api_key, false).0
+    let (state_pair, _, _) = fake_state_with(api_key, false);
+    state_pair
 }
 
 /// Like `fake_state` but lets the test supply the `is_supervisor` flag
-/// and returns the `chat_block_tx` sender clone so tests can inject
-/// wire events into the scoped SSE stream.
+/// and returns the `chat_block_tx` and `agent_status_tx` sender clones
+/// so tests can inject wire events / status transitions into the scoped
+/// SSE stream.
 fn fake_state_with(
     api_key: Option<&str>,
     is_supervisor: bool,
 ) -> (
     (WebserviceState, mpsc::Receiver<AgentSocketEvent>),
     broadcast::Sender<aciddog::wire_chat::ChatBlockEvent>,
+    broadcast::Sender<aciddog::wire_chat::AgentStatusEvent>,
 ) {
     let (events_tx, events_rx) = mpsc::channel::<AgentSocketEvent>(16);
     let (broadcast_tx, _) = broadcast::channel(16);
@@ -38,6 +41,7 @@ fn fake_state_with(
     let (channel_message_tx, _) = broadcast::channel(64);
     let (workflow_event_tx, _) = broadcast::channel(64);
     let (cron_event_tx, _) = broadcast::channel(64);
+    let (agent_status_tx, _) = broadcast::channel(64);
     let state = WebserviceState {
         session_id: Uuid::new_v4(),
         events_tx,
@@ -46,10 +50,11 @@ fn fake_state_with(
         channel_message_tx,
         workflow_event_tx,
         cron_event_tx,
+        agent_status_tx: agent_status_tx.clone(),
         is_supervisor,
         api_key: api_key.map(|s| std::sync::Arc::new(s.to_string())),
     };
-    ((state, events_rx), chat_block_tx)
+    ((state, events_rx), chat_block_tx, agent_status_tx)
 }
 
 /// Spawn a tiny "orchestrator" that auto-replies `Response::ok("queued")`
@@ -160,7 +165,7 @@ async fn rpc_rejects_missing_bearer_when_api_key_required() {
 
 #[tokio::test]
 async fn chat_events_rejects_non_supervisor() {
-    let ((state, _events_rx), _chat_tx) = fake_state_with(None, false);
+    let ((state, _events_rx), _chat_tx, _status_tx) = fake_state_with(None, false);
     let router = build_router(state, vec![]);
 
     let req = Request::builder()
@@ -177,7 +182,7 @@ async fn chat_events_filters_on_agent_id() {
     use aciddog::wire_chat::{ChatBlockEvent, WireChatBlock};
     use tokio::time::{timeout, Duration};
 
-    let ((state, _events_rx), chat_tx) = fake_state_with(None, true);
+    let ((state, _events_rx), chat_tx, _status_tx) = fake_state_with(None, true);
     let router = build_router(state, vec![]);
 
     let req = Request::builder()
@@ -240,6 +245,78 @@ async fn chat_events_filters_on_agent_id() {
     assert!(
         !out.contains("\"text\":\"nope\""),
         "mismatched-agent event leaked into stream:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn chat_events_forwards_named_status_event_for_target_agent() {
+    use aciddog::wire_chat::AgentStatusEvent;
+    use tokio::time::{timeout, Duration};
+
+    let ((state, _events_rx), _chat_tx, status_tx) = fake_state_with(None, true);
+    let router = build_router(state, vec![]);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/chat/events?agent=planner")
+        .body(Body::empty())
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let mut body = resp.into_body().into_data_stream();
+    use futures::StreamExt;
+
+    // Producer: push a foreign-agent status (must be filtered out) and
+    // a target status (must arrive as a NAMED `status` SSE frame).
+    let status_tx2 = status_tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let _ = status_tx2.send(AgentStatusEvent {
+            agent: "other".into(),
+            status: "working".into(),
+        });
+        let _ = status_tx2.send(AgentStatusEvent {
+            agent: "planner".into(),
+            status: "working".into(),
+        });
+    });
+
+    let mut collected = Vec::<u8>::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        match timeout(Duration::from_millis(200), body.next()).await {
+            Ok(Some(Ok(chunk))) => {
+                collected.extend_from_slice(&chunk);
+                // Stop once we've seen both the named-event line AND
+                // the data payload for planner's working status.
+                let s = String::from_utf8_lossy(&collected);
+                if s.contains("event: status") && s.contains("\"status\":\"working\"") {
+                    break;
+                }
+            }
+            _ => continue,
+        }
+    }
+    let out = String::from_utf8_lossy(&collected);
+    assert!(
+        out.contains("event: status"),
+        "expected named `status` SSE event header in stream, got:\n{out}"
+    );
+    assert!(
+        out.contains("\"status\":\"working\""),
+        "expected planner's working payload in stream, got:\n{out}"
+    );
+    assert!(
+        out.contains("\"agent\":\"planner\""),
+        "expected planner agent id in payload, got:\n{out}"
+    );
+    // The foreign-agent status frame must NOT have leaked through —
+    // the chat_events handler filters by agent server-side.
+    let frames_with_other = out.matches("\"agent\":\"other\"").count();
+    assert_eq!(
+        frames_with_other, 0,
+        "mismatched-agent status leaked into stream:\n{out}"
     );
 }
 

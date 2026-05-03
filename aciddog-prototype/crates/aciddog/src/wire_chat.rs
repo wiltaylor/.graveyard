@@ -448,6 +448,17 @@ pub struct ChatBlockEvent {
     pub seq: u64,
 }
 
+/// Named SSE event payload for an agent's high-level lifecycle status
+/// transitions (`ready` / `working` / `error` / `hibernated` / `asleep`).
+/// `status` is intentionally `String` (not an enum) so the daemon's
+/// `App::status_label` lowercase strings drop in unchanged and a future
+/// status variant doesn't require a wire bump.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentStatusEvent {
+    pub agent: String,
+    pub status: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

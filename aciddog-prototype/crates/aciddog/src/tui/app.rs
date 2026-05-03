@@ -1926,6 +1926,15 @@ pub struct AgentChat {
     /// tests and for chats built before the broadcaster is installed —
     /// a `None` sink is a no-op, not an error.
     pub chat_block_tx: Option<broadcast::Sender<crate::wire_chat::ChatBlockEvent>>,
+    /// Broadcast sink for agent lifecycle status transitions
+    /// (`ready` / `working` / `error` / `hibernated` / `asleep`).
+    /// Populated on chats at construction time alongside
+    /// `chat_block_tx`. `set_status_and_emit` fans out an
+    /// [`crate::wire_chat::AgentStatusEvent`] tagged with this chat's
+    /// `display_name` whenever the status actually changes (idempotent
+    /// on duplicate writes). `None` in unit tests where no subscriber
+    /// is wired — emit becomes a no-op.
+    pub agent_status_tx: Option<broadcast::Sender<crate::wire_chat::AgentStatusEvent>>,
     /// Wall-clock UTC time the current chat session began. Combined
     /// with `display_name` to derive `session_hash`. Refreshed (and
     /// the JSONL file rolls) on `/compact` and `/reset`.
@@ -2009,6 +2018,7 @@ impl Default for AgentChat {
             anchor_scratch: None,
             pending_compaction: None,
             chat_block_tx: None,
+            agent_status_tx: None,
             session_started: chrono::DateTime::default(),
             session_hash: String::new(),
             chat_log: None,
@@ -2319,7 +2329,7 @@ impl AgentChat {
         if self.status != AgentStatus::Working {
             self.thinking_message_idx = Some(pseudo_random(pool_len));
         }
-        self.status = AgentStatus::Working;
+        self.set_status_and_emit(AgentStatus::Working);
     }
 
     /// Leave the `Working` state (turn ended, error, hibernation) and
@@ -2327,6 +2337,46 @@ impl AgentChat {
     /// caller writes the new status explicitly.
     pub fn end_working(&mut self) {
         self.thinking_message_idx = None;
+    }
+
+    /// Funnel for every status transition. Compares the requested
+    /// status against the current value and emits an
+    /// [`crate::wire_chat::AgentStatusEvent`] on the per-chat
+    /// `agent_status_tx` broadcaster ONLY when the value actually
+    /// changes (idempotency pin: duplicate writes never emit). Calls
+    /// [`Self::end_working`] when leaving the `Working` variant so the
+    /// TUI thinking-row clears, preserving existing behaviour.
+    ///
+    /// The wire string mirrors [`super::App::status_label`]'s
+    /// vocabulary verbatim (`ready` / `working` / `error` /
+    /// `hibernated` / `asleep`) — keep them in sync if either side
+    /// changes.
+    ///
+    /// `tx.send` failure (no subscribers) is intentionally swallowed:
+    /// a missing webservice subscriber must not be a hard error in the
+    /// status path.
+    pub fn set_status_and_emit(&mut self, new: AgentStatus) {
+        if self.status == new {
+            return;
+        }
+        let was_working = self.status == AgentStatus::Working;
+        self.status = new;
+        if was_working {
+            self.end_working();
+        }
+        let label = match new {
+            AgentStatus::Ready => "ready",
+            AgentStatus::Working => "working",
+            AgentStatus::Error => "error",
+            AgentStatus::Hibernated => "hibernated",
+            AgentStatus::Asleep => "asleep",
+        };
+        if let Some(tx) = self.agent_status_tx.as_ref() {
+            let _ = tx.send(crate::wire_chat::AgentStatusEvent {
+                agent: self.display_name.clone(),
+                status: label.to_string(),
+            });
+        }
     }
 }
 
@@ -2852,6 +2902,15 @@ pub struct App {
     /// each fire. The supervisor-scoped `/v1/cron/events` handler
     /// subscribes here.
     pub cron_event_tx: broadcast::Sender<crate::cron::CronEvent>,
+    /// Broadcast sender for per-agent lifecycle status transitions.
+    /// Cloned into every [`AgentChat`] so [`AgentChat::set_status_and_emit`]
+    /// fans out an [`crate::wire_chat::AgentStatusEvent`] on every
+    /// real change (idempotent on duplicates). The supervisor-scoped
+    /// `/v1/chat/events?agent=<id>` SSE handler filters this stream
+    /// and forwards matching events as a NAMED `status` SSE event so
+    /// the web ChatPane can show the animated `thinking` indicator
+    /// with TUI parity.
+    pub agent_status_tx: broadcast::Sender<crate::wire_chat::AgentStatusEvent>,
 }
 
 /// Time window for detecting a double-click. Matches the typical
@@ -3018,8 +3077,15 @@ impl App {
         // NOTE: `_keepalive_rx` is dropped immediately — that's fine.
         // `Sender::subscribe()` creates fresh receivers on demand from
         // the SSE handler; the sender stays alive as long as `App` does.
+        // Parallel broadcaster for agent lifecycle status transitions.
+        // Sized at the same capacity as the chat-block broadcaster —
+        // status events are far less chatty than block events but
+        // keeping the constants aligned avoids cognitive load.
+        let (agent_status_tx, _status_keepalive_rx) =
+            broadcast::channel::<crate::wire_chat::AgentStatusEvent>(CHAT_BLOCK_BROADCAST_CAPACITY);
         for chat in &mut chats {
             chat.chat_block_tx = Some(chat_block_tx.clone());
+            chat.agent_status_tx = Some(agent_status_tx.clone());
         }
         // Parallel broadcaster for channel messages — fed from
         // `broadcast_to_channel` so the supervisor SSE stream can
@@ -3050,6 +3116,7 @@ impl App {
             channel_message_tx,
             workflow_event_tx,
             cron_event_tx,
+            agent_status_tx,
             layout: LayoutRects::default(),
             copied_at: None,
             agent_ids: HashMap::new(),
@@ -3545,8 +3612,7 @@ impl App {
                     chat.push_block(ChatBlock::system_error(
                         "agent offline, message dropped".to_string(),
                     ));
-                    chat.status = AgentStatus::Error;
-                    chat.end_working();
+                    chat.set_status_and_emit(AgentStatus::Error);
                 }
             }
         }
@@ -3660,8 +3726,7 @@ impl App {
                     refresh_agent_info_usage(chat);
                 }
                 if chat.status == AgentStatus::Working {
-                    chat.status = AgentStatus::Ready;
-                    chat.end_working();
+                    chat.set_status_and_emit(AgentStatus::Ready);
                 }
                 // `promptAndDrop` and `summarise` may have queued a
                 // teardown to run once the current turn completes.
@@ -3673,18 +3738,17 @@ impl App {
             }
             AIEvent::Error { message, .. } => {
                 chat.push_block(ChatBlock::system_error(message));
-                chat.status = AgentStatus::Error;
-                chat.end_working();
+                chat.set_status_and_emit(AgentStatus::Error);
             }
             AIEvent::Stopped => {
                 chat.push_block(ChatBlock::system_info("[stopped]"));
                 if chat.status == AgentStatus::Working {
-                    chat.status = if chat.asleep {
+                    let next = if chat.asleep {
                         AgentStatus::Asleep
                     } else {
                         AgentStatus::Ready
                     };
-                    chat.end_working();
+                    chat.set_status_and_emit(next);
                 }
             }
             AIEvent::RateLimit {
@@ -4685,6 +4749,7 @@ impl App {
             context_usage_mode,
             kind: ChatKind::Worker,
             chat_block_tx: Some(self.chat_block_tx.clone()),
+            agent_status_tx: Some(self.agent_status_tx.clone()),
             session_started,
             session_hash,
             ..Default::default()
@@ -4809,12 +4874,11 @@ impl App {
             chat.user_tx = None;
             chat.agent_tx = None;
             chat.cancel_tx = None;
-            chat.status = AgentStatus::Hibernated;
+            chat.set_status_and_emit(AgentStatus::Hibernated);
             chat.hibernated = true;
             if is_remote {
                 chat.remote_terminal = true;
             }
-            chat.end_working();
         }
 
         // A hibernated worker is hidden from the agent list. If the
@@ -5109,7 +5173,7 @@ impl App {
             chat.user_tx = None;
             chat.agent_tx = None;
             chat.cancel_tx = None;
-            chat.status = AgentStatus::Hibernated;
+            chat.set_status_and_emit(AgentStatus::Hibernated);
             chat.hibernated = true;
             chat.archived = true;
             chat.remote_terminal = true;
@@ -5119,7 +5183,6 @@ impl App {
                 collapsed: true,
                 pending: false,
             });
-            chat.end_working();
         }
         if let Some(old_session) = old_session {
             self.agent_ids.remove(&old_session);
@@ -9076,7 +9139,7 @@ impl App {
             if !chat.asleep && chat.status != AgentStatus::Working {
                 chat.asleep = true;
                 if chat.status != AgentStatus::Hibernated {
-                    chat.status = AgentStatus::Asleep;
+                    chat.set_status_and_emit(AgentStatus::Asleep);
                 }
             }
         }
@@ -9110,7 +9173,7 @@ impl App {
             if !chat.asleep && chat.status != AgentStatus::Working {
                 chat.asleep = true;
                 if chat.status != AgentStatus::Hibernated {
-                    chat.status = AgentStatus::Asleep;
+                    chat.set_status_and_emit(AgentStatus::Asleep);
                 }
             }
         }
@@ -9591,7 +9654,7 @@ impl App {
             if !chat.asleep {
                 chat.asleep = true;
                 if chat.status != AgentStatus::Hibernated {
-                    chat.status = AgentStatus::Asleep;
+                    chat.set_status_and_emit(AgentStatus::Asleep);
                 }
             }
         }
@@ -9616,7 +9679,7 @@ impl App {
             if chat.asleep {
                 chat.asleep = false;
                 if chat.status == AgentStatus::Asleep {
-                    chat.status = AgentStatus::Ready;
+                    chat.set_status_and_emit(AgentStatus::Ready);
                 }
                 chat.push_block(ChatBlock::system_info("woken by supervisor"));
             }
@@ -10061,7 +10124,7 @@ impl App {
                         // stays Hibernated visually; the asleep flag
                         // itself prevents auto-resurrection.
                         if chat.status != AgentStatus::Hibernated {
-                            chat.status = AgentStatus::Asleep;
+                            chat.set_status_and_emit(AgentStatus::Asleep);
                         }
                         chat.push_block(ChatBlock::system_info(
                             "agent is now asleep — type /awake to resume",
@@ -10076,7 +10139,7 @@ impl App {
                     if chat.asleep {
                         chat.asleep = false;
                         if chat.status == AgentStatus::Asleep {
-                            chat.status = AgentStatus::Ready;
+                            chat.set_status_and_emit(AgentStatus::Ready);
                         }
                         chat.push_block(ChatBlock::system_info("agent awake"));
                     } else {
@@ -26242,5 +26305,108 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         let resp = admin_send(&mut app, sender, RequestCmd::ServerExit);
         assert!(resp.ok, "err={:?}", resp.error);
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn set_status_and_emit_emits_only_on_actual_change() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<crate::wire_chat::AgentStatusEvent>(8);
+        let mut chat = AgentChat {
+            display_name: "agent-1".into(),
+            agent_status_tx: Some(tx.clone()),
+            status: AgentStatus::Ready,
+            ..Default::default()
+        };
+
+        // Ready -> Ready: idempotent, no emit.
+        chat.set_status_and_emit(AgentStatus::Ready);
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        // Ready -> Working: emit.
+        chat.set_status_and_emit(AgentStatus::Working);
+        let first = rx.try_recv().expect("expected working event");
+        assert_eq!(first.agent, "agent-1");
+        assert_eq!(first.status, "working");
+
+        // Working -> Working: duplicate write, idempotent — no emit.
+        chat.set_status_and_emit(AgentStatus::Working);
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        // Working -> Ready: emit AND end_working() should clear the
+        // thinking message idx (preserves existing TUI behaviour).
+        chat.thinking_message_idx = Some(3);
+        chat.set_status_and_emit(AgentStatus::Ready);
+        let second = rx.try_recv().expect("expected ready event");
+        assert_eq!(second.status, "ready");
+        assert_eq!(
+            chat.thinking_message_idx, None,
+            "leaving Working must clear thinking_message_idx"
+        );
+
+        // Drain — assert exactly two events were observed across the
+        // four calls (idempotent on duplicates).
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn set_status_and_emit_maps_each_variant_to_status_label_vocabulary() {
+        // Pin the wire vocabulary against `App::status_label`. If
+        // either side changes the lowercase strings, this test breaks
+        // before the web UI silently desyncs.
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<crate::wire_chat::AgentStatusEvent>(8);
+        let cases = [
+            (AgentStatus::Ready, "ready"),
+            (AgentStatus::Working, "working"),
+            (AgentStatus::Error, "error"),
+            (AgentStatus::Hibernated, "hibernated"),
+            (AgentStatus::Asleep, "asleep"),
+        ];
+        // Walk through the variants, alternating off Ready in between
+        // so each transition actually fires (the helper is idempotent
+        // on equal writes).
+        let mut chat = AgentChat {
+            display_name: "agent-x".into(),
+            agent_status_tx: Some(tx.clone()),
+            status: AgentStatus::Ready,
+            ..Default::default()
+        };
+        for (variant, expected) in cases {
+            // Push to Working first as a no-op separator (skipped on
+            // the first iteration where status==Ready and variant==Ready).
+            if chat.status == variant {
+                continue;
+            }
+            chat.set_status_and_emit(variant);
+            let ev = rx.try_recv().expect("expected event for variant");
+            assert_eq!(ev.status, expected, "variant {:?} mismatch", variant);
+        }
+    }
+
+    #[test]
+    fn set_status_and_emit_no_subscribers_is_silent_noop() {
+        // The helper must not panic if the broadcast has zero
+        // receivers. The existing chat_block_tx pattern has the same
+        // contract — best-effort fan-out, never error.
+        let (tx, _) = tokio::sync::broadcast::channel::<crate::wire_chat::AgentStatusEvent>(4);
+        let mut chat = AgentChat {
+            display_name: "lonely".into(),
+            agent_status_tx: Some(tx.clone()),
+            status: AgentStatus::Ready,
+            ..Default::default()
+        };
+        // Drop every receiver before the change so `tx.send` returns
+        // SendError(no_receivers) — the helper must swallow it.
+        drop(tx);
+        chat.set_status_and_emit(AgentStatus::Working);
+        // Status still flipped despite the swallowed send error.
+        assert_eq!(chat.status, AgentStatus::Working);
     }
 }

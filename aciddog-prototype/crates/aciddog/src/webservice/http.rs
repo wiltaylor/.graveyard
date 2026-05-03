@@ -310,6 +310,11 @@ fn ready_event() -> Event {
 /// shared `App::chat_block_tx` broadcaster down to events whose
 /// `agent` field matches the query string — so the manager portal
 /// only sees the chat it's currently viewing.
+///
+/// `AgentStatusEvent`s for the same agent are merged onto the same
+/// stream as a NAMED `status` SSE event so the web ChatPane can drive
+/// an animated `thinking` indicator with TUI parity. Block events keep
+/// their default-named shape (no event name) for backwards compatibility.
 async fn chat_events(
     State(state): State<WebserviceState>,
     Query(q): Query<ChatEventsQuery>,
@@ -324,25 +329,55 @@ async fn chat_events(
             .into_response();
     }
     let wanted = q.agent;
-    let rx = state.chat_block_tx.subscribe();
-    let events = BroadcastStream::new(rx).filter_map(move |msg| {
+    let block_rx = state.chat_block_tx.subscribe();
+    let status_rx = state.agent_status_tx.subscribe();
+    let block_events = {
         let wanted = wanted.clone();
-        async move {
-            match msg {
-                Ok(ev) if ev.agent == wanted => Event::default().json_data(&ev).ok().map(Ok),
-                Ok(_) => None,
-                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
-                    let payload = serde_json::json!({ "kind": "lagged", "dropped": n });
-                    Event::default()
-                        .event("lagged")
-                        .json_data(payload)
-                        .ok()
-                        .map(Ok::<_, Infallible>)
+        BroadcastStream::new(block_rx).filter_map(move |msg| {
+            let wanted = wanted.clone();
+            async move {
+                match msg {
+                    Ok(ev) if ev.agent == wanted => Event::default().json_data(&ev).ok().map(Ok),
+                    Ok(_) => None,
+                    Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                        let payload = serde_json::json!({ "kind": "lagged", "dropped": n });
+                        Event::default()
+                            .event("lagged")
+                            .json_data(payload)
+                            .ok()
+                            .map(Ok::<_, Infallible>)
+                    }
                 }
             }
-        }
-    });
-    let stream = futures::stream::once(async { Ok::<_, Infallible>(ready_event()) }).chain(events);
+        })
+    };
+    let status_events = {
+        let wanted = wanted.clone();
+        BroadcastStream::new(status_rx).filter_map(move |msg| {
+            let wanted = wanted.clone();
+            async move {
+                match msg {
+                    Ok(ev) if ev.agent == wanted => Event::default()
+                        .event("status")
+                        .json_data(&ev)
+                        .ok()
+                        .map(Ok::<_, Infallible>),
+                    Ok(_) => None,
+                    Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                        let payload =
+                            serde_json::json!({ "kind": "lagged", "dropped": n, "stream": "status" });
+                        Event::default()
+                            .event("lagged")
+                            .json_data(payload)
+                            .ok()
+                            .map(Ok::<_, Infallible>)
+                    }
+                }
+            }
+        })
+    };
+    let merged = futures::stream::select(block_events, status_events);
+    let stream = futures::stream::once(async { Ok::<_, Infallible>(ready_event()) }).chain(merged);
     Sse::new(stream)
         .keep_alive(
             KeepAlive::new()

@@ -84,6 +84,13 @@ pub struct WebserviceState {
     /// subscribes here. Populated from `App::handle_cron_*` mutation
     /// handlers and from `tick_cron` on each fire.
     pub cron_event_tx: broadcast::Sender<crate::cron::CronEvent>,
+    /// Per-`App` fan-out of agent lifecycle status transitions
+    /// (`ready` / `working` / `error` / `hibernated` / `asleep`).
+    /// Forwarded by the `/v1/chat/events?agent=<id>` handler as a
+    /// NAMED `status` SSE event (filtered to events whose `agent`
+    /// matches the query string), so the web ChatPane can drive a
+    /// `thinking` indicator with TUI parity.
+    pub agent_status_tx: broadcast::Sender<crate::wire_chat::AgentStatusEvent>,
     /// Whether the automaton backing this webservice is flagged
     /// `supervisor = true`. Gates the `/v1/chat/events` handler —
     /// non-supervisor webservices have no business snooping on other
@@ -114,6 +121,7 @@ pub async fn run_webservice_core(
     channel_message_tx: broadcast::Sender<crate::wire_channel::ChannelMessageEvent>,
     workflow_event_tx: broadcast::Sender<crate::wire_workflow::WireWorkflowEvent>,
     cron_event_tx: broadcast::Sender<crate::cron::CronEvent>,
+    agent_status_tx: broadcast::Sender<crate::wire_chat::AgentStatusEvent>,
 ) {
     let is_supervisor = automaton.supervisor;
     let (bind, api_key_env) = match automaton.backend {
@@ -156,6 +164,7 @@ pub async fn run_webservice_core(
         channel_message_tx,
         workflow_event_tx,
         cron_event_tx,
+        agent_status_tx,
         is_supervisor,
         api_key,
     };

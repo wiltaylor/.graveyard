@@ -200,6 +200,17 @@ export interface ChatBlockEvent {
   seq: number;
 }
 
+/// Named SSE event payload (`event: status`) emitted alongside
+/// `ChatBlockEvent`s on the `/api/instances/<id>/agents/<agent>/events`
+/// stream. Mirrors `crate::wire_chat::AgentStatusEvent` on the daemon.
+/// `status` is a free-form string so future variants don't bump the
+/// wire — current daemon vocabulary is `ready` / `working` / `error` /
+/// `hibernated` / `asleep` (matches `AgentRow.status`).
+export interface AgentStatusEvent {
+  agent: string;
+  status: string;
+}
+
 export interface ChatHistoryResponse {
   ok: boolean;
   blocks: WireChatBlock[];

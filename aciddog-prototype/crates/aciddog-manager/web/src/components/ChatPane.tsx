@@ -10,7 +10,7 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 
 import { api, chatEventsUrl } from "../api";
-import type { WireChatBlock, ChatBlockEvent } from "../types";
+import type { AgentStatusEvent, WireChatBlock, ChatBlockEvent } from "../types";
 import {
   Badge,
   Button,
@@ -24,6 +24,7 @@ import {
   type IconName,
   type TerminalLine,
 } from "./ui";
+import Spinner from "./ui/Spinner";
 
 interface Props {
   instanceId: string;
@@ -45,6 +46,11 @@ export default function ChatPane(props: Props): JSX.Element {
   const [input, setInput] = createSignal("");
   const [sending, setSending] = createSignal(false);
   const [sendError, setSendError] = createSignal<string | null>(null);
+  // True while the daemon reports this agent as `working` — drives the
+  // animated `thinking…` indicator pinned above the composer. Toggled
+  // off on every effect re-init so a stale `working` from a prior
+  // pane (instance/agent change) cannot leak forward visually.
+  const [isWorking, setIsWorking] = createSignal(false);
 
   const loadHistory = async () => {
     setHistoryError(null);
@@ -68,6 +74,10 @@ export default function ChatPane(props: Props): JSX.Element {
   createEffect(() => {
     const instId = props.instanceId;
     const agentId = props.agent;
+    // Reset BEFORE the new EventSource subscribes so a stale
+    // `working` from the previously-viewed pane can't leak across
+    // the boundary if the new daemon never sends a `status` event.
+    setIsWorking(false);
     setBlocks([]);
     setDroppedCount(0);
     setStreamStatus("connecting");
@@ -97,6 +107,18 @@ export default function ChatPane(props: Props): JSX.Element {
         // Malformed event — ignore rather than tearing down the stream.
       }
     };
+    es.addEventListener("status", (ev) => {
+      try {
+        const parsed = JSON.parse((ev as MessageEvent).data) as AgentStatusEvent;
+        // Defensive: the daemon already filters by agent server-side,
+        // but the upstream broadcaster fans out to every subscriber so
+        // mid-stream agent re-targets are possible. Drop foreign rows.
+        if (parsed.agent !== agentId) return;
+        setIsWorking(parsed.status === "working");
+      } catch {
+        // Malformed event — ignore (mirror onmessage's defensive shape).
+      }
+    });
     es.addEventListener("lagged", (ev) => {
       setStreamStatus("lagged");
       try {
@@ -202,14 +224,26 @@ export default function ChatPane(props: Props): JSX.Element {
             historyError() ? "history unavailable." : "(no messages yet)"
           }
           footer={
-            <ChatComposer
-              value={input()}
-              onInput={setInput}
-              onSubmit={submit}
-              sending={sending()}
-              error={sendError()}
-              placeholder="Send a message as the human operator. Enter to send, Shift+Enter for newline."
-            />
+            <>
+              <Show when={isWorking()}>
+                <div
+                  role="status"
+                  aria-live="polite"
+                  class="flex items-center gap-2 px-3 py-1 text-fg-3 italic"
+                >
+                  <Spinner size={14} />
+                  <span>thinking…</span>
+                </div>
+              </Show>
+              <ChatComposer
+                value={input()}
+                onInput={setInput}
+                onSubmit={submit}
+                sending={sending()}
+                error={sendError()}
+                placeholder="Send a message as the human operator. Enter to send, Shift+Enter for newline."
+              />
+            </>
           }
         />
       </div>
