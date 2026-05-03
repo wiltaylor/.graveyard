@@ -947,7 +947,7 @@ function TaskDetailModal(props: {
               class="mt-1 w-full rounded border border-border bg-bg-0 px-2 py-1"
             />
           </label>
-          <div class="grid grid-cols-2 gap-2">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <label class="block">
               <span class="text-xs text-fg-2">Status</span>
               <select

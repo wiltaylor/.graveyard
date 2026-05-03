@@ -154,7 +154,7 @@ export default function UsersView(props: Props): JSX.Element {
 
       <Card title="Add user">
         <form onSubmit={addUser} style={{ display: "flex", "flex-direction": "column", gap: "12px" }}>
-          <div style={{ display: "grid", "grid-template-columns": "1fr 1fr", gap: "12px" }}>
+          <div class="form-row-2">
             <Input
               label="Username"
               required
@@ -313,7 +313,7 @@ export default function UsersView(props: Props): JSX.Element {
             onInput={(e) => setCurrentPw(e.currentTarget.value)}
             autocomplete="current-password"
           />
-          <div style={{ display: "grid", "grid-template-columns": "1fr 1fr", gap: "12px" }}>
+          <div class="form-row-2">
             <Input
               label="New password"
               required
@@ -347,4 +347,3 @@ export default function UsersView(props: Props): JSX.Element {
     </div>
   );
 }
-

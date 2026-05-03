@@ -586,9 +586,7 @@ function CronFormModal(props: FormProps): JSX.Element {
           mono
         />
 
-        <div
-          style={{ display: "grid", "grid-template-columns": "1fr 1fr", gap: "12px" }}
-        >
+        <div class="form-row-2">
           <Select
             label="Schedule kind"
             value={props.form.scheduleKind}

@@ -857,13 +857,7 @@ function TeamSection(props: SectionProps): JSX.Element {
     <SectionLayout
       scrolling={
         <Card padded={true}>
-          <div
-            style={{
-              display: "grid",
-              "grid-template-columns": "repeat(2, minmax(0, 1fr))",
-              gap: "12px",
-            }}
-          >
+          <div class="form-row-2">
             <Input
               label="Team id"
               value={team().id}
@@ -1021,13 +1015,7 @@ function AiCoreForm(props: {
   const c = () => props.core;
   return (
     <Card title={`ai_core ${c().id}`}>
-      <div
-        style={{
-          display: "grid",
-          "grid-template-columns": "repeat(2, minmax(0, 1fr))",
-          gap: "12px",
-        }}
-      >
+      <div class="form-row-2">
         <Input
           label="ID"
           value={c().id}
@@ -1283,13 +1271,7 @@ function AgentForm(props: {
   };
   return (
     <Card title={`agent ${a().id}`}>
-      <div
-        style={{
-          display: "grid",
-          "grid-template-columns": "repeat(2, minmax(0, 1fr))",
-          gap: "12px",
-        }}
-      >
+      <div class="form-row-2">
         <Input
           label="ID"
           value={a().id}
@@ -1572,13 +1554,7 @@ function WorkerForm(props: {
   };
   return (
     <Card title={`worker ${w().id}`}>
-      <div
-        style={{
-          display: "grid",
-          "grid-template-columns": "repeat(2, minmax(0, 1fr))",
-          gap: "12px",
-        }}
-      >
+      <div class="form-row-2">
         <Input
           label="ID"
           value={w().id}
@@ -1799,13 +1775,7 @@ function AutomatonForm(props: {
   const a = () => props.auto;
   return (
     <Card title={`automaton ${a().id}`}>
-      <div
-        style={{
-          display: "grid",
-          "grid-template-columns": "repeat(2, minmax(0, 1fr))",
-          gap: "12px",
-        }}
-      >
+      <div class="form-row-2">
         <Input
           label="ID"
           value={a().id}
@@ -2015,13 +1985,7 @@ function ChannelsSection(props: SectionProps): JSX.Element {
             const v = c();
             return (
               <Card title={`channel ${v.id}`}>
-                <div
-                  style={{
-                    display: "grid",
-                    "grid-template-columns": "repeat(2, minmax(0, 1fr))",
-                    gap: "12px",
-                  }}
-                >
+                <div class="form-row-2">
                   <Input
                     label="ID"
                     value={v.id}
@@ -2118,13 +2082,7 @@ function MemoryBanksSection(props: SectionProps): JSX.Element {
             const v = m();
             return (
               <Card title={`memory_bank ${v.id}`}>
-                <div
-                  style={{
-                    display: "grid",
-                    "grid-template-columns": "repeat(2, minmax(0, 1fr))",
-                    gap: "12px",
-                  }}
-                >
+                <div class="form-row-2">
                   <Input
                     label="ID"
                     value={v.id}
@@ -2228,13 +2186,7 @@ function CompactionsSection(props: SectionProps): JSX.Element {
             };
             return (
               <Card title={`compaction ${v.id}`}>
-                <div
-                  style={{
-                    display: "grid",
-                    "grid-template-columns": "repeat(2, minmax(0, 1fr))",
-                    gap: "12px",
-                  }}
-                >
+                <div class="form-row-2">
                   <Input
                     label="ID"
                     value={v.id}
@@ -2349,13 +2301,7 @@ function WebhooksSection(props: SectionProps): JSX.Element {
             };
             return (
               <Card title={`webhook ${v.id}`}>
-                <div
-                  style={{
-                    display: "grid",
-                    "grid-template-columns": "repeat(2, minmax(0, 1fr))",
-                    gap: "12px",
-                  }}
-                >
+                <div class="form-row-2">
                   <Input
                     label="ID"
                     value={v.id}
@@ -2521,13 +2467,7 @@ function WorkflowForm(props: {
   };
   return (
     <Card title={`workflow ${w().id}`}>
-      <div
-        style={{
-          display: "grid",
-          "grid-template-columns": "repeat(2, minmax(0, 1fr))",
-          gap: "12px",
-        }}
-      >
+      <div class="form-row-2">
         <Input
           label="ID"
           value={w().id}
@@ -2679,13 +2619,7 @@ function PropertiesEditor(props: {
             onDown={() => props.onMove(i(), 1)}
             onRemove={() => props.onRemove(i())}
           >
-            <div
-              style={{
-                display: "grid",
-                "grid-template-columns": "repeat(3, minmax(0, 1fr))",
-                gap: "8px",
-              }}
-            >
+            <div class="form-row-3">
               <Input
                 label="ID"
                 value={p.id}
@@ -2818,13 +2752,7 @@ function StepsEditor(props: {
             onDown={() => props.onMove(i(), 1)}
             onRemove={() => props.onRemove(i())}
           >
-            <div
-              style={{
-                display: "grid",
-                "grid-template-columns": "repeat(2, minmax(0, 1fr))",
-                gap: "8px",
-              }}
-            >
+            <div class="form-row-2">
               <Input
                 label="ID"
                 value={s.id}

@@ -391,10 +391,9 @@ function CoreCard(props: { core: WireAiCore }): JSX.Element {
         </Show>
       </header>
       <dl
+        class="form-row-2"
         style={{
           "margin-top": "12px",
-          display: "grid",
-          "grid-template-columns": "repeat(2, minmax(0, 1fr))",
           "row-gap": "8px",
           "column-gap": "16px",
           "font-size": "13px",
