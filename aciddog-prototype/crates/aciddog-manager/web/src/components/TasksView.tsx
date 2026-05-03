@@ -11,7 +11,7 @@ import {
 
 import { api } from "../api";
 import type { AgentRow, Task, TaskStatus, TodoStatus } from "../types";
-import { Badge, Button, Toast } from "./ui";
+import { Badge, Button, Icon, Menu, Toast } from "./ui";
 
 interface Props {
   instanceId: string;
@@ -167,6 +167,8 @@ export default function TasksView(props: Props): JSX.Element {
     }
     return out;
   });
+  const [statusFilter, setStatusFilter] =
+    createSignal<TaskStatus | "all">("all");
 
   const openTask = createMemo<Task | null>(() => {
     const id = openTaskId();
@@ -198,13 +200,26 @@ export default function TasksView(props: Props): JSX.Element {
 
   return (
     <div class="h-full flex flex-col">
-      <header class="flex items-center justify-between px-6 py-3 border-b border-border-subtle bg-bg-1">
+      <header class="flex items-center justify-between gap-3 px-6 py-3 border-b border-border-subtle bg-bg-1">
         <div class="flex items-center gap-3">
           <h2 class="text-base font-semibold text-fg-0">Tasks</h2>
           <Show when={loading()}>
             <Badge tone="neutral" dot>loading</Badge>
           </Show>
         </div>
+        {/* TODO(T4): replace native <select> with overflow pill row when icon tab strip primitive lands. */}
+        <select
+          value={statusFilter()}
+          onInput={(e) =>
+            setStatusFilter(e.currentTarget.value as TaskStatus | "all")
+          }
+          class="md:hidden rounded border border-border bg-bg-0 px-2 py-1 text-sm min-w-[10rem]"
+        >
+          <option value="all">All statuses</option>
+          <For each={STATUS_ORDER}>
+            {(s) => <option value={s}>{STATUS_LABEL[s]}</option>}
+          </For>
+        </select>
         <div class="flex items-center gap-2">
           <Button size="sm" variant="ghost" icon="refresh" onClick={loadTasks}>
             Refresh
@@ -226,20 +241,33 @@ export default function TasksView(props: Props): JSX.Element {
         </div>
       </Show>
 
-      <div class="flex-1 overflow-x-auto overflow-y-hidden px-4 py-3">
-        <div class="grid grid-cols-8 gap-3 h-full min-w-[98rem]">
-          <For each={STATUS_ORDER}>
-            {(status) => (
-              <KanbanColumn
-                status={status}
-                tasks={tasksByStatus()[status]}
-                agents={props.agents}
-                onDrop={(taskId) => moveTask(taskId, status)}
-                onCardClick={(taskId) => setOpenTaskId(taskId)}
-              />
-            )}
-          </For>
+      <div class="hidden md:flex flex-1 flex-col">
+        <div class="flex-1 overflow-x-auto overflow-y-hidden px-4 py-3">
+          <div class="grid grid-cols-8 gap-3 h-full min-w-[98rem]">
+            <For each={STATUS_ORDER}>
+              {(status) => (
+                <KanbanColumn
+                  status={status}
+                  tasks={tasksByStatus()[status]}
+                  agents={props.agents}
+                  onDrop={(taskId) => moveTask(taskId, status)}
+                  onCardClick={(taskId) => setOpenTaskId(taskId)}
+                />
+              )}
+            </For>
+          </div>
         </div>
+      </div>
+
+      <div class="md:hidden flex-1 overflow-y-auto">
+        <MobileTaskList
+          tasksByStatus={tasksByStatus()}
+          agents={props.agents}
+          statusFilter={statusFilter()}
+          onShowAll={() => setStatusFilter("all")}
+          onCardClick={(id) => setOpenTaskId(id)}
+          onMove={moveTask}
+        />
       </div>
 
       <Show when={openTask()}>
@@ -362,6 +390,220 @@ function TaskCard(props: {
           → on approve: {decorateAssignee(props.task.planned_assignee, props.agents)}
         </div>
       </Show>
+    </article>
+  );
+}
+
+function initialOpenState(
+  tasksByStatus: Record<TaskStatus, Task[]>,
+): Record<TaskStatus, boolean> {
+  const out = {} as Record<TaskStatus, boolean>;
+  for (const status of STATUS_ORDER) {
+    out[status] =
+      tasksByStatus[status].length >= 1 &&
+      status !== "done" &&
+      status !== "cancelled";
+  }
+  return out;
+}
+
+// TODO(T8): mobile Tasks list smoke test.
+function MobileTaskList(props: {
+  tasksByStatus: Record<TaskStatus, Task[]>;
+  agents: AgentRow[];
+  statusFilter: TaskStatus | "all";
+  onShowAll: () => void;
+  onCardClick: (id: string) => void;
+  onMove: (id: string, s: TaskStatus) => void;
+}): JSX.Element {
+  const [openSections, setOpenSections] = createSignal<
+    Record<TaskStatus, boolean>
+  >(initialOpenState(props.tasksByStatus));
+  let taskCounts = Object.fromEntries(
+    STATUS_ORDER.map((status) => [
+      status,
+      props.tasksByStatus[status].length,
+    ]),
+  ) as Record<TaskStatus, number>;
+
+  createEffect(() => {
+    const nextCounts = Object.fromEntries(
+      STATUS_ORDER.map((status) => [
+        status,
+        props.tasksByStatus[status].length,
+      ]),
+    ) as Record<TaskStatus, number>;
+    const prevCounts = taskCounts;
+
+    setOpenSections((prev) => {
+      const next = { ...prev };
+      for (const status of STATUS_ORDER) {
+        if (
+          prevCounts[status] === 0 &&
+          nextCounts[status] > 0 &&
+          status !== "done" &&
+          status !== "cancelled"
+        ) {
+          next[status] = true;
+        }
+      }
+      return next;
+    });
+    taskCounts = nextCounts;
+  });
+
+  const visibleStatuses = createMemo(() =>
+    props.statusFilter === "all" ? STATUS_ORDER : [props.statusFilter],
+  );
+
+  const isOpen = (status: TaskStatus) =>
+    props.statusFilter !== "all" || openSections()[status];
+
+  const toggleSection = (status: TaskStatus) => {
+    if (props.statusFilter !== "all") return;
+    setOpenSections((prev) => ({ ...prev, [status]: !prev[status] }));
+  };
+
+  return (
+    <div class="px-3 py-3">
+      <Show when={props.statusFilter !== "all"}>
+        <div class="px-3 py-1 text-xs text-fg-3">
+          Filtered to {STATUS_LABEL[props.statusFilter as TaskStatus]}.{" "}
+          <button
+            type="button"
+            onClick={props.onShowAll}
+            class="underline hover:text-fg-1"
+          >
+            Show all
+          </button>
+        </div>
+      </Show>
+      <For each={visibleStatuses()}>
+        {(status) => {
+          const sectionId = `tasks-mobile-section-${status}`;
+          const tasks = () => props.tasksByStatus[status];
+          const sectionOpen = () => isOpen(status);
+
+          return (
+            <section class={`rounded border ${STATUS_ACCENT[status]} mb-2`}>
+              <button
+                type="button"
+                class="min-h-[44px] w-full px-3 gap-2 text-left flex items-center"
+                aria-expanded={sectionOpen()}
+                aria-controls={sectionId}
+                onClick={() => toggleSection(status)}
+              >
+                <Icon
+                  name="chevron-right"
+                  size={16}
+                  class={sectionOpen() ? "transform rotate-90" : ""}
+                />
+                <span class="text-xs uppercase tracking-wider">
+                  {STATUS_LABEL[status]}
+                </span>
+                <span class="ml-auto text-xs opacity-70">
+                  {tasks().length}
+                </span>
+              </button>
+              <Show when={sectionOpen()}>
+                <div id={sectionId}>
+                  <Show when={tasks().length === 0}>
+                    <div class="px-3 py-2 text-xs text-fg-3 italic">
+                      No tasks.
+                    </div>
+                  </Show>
+                  <For each={tasks()}>
+                    {(task) => (
+                      <MobileTaskCard
+                        task={task}
+                        agents={props.agents}
+                        onCardClick={props.onCardClick}
+                        onMove={props.onMove}
+                      />
+                    )}
+                  </For>
+                </div>
+              </Show>
+            </section>
+          );
+        }}
+      </For>
+    </div>
+  );
+}
+
+function MobileTaskCard(props: {
+  task: Task;
+  agents: AgentRow[];
+  onCardClick: (id: string) => void;
+  onMove: (id: string, s: TaskStatus) => void;
+}): JSX.Element {
+  return (
+    <article class="flex gap-2 px-3 py-2 border-t border-border-subtle">
+      <button
+        type="button"
+        onClick={() => props.onCardClick(props.task.id)}
+        class="min-h-[44px] flex-1 text-left text-sm"
+      >
+        <div class="font-medium line-clamp-2">{props.task.title}</div>
+        <div class="mt-1 flex items-center justify-between text-xs text-fg-2">
+          <span>{decorateAssignee(props.task.assignee, props.agents)}</span>
+          <span>
+            <Show when={props.task.todos.length > 0}>
+              <span>
+                {
+                  props.task.todos.filter((t) => t.status === "completed")
+                    .length
+                }
+                /{props.task.todos.length} todos
+              </span>
+            </Show>
+            <Show when={props.task.blocked_by.length > 0}>
+              <span class="ml-2 text-warning-fg">
+                {props.task.blocked_by.length} blocking
+              </span>
+            </Show>
+          </span>
+        </div>
+        <Show
+          when={props.task.status === "planning" && props.task.planned_assignee}
+        >
+          <div class="mt-1 text-xs text-fg-3 italic">
+            → on approve:{" "}
+            {decorateAssignee(props.task.planned_assignee, props.agents)}
+          </div>
+        </Show>
+      </button>
+      <Menu
+        align="end"
+        sections={[
+          {
+            title: "Move to…",
+            items: STATUS_ORDER.filter((s) => s !== props.task.status).map(
+              (s) => ({
+                id: s,
+                label: `Move to ${STATUS_LABEL[s]}`,
+                danger: s === "cancelled",
+                onSelect: () => props.onMove(props.task.id, s),
+              }),
+            ),
+          },
+        ]}
+        trigger={(api) => (
+          <button
+            type="button"
+            aria-label="Change status"
+            aria-haspopup="menu"
+            class="min-h-[44px] min-w-[44px] flex items-center justify-center text-fg-2 hover:text-fg-0"
+            onClick={(e) => {
+              e.stopPropagation();
+              api.toggle();
+            }}
+          >
+            <Icon name="more-horizontal" size={16} />
+          </button>
+        )}
+      />
     </article>
   );
 }
