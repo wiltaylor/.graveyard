@@ -3225,3 +3225,96 @@ h2.fsidebar-section {
     50% { opacity: 1; }
   }
 }
+
+/* === Mobile / touch ergonomics — WCAG 2.5.5 + iOS no-zoom ============== */
+/* TODO(T1 40aa10ce): once breakpoint tokens land, swap 768px → var(--bp-md) and 1024px → var(--bp-md). */
+
+@media (max-width: 768px) {
+  /* PRIMARY mobile gate — body identical to the (pointer:coarse) block below */
+
+  /* iOS focus-zoom defeat — blanket form-element rule first */
+  input, textarea, select { font-size: 16px; }
+
+  /* Buttons */
+  .fbtn    { min-height: 44px; height: auto; padding: 0 16px; }
+  .fbtn-sm { min-height: 44px; height: auto; padding: 0 14px; font-size: 13px; }
+  .fbtn-lg { min-height: 48px; height: auto; padding: 0 20px; font-size: 14px; }
+
+  /* Topbar */
+  .ftopbar-icon-btn { width: 44px; height: 44px; }
+  .ftopbar-hamburger { width: 44px; height: 44px; }
+  .ftopbar-search   { height: 44px; }
+  .ftopbar-search input { font-size: 16px; }
+
+  /* Field input wrapper */
+  .ffield-input { min-height: 44px; height: auto; }
+  .ffield-input input { font-size: 16px; }
+
+  /* Sidebar links */
+  .fsidebar a { padding: 12px 14px; min-height: 44px; }
+
+  /* Tree rows + icon buttons (rows are the touch target, glyph SVGs unchanged) */
+  .tn { height: 44px; }
+  .tree-head .icon-btn   { width: 44px; height: 44px; }
+  .tabs .icon-btn        { width: 44px; height: 44px; }
+  .chat-composer .icon-btn { width: 44px; height: 44px; }
+
+  /* Tabs — height floor only; padding/font-size unchanged */
+  .tab               { min-height: 44px; height: auto; }
+  .tabs.pill .tab    { min-height: 44px; height: auto; }
+  .tabs.vertical .tab{ min-height: 44px; height: auto; }
+
+  /* Remaining named form inputs to 16px (iOS) */
+  .tn-input             { font-size: 16px; }
+  .dp-input             { font-size: 16px; }
+  .dd-search input      { font-size: 16px; }
+  .ta-field textarea    { font-size: 16px; }
+  .chat-composer textarea { font-size: 16px; }
+  /* inputs preview (around line 3008) — input,select rule */
+  input, select         { font-size: 16px; }
+}
+
+@media (pointer: coarse) and (max-width: 1024px) {
+  /* PRIMARY mobile gate — body identical to the (pointer:coarse) block below */
+
+  /* iOS focus-zoom defeat — blanket form-element rule first */
+  input, textarea, select { font-size: 16px; }
+
+  /* Buttons */
+  .fbtn    { min-height: 44px; height: auto; padding: 0 16px; }
+  .fbtn-sm { min-height: 44px; height: auto; padding: 0 14px; font-size: 13px; }
+  .fbtn-lg { min-height: 48px; height: auto; padding: 0 20px; font-size: 14px; }
+
+  /* Topbar */
+  .ftopbar-icon-btn { width: 44px; height: 44px; }
+  .ftopbar-hamburger { width: 44px; height: 44px; }
+  .ftopbar-search   { height: 44px; }
+  .ftopbar-search input { font-size: 16px; }
+
+  /* Field input wrapper */
+  .ffield-input { min-height: 44px; height: auto; }
+  .ffield-input input { font-size: 16px; }
+
+  /* Sidebar links */
+  .fsidebar a { padding: 12px 14px; min-height: 44px; }
+
+  /* Tree rows + icon buttons (rows are the touch target, glyph SVGs unchanged) */
+  .tn { height: 44px; }
+  .tree-head .icon-btn   { width: 44px; height: 44px; }
+  .tabs .icon-btn        { width: 44px; height: 44px; }
+  .chat-composer .icon-btn { width: 44px; height: 44px; }
+
+  /* Tabs — height floor only; padding/font-size unchanged */
+  .tab               { min-height: 44px; height: auto; }
+  .tabs.pill .tab    { min-height: 44px; height: auto; }
+  .tabs.vertical .tab{ min-height: 44px; height: auto; }
+
+  /* Remaining named form inputs to 16px (iOS) */
+  .tn-input             { font-size: 16px; }
+  .dp-input             { font-size: 16px; }
+  .dd-search input      { font-size: 16px; }
+  .ta-field textarea    { font-size: 16px; }
+  .chat-composer textarea { font-size: 16px; }
+  /* inputs preview (around line 3008) — input,select rule */
+  input, select         { font-size: 16px; }
+}
