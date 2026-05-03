@@ -368,8 +368,21 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
             cmd: TaskCommand::Take,
         } => RequestCmd::TaskTake,
         AgentCommand::Task {
-            cmd: TaskCommand::Review { id, reviewer, note },
-        } => RequestCmd::TaskReview { id, reviewer, note },
+            cmd:
+                TaskCommand::Review {
+                    id,
+                    reviewer,
+                    changes,
+                    demo,
+                    note,
+                },
+        } => RequestCmd::TaskReview {
+            id,
+            reviewer,
+            changes,
+            demo,
+            note,
+        },
         AgentCommand::Task {
             cmd: TaskCommand::ReviewApprove { id, note },
         } => RequestCmd::TaskReviewApprove { id, note },

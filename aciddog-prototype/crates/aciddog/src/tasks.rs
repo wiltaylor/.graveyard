@@ -162,6 +162,12 @@ pub struct Comment {
     pub body: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ReviewReport {
+    pub changes_made: String,
+    pub demo_instructions: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Task {
     pub id: Uuid,
@@ -180,6 +186,8 @@ pub struct Task {
     /// additive field still load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_submitter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_report: Option<ReviewReport>,
     /// Filesystem worktree path used by spawned workers as their cwd.
     /// `serde(default)` so older JSON files without this field still
     /// load for forward-compat.
@@ -207,6 +215,12 @@ pub enum TaskError {
 
     #[error("task {0} is not in progress; only in-progress tasks can be submitted for review")]
     NotInProgressForReview(Uuid),
+
+    #[error("changes made is required when submitting a task for review")]
+    EmptyReviewChanges,
+
+    #[error("demo instructions are required when submitting a task for review")]
+    EmptyReviewDemo,
 
     #[error("task {0} is not in review")]
     NotInReview(Uuid),
@@ -435,6 +449,7 @@ impl TaskStore {
             assignee,
             planned_assignee: None,
             review_submitter: None,
+            review_report: None,
             worktree,
             created_by,
             created_at_secs: now,
@@ -509,6 +524,7 @@ impl TaskStore {
             assignee: Some(USER_INBOX_ID.to_string()),
             planned_assignee: Some(planned_assignee),
             review_submitter: None,
+            review_report: None,
             worktree,
             created_by,
             created_at_secs: now,
@@ -613,10 +629,21 @@ impl TaskStore {
         id: Uuid,
         reviewer: String,
         submitter: String,
+        report: ReviewReport,
     ) -> Result<String, TaskError> {
         let reviewer = reviewer.trim().to_string();
         if reviewer.is_empty() {
             return Err(TaskError::EmptyTitle);
+        }
+        let report = ReviewReport {
+            changes_made: report.changes_made.trim().to_string(),
+            demo_instructions: report.demo_instructions.trim().to_string(),
+        };
+        if report.changes_made.is_empty() {
+            return Err(TaskError::EmptyReviewChanges);
+        }
+        if report.demo_instructions.is_empty() {
+            return Err(TaskError::EmptyReviewDemo);
         }
         // bug_patterns/b6267406: group reviewer routing can choose a
         // leaderless group, so require a concrete reviewer for now.
@@ -640,6 +667,7 @@ impl TaskStore {
             let t = &mut self.tasks[pos];
             t.status = TaskStatus::Review;
             t.review_submitter = Some(prior_assignee);
+            t.review_report = Some(report);
             t.assignee = Some(reviewer.clone());
             t.updated_at_secs = now;
             t.notes.push(Note {
@@ -733,6 +761,7 @@ impl TaskStore {
             });
             t.assignee = Some(implementer.clone());
             t.review_submitter = None;
+            t.review_report = None;
             t.status = TaskStatus::InProgress;
             t.updated_at_secs = now;
             t.notes.push(Note {
@@ -1300,6 +1329,13 @@ mod tests {
         TaskStore::new()
     }
 
+    fn review_report() -> ReviewReport {
+        ReviewReport {
+            changes_made: "implemented the requested change".into(),
+            demo_instructions: "run the test suite".into(),
+        }
+    }
+
     #[test]
     fn parse_status_accepts_common_spellings() {
         assert_eq!(TaskStatus::parse("open").unwrap(), TaskStatus::Open);
@@ -1506,7 +1542,7 @@ mod tests {
             "implementer",
         )
         .unwrap();
-        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+        s.submit_for_review(id, "reviewer".into(), "implementer".into(), review_report())
             .unwrap();
 
         let err = s
@@ -1681,7 +1717,7 @@ mod tests {
             "implementer",
         )
         .unwrap();
-        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+        s.submit_for_review(id, "reviewer".into(), "implementer".into(), review_report())
             .unwrap();
 
         assert!(matches!(s.take("worker"), Err(TaskError::NoFreeTasks)));
@@ -2003,8 +2039,13 @@ mod tests {
             "implementer",
         )
         .unwrap();
-        s.submit_for_review(blocker, "reviewer".into(), "implementer".into())
-            .unwrap();
+        s.submit_for_review(
+            blocker,
+            "reviewer".into(),
+            "implementer".into(),
+            review_report(),
+        )
+        .unwrap();
 
         let dependent = s.get(dependent_id).unwrap().clone();
         assert!(s.is_blocked(&dependent));
@@ -2366,9 +2407,13 @@ mod tests {
     fn submit_for_review_reassigns_to_reviewer_and_records_submitter() {
         let mut s = mk_store();
         let id = add_in_progress_task(&mut s);
+        let report = ReviewReport {
+            changes_made: "fixed the bug".into(),
+            demo_instructions: "run cargo test".into(),
+        };
 
         let reviewer = s
-            .submit_for_review(id, "reviewer".into(), "implementer".into())
+            .submit_for_review(id, "reviewer".into(), "implementer".into(), report.clone())
             .unwrap();
 
         assert_eq!(reviewer, "reviewer");
@@ -2376,8 +2421,47 @@ mod tests {
         assert_eq!(t.status, TaskStatus::Review);
         assert_eq!(t.assignee.as_deref(), Some("reviewer"));
         assert_eq!(t.review_submitter.as_deref(), Some("implementer"));
+        assert_eq!(t.review_report.as_ref(), Some(&report));
         assert_eq!(t.notes.len(), 1);
         assert!(t.notes[0].body.contains("submitted for review"));
+    }
+
+    #[test]
+    fn submit_for_review_rejects_empty_changes_made() {
+        let mut s = mk_store();
+        let id = add_in_progress_task(&mut s);
+
+        assert!(matches!(
+            s.submit_for_review(
+                id,
+                "reviewer".into(),
+                "implementer".into(),
+                ReviewReport {
+                    changes_made: "   ".into(),
+                    demo_instructions: "run it".into(),
+                },
+            ),
+            Err(TaskError::EmptyReviewChanges)
+        ));
+    }
+
+    #[test]
+    fn submit_for_review_rejects_empty_demo_instructions() {
+        let mut s = mk_store();
+        let id = add_in_progress_task(&mut s);
+
+        assert!(matches!(
+            s.submit_for_review(
+                id,
+                "reviewer".into(),
+                "implementer".into(),
+                ReviewReport {
+                    changes_made: "did work".into(),
+                    demo_instructions: "   ".into(),
+                },
+            ),
+            Err(TaskError::EmptyReviewDemo)
+        ));
     }
 
     #[test]
@@ -2397,7 +2481,7 @@ mod tests {
         )
         .unwrap();
 
-        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+        s.submit_for_review(id, "reviewer".into(), "implementer".into(), review_report())
             .unwrap();
 
         assert_eq!(
@@ -2415,7 +2499,7 @@ mod tests {
             .id;
 
         assert!(matches!(
-            s.submit_for_review(id, "reviewer".into(), "alice".into()),
+            s.submit_for_review(id, "reviewer".into(), "alice".into(), review_report()),
             Err(TaskError::NotInProgressForReview(_))
         ));
     }
@@ -2427,7 +2511,7 @@ mod tests {
         let id = add_in_progress_task(&mut s);
 
         assert!(matches!(
-            s.submit_for_review(id, "reviewers".into(), "implementer".into()),
+            s.submit_for_review(id, "reviewers".into(), "implementer".into(), review_report()),
             Err(TaskError::ReviewerIsGroup(group)) if group == "reviewers"
         ));
     }
@@ -2436,7 +2520,8 @@ mod tests {
     fn review_approve_marks_done_and_clears_submitter() {
         let mut s = mk_store();
         let id = add_in_progress_task(&mut s);
-        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+        let report = review_report();
+        s.submit_for_review(id, "reviewer".into(), "implementer".into(), report.clone())
             .unwrap();
 
         let submitter = s.review_approve(id, "reviewer".into()).unwrap();
@@ -2446,6 +2531,7 @@ mod tests {
         assert_eq!(t.status, TaskStatus::Done);
         assert_eq!(t.assignee.as_deref(), Some("reviewer"));
         assert!(t.review_submitter.is_none());
+        assert_eq!(t.review_report.as_ref(), Some(&report));
         assert!(t.notes[1].body.contains("review approved"));
     }
 
@@ -2453,7 +2539,7 @@ mod tests {
     fn review_approve_returns_empty_submitter_when_missing() {
         let mut s = mk_store();
         let id = add_in_progress_task(&mut s);
-        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+        s.submit_for_review(id, "reviewer".into(), "implementer".into(), review_report())
             .unwrap();
         s.tasks
             .iter_mut()
@@ -2471,7 +2557,7 @@ mod tests {
     fn review_approve_rejects_wrong_caller() {
         let mut s = mk_store();
         let id = add_in_progress_task(&mut s);
-        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+        s.submit_for_review(id, "reviewer".into(), "implementer".into(), review_report())
             .unwrap();
 
         assert!(matches!(
@@ -2499,7 +2585,7 @@ mod tests {
     fn review_reject_restores_submitter_and_marks_in_progress() {
         let mut s = mk_store();
         let id = add_in_progress_task(&mut s);
-        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+        s.submit_for_review(id, "reviewer".into(), "implementer".into(), review_report())
             .unwrap();
 
         let implementer = s
@@ -2511,6 +2597,7 @@ mod tests {
         assert_eq!(t.status, TaskStatus::InProgress);
         assert_eq!(t.assignee.as_deref(), Some("implementer"));
         assert!(t.review_submitter.is_none());
+        assert!(t.review_report.is_none());
         assert_eq!(t.comments.len(), 1);
         assert!(t.comments[0].body.contains("needs tests"));
         assert!(t.notes[1].body.contains("review rejected"));
@@ -2520,7 +2607,7 @@ mod tests {
     fn review_reject_requires_submitter() {
         let mut s = mk_store();
         let id = add_in_progress_task(&mut s);
-        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+        s.submit_for_review(id, "reviewer".into(), "implementer".into(), review_report())
             .unwrap();
         s.tasks
             .iter_mut()
@@ -2538,7 +2625,7 @@ mod tests {
     fn review_reject_rejects_empty_reason() {
         let mut s = mk_store();
         let id = add_in_progress_task(&mut s);
-        s.submit_for_review(id, "reviewer".into(), "implementer".into())
+        s.submit_for_review(id, "reviewer".into(), "implementer".into(), review_report())
             .unwrap();
 
         assert!(matches!(
@@ -2654,6 +2741,37 @@ mod tests {
 
         assert_eq!(s.all().len(), 2);
         assert!(s.all().iter().all(|t| t.review_submitter.is_none()));
+    }
+
+    #[test]
+    fn tasks_json_without_review_report_loads_with_none() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("tasks.json");
+        std::fs::write(
+            &path,
+            br#"[
+                {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "title": "legacy open",
+                    "description": null,
+                    "status": "open",
+                    "assignee": null,
+                    "created_by": "alice",
+                    "created_at_secs": 1,
+                    "updated_at_secs": 1,
+                    "notes": [],
+                    "blocked_by": [],
+                    "todos": [],
+                    "comments": []
+                }
+            ]"#,
+        )
+        .unwrap();
+
+        let s = TaskStore::load_or_init(path).unwrap();
+
+        assert_eq!(s.all().len(), 1);
+        assert!(s.all()[0].review_report.is_none());
     }
 
     #[test]

@@ -264,6 +264,8 @@ pub enum RequestCmd {
     TaskReview {
         id: Uuid,
         reviewer: String,
+        changes: String,
+        demo: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
@@ -1378,6 +1380,8 @@ mod tests {
             cmd: RequestCmd::TaskReview {
                 id,
                 reviewer: "reviewer".into(),
+                changes: "implemented feature".into(),
+                demo: "run aciddog test".into(),
                 note: Some("ready".into()),
             },
         };
@@ -1388,10 +1392,14 @@ mod tests {
             RequestCmd::TaskReview {
                 id: parsed,
                 reviewer,
+                changes,
+                demo,
                 note,
             } => {
                 assert_eq!(parsed, id);
                 assert_eq!(reviewer, "reviewer");
+                assert_eq!(changes, "implemented feature");
+                assert_eq!(demo, "run aciddog test");
                 assert_eq!(note.as_deref(), Some("ready"));
             }
             other => panic!("expected TaskReview, got {other:?}"),

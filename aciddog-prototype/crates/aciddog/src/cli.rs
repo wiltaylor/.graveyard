@@ -539,6 +539,10 @@ pub enum TaskCommand {
         #[arg(long)]
         reviewer: String,
         #[arg(long)]
+        changes: String,
+        #[arg(long)]
+        demo: String,
+        #[arg(long)]
         note: Option<String>,
     },
     /// Approve a task assigned to you for review.
@@ -1458,6 +1462,10 @@ mod tests {
             &id.to_string(),
             "--reviewer",
             "reviewer",
+            "--changes",
+            "implemented feature",
+            "--demo",
+            "run aciddog test",
             "--note",
             "ready",
         ])
@@ -1468,11 +1476,15 @@ mod tests {
                     TaskCommand::Review {
                         id: parsed,
                         reviewer,
+                        changes,
+                        demo,
                         note,
                     },
             } => {
                 assert_eq!(parsed, id);
                 assert_eq!(reviewer, "reviewer");
+                assert_eq!(changes, "implemented feature");
+                assert_eq!(demo, "run aciddog test");
                 assert_eq!(note.as_deref(), Some("ready"));
             }
             other => panic!("expected Task::Review, got {other:?}"),

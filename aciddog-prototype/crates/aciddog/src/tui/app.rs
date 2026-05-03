@@ -32,7 +32,7 @@ use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::{AciddogConfig, AiCore, AiCoreKind};
 use crate::memory::MemoryRegistry;
 use crate::repos::{self, compute_branch_diff, DiffOutcome};
-use crate::tasks::{Task, TaskFilter, TaskPatch, TaskStatus, TaskStore, TodoStatus};
+use crate::tasks::{ReviewReport, Task, TaskFilter, TaskPatch, TaskStatus, TaskStore, TodoStatus};
 use crate::usage;
 
 const RESTART_CORE_PREAMBLE: &str = "Your prior AI-core session was lost; you are picking up where it left off.\n\nThe transcript below is your previous self's conversation - read it as your own history, then continue from where it stops. Tool side-effects (files written, etc.) already happened in the world; re-derive state from disk rather than trusting it from memory.\n";
@@ -43,19 +43,9 @@ use crate::wire_repos::{
 use super::cores_view::{CoresScreen, UsageEvent};
 use super::repo_diff_view::RepoDiffScreen;
 use super::tasks_view::{
-    ChildOverlay, ChildPromptKind, FormField, PopoverKind, TaskForm, TaskFormKind, TasksPrompt,
-    TasksScreen, OPERATOR,
+    FormField, PopoverKind, ReviewPromptField, TaskDetailScreen, TaskForm, TaskFormKind, TaskTab,
+    TasksPrompt, TasksScreen, OPERATOR,
 };
-
-/// True when a child-overlay prompt is a yes/no confirmation rather
-/// than a body-entry prompt. Used by `handle_child_overlay_key` to
-/// short-circuit on single-char y/n input.
-fn is_confirm_prompt(kind: ChildPromptKind) -> bool {
-    matches!(
-        kind,
-        ChildPromptKind::ConfirmDeleteTodo(_) | ChildPromptKind::ConfirmDeleteComment(_)
-    )
-}
 
 use super::blocks::{BlockAction, ChatBlock, ChatButton, ScrollAnchor};
 use super::clipboard;
@@ -930,8 +920,20 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             let (k, s, b) = task_op_summary(&TaskCommand::Take);
             ChatBlock::task_op(k, s, b)
         }
-        RequestCmd::TaskReview { id, reviewer, note } => {
-            let (k, s, b) = task_op_summary(&TaskCommand::Review { id, reviewer, note });
+        RequestCmd::TaskReview {
+            id,
+            reviewer,
+            changes,
+            demo,
+            note,
+        } => {
+            let (k, s, b) = task_op_summary(&TaskCommand::Review {
+                id,
+                reviewer,
+                changes,
+                demo,
+                note,
+            });
             ChatBlock::task_op(k, s, b)
         }
         RequestCmd::TaskReviewApprove { id, note } => {
@@ -1482,6 +1484,9 @@ pub enum Focus {
     /// The main area while `active_view == RepoDiff` — keyboard input
     /// scrolls the computed diff buffer and Esc/q closes it.
     RepoDiff,
+    /// The main area while `active_view == TaskDetail` — keyboard
+    /// input stays within the task-detail tabs and Esc/q closes it.
+    TaskDetail,
 }
 
 /// Which scrollable zone inside the Memory view the wheel cursor is
@@ -1520,6 +1525,13 @@ pub enum ActiveView {
     RepoDiff {
         repo_idx: usize,
         worktree_idx: usize,
+    },
+    /// Full-screen detail route for an existing task. The task list
+    /// remains in `TasksScreen`; this route owns only the selected
+    /// task's tabbed detail surface.
+    #[allow(dead_code)]
+    TaskDetail {
+        task_id: Uuid,
     },
     Channel(usize),
     /// Property-entry form for the workflow at
@@ -1593,19 +1605,15 @@ pub struct LayoutRects {
     /// frame. Clicking a field focuses it (and opens the picker on
     /// dropdowns); clicking a button activates it.
     pub task_form_fields: Vec<(FormField, Rect)>,
-    /// Per-row hit rects for the expanded TODOs section in the task
-    /// edit form. `Uuid` is the todo id; clicking the row toggles its
-    /// status between Pending and Completed.
-    pub task_form_todo_rows: Vec<(uuid::Uuid, Rect)>,
-    /// Outer rect of the expanded TODOs section box when it is the
-    /// focused task-form field. Used for mouse-wheel hit-testing.
-    pub task_form_todos_section: Option<Rect>,
-    /// Per-row hit rects for the expanded Comments section. Clicking
-    /// the row sets `comments_cursor` to that index.
-    pub task_form_comment_rows: Vec<(uuid::Uuid, Rect)>,
-    /// Outer rect of the expanded Comments section box when it is the
-    /// focused task-form field. Used for mouse-wheel hit-testing.
-    pub task_form_comments_section: Option<Rect>,
+    /// Clickable tab label rects in the full-screen task detail view.
+    pub task_detail_tabs: Vec<(super::tasks_view::TaskTab, Rect)>,
+    /// Per-row hit rects for task-detail Comments tab rows.
+    pub task_detail_comment_rows: Vec<(uuid::Uuid, Rect)>,
+    /// Per-row hit rects for task-detail TODOs tab rows.
+    pub task_detail_todo_rows: Vec<(uuid::Uuid, Rect)>,
+    /// Captured body rect for the task-detail Review tab. Wheel
+    /// routing lands in a later slice, but the geometry is owned here.
+    pub task_detail_review_section: Option<Rect>,
     /// When a dropdown picker is open, each visible option gets a
     /// clickable rect here. Populated by `render_dropdown_picker`
     /// and consumed by the mouse handler.
@@ -1619,13 +1627,6 @@ pub struct LayoutRects {
     /// picker. Empty when no picker is open or when the picker
     /// doesn't show buttons.
     pub task_form_picker_buttons: Vec<(FormField, Rect)>,
-    /// When a child overlay (TODOs or Comments) is open, each row
-    /// gets a clickable rect here. The mouse handler uses it to
-    /// jump the cursor to the clicked row.
-    pub child_overlay_rows: Vec<Rect>,
-    /// The full outer rect of the child overlay, used to detect
-    /// clicks *outside* the overlay (which close it).
-    pub child_overlay_outer: Option<Rect>,
     /// Clickable rects for the Memory view's bank list (when the
     /// view is in the Banks stage). Populated each frame in `ui.rs`.
     pub memory_bank_rows: Vec<Rect>,
@@ -2778,6 +2779,10 @@ pub struct App {
     pub repo_status_msg: Option<String>,
     /// UI-local state for the Tasks screen: cursor, modals, prompts.
     pub tasks_screen: TasksScreen,
+    /// UI-local state for the full-screen task detail route. Kept as
+    /// `None` outside `ActiveView::TaskDetail` so tab cursors and
+    /// scroll offsets are rebuilt fresh on every future entry.
+    pub task_detail: Option<TaskDetailScreen>,
     /// UI-local state for the Memory view: bank list, search, modals.
     pub memory_screen: super::memory_view::MemoryScreen,
     /// Channel for replies from background memory ops (search, store,
@@ -3070,6 +3075,7 @@ impl App {
             repo_diff_screen: None,
             repo_status_msg: None,
             tasks_screen: TasksScreen::default(),
+            task_detail: None,
             memory_screen: super::memory_view::MemoryScreen::default(),
             memory_event_tx: None,
             last_click: None,
@@ -3894,8 +3900,14 @@ impl App {
             RequestCmd::TaskTake => {
                 self.handle_task_take(idx, reply);
             }
-            RequestCmd::TaskReview { id, reviewer, note } => {
-                self.handle_task_review(idx, id, reviewer, note, reply);
+            RequestCmd::TaskReview {
+                id,
+                reviewer,
+                changes,
+                demo,
+                note,
+            } => {
+                self.handle_task_review(idx, id, reviewer, changes, demo, note, reply);
             }
             RequestCmd::TaskReviewApprove { id, note } => {
                 self.handle_task_review_approve(idx, id, note, reply);
@@ -6830,6 +6842,8 @@ impl App {
         sender_idx: usize,
         id: Uuid,
         reviewer: String,
+        changes: String,
+        demo: String,
         note: Option<String>,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
@@ -6838,7 +6852,11 @@ impl App {
             return;
         };
         let who = sender.display_name.clone();
-        match self.submit_task_for_review(id, reviewer, note, &who) {
+        let report = ReviewReport {
+            changes_made: changes,
+            demo_instructions: demo,
+        };
+        match self.submit_task_for_review(id, reviewer, report, note, &who) {
             Ok(reviewer) => {
                 let _ = reply.send(Response::ok(format!("submitted for review to {reviewer}")));
             }
@@ -8708,6 +8726,7 @@ impl App {
         &mut self,
         task_id: Uuid,
         reviewer: String,
+        report: ReviewReport,
         note: Option<String>,
         submitter: &str,
     ) -> Result<String, String> {
@@ -8719,7 +8738,7 @@ impl App {
         self.seed_task_group_assignees();
         let reviewer = self
             .tasks
-            .submit_for_review(task_id, reviewer, submitter.to_string())
+            .submit_for_review(task_id, reviewer, submitter.to_string(), report)
             .map_err(|e| e.to_string())?;
         self.add_review_note_if_present(task_id, submitter, note)
             .map_err(|e| e.to_string())?;
@@ -10279,13 +10298,19 @@ impl App {
         let memory_modal_open = self.active_view == ActiveView::Memory
             && self.focus == Focus::Memory
             && self.memory_screen.has_active_modal();
+        let task_detail_open = matches!(self.active_view, ActiveView::TaskDetail { .. })
+            && self.focus == Focus::TaskDetail;
         if matches!(code, KeyCode::Tab)
             && matches!(self.active_view, ActiveView::RepoDiff { .. })
             && self.focus == Focus::RepoDiff
         {
             return;
         }
-        if matches!(code, KeyCode::Tab) && !tasks_modal_open && !memory_modal_open {
+        if matches!(code, KeyCode::Tab)
+            && !tasks_modal_open
+            && !memory_modal_open
+            && !task_detail_open
+        {
             // Inbox sub-pane Tab: when focused on the inbox list,
             // first Tab moves focus into the detail pane (still on
             // Focus::Inbox). The next Tab advances the outer cycle
@@ -10314,6 +10339,7 @@ impl App {
                 ActiveView::Inbox => Focus::Inbox,
                 ActiveView::Cron => Focus::Cron,
                 ActiveView::RepoDiff { .. } => Focus::RepoDiff,
+                ActiveView::TaskDetail { .. } => Focus::TaskDetail,
                 ActiveView::WorkflowForm { .. } | ActiveView::WorkflowInstance { .. } => {
                     Focus::Workflow
                 }
@@ -10368,6 +10394,7 @@ impl App {
             Focus::Repos => self.handle_key_repos(code, mods),
             Focus::Memory => self.handle_key_memory(code, mods),
             Focus::RepoDiff => self.handle_key_repo_diff(code, mods),
+            Focus::TaskDetail => self.handle_key_task_detail(code, mods),
             Focus::Workflows => self.handle_key_workflows(code, mods),
             Focus::Workflow => self.handle_key_workflow_view(code, mods),
             Focus::Cores => self.handle_key_cores(code, mods),
@@ -10426,6 +10453,10 @@ impl App {
             }
             ActiveView::RepoDiff { .. } => {
                 self.close_repo_diff();
+                self.focus = Focus::Chat;
+            }
+            ActiveView::TaskDetail { .. } => {
+                self.close_task_detail();
                 self.focus = Focus::Chat;
             }
             ActiveView::Channel(_) => {
@@ -11546,6 +11577,25 @@ impl App {
         self.selected_repo_row = self.selected_repo_row.min(max);
     }
 
+    fn close_task_detail(&mut self) {
+        self.active_view = ActiveView::Tasks;
+        self.focus = Focus::Tasks;
+        self.task_detail = None;
+        let rows = TasksScreen::rows(&self.tasks);
+        self.tasks_screen.reclamp(&rows);
+    }
+
+    fn open_task_detail(&mut self, task_id: Uuid) {
+        if self.tasks.get(task_id).is_none() {
+            let rows = TasksScreen::rows(&self.tasks);
+            self.tasks_screen.reclamp(&rows);
+            return;
+        }
+        self.task_detail = Some(TaskDetailScreen::new(task_id));
+        self.active_view = ActiveView::TaskDetail { task_id };
+        self.focus = Focus::TaskDetail;
+    }
+
     fn scroll_repo_diff_by(&mut self, delta: i32) {
         let Some(screen) = self.repo_diff_screen.as_mut() else {
             return;
@@ -11593,6 +11643,411 @@ impl App {
                 self.focus = Focus::Repos;
             }
             _ => {}
+        }
+    }
+
+    fn handle_key_task_detail(&mut self, code: KeyCode, _mods: KeyModifiers) {
+        self.tasks_screen.status_msg = None;
+        if self.tasks_screen.prompt.is_some() {
+            self.handle_task_prompt_key(code);
+            return;
+        }
+        if self.tasks_screen.form.is_some() {
+            self.handle_task_form_key(code);
+            return;
+        }
+
+        if self
+            .task_detail
+            .as_ref()
+            .and_then(|screen| screen.popover.as_ref())
+            .is_some()
+        {
+            if let Some(screen) = self.task_detail.as_mut() {
+                screen.handle_key(code);
+            }
+            return;
+        }
+
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => self.close_task_detail(),
+            KeyCode::Char('e')
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Task)
+                    .unwrap_or(false) =>
+            {
+                self.open_detail_task_edit_form();
+            }
+            KeyCode::Char('j') | KeyCode::Down
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Comments)
+                    .unwrap_or(false) =>
+            {
+                self.move_detail_comments_cursor(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Comments)
+                    .unwrap_or(false) =>
+            {
+                self.move_detail_comments_cursor(-1);
+            }
+            KeyCode::PageDown
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Comments)
+                    .unwrap_or(false) =>
+            {
+                self.page_detail_comments_cursor(1);
+            }
+            KeyCode::PageUp
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Comments)
+                    .unwrap_or(false) =>
+            {
+                self.page_detail_comments_cursor(-1);
+            }
+            KeyCode::Char('a')
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Comments)
+                    .unwrap_or(false) =>
+            {
+                self.open_detail_add_comment_prompt();
+            }
+            KeyCode::Char('e')
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Comments)
+                    .unwrap_or(false) =>
+            {
+                self.open_detail_edit_comment_prompt();
+            }
+            KeyCode::Char('d')
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Comments)
+                    .unwrap_or(false) =>
+            {
+                self.open_detail_delete_comment_prompt();
+            }
+            KeyCode::Enter
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Comments)
+                    .unwrap_or(false) =>
+            {
+                self.open_detail_popover(PopoverKind::Comment);
+            }
+            KeyCode::Char('j') | KeyCode::Down
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Todos)
+                    .unwrap_or(false) =>
+            {
+                self.move_detail_todos_cursor(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Todos)
+                    .unwrap_or(false) =>
+            {
+                self.move_detail_todos_cursor(-1);
+            }
+            KeyCode::PageDown
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Todos)
+                    .unwrap_or(false) =>
+            {
+                self.page_detail_todos_cursor(1);
+            }
+            KeyCode::PageUp
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Todos)
+                    .unwrap_or(false) =>
+            {
+                self.page_detail_todos_cursor(-1);
+            }
+            KeyCode::Char('a')
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Todos)
+                    .unwrap_or(false) =>
+            {
+                self.open_detail_add_todo_prompt();
+            }
+            KeyCode::Char('e')
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Todos)
+                    .unwrap_or(false) =>
+            {
+                self.open_detail_edit_todo_prompt();
+            }
+            KeyCode::Char('d')
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Todos)
+                    .unwrap_or(false) =>
+            {
+                self.open_detail_delete_todo_prompt();
+            }
+            KeyCode::Char(' ')
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Todos)
+                    .unwrap_or(false) =>
+            {
+                self.cycle_detail_selected_todo();
+            }
+            KeyCode::Enter
+                if self
+                    .task_detail
+                    .as_ref()
+                    .map(|s| s.active_tab == TaskTab::Todos)
+                    .unwrap_or(false) =>
+            {
+                self.open_detail_popover(PopoverKind::Todo);
+            }
+            _ => {
+                if let Some(screen) = self.task_detail.as_mut() {
+                    screen.handle_key(code);
+                }
+            }
+        }
+    }
+
+    fn detail_task_id(&self) -> Option<uuid::Uuid> {
+        self.task_detail.as_ref().map(|screen| screen.task_id)
+    }
+
+    fn open_detail_task_edit_form(&mut self) {
+        let Some(task_id) = self.detail_task_id() else {
+            return;
+        };
+        if let Some(t) = self.tasks.get(task_id) {
+            self.tasks_screen.open_edit(t);
+            self.inject_assignee_options();
+        }
+    }
+
+    fn move_detail_comments_cursor(&mut self, delta: i32) {
+        let Some(task_id) = self.detail_task_id() else {
+            return;
+        };
+        let len = self
+            .tasks
+            .comments_of(task_id)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        if let Some(screen) = self.task_detail.as_mut() {
+            screen.move_comments_cursor(delta, len);
+        }
+    }
+
+    fn page_detail_comments_cursor(&mut self, delta_pages: i32) {
+        let Some(task_id) = self.detail_task_id() else {
+            return;
+        };
+        let len = self
+            .tasks
+            .comments_of(task_id)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        if let Some(screen) = self.task_detail.as_mut() {
+            screen.page_comments_cursor(delta_pages, len);
+        }
+    }
+
+    fn move_detail_todos_cursor(&mut self, delta: i32) {
+        let Some(task_id) = self.detail_task_id() else {
+            return;
+        };
+        let len = self.tasks.todos_of(task_id).map(|v| v.len()).unwrap_or(0);
+        if let Some(screen) = self.task_detail.as_mut() {
+            screen.move_todos_cursor(delta, len);
+        }
+    }
+
+    fn page_detail_todos_cursor(&mut self, delta_pages: i32) {
+        let Some(task_id) = self.detail_task_id() else {
+            return;
+        };
+        let len = self.tasks.todos_of(task_id).map(|v| v.len()).unwrap_or(0);
+        if let Some(screen) = self.task_detail.as_mut() {
+            screen.page_todos_cursor(delta_pages, len);
+        }
+    }
+
+    fn open_detail_add_todo_prompt(&mut self) {
+        let Some(task_id) = self.detail_task_id() else {
+            return;
+        };
+        self.tasks_screen.prompt = Some(TasksPrompt::AddTodo {
+            task_id,
+            body: String::new(),
+        });
+    }
+
+    fn open_detail_edit_todo_prompt(&mut self) {
+        let Some(screen) = self.task_detail.as_ref() else {
+            return;
+        };
+        let task_id = screen.task_id;
+        let cursor = screen.todos_cursor;
+        let Some(todo) = self
+            .tasks
+            .todos_of(task_id)
+            .and_then(|v| v.get(cursor))
+            .cloned()
+        else {
+            return;
+        };
+        self.tasks_screen.prompt = Some(TasksPrompt::EditTodo {
+            task_id,
+            todo_id: todo.id,
+            body: todo.body,
+        });
+    }
+
+    fn open_detail_delete_todo_prompt(&mut self) {
+        let Some(screen) = self.task_detail.as_ref() else {
+            return;
+        };
+        let task_id = screen.task_id;
+        let cursor = screen.todos_cursor;
+        let Some(todo_id) = self
+            .tasks
+            .todos_of(task_id)
+            .and_then(|v| v.get(cursor))
+            .map(|td| td.id)
+        else {
+            return;
+        };
+        self.tasks_screen.prompt = Some(TasksPrompt::ConfirmDeleteTodo {
+            task_id,
+            todo_id,
+            buffer: String::new(),
+        });
+    }
+
+    fn open_detail_add_comment_prompt(&mut self) {
+        let Some(task_id) = self.detail_task_id() else {
+            return;
+        };
+        self.tasks_screen.prompt = Some(TasksPrompt::AddComment {
+            task_id,
+            body: String::new(),
+        });
+    }
+
+    fn open_detail_edit_comment_prompt(&mut self) {
+        let Some(screen) = self.task_detail.as_ref() else {
+            return;
+        };
+        let task_id = screen.task_id;
+        let cursor = screen.comments_cursor;
+        let Some(comment) = self
+            .tasks
+            .comments_of(task_id)
+            .and_then(|v| v.get(cursor))
+            .cloned()
+        else {
+            return;
+        };
+        self.tasks_screen.prompt = Some(TasksPrompt::EditComment {
+            task_id,
+            comment_id: comment.id,
+            body: comment.body,
+        });
+    }
+
+    fn open_detail_delete_comment_prompt(&mut self) {
+        let Some(screen) = self.task_detail.as_ref() else {
+            return;
+        };
+        let task_id = screen.task_id;
+        let cursor = screen.comments_cursor;
+        let Some(comment_id) = self
+            .tasks
+            .comments_of(task_id)
+            .and_then(|v| v.get(cursor))
+            .map(|c| c.id)
+        else {
+            return;
+        };
+        self.tasks_screen.prompt = Some(TasksPrompt::ConfirmDeleteComment {
+            task_id,
+            comment_id,
+            buffer: String::new(),
+        });
+    }
+
+    fn cycle_detail_selected_todo(&mut self) {
+        let Some(screen) = self.task_detail.as_ref() else {
+            return;
+        };
+        let task_id = screen.task_id;
+        let cursor = screen.todos_cursor;
+        let todo = self
+            .tasks
+            .todos_of(task_id)
+            .and_then(|v| v.get(cursor))
+            .cloned();
+        if let Some(todo) = todo {
+            let next = match todo.status {
+                crate::tasks::TodoStatus::Pending => crate::tasks::TodoStatus::InProgress,
+                crate::tasks::TodoStatus::InProgress => crate::tasks::TodoStatus::Completed,
+                crate::tasks::TodoStatus::Completed => crate::tasks::TodoStatus::Pending,
+            };
+            if let Err(e) = self.tasks.update_todo(task_id, todo.id, None, Some(next)) {
+                self.tasks_screen.status_msg = Some(format!("error: {e}"));
+            }
+        }
+    }
+
+    fn open_detail_popover(&mut self, kind: PopoverKind) {
+        let Some(screen) = self.task_detail.as_mut() else {
+            return;
+        };
+        let has_row = match kind {
+            PopoverKind::Todo => self
+                .tasks
+                .todos_of(screen.task_id)
+                .map(|v| screen.todos_cursor < v.len())
+                .unwrap_or(false),
+            PopoverKind::Comment => self
+                .tasks
+                .comments_of(screen.task_id)
+                .map(|v| screen.comments_cursor < v.len())
+                .unwrap_or(false),
+        };
+        if has_row {
+            screen.open_popover(kind);
         }
     }
 
@@ -12821,12 +13276,6 @@ impl App {
             self.handle_task_form_key(code);
             return;
         }
-        // TODOs / Comments overlay takes all input while open.
-        if self.tasks_screen.child_overlay.is_some() {
-            self.handle_child_overlay_key(code);
-            return;
-        }
-
         let rows = TasksScreen::rows(&self.tasks);
         match code {
             KeyCode::Char('j') | KeyCode::Down => self.tasks_screen.move_down(&rows),
@@ -12929,28 +13378,9 @@ impl App {
                     }
                 }
             }
-            // Open the TODOs overlay on the selected task.
-            KeyCode::Char('o') => {
-                if let Some(id) = self.tasks_screen.selected_task_id(&rows) {
-                    self.tasks_screen.open_todos(id);
-                }
-            }
-            // Open the Comments overlay on the selected task.
-            KeyCode::Char('c') => {
-                if let Some(id) = self.tasks_screen.selected_task_id(&rows) {
-                    self.tasks_screen.open_comments(id);
-                }
-            }
             KeyCode::Enter => {
-                // Enter on a row opens the edit form (the only task-
-                // detail surface). The form lays out title, description,
-                // assignee, status, blocked-by plus collapsible read-
-                // only TODOs and Comments sections.
                 if let Some(id) = self.tasks_screen.selected_task_id(&rows) {
-                    if let Some(t) = self.tasks.get(id) {
-                        self.tasks_screen.open_edit(t);
-                        self.inject_assignee_options();
-                    }
+                    self.open_task_detail(id);
                 }
             }
             KeyCode::Esc => {
@@ -12962,256 +13392,10 @@ impl App {
         }
     }
 
-    /// Key handling when the TODOs or Comments overlay (or one of
-    /// its prompt sub-states) is active. Splits into three paths:
-    /// Browse (navigation + action triggers), Prompt with a buffer
-    /// (text entry for add/edit), Prompt for confirm-delete.
-    fn handle_child_overlay_key(&mut self, code: KeyCode) {
-        let Some(overlay) = self.tasks_screen.child_overlay.clone() else {
-            return;
-        };
-        match overlay {
-            ChildOverlay::Todos { task_id, cursor } => {
-                self.handle_child_todos_key(code, task_id, cursor);
-            }
-            ChildOverlay::Comments { task_id, cursor } => {
-                self.handle_child_comments_key(code, task_id, cursor);
-            }
-            ChildOverlay::Prompt {
-                task_id,
-                kind,
-                mut buffer,
-            } => match code {
-                KeyCode::Esc => {
-                    // Return to the browse state for whichever list
-                    // this prompt belonged to.
-                    self.return_to_browse(task_id, kind);
-                }
-                KeyCode::Enter => {
-                    self.commit_child_prompt(task_id, kind, buffer);
-                }
-                KeyCode::Char(c) if is_confirm_prompt(kind) => {
-                    // Delete confirmation: y / n short-circuits.
-                    match c {
-                        'y' | 'Y' => {
-                            self.commit_child_prompt(task_id, kind, String::from("y"));
-                        }
-                        'n' | 'N' => {
-                            self.return_to_browse(task_id, kind);
-                        }
-                        _ => {}
-                    }
-                }
-                KeyCode::Char(c) => {
-                    buffer.push(c);
-                    self.tasks_screen.child_overlay = Some(ChildOverlay::Prompt {
-                        task_id,
-                        kind,
-                        buffer,
-                    });
-                }
-                KeyCode::Backspace => {
-                    buffer.pop();
-                    self.tasks_screen.child_overlay = Some(ChildOverlay::Prompt {
-                        task_id,
-                        kind,
-                        buffer,
-                    });
-                }
-                _ => {}
-            },
-        }
-    }
-
-    fn handle_child_todos_key(&mut self, code: KeyCode, task_id: Uuid, cursor: usize) {
-        let row_count = self.tasks.todos_of(task_id).map(|v| v.len()).unwrap_or(0);
-        match code {
-            KeyCode::Esc => self.tasks_screen.close_modal(),
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.tasks_screen.child_overlay_move(1, row_count);
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.tasks_screen.child_overlay_move(-1, row_count);
-            }
-            KeyCode::Char('a') => {
-                self.tasks_screen.child_overlay = Some(ChildOverlay::Prompt {
-                    task_id,
-                    kind: ChildPromptKind::AddTodo,
-                    buffer: String::new(),
-                });
-            }
-            KeyCode::Char('e') => {
-                if let Some(todo) = self
-                    .tasks
-                    .todos_of(task_id)
-                    .and_then(|v| v.get(cursor))
-                    .cloned()
-                {
-                    self.tasks_screen.child_overlay = Some(ChildOverlay::Prompt {
-                        task_id,
-                        kind: ChildPromptKind::EditTodo(todo.id),
-                        buffer: todo.body,
-                    });
-                }
-            }
-            KeyCode::Char('d') => {
-                if let Some(id) = self
-                    .tasks
-                    .todos_of(task_id)
-                    .and_then(|v| v.get(cursor))
-                    .map(|t| t.id)
-                {
-                    self.tasks_screen.child_overlay = Some(ChildOverlay::Prompt {
-                        task_id,
-                        kind: ChildPromptKind::ConfirmDeleteTodo(id),
-                        buffer: String::new(),
-                    });
-                }
-            }
-            KeyCode::Char(' ') => {
-                // Cycle the selected TODO's status.
-                let todo = self
-                    .tasks
-                    .todos_of(task_id)
-                    .and_then(|v| v.get(cursor))
-                    .cloned();
-                if let Some(todo) = todo {
-                    let next = match todo.status {
-                        TodoStatus::Pending => TodoStatus::InProgress,
-                        TodoStatus::InProgress => TodoStatus::Completed,
-                        TodoStatus::Completed => TodoStatus::Pending,
-                    };
-                    if let Err(e) = self.tasks.update_todo(task_id, todo.id, None, Some(next)) {
-                        self.tasks_screen.status_msg = Some(format!("error: {e}"));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_child_comments_key(&mut self, code: KeyCode, task_id: Uuid, cursor: usize) {
-        let row_count = self
-            .tasks
-            .comments_of(task_id)
-            .map(|v| v.len())
-            .unwrap_or(0);
-        match code {
-            KeyCode::Esc => self.tasks_screen.close_modal(),
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.tasks_screen.child_overlay_move(1, row_count);
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.tasks_screen.child_overlay_move(-1, row_count);
-            }
-            KeyCode::Char('a') => {
-                self.tasks_screen.child_overlay = Some(ChildOverlay::Prompt {
-                    task_id,
-                    kind: ChildPromptKind::AddComment,
-                    buffer: String::new(),
-                });
-            }
-            KeyCode::Char('e') => {
-                if let Some(comment) = self
-                    .tasks
-                    .comments_of(task_id)
-                    .and_then(|v| v.get(cursor))
-                    .cloned()
-                {
-                    self.tasks_screen.child_overlay = Some(ChildOverlay::Prompt {
-                        task_id,
-                        kind: ChildPromptKind::EditComment(comment.id),
-                        buffer: comment.body,
-                    });
-                }
-            }
-            KeyCode::Char('d') => {
-                if let Some(id) = self
-                    .tasks
-                    .comments_of(task_id)
-                    .and_then(|v| v.get(cursor))
-                    .map(|c| c.id)
-                {
-                    self.tasks_screen.child_overlay = Some(ChildOverlay::Prompt {
-                        task_id,
-                        kind: ChildPromptKind::ConfirmDeleteComment(id),
-                        buffer: String::new(),
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Restore the overlay to its Browse state after Esc / n on a
-    /// prompt. Picks Todos vs Comments based on the prompt kind.
-    fn return_to_browse(&mut self, task_id: Uuid, kind: ChildPromptKind) {
-        self.tasks_screen.child_overlay = Some(match kind {
-            ChildPromptKind::AddTodo
-            | ChildPromptKind::EditTodo(_)
-            | ChildPromptKind::ConfirmDeleteTodo(_) => ChildOverlay::Todos { task_id, cursor: 0 },
-            ChildPromptKind::AddComment
-            | ChildPromptKind::EditComment(_)
-            | ChildPromptKind::ConfirmDeleteComment(_) => {
-                ChildOverlay::Comments { task_id, cursor: 0 }
-            }
-        });
-    }
-
-    /// Apply a submitted child-prompt buffer. Errors surface in
-    /// `status_msg`; on success the overlay returns to its Browse
-    /// state so further ops can follow immediately.
-    fn commit_child_prompt(&mut self, task_id: Uuid, kind: ChildPromptKind, buffer: String) {
-        let body = buffer.trim().to_string();
-        let result = match kind {
-            ChildPromptKind::AddTodo => self
-                .tasks
-                .add_todo(task_id, body, OPERATOR.to_string())
-                .map(|_| ()),
-            ChildPromptKind::EditTodo(todo_id) => self
-                .tasks
-                .update_todo(task_id, todo_id, Some(body), None)
-                .map(|_| ()),
-            ChildPromptKind::ConfirmDeleteTodo(todo_id) => {
-                if body.eq_ignore_ascii_case("y") {
-                    self.tasks.remove_todo(task_id, todo_id).map(|_| ())
-                } else {
-                    Ok(())
-                }
-            }
-            ChildPromptKind::AddComment => self
-                .tasks
-                .add_comment(task_id, body, OPERATOR.to_string())
-                .map(|_| ()),
-            ChildPromptKind::EditComment(comment_id) => self
-                .tasks
-                .update_comment(task_id, comment_id, body)
-                .map(|_| ()),
-            ChildPromptKind::ConfirmDeleteComment(comment_id) => {
-                if body.eq_ignore_ascii_case("y") {
-                    self.tasks.remove_comment(task_id, comment_id).map(|_| ())
-                } else {
-                    Ok(())
-                }
-            }
-        };
-        if let Err(e) = result {
-            self.tasks_screen.status_msg = Some(format!("error: {e}"));
-        }
-        // Always drop back to the browse view for that list so the
-        // next key can continue managing the entries.
-        self.return_to_browse(task_id, kind);
-    }
-
     fn handle_task_form_key(&mut self, code: KeyCode) {
         let Some(form) = self.tasks_screen.form.as_mut() else {
             return;
         };
-
-        if form.popover_open.is_some() {
-            Self::handle_task_form_popover_key(form, code);
-            return;
-        }
 
         // Single-select dropdown picker (assignee / status) takes
         // all keyboard input while open.
@@ -13245,17 +13429,6 @@ impl App {
         let on_button = focused.is_button();
         let on_blocked_by = focused == FormField::BlockedBy;
         let on_description = focused == FormField::Description;
-        let on_todos = focused == FormField::Todos;
-        let on_comments = focused == FormField::Comments;
-        let on_section = on_todos || on_comments;
-        let (todos_len, comments_len) = match form.kind {
-            TaskFormKind::Edit(id) => self
-                .tasks
-                .get(id)
-                .map(|t| (t.todos.len(), t.comments.len()))
-                .unwrap_or((0, 0)),
-            TaskFormKind::Add => (0, 0),
-        };
 
         // Description has its own text-editor key map.
         if on_description {
@@ -13306,58 +13479,11 @@ impl App {
 
         match code {
             KeyCode::Esc => self.tasks_screen.close_modal(),
-            KeyCode::PageUp if on_todos && !form.todos_collapsed && form.popover_open.is_none() => {
-                form.page_form_section_cursor(-1, PopoverKind::Todo, todos_len);
-            }
-            KeyCode::PageDown
-                if on_todos && !form.todos_collapsed && form.popover_open.is_none() =>
-            {
-                form.page_form_section_cursor(1, PopoverKind::Todo, todos_len);
-            }
-            KeyCode::Home if on_todos && !form.todos_collapsed && form.popover_open.is_none() => {
-                form.jump_form_section_cursor(false, PopoverKind::Todo, todos_len);
-            }
-            KeyCode::End if on_todos && !form.todos_collapsed && form.popover_open.is_none() => {
-                form.jump_form_section_cursor(true, PopoverKind::Todo, todos_len);
-            }
-            KeyCode::PageUp
-                if on_comments && !form.comments_collapsed && form.popover_open.is_none() =>
-            {
-                form.page_form_section_cursor(-1, PopoverKind::Comment, comments_len);
-            }
-            KeyCode::PageDown
-                if on_comments && !form.comments_collapsed && form.popover_open.is_none() =>
-            {
-                form.page_form_section_cursor(1, PopoverKind::Comment, comments_len);
-            }
-            KeyCode::Home
-                if on_comments && !form.comments_collapsed && form.popover_open.is_none() =>
-            {
-                form.jump_form_section_cursor(false, PopoverKind::Comment, comments_len);
-            }
-            KeyCode::End
-                if on_comments && !form.comments_collapsed && form.popover_open.is_none() =>
-            {
-                form.jump_form_section_cursor(true, PopoverKind::Comment, comments_len);
-            }
-            // Tab/Down → next control; Shift-Tab/Up → previous. The
-            // Todos / Comments sections claim j/k for inner scroll
-            // when expanded, but always yield Tab and Up/Down to the
-            // form's own focus walk so the user can leave the
-            // section without first collapsing it.
             KeyCode::Tab | KeyCode::Down => form.focus_next(),
             KeyCode::BackTab | KeyCode::Up => form.focus_prev(),
             KeyCode::Enter => match focused {
                 FormField::Ok => self.submit_task_form(),
                 FormField::Cancel => self.tasks_screen.close_modal(),
-                FormField::Todos if !form.todos_collapsed && todos_len > 0 => {
-                    form.open_popover(PopoverKind::Todo);
-                }
-                FormField::Todos => form.toggle_todos_collapsed(),
-                FormField::Comments if !form.comments_collapsed && comments_len > 0 => {
-                    form.open_popover(PopoverKind::Comment);
-                }
-                FormField::Comments => form.toggle_comments_collapsed(),
                 FormField::Approve => {
                     if let TaskFormKind::Edit(id) = form.kind {
                         // Drop the form before calling approve so the
@@ -13376,228 +13502,14 @@ impl App {
                 _ if on_blocked_by => self.open_blocked_by_picker_for_form(),
                 _ => self.submit_task_form(),
             },
-            // Cursor navigation inside an expanded section. The
-            // renderer auto-tracks scroll to keep the cursor in view;
-            // we don't have the live task here so we drop the cursor
-            // walk down to the helpers below which consult `self.tasks`.
-            KeyCode::Char('j') if on_section => {
-                self.move_form_section_cursor(1);
-            }
-            KeyCode::Char('k') if on_section => {
-                self.move_form_section_cursor(-1);
-            }
-            // Space on Todos toggles the cursor-selected todo between
-            // Pending and Completed. Mirrors a checkbox click in the
-            // mouse handler.
-            KeyCode::Char(' ') if on_todos && !form.todos_collapsed => {
-                self.toggle_form_selected_todo();
-            }
-            // `a` on the expanded TODOs section opens an inline
-            // add-todo prompt at the chat input bar; the form stays
-            // visible behind it.
-            KeyCode::Char('a') if on_todos && !form.todos_collapsed => {
-                self.open_form_add_todo_prompt();
-            }
-            // `d` opens the y/n confirmation prompt for the cursor-
-            // selected todo. Confirming removes it from the store;
-            // declining or Esc returns control to the form intact.
-            KeyCode::Char('d') if on_todos && !form.todos_collapsed => {
-                self.open_form_delete_todo_prompt();
-            }
-            // Comment management while focused + expanded: a/e/d
-            // pipe into TasksPrompt so the user can compose without
-            // leaving the form.
-            KeyCode::Char('a') if on_comments && !form.comments_collapsed => {
-                self.open_form_add_comment_prompt();
-            }
-            KeyCode::Char('e') if on_comments && !form.comments_collapsed => {
-                self.open_form_edit_comment_prompt();
-            }
-            KeyCode::Char('d') if on_comments && !form.comments_collapsed => {
-                self.open_form_delete_comment_prompt();
-            }
-            KeyCode::Backspace if !on_dropdown && !on_button && !on_blocked_by && !on_section => {
+            KeyCode::Backspace if !on_dropdown && !on_button && !on_blocked_by => {
                 form.field_mut(focused).pop();
             }
-            KeyCode::Char(c) if !on_dropdown && !on_button && !on_blocked_by && !on_section => {
+            KeyCode::Char(c) if !on_dropdown && !on_button && !on_blocked_by => {
                 form.field_mut(focused).push(c);
             }
             _ => {}
         }
-    }
-
-    fn handle_task_form_popover_key(form: &mut TaskForm, code: KeyCode) {
-        // TODO: press 'e' to edit
-        match code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => form.close_popover(),
-            KeyCode::Char('j') | KeyCode::Down => {
-                form.scroll_popover(1, form.last_popover_max_scroll);
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                form.scroll_popover(-1, form.last_popover_max_scroll);
-            }
-            KeyCode::PageDown => {
-                let delta = i32::from(form.last_popover_body_height.max(1));
-                form.scroll_popover(delta, form.last_popover_max_scroll);
-            }
-            KeyCode::PageUp => {
-                let delta = i32::from(form.last_popover_body_height.max(1));
-                form.scroll_popover(-delta, form.last_popover_max_scroll);
-            }
-            _ => {}
-        }
-    }
-
-    /// Step the cursor inside the currently-focused expanded section
-    /// by `delta` rows. Reads the live task to compute the upper
-    /// bound. No-op if no form is open or the section is collapsed.
-    fn move_form_section_cursor(&mut self, delta: i32) {
-        let Some(form) = self.tasks_screen.form.as_ref() else {
-            return;
-        };
-        let TaskFormKind::Edit(task_id) = form.kind else {
-            return;
-        };
-        let focused = form.focused_field;
-        let Some(task) = self.tasks.get(task_id) else {
-            return;
-        };
-        let len = match focused {
-            FormField::Todos if !form.todos_collapsed => task.todos.len(),
-            FormField::Comments if !form.comments_collapsed => task.comments.len(),
-            _ => return,
-        };
-        let Some(form) = self.tasks_screen.form.as_mut() else {
-            return;
-        };
-        match focused {
-            FormField::Todos => form.move_todos_cursor(delta, len),
-            FormField::Comments => form.move_comments_cursor(delta, len),
-            _ => {}
-        }
-    }
-
-    /// Toggle the cursor-selected TODO between Pending and Completed.
-    /// Stays a no-op if the section is collapsed, the form is closed,
-    /// or the cursor is past the end.
-    fn toggle_form_selected_todo(&mut self) {
-        let Some(form) = self.tasks_screen.form.as_ref() else {
-            return;
-        };
-        let TaskFormKind::Edit(task_id) = form.kind else {
-            return;
-        };
-        if form.todos_collapsed {
-            return;
-        }
-        let cursor = form.todos_cursor;
-        let Some(task) = self.tasks.get(task_id) else {
-            return;
-        };
-        let Some(td) = task.todos.get(cursor) else {
-            return;
-        };
-        let next_status = match td.status {
-            crate::tasks::TodoStatus::Completed => crate::tasks::TodoStatus::Pending,
-            _ => crate::tasks::TodoStatus::Completed,
-        };
-        let todo_id = td.id;
-        let _ = self
-            .tasks
-            .update_todo(task_id, todo_id, None, Some(next_status));
-    }
-
-    fn open_form_add_todo_prompt(&mut self) {
-        let Some(form) = self.tasks_screen.form.as_ref() else {
-            return;
-        };
-        let TaskFormKind::Edit(task_id) = form.kind else {
-            return;
-        };
-        self.tasks_screen.prompt = Some(TasksPrompt::AddTodo {
-            task_id,
-            body: String::new(),
-        });
-    }
-
-    fn open_form_delete_todo_prompt(&mut self) {
-        let Some(form) = self.tasks_screen.form.as_ref() else {
-            return;
-        };
-        let TaskFormKind::Edit(task_id) = form.kind else {
-            return;
-        };
-        let cursor = form.todos_cursor;
-        let Some(task) = self.tasks.get(task_id) else {
-            return;
-        };
-        let Some(td) = task.todos.get(cursor) else {
-            return;
-        };
-        let todo_id = td.id;
-        self.tasks_screen.prompt = Some(TasksPrompt::ConfirmDeleteTodo {
-            task_id,
-            todo_id,
-            buffer: String::new(),
-        });
-    }
-
-    fn open_form_add_comment_prompt(&mut self) {
-        let Some(form) = self.tasks_screen.form.as_ref() else {
-            return;
-        };
-        let TaskFormKind::Edit(task_id) = form.kind else {
-            return;
-        };
-        self.tasks_screen.prompt = Some(TasksPrompt::AddComment {
-            task_id,
-            body: String::new(),
-        });
-    }
-
-    fn open_form_edit_comment_prompt(&mut self) {
-        let Some(form) = self.tasks_screen.form.as_ref() else {
-            return;
-        };
-        let TaskFormKind::Edit(task_id) = form.kind else {
-            return;
-        };
-        let cursor = form.comments_cursor;
-        let Some(task) = self.tasks.get(task_id) else {
-            return;
-        };
-        let Some(c) = task.comments.get(cursor) else {
-            return;
-        };
-        let comment_id = c.id;
-        let body = c.body.clone();
-        self.tasks_screen.prompt = Some(TasksPrompt::EditComment {
-            task_id,
-            comment_id,
-            body,
-        });
-    }
-
-    fn open_form_delete_comment_prompt(&mut self) {
-        let Some(form) = self.tasks_screen.form.as_ref() else {
-            return;
-        };
-        let TaskFormKind::Edit(task_id) = form.kind else {
-            return;
-        };
-        let cursor = form.comments_cursor;
-        let Some(task) = self.tasks.get(task_id) else {
-            return;
-        };
-        let Some(c) = task.comments.get(cursor) else {
-            return;
-        };
-        let comment_id = c.id;
-        self.tasks_screen.prompt = Some(TasksPrompt::ConfirmDeleteComment {
-            task_id,
-            comment_id,
-            buffer: String::new(),
-        });
     }
 
     /// Open the blocked-by multi-select picker, feeding it the full
@@ -13672,11 +13584,15 @@ impl App {
             task_id,
             options,
             selected: 0,
+            field: ReviewPromptField::ChangesMade,
+            changes_made: String::new(),
+            demo_instructions: String::new(),
+            error: None,
         });
     }
 
     fn handle_task_prompt_key(&mut self, code: KeyCode) {
-        let mut submit_review: Option<(Uuid, String)> = None;
+        let mut submit_review: Option<(Uuid, String, ReviewReport)> = None;
         let prompt = self.tasks_screen.prompt.as_mut();
         let Some(prompt) = prompt else { return };
         match prompt {
@@ -13740,15 +13656,15 @@ impl App {
                                 let new_id = td.id;
                                 self.tasks_screen.status_msg = Some("todo added".into());
                                 self.tasks_screen.prompt = None;
-                                // Bump the form's cursor onto the
-                                // freshly-added todo so Space toggles
-                                // it without an extra j-walk.
-                                if let (Some(form), Some(t)) =
-                                    (self.tasks_screen.form.as_mut(), self.tasks.get(id))
+                                if let (Some(screen), Some(t)) =
+                                    (self.task_detail.as_mut(), self.tasks.get(id))
                                 {
-                                    if let Some(idx) = t.todos.iter().position(|td| td.id == new_id)
-                                    {
-                                        form.todos_cursor = idx;
+                                    if screen.task_id == id {
+                                        if let Some(idx) =
+                                            t.todos.iter().position(|td| td.id == new_id)
+                                        {
+                                            screen.todos_cursor = idx;
+                                        }
                                     }
                                 }
                             }
@@ -13760,6 +13676,36 @@ impl App {
                     } else {
                         self.tasks_screen.prompt = None;
                     }
+                }
+                KeyCode::Backspace => {
+                    body.pop();
+                }
+                KeyCode::Char(c) => body.push(c),
+                _ => {}
+            },
+            TasksPrompt::EditTodo {
+                task_id,
+                todo_id,
+                body,
+            } => match code {
+                KeyCode::Esc => {
+                    self.tasks_screen.prompt = None;
+                }
+                KeyCode::Enter => {
+                    if !body.trim().is_empty() {
+                        let task_id = *task_id;
+                        let todo_id = *todo_id;
+                        let body = std::mem::take(body);
+                        match self.tasks.update_todo(task_id, todo_id, Some(body), None) {
+                            Ok(_) => {
+                                self.tasks_screen.status_msg = Some("todo updated".into());
+                            }
+                            Err(e) => {
+                                self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                            }
+                        }
+                    }
+                    self.tasks_screen.prompt = None;
                 }
                 KeyCode::Backspace => {
                     body.pop();
@@ -13786,16 +13732,16 @@ impl App {
                             self.tasks_screen.status_msg = Some(format!("error: {e}"));
                         }
                     }
-                    // Snap the cursor back into range so a follow-up
-                    // Space doesn't index past the new end.
-                    if let (Some(form), Some(t)) =
-                        (self.tasks_screen.form.as_mut(), self.tasks.get(task_id))
+                    if let (Some(screen), Some(t)) =
+                        (self.task_detail.as_mut(), self.tasks.get(task_id))
                     {
-                        let len = t.todos.len();
-                        if len == 0 {
-                            form.todos_cursor = 0;
-                        } else if form.todos_cursor >= len {
-                            form.todos_cursor = len - 1;
+                        if screen.task_id == task_id {
+                            let len = t.todos.len();
+                            if len == 0 {
+                                screen.todos_cursor = 0;
+                            } else if screen.todos_cursor >= len {
+                                screen.todos_cursor = len - 1;
+                            }
                         }
                     }
                     self.tasks_screen.prompt = None;
@@ -13822,16 +13768,16 @@ impl App {
                             Ok(c) => {
                                 let new_id = c.id;
                                 self.tasks_screen.status_msg = Some("comment added".into());
-                                // Drop the prompt and bump the cursor
-                                // to the freshly-added row.
                                 self.tasks_screen.prompt = None;
-                                if let (Some(form), Some(t)) =
-                                    (self.tasks_screen.form.as_mut(), self.tasks.get(id))
+                                if let (Some(screen), Some(t)) =
+                                    (self.task_detail.as_mut(), self.tasks.get(id))
                                 {
-                                    if let Some(idx) =
-                                        t.comments.iter().position(|c| c.id == new_id)
-                                    {
-                                        form.comments_cursor = idx;
+                                    if screen.task_id == id {
+                                        if let Some(idx) =
+                                            t.comments.iter().position(|c| c.id == new_id)
+                                        {
+                                            screen.comments_cursor = idx;
+                                        }
                                     }
                                 }
                                 self.notify_planning_creator_of_comment(id, OPERATOR);
@@ -13901,15 +13847,16 @@ impl App {
                             self.tasks_screen.status_msg = Some(format!("error: {e}"));
                         }
                     }
-                    // Snap the cursor back into range.
-                    if let (Some(form), Some(t)) =
-                        (self.tasks_screen.form.as_mut(), self.tasks.get(task_id))
+                    if let (Some(screen), Some(t)) =
+                        (self.task_detail.as_mut(), self.tasks.get(task_id))
                     {
-                        let len = t.comments.len();
-                        if len == 0 {
-                            form.comments_cursor = 0;
-                        } else if form.comments_cursor >= len {
-                            form.comments_cursor = len - 1;
+                        if screen.task_id == task_id {
+                            let len = t.comments.len();
+                            if len == 0 {
+                                screen.comments_cursor = 0;
+                            } else if screen.comments_cursor >= len {
+                                screen.comments_cursor = len - 1;
+                            }
                         }
                     }
                     self.tasks_screen.prompt = None;
@@ -13961,17 +13908,29 @@ impl App {
                 task_id,
                 options,
                 selected,
+                field,
+                changes_made,
+                demo_instructions,
+                error,
             } => match code {
                 KeyCode::Esc => {
                     self.tasks_screen.prompt = None;
                 }
+                KeyCode::Tab => {
+                    *field = match field {
+                        ReviewPromptField::ChangesMade => ReviewPromptField::DemoInstructions,
+                        ReviewPromptField::DemoInstructions => ReviewPromptField::Reviewer,
+                        ReviewPromptField::Reviewer => ReviewPromptField::ChangesMade,
+                    };
+                    *error = None;
+                }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if !options.is_empty() {
+                    if *field == ReviewPromptField::Reviewer && !options.is_empty() {
                         *selected = (*selected + 1) % options.len();
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    if !options.is_empty() {
+                    if *field == ReviewPromptField::Reviewer && !options.is_empty() {
                         *selected = if *selected == 0 {
                             options.len() - 1
                         } else {
@@ -13980,18 +13939,51 @@ impl App {
                     }
                 }
                 KeyCode::Enter => {
-                    if let Some(reviewer) = options.get(*selected).cloned() {
-                        submit_review = Some((*task_id, reviewer));
+                    if changes_made.trim().is_empty() {
+                        *field = ReviewPromptField::ChangesMade;
+                        *error = Some("changes made is required".into());
+                    } else if demo_instructions.trim().is_empty() {
+                        *field = ReviewPromptField::DemoInstructions;
+                        *error = Some("demo instructions are required".into());
+                    } else if let Some(reviewer) = options.get(*selected).cloned() {
+                        submit_review = Some((
+                            *task_id,
+                            reviewer,
+                            ReviewReport {
+                                changes_made: changes_made.clone(),
+                                demo_instructions: demo_instructions.clone(),
+                            },
+                        ));
                     } else {
                         self.tasks_screen.status_msg = Some("no reviewer selected".into());
                         self.tasks_screen.prompt = None;
                     }
                 }
+                KeyCode::Backspace => {
+                    match field {
+                        ReviewPromptField::ChangesMade => {
+                            changes_made.pop();
+                        }
+                        ReviewPromptField::DemoInstructions => {
+                            demo_instructions.pop();
+                        }
+                        ReviewPromptField::Reviewer => {}
+                    }
+                    *error = None;
+                }
+                KeyCode::Char(c) => {
+                    match field {
+                        ReviewPromptField::ChangesMade => changes_made.push(c),
+                        ReviewPromptField::DemoInstructions => demo_instructions.push(c),
+                        ReviewPromptField::Reviewer => {}
+                    }
+                    *error = None;
+                }
                 _ => {}
             },
         }
-        if let Some((task_id, reviewer)) = submit_review {
-            match self.submit_task_for_review(task_id, reviewer, None, OPERATOR) {
+        if let Some((task_id, reviewer, report)) = submit_review {
+            match self.submit_task_for_review(task_id, reviewer, report, None, OPERATOR) {
                 Ok(reviewer) => {
                     self.tasks_screen.status_msg = Some(format!("submitted → {reviewer}"));
                 }
@@ -14423,20 +14415,14 @@ impl App {
                 //    captures all clicks. Clicks outside its rect
                 //    are swallowed so the user can't accidentally
                 //    dismiss the modal by clicking behind it.
-                if self.active_view == ActiveView::Tasks && self.tasks_screen.form.is_some() {
+                if matches!(
+                    self.active_view,
+                    ActiveView::Tasks | ActiveView::TaskDetail { .. }
+                ) && self.tasks_screen.form.is_some()
+                {
                     self.handle_mouse_task_modal(pos);
                     return;
                 }
-                // 0b. If a child overlay (TODOs / Comments) is
-                //     open, clicks inside move the cursor; clicks
-                //     outside the overlay close it.
-                if self.active_view == ActiveView::Tasks
-                    && self.tasks_screen.child_overlay.is_some()
-                {
-                    self.handle_mouse_child_overlay(pos);
-                    return;
-                }
-
                 // 0c. Memory-view modals (form / detail / links /
                 //     confirm-delete) capture all clicks. Clicks
                 //     outside the modal dismiss it, clicks inside
@@ -14463,6 +14449,18 @@ impl App {
                 //     prevent accidental dismissal via sidebar click.
                 if self.active_view == ActiveView::Cron && self.handle_mouse_cron(pos) {
                     return;
+                }
+
+                // 0f. Task detail owns its tab-strip hit tests while
+                //     the full-screen detail route is active.
+                if matches!(self.active_view, ActiveView::TaskDetail { .. }) {
+                    let layout = self.layout.clone();
+                    if let Some(screen) = self.task_detail.as_mut() {
+                        if screen.handle_mouse(&layout, pos) {
+                            self.focus = Focus::TaskDetail;
+                            return;
+                        }
+                    }
                 }
 
                 // 1. Chat buttons take priority.
@@ -14653,6 +14651,7 @@ impl App {
                             ActiveView::Inbox => Focus::Inbox,
                             ActiveView::Cron => Focus::Cron,
                             ActiveView::RepoDiff { .. } => Focus::RepoDiff,
+                            ActiveView::TaskDetail { .. } => Focus::TaskDetail,
                             ActiveView::WorkflowForm { .. }
                             | ActiveView::WorkflowInstance { .. } => Focus::Workflow,
                         };
@@ -14679,9 +14678,9 @@ impl App {
                             }
                         }
 
-                        // In Tasks view, clicking a row selects it;
-                        // a double-click on the same row opens the
-                        // edit modal.
+                        // In Tasks view, clicking a real task row
+                        // selects it and opens the full-screen detail
+                        // route. Header rows stay inert.
                         if self.active_view == ActiveView::Tasks {
                             let row_in_list = ev.row.saturating_sub(rect.y) as usize;
                             let rows = TasksScreen::rows(&self.tasks);
@@ -14689,33 +14688,8 @@ impl App {
                                 rows.get(row_in_list).cloned()
                             {
                                 self.tasks_screen.selected_row = row_in_list;
-
-                                // Double-click test: same (col, row)
-                                // within the double-click window.
-                                let is_double = match self.last_click {
-                                    Some((c, r, t)) => {
-                                        c == ev.column
-                                            && r == ev.row
-                                            && t.elapsed() < DOUBLE_CLICK_WINDOW
-                                    }
-                                    None => false,
-                                };
-                                self.last_click = Some((ev.column, ev.row, Instant::now()));
-
-                                if is_double {
-                                    if let Some(t) = self.tasks.get(id) {
-                                        self.tasks_screen.open_edit(t);
-                                        self.inject_assignee_options();
-                                    }
-                                    // Reset so a third click isn't
-                                    // also treated as a double.
-                                    self.last_click = None;
-                                }
+                                self.open_task_detail(id);
                             } else {
-                                // Click landed on a header or an
-                                // empty row — forget the last task
-                                // click so a subsequent click on a
-                                // different row doesn't double.
                                 self.last_click = None;
                             }
                         }
@@ -14732,6 +14706,7 @@ impl App {
                             ActiveView::Inbox => Focus::Inbox,
                             ActiveView::Cron => Focus::Cron,
                             ActiveView::RepoDiff { .. } => Focus::RepoDiff,
+                            ActiveView::TaskDetail { .. } => Focus::TaskDetail,
                             ActiveView::WorkflowForm { .. }
                             | ActiveView::WorkflowInstance { .. } => Focus::Workflow,
                         };
@@ -14747,9 +14722,6 @@ impl App {
                         .unwrap_or(false)
                 {
                     self.scroll_repo_diff_by(-1);
-                    return;
-                }
-                if self.scroll_task_form_section_at(pos, -1) {
                     return;
                 }
                 if self.active_view == ActiveView::Inbox && self.mouse_in_inbox_detail_zone(pos) {
@@ -14797,9 +14769,6 @@ impl App {
                     self.scroll_repo_diff_by(1);
                     return;
                 }
-                if self.scroll_task_form_section_at(pos, 1) {
-                    return;
-                }
                 if self.active_view == ActiveView::Inbox && self.mouse_in_inbox_detail_zone(pos) {
                     let max = self.inbox_detail_max_scroll();
                     self.inbox_screen.detail_scroll =
@@ -14839,47 +14808,6 @@ impl App {
             }
             _ => {}
         }
-    }
-
-    fn scroll_task_form_section_at(&mut self, pos: (u16, u16), delta: i32) -> bool {
-        if self.active_view != ActiveView::Tasks {
-            return false;
-        }
-        let Some(form) = self.tasks_screen.form.as_ref() else {
-            return false;
-        };
-        let TaskFormKind::Edit(task_id) = form.kind else {
-            return false;
-        };
-        let Some(task) = self.tasks.get(task_id) else {
-            return false;
-        };
-        let hit = if !form.todos_collapsed
-            && self
-                .layout
-                .task_form_todos_section
-                .map(|r| rect_contains(r, pos))
-                .unwrap_or(false)
-        {
-            Some((PopoverKind::Todo, task.todos.len()))
-        } else if !form.comments_collapsed
-            && self
-                .layout
-                .task_form_comments_section
-                .map(|r| rect_contains(r, pos))
-                .unwrap_or(false)
-        {
-            Some((PopoverKind::Comment, task.comments.len()))
-        } else {
-            None
-        };
-        let Some((kind, len)) = hit else {
-            return false;
-        };
-        if let Some(form) = self.tasks_screen.form.as_mut() {
-            form.scroll_form_section_viewport(delta, kind, len);
-        }
-        true
     }
 
     /// Returns the scrollable "zone" the cursor is in, if any. Used by
@@ -15509,68 +15437,6 @@ impl App {
             return;
         }
 
-        // Click on a TODO row: first click selects (focus + move
-        // cursor); a second click on the already-selected row is what
-        // actually toggles the done state. Two-step pattern keeps a
-        // mis-aimed click from accidentally checking off the wrong
-        // todo. Beats the field hit-test because the row rects sit
-        // inside the section's outer rect.
-        if let Some((todo_id, row_idx)) = self
-            .layout
-            .task_form_todo_rows
-            .iter()
-            .enumerate()
-            .find(|(_, (_, r))| rect_contains(*r, pos))
-            .map(|(idx, (id, _))| (*id, idx))
-        {
-            let mut should_toggle = false;
-            if let Some(form) = self.tasks_screen.form.as_mut() {
-                let new_cursor = (form.todos_scroll as usize) + row_idx;
-                should_toggle =
-                    form.focused_field == FormField::Todos && form.todos_cursor == new_cursor;
-                form.focused_field = FormField::Todos;
-                form.todos_cursor = new_cursor;
-            }
-            if should_toggle {
-                let task_id = match self.tasks_screen.form.as_ref().map(|f| f.kind) {
-                    Some(TaskFormKind::Edit(id)) => Some(id),
-                    _ => None,
-                };
-                if let Some(task_id) = task_id {
-                    let next = self
-                        .tasks
-                        .get(task_id)
-                        .and_then(|t| t.todos.iter().find(|td| td.id == todo_id))
-                        .map(|td| match td.status {
-                            crate::tasks::TodoStatus::Completed => {
-                                crate::tasks::TodoStatus::Pending
-                            }
-                            _ => crate::tasks::TodoStatus::Completed,
-                        });
-                    if let Some(next) = next {
-                        let _ = self.tasks.update_todo(task_id, todo_id, None, Some(next));
-                    }
-                }
-            }
-            return;
-        }
-
-        // Click on a comment row sets the cursor.
-        if let Some((_, row_idx)) = self
-            .layout
-            .task_form_comment_rows
-            .iter()
-            .enumerate()
-            .find(|(_, (_, r))| rect_contains(*r, pos))
-            .map(|(idx, (id, _))| (*id, idx))
-        {
-            if let Some(form) = self.tasks_screen.form.as_mut() {
-                form.focused_field = FormField::Comments;
-                form.comments_cursor = (form.comments_scroll as usize) + row_idx;
-            }
-            return;
-        }
-
         // No picker: hit-test form fields and buttons.
         let hit = self
             .layout
@@ -15615,19 +15481,6 @@ impl App {
                     }
                 } else if field == FormField::BlockedBy {
                     self.open_blocked_by_picker_for_form();
-                }
-                // Clicking the Todos / Comments label toggles the
-                // collapse state — same as Enter on a focused
-                // section. Click on a row inside the expanded box is
-                // handled above and short-circuits before this point.
-                else if field == FormField::Todos {
-                    if let Some(form) = self.tasks_screen.form.as_mut() {
-                        form.toggle_todos_collapsed();
-                    }
-                } else if field == FormField::Comments {
-                    if let Some(form) = self.tasks_screen.form.as_mut() {
-                        form.toggle_comments_collapsed();
-                    }
                 }
             }
         }
@@ -15734,31 +15587,6 @@ impl App {
         }
 
         false
-    }
-
-    /// Handle a left click while the TODOs / Comments overlay is
-    /// open. Click on a visible row → move the cursor to it; click
-    /// outside the overlay's outer rect → close it.
-    fn handle_mouse_child_overlay(&mut self, pos: (u16, u16)) {
-        // Click a row? Move the cursor.
-        if let Some(idx) = self
-            .layout
-            .child_overlay_rows
-            .iter()
-            .position(|r| rect_contains(*r, pos))
-        {
-            let row_count = self.layout.child_overlay_rows.len();
-            self.tasks_screen.child_overlay_set_cursor(idx, row_count);
-            return;
-        }
-        // Click inside the overlay but not on a row → swallow.
-        if let Some(outer) = self.layout.child_overlay_outer {
-            if rect_contains(outer, pos) {
-                return;
-            }
-        }
-        // Click outside → close.
-        self.tasks_screen.close_modal();
     }
 
     fn dispatch_button(&mut self, action: BlockAction) {
@@ -16245,10 +16073,21 @@ pub(crate) fn task_op_summary(
             String::new(),
         ),
         TaskCommand::Take => (TaskOpKind::Take, "Take".to_string(), String::new()),
-        TaskCommand::Review { id, reviewer, note } => (
+        TaskCommand::Review {
+            id,
+            reviewer,
+            changes,
+            demo,
+            note,
+        } => (
             TaskOpKind::Update,
             format!("Review: {} -> {reviewer}", short_id(*id)),
-            note.clone().unwrap_or_default(),
+            format!(
+                "Changes made: {changes}\nDemo instructions: {demo}{}",
+                note.as_ref()
+                    .map(|note| format!("\nNote: {note}"))
+                    .unwrap_or_default()
+            ),
         ),
         TaskCommand::ReviewApprove { id, note } => (
             TaskOpKind::Update,
@@ -22781,162 +22620,6 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         assert_eq!(comments[0].body, "from agent a");
     }
 
-    // --------- TUI overlays: o (TODOs) / c (Comments) ---------
-
-    #[tokio::test]
-    async fn o_opens_todos_overlay_on_selected_task() {
-        let mut app = App::new(sample_config());
-        let tid = app
-            .tasks
-            .add("parent".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('o'), KeyModifiers::NONE);
-        match &app.tasks_screen.child_overlay {
-            Some(super::super::tasks_view::ChildOverlay::Todos { task_id, .. }) => {
-                assert_eq!(*task_id, tid);
-            }
-            other => panic!("expected Todos overlay, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn c_opens_comments_overlay_on_selected_task() {
-        let mut app = App::new(sample_config());
-        let tid = app
-            .tasks
-            .add("parent".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
-        match &app.tasks_screen.child_overlay {
-            Some(super::super::tasks_view::ChildOverlay::Comments { task_id, .. }) => {
-                assert_eq!(*task_id, tid);
-            }
-            other => panic!("expected Comments overlay, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn todos_overlay_add_body_enter_appends_a_todo() {
-        let mut app = App::new(sample_config());
-        let tid = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('o'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
-        for c in "draft schema".chars() {
-            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
-        }
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        let todos = app.tasks.todos_of(tid).unwrap();
-        assert_eq!(todos.len(), 1);
-        assert_eq!(todos[0].body, "draft schema");
-        // Overlay bounces back to Browse so the next op can follow.
-        assert!(matches!(
-            app.tasks_screen.child_overlay,
-            Some(super::super::tasks_view::ChildOverlay::Todos { .. })
-        ));
-    }
-
-    #[tokio::test]
-    async fn todos_overlay_space_cycles_status_of_cursor_row() {
-        let mut app = App::new(sample_config());
-        let tid = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        let td_id = app
-            .tasks
-            .add_todo(tid, "one".into(), "seed".into())
-            .unwrap()
-            .id;
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('o'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
-        assert_eq!(
-            app.tasks
-                .todos_of(tid)
-                .unwrap()
-                .iter()
-                .find(|td| td.id == td_id)
-                .unwrap()
-                .status,
-            crate::tasks::TodoStatus::InProgress
-        );
-    }
-
-    #[tokio::test]
-    async fn todos_overlay_d_y_removes_cursor_row() {
-        let mut app = App::new(sample_config());
-        let tid = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        let td_id = app
-            .tasks
-            .add_todo(tid, "one".into(), "seed".into())
-            .unwrap()
-            .id;
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('o'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
-        assert!(app
-            .tasks
-            .todos_of(tid)
-            .unwrap()
-            .iter()
-            .all(|td| td.id != td_id));
-    }
-
-    #[tokio::test]
-    async fn comments_overlay_add_body_enter_appends_comment() {
-        let mut app = App::new(sample_config());
-        let tid = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
-        for ch in "heads up".chars() {
-            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE);
-        }
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        let comments = app.tasks.comments_of(tid).unwrap();
-        assert_eq!(comments.len(), 1);
-        assert_eq!(comments[0].body, "heads up");
-        // Author is the TUI operator constant.
-        assert_eq!(comments[0].author, "tui");
-    }
-
     #[tokio::test]
     async fn description_enter_inserts_newline_instead_of_submitting() {
         let mut app = App::new(sample_config());
@@ -23158,22 +22841,6 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         let form = app.tasks_screen.form.as_ref().unwrap();
         assert!(form.blocked_by_picker.is_none());
         assert!(form.blocked_by.is_empty(), "esc discards the toggle");
-    }
-
-    #[tokio::test]
-    async fn esc_closes_child_overlay() {
-        let mut app = App::new(sample_config());
-        app.tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap();
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('o'), KeyModifiers::NONE);
-        assert!(app.tasks_screen.child_overlay.is_some());
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(app.tasks_screen.child_overlay.is_none());
     }
 
     #[tokio::test]
@@ -24080,12 +23747,25 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
             app.tasks_screen.prompt,
             Some(TasksPrompt::ReviewPicker { .. })
         ));
+        type_string(&mut app, "implemented change");
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE);
+        type_string(&mut app, "run the app");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
 
         let t = app.tasks.get(id).unwrap();
         assert_eq!(t.status, crate::tasks::TaskStatus::Review);
         assert_eq!(t.assignee.as_deref(), Some("a"));
         assert_eq!(t.review_submitter.as_deref(), Some(OPERATOR));
+        assert_eq!(
+            t.review_report.as_ref().map(|r| r.changes_made.as_str()),
+            Some("implemented change")
+        );
+        assert_eq!(
+            t.review_report
+                .as_ref()
+                .map(|r| r.demo_instructions.as_str()),
+            Some("run the app")
+        );
         assert!(app.tasks_screen.prompt.is_none());
     }
 
@@ -24151,7 +23831,68 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
     }
 
     #[test]
-    fn enter_on_task_row_opens_edit_form() {
+    fn enter_on_task_row_opens_task_detail() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.active_view, ActiveView::TaskDetail { task_id: id });
+        assert_eq!(app.focus, Focus::TaskDetail);
+        assert!(matches!(
+            app.task_detail.as_ref().map(|s| s.task_id),
+            Some(task_id) if task_id == id
+        ));
+    }
+
+    #[test]
+    fn esc_closes_task_detail_and_drops_state() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::TaskDetail { task_id: id };
+        app.focus = Focus::TaskDetail;
+        app.task_detail = Some(TaskDetailScreen::new(id));
+
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+
+        assert_eq!(app.active_view, ActiveView::Tasks);
+        assert_eq!(app.focus, Focus::Tasks);
+        assert!(app.task_detail.is_none());
+    }
+
+    #[test]
+    fn q_closes_task_detail_and_reclamps_list_selection() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::TaskDetail { task_id: id };
+        app.focus = Focus::TaskDetail;
+        app.task_detail = Some(TaskDetailScreen::new(id));
+        app.tasks_screen.selected_row = usize::MAX;
+
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE);
+
+        assert_eq!(app.active_view, ActiveView::Tasks);
+        assert_eq!(app.focus, Focus::Tasks);
+        assert!(app.task_detail.is_none());
+        assert_ne!(app.tasks_screen.selected_row, usize::MAX);
+    }
+
+    #[test]
+    fn edit_form_tab_order_is_fields_only() {
         let mut app = App::new(sample_config());
         app.tasks
             .add("t".into(), None, None, "seed".into(), Vec::new())
@@ -24160,442 +23901,43 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         app.focus = Focus::Tasks;
         let rows = TasksScreen::rows(&app.tasks);
         app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        let order = app.tasks_screen.form.as_ref().unwrap().tab_order();
+        assert_eq!(
+            order,
+            vec![
+                FormField::Title,
+                FormField::Description,
+                FormField::Assignee,
+                FormField::Status,
+                FormField::BlockedBy,
+                FormField::Ok,
+                FormField::Cancel,
+            ]
+        );
+    }
+
+    #[test]
+    fn detail_task_tab_e_opens_edit_form_and_esc_returns_to_detail() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add("t".into(), None, None, "seed".into(), Vec::new())
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::TaskDetail { task_id: id };
+        app.focus = Focus::TaskDetail;
+        app.task_detail = Some(TaskDetailScreen::new(id));
+
+        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
         assert!(matches!(
             app.tasks_screen.form.as_ref().map(|f| f.kind),
-            Some(TaskFormKind::Edit(_))
+            Some(TaskFormKind::Edit(edit_id)) if edit_id == id
         ));
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.tasks_screen.form.is_none());
-    }
-
-    #[test]
-    fn edit_form_tab_order_includes_todos_and_comments() {
-        let mut app = App::new(sample_config());
-        app.tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap();
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        let order = app.tasks_screen.form.as_ref().unwrap().tab_order();
-        assert!(order.contains(&FormField::Todos));
-        assert!(order.contains(&FormField::Comments));
-    }
-
-    #[test]
-    fn add_form_tab_order_excludes_todos_and_comments() {
-        let mut app = App::new(sample_config());
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
-        let order = app.tasks_screen.form.as_ref().unwrap().tab_order();
-        assert!(!order.contains(&FormField::Todos));
-        assert!(!order.contains(&FormField::Comments));
-    }
-
-    #[test]
-    fn edit_form_todos_and_comments_default_collapsed_with_zero_scroll() {
-        let mut app = App::new(sample_config());
-        app.tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap();
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        let form = app.tasks_screen.form.as_ref().unwrap();
-        assert!(form.todos_collapsed);
-        assert!(form.comments_collapsed);
-        assert_eq!(form.todos_scroll, 0);
-        assert_eq!(form.comments_scroll, 0);
-    }
-
-    #[test]
-    fn enter_on_focused_todos_field_toggles_collapse() {
-        let mut app = App::new(sample_config());
-        app.tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap();
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        // Focus the Todos field directly (avoids Description swallowing keys).
-        app.tasks_screen.form.as_mut().unwrap().focused_field = FormField::Todos;
-        assert!(app.tasks_screen.form.as_ref().unwrap().todos_collapsed);
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(!app.tasks_screen.form.as_ref().unwrap().todos_collapsed);
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.tasks_screen.form.as_ref().unwrap().todos_collapsed);
-    }
-
-    #[test]
-    fn enter_on_focused_comments_field_toggles_collapse_and_resets_scroll() {
-        let mut app = App::new(sample_config());
-        app.tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap();
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        {
-            let form = app.tasks_screen.form.as_mut().unwrap();
-            form.focused_field = FormField::Comments;
-            // Pretend the user had scrolled within an earlier expansion.
-            form.comments_scroll = 7;
-        }
-        // Toggling resets scroll so a re-expansion lands at the top.
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        let form = app.tasks_screen.form.as_ref().unwrap();
-        assert!(!form.comments_collapsed);
-        assert_eq!(form.comments_scroll, 0);
-    }
-
-    #[test]
-    fn j_k_moves_todo_cursor_only_when_expanded() {
-        let mut app = App::new(sample_config());
-        let task_id = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        // Three todos so cursor has somewhere to walk.
-        for body in ["one", "two", "three"] {
-            app.tasks
-                .add_todo(task_id, body.into(), "seed".into())
-                .unwrap();
-        }
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        app.tasks_screen.form.as_mut().unwrap().focused_field = FormField::Todos;
-
-        // Collapsed: j/k are absorbed (no cursor movement, no text
-        // mutation either since Todos is gated as a "section").
-        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 0);
-
-        // Expand, walk down twice, then up once.
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 2);
-        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
-        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 1);
-        // Past the end is clamped.
-        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE);
-        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 2);
-    }
-
-    #[test]
-    fn space_toggles_cursor_selected_todo_done() {
-        let mut app = App::new(sample_config());
-        let task_id = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        for body in ["one", "two"] {
-            app.tasks
-                .add_todo(task_id, body.into(), "seed".into())
-                .unwrap();
-        }
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        // Focus + expand Todos, then point cursor at the second todo.
-        {
-            let form = app.tasks_screen.form.as_mut().unwrap();
-            form.focused_field = FormField::Todos;
-            form.todos_collapsed = false;
-            form.todos_cursor = 1;
-        }
-
-        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
-        assert_eq!(
-            app.tasks.get(task_id).unwrap().todos[1].status,
-            crate::tasks::TodoStatus::Completed
-        );
-
-        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
-        assert_eq!(
-            app.tasks.get(task_id).unwrap().todos[1].status,
-            crate::tasks::TodoStatus::Pending
-        );
-    }
-
-    #[test]
-    fn esc_closes_task_form_popover() {
-        let mut form = TaskForm::new_add();
-        form.open_popover(PopoverKind::Comment);
-        App::handle_task_form_popover_key(&mut form, KeyCode::Esc);
-        assert_eq!(form.popover_open, None);
-    }
-
-    #[test]
-    fn a_in_expanded_todos_opens_add_todo_prompt_and_commits_to_store() {
-        let mut app = App::new(sample_config());
-        let task_id = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        {
-            let form = app.tasks_screen.form.as_mut().unwrap();
-            form.focused_field = FormField::Todos;
-            form.todos_collapsed = false;
-        }
-
-        // `a` opens the add-todo prompt overlaid on the form.
-        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
-        assert!(matches!(
-            app.tasks_screen.prompt,
-            Some(TasksPrompt::AddTodo { .. })
-        ));
-        assert!(app.tasks_screen.form.is_some(), "form must stay open");
-
-        // Type body, commit, prompt closes, todo lands on the task,
-        // and the form's cursor lands on the new todo.
-        for c in "first todo".chars() {
-            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
-        }
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.tasks_screen.prompt.is_none());
-        let todos = &app.tasks.get(task_id).unwrap().todos;
-        assert_eq!(todos.len(), 1);
-        assert_eq!(todos[0].body, "first todo");
-        assert_eq!(todos[0].status, crate::tasks::TodoStatus::Pending);
-        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 0);
-    }
-
-    #[test]
-    fn d_then_y_in_expanded_todos_removes_selected_todo() {
-        let mut app = App::new(sample_config());
-        let task_id = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        let id_a = app
-            .tasks
-            .add_todo(task_id, "keep".into(), "seed".into())
-            .unwrap()
-            .id;
-        let id_b = app
-            .tasks
-            .add_todo(task_id, "doomed".into(), "seed".into())
-            .unwrap()
-            .id;
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        {
-            let form = app.tasks_screen.form.as_mut().unwrap();
-            form.focused_field = FormField::Todos;
-            form.todos_collapsed = false;
-            // Aim at the second todo (the doomed one).
-            form.todos_cursor = 1;
-        }
-        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
-        assert!(matches!(
-            app.tasks_screen.prompt,
-            Some(TasksPrompt::ConfirmDeleteTodo { .. })
-        ));
-
-        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
-        assert!(app.tasks_screen.prompt.is_none());
-        let todos = &app.tasks.get(task_id).unwrap().todos;
-        assert_eq!(todos.len(), 1);
-        assert_eq!(todos[0].id, id_a);
-        assert_ne!(todos[0].id, id_b);
-        // Cursor must clamp back into range after the delete.
-        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 0);
-        // Form stays open.
-        assert!(app.tasks_screen.form.is_some());
-    }
-
-    #[test]
-    fn d_then_n_in_expanded_todos_keeps_todo() {
-        let mut app = App::new(sample_config());
-        let task_id = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        app.tasks
-            .add_todo(task_id, "stay".into(), "seed".into())
-            .unwrap();
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        {
-            let form = app.tasks_screen.form.as_mut().unwrap();
-            form.focused_field = FormField::Todos;
-            form.todos_collapsed = false;
-        }
-        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE);
-        assert!(app.tasks_screen.prompt.is_none());
-        assert_eq!(app.tasks.get(task_id).unwrap().todos.len(), 1);
-    }
-
-    #[test]
-    fn esc_cancels_add_todo_prompt_without_creating_todo() {
-        let mut app = App::new(sample_config());
-        let task_id = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        {
-            let form = app.tasks_screen.form.as_mut().unwrap();
-            form.focused_field = FormField::Todos;
-            form.todos_collapsed = false;
-        }
-        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
-        for c in "scratch".chars() {
-            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
-        }
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(app.tasks_screen.prompt.is_none());
-        assert!(app.tasks.get(task_id).unwrap().todos.is_empty());
-        assert!(app.tasks_screen.form.is_some());
-    }
-
-    #[test]
-    fn a_in_expanded_comments_opens_add_comment_prompt() {
-        let mut app = App::new(sample_config());
-        app.tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap();
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        {
-            let form = app.tasks_screen.form.as_mut().unwrap();
-            form.focused_field = FormField::Comments;
-            form.comments_collapsed = false;
-        }
-        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
-        assert!(matches!(
-            app.tasks_screen.prompt,
-            Some(TasksPrompt::AddComment { .. })
-        ));
-
-        // Type, commit; the comment should land on the live task and
-        // the form should still be open.
-        for c in "hello".chars() {
-            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
-        }
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.tasks_screen.prompt.is_none());
-        assert!(app.tasks_screen.form.is_some());
-        let comments = &app.tasks.all()[0].comments;
-        assert_eq!(comments.len(), 1);
-        assert_eq!(comments[0].body, "hello");
-    }
-
-    #[test]
-    fn e_in_expanded_comments_edits_selected_comment() {
-        let mut app = App::new(sample_config());
-        let task_id = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        app.tasks
-            .add_comment(task_id, "seed".into(), "first".into())
-            .unwrap();
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        {
-            let form = app.tasks_screen.form.as_mut().unwrap();
-            form.focused_field = FormField::Comments;
-            form.comments_collapsed = false;
-            form.comments_cursor = 0;
-        }
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        assert!(matches!(
-            app.tasks_screen.prompt,
-            Some(TasksPrompt::EditComment { .. })
-        ));
-
-        // Replace the body wholesale.
-        for _ in 0.."first".len() {
-            app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
-        }
-        for c in "edited".chars() {
-            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
-        }
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.tasks_screen.prompt.is_none());
-        assert_eq!(app.tasks.get(task_id).unwrap().comments[0].body, "edited");
-    }
-
-    #[test]
-    fn d_then_y_in_expanded_comments_removes_selected_comment() {
-        let mut app = App::new(sample_config());
-        let task_id = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        app.tasks
-            .add_comment(task_id, "seed".into(), "doomed".into())
-            .unwrap();
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        {
-            let form = app.tasks_screen.form.as_mut().unwrap();
-            form.focused_field = FormField::Comments;
-            form.comments_collapsed = false;
-            form.comments_cursor = 0;
-        }
-        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
-        assert!(matches!(
-            app.tasks_screen.prompt,
-            Some(TasksPrompt::ConfirmDeleteComment { .. })
-        ));
-        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
-        assert!(app.tasks_screen.prompt.is_none());
-        assert!(app.tasks.get(task_id).unwrap().comments.is_empty());
-        // Form must remain open after the comment delete.
-        assert!(app.tasks_screen.form.is_some());
+        assert_eq!(app.active_view, ActiveView::TaskDetail { task_id: id });
+        assert_eq!(app.focus, Focus::TaskDetail);
     }
 
     #[test]
@@ -24913,130 +24255,6 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
     }
 
     #[test]
-    fn first_click_on_todo_row_selects_second_click_toggles() {
-        let mut app = App::new(sample_config());
-        let task_id = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        let todo_id = app
-            .tasks
-            .add_todo(task_id, "do thing".into(), "seed".into())
-            .unwrap()
-            .id;
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        // Simulate the renderer expanding the section + emitting a
-        // hit rect for the row.
-        {
-            let form = app.tasks_screen.form.as_mut().unwrap();
-            form.focused_field = FormField::Title;
-            form.todos_collapsed = false;
-            form.todos_cursor = 0;
-            form.todos_scroll = 0;
-        }
-        let row_rect = Rect::new(10, 30, 40, 1);
-        app.layout.task_form_todo_rows = vec![(todo_id, row_rect)];
-
-        // First click: focus + select; status unchanged.
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 12,
-            row: 30,
-            modifiers: KeyModifiers::NONE,
-        });
-        let form = app.tasks_screen.form.as_ref().unwrap();
-        assert_eq!(form.focused_field, FormField::Todos);
-        assert_eq!(form.todos_cursor, 0);
-        assert_eq!(
-            app.tasks.get(task_id).unwrap().todos[0].status,
-            crate::tasks::TodoStatus::Pending,
-            "first click must not toggle"
-        );
-
-        // Second click on the same row: now toggles.
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 14,
-            row: 30,
-            modifiers: KeyModifiers::NONE,
-        });
-        assert_eq!(
-            app.tasks.get(task_id).unwrap().todos[0].status,
-            crate::tasks::TodoStatus::Completed
-        );
-
-        // Third click toggles back.
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 14,
-            row: 30,
-            modifiers: KeyModifiers::NONE,
-        });
-        assert_eq!(
-            app.tasks.get(task_id).unwrap().todos[0].status,
-            crate::tasks::TodoStatus::Pending
-        );
-    }
-
-    #[test]
-    fn click_on_different_todo_row_only_moves_cursor() {
-        let mut app = App::new(sample_config());
-        let task_id = app
-            .tasks
-            .add("t".into(), None, None, "seed".into(), Vec::new())
-            .unwrap()
-            .id;
-        let id_a = app
-            .tasks
-            .add_todo(task_id, "a".into(), "seed".into())
-            .unwrap()
-            .id;
-        let id_b = app
-            .tasks
-            .add_todo(task_id, "b".into(), "seed".into())
-            .unwrap()
-            .id;
-        app.active_view = ActiveView::Tasks;
-        app.focus = Focus::Tasks;
-        let rows = TasksScreen::rows(&app.tasks);
-        app.tasks_screen.reclamp(&rows);
-        app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-        {
-            let form = app.tasks_screen.form.as_mut().unwrap();
-            // Pretend the user already selected todo `a`.
-            form.focused_field = FormField::Todos;
-            form.todos_collapsed = false;
-            form.todos_cursor = 0;
-        }
-        app.layout.task_form_todo_rows = vec![
-            (id_a, Rect::new(10, 30, 40, 1)),
-            (id_b, Rect::new(10, 31, 40, 1)),
-        ];
-
-        // Click the OTHER row: only moves cursor, no toggle.
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 14,
-            row: 31,
-            modifiers: KeyModifiers::NONE,
-        });
-        assert_eq!(app.tasks_screen.form.as_ref().unwrap().todos_cursor, 1);
-        assert_eq!(
-            app.tasks.get(task_id).unwrap().todos[0].status,
-            crate::tasks::TodoStatus::Pending
-        );
-        assert_eq!(
-            app.tasks.get(task_id).unwrap().todos[1].status,
-            crate::tasks::TodoStatus::Pending
-        );
-    }
-
-    #[test]
     fn clicking_field_rect_focuses_that_field() {
         let mut app = App::new(sample_config());
         app.active_view = ActiveView::Tasks;
@@ -25159,7 +24377,7 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
     }
 
     #[test]
-    fn double_click_on_task_row_opens_edit_modal() {
+    fn single_click_on_task_row_opens_detail() {
         let mut app = App::new(sample_config());
         let id = app
             .tasks
@@ -25179,37 +24397,23 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
             }
             other => panic!("expected first task at row index 2, got {other:?}"),
         }
-        // First click: selects.
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 5,
             row: 4,
             modifiers: KeyModifiers::NONE,
         });
-        assert!(
-            app.tasks_screen.form.is_none(),
-            "single click should not open form"
-        );
         assert_eq!(app.tasks_screen.selected_row, 2);
-        // Second click: opens the edit modal.
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 5,
-            row: 4,
-            modifiers: KeyModifiers::NONE,
-        });
-        let form = app
-            .tasks_screen
-            .form
-            .as_ref()
-            .expect("double click should open edit form");
-        assert!(matches!(form.kind, TaskFormKind::Edit(edit_id) if edit_id == id));
-        // Pre-filled.
-        assert_eq!(form.title, "hello");
+        assert_eq!(app.active_view, ActiveView::TaskDetail { task_id: id });
+        assert_eq!(app.focus, Focus::TaskDetail);
+        assert!(matches!(
+            app.task_detail.as_ref().map(|s| s.task_id),
+            Some(task_id) if task_id == id
+        ));
     }
 
     #[test]
-    fn single_click_outside_double_click_window_does_not_open_form() {
+    fn click_on_task_header_row_is_inert() {
         let mut app = App::new(sample_config());
         app.tasks
             .add("hello".into(), None, None, "seed".into(), Vec::new())
@@ -25220,21 +24424,12 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 5,
-            row: 3,
+            row: 2,
             modifiers: KeyModifiers::NONE,
         });
-        // Simulate enough time passing that the next click is out
-        // of the double-click window. We achieve this by clearing
-        // `last_click` directly (time travel in unit tests is
-        // awkward and this keeps the test deterministic).
-        app.last_click = None;
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 5,
-            row: 3,
-            modifiers: KeyModifiers::NONE,
-        });
-        assert!(app.tasks_screen.form.is_none());
+        assert_eq!(app.active_view, ActiveView::Tasks);
+        assert_eq!(app.focus, Focus::Tasks);
+        assert!(app.task_detail.is_none());
     }
 
     #[test]

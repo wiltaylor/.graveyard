@@ -7,9 +7,20 @@
 //! all UI-local state; the `TaskStore` stays the single source of
 //! truth for persisted task data.
 
+use std::time::Instant;
+
+use crossterm::event::KeyCode;
+use ratatui::{
+    layout::{Constraint, Direction, Layout as RatatuiLayout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Wrap},
+    Frame,
+};
+use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
 
-use crate::tasks::{Task, TaskError, TaskPatch, TaskStatus, TaskStore};
+use crate::tasks::{ReviewReport, Task, TaskError, TaskPatch, TaskStatus, TaskStore, TodoStatus};
 
 /// Author string used for TUI-originated mutations. Distinct from
 /// agent display names so transcripts can tell which writes came from
@@ -82,6 +93,718 @@ pub enum PopoverKind {
     Comment,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskTab {
+    Task,
+    Comments,
+    Todos,
+    Review,
+}
+
+impl TaskTab {
+    const ALL: [TaskTab; 4] = [
+        TaskTab::Task,
+        TaskTab::Comments,
+        TaskTab::Todos,
+        TaskTab::Review,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Task => "Task",
+            Self::Comments => "Comments",
+            Self::Todos => "TODOs",
+            Self::Review => "Review",
+        }
+    }
+
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|tab| *tab == self)
+            .unwrap_or_default()
+    }
+
+    fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    fn prev(self) -> Self {
+        let idx = self.index();
+        Self::ALL[(idx + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TaskDetailLastVisible {
+    pub task: u16,
+    pub comments: u16,
+    pub todos: u16,
+    pub review: u16,
+}
+
+#[derive(Debug, Clone)]
+pub struct Popover {
+    pub kind: PopoverKind,
+    pub scroll: u16,
+    pub last_body_height: u16,
+    pub last_max_scroll: u16,
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskDetailScreen {
+    pub task_id: Uuid,
+    pub active_tab: TaskTab,
+    pub comments_cursor: usize,
+    pub todos_cursor: usize,
+    pub task_scroll: u16,
+    pub comments_scroll: u16,
+    pub todos_scroll: u16,
+    pub review_scroll: u16,
+    pub last_visible: TaskDetailLastVisible,
+    pub status_msg: Option<(String, Instant)>,
+    pub popover: Option<Popover>,
+}
+
+impl TaskDetailScreen {
+    pub fn new(task_id: Uuid) -> Self {
+        Self {
+            task_id,
+            active_tab: TaskTab::Task,
+            comments_cursor: 0,
+            todos_cursor: 0,
+            task_scroll: 0,
+            comments_scroll: 0,
+            todos_scroll: 0,
+            review_scroll: 0,
+            last_visible: TaskDetailLastVisible::default(),
+            status_msg: None,
+            popover: None,
+        }
+    }
+
+    pub fn render(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        focused: bool,
+        store: &TaskStore,
+        layout: &mut super::app::LayoutRects,
+    ) -> Rect {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" task detail ")
+            .title_bottom(" [/] tabs · 1-4 jump · Tab next · Esc/q back ")
+            .border_style(if focused {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            });
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let chunks = RatatuiLayout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(inner);
+        self.render_tabs(f, chunks[0], layout);
+        self.render_body(f, chunks[1], store, layout);
+        if let Some((msg, at)) = &self.status_msg {
+            if at.elapsed().as_secs() < 4 && chunks[1].height > 0 {
+                let y = chunks[1].y + chunks[1].height.saturating_sub(1);
+                let rect = Rect::new(chunks[1].x, y, chunks[1].width, 1);
+                f.render_widget(
+                    Paragraph::new(msg.clone()).style(Style::default().fg(Color::Yellow)),
+                    rect,
+                );
+            }
+        }
+
+        if self.popover.is_some() {
+            self.render_popover(f, area, store);
+        }
+
+        inner
+    }
+
+    fn render_tabs(&self, f: &mut Frame, area: Rect, layout: &mut super::app::LayoutRects) {
+        let mut spans = Vec::new();
+        let mut x = area.x;
+        for (idx, tab) in TaskTab::ALL.iter().copied().enumerate() {
+            if idx > 0 {
+                spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+                x = x.saturating_add(3);
+            }
+
+            let label = tab.label();
+            let width = UnicodeWidthStr::width(label) as u16;
+            layout.task_detail_tabs.push((
+                tab,
+                Rect {
+                    x,
+                    y: area.y,
+                    width,
+                    height: area.height.min(1),
+                },
+            ));
+            x = x.saturating_add(width);
+
+            let style = if tab == self.active_tab {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            spans.push(Span::styled(label, style));
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+
+    fn render_body(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        store: &TaskStore,
+        layout: &mut super::app::LayoutRects,
+    ) {
+        let Some(task) = store.get(self.task_id) else {
+            f.render_widget(
+                Paragraph::new("Task not found.")
+                    .style(Style::default().fg(Color::Red))
+                    .wrap(Wrap { trim: false }),
+                area,
+            );
+            return;
+        };
+        match self.active_tab {
+            TaskTab::Task => self.render_task_tab(f, area, task, store),
+            TaskTab::Comments => self.render_comments_tab(f, area, task, layout),
+            TaskTab::Todos => self.render_todos_tab(f, area, task, layout),
+            TaskTab::Review => self.render_review_tab(f, area, task, layout),
+        }
+    }
+
+    fn render_task_tab(&mut self, f: &mut Frame, area: Rect, task: &Task, store: &TaskStore) {
+        self.last_visible.task = area.height.max(1);
+        let now = now_secs();
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        push_field_line(&mut lines, "id", task.id.to_string());
+        push_field_line(&mut lines, "title", task.title.clone());
+        push_field_line(&mut lines, "status", task.status.as_str().to_string());
+        push_field_line(
+            &mut lines,
+            "assignee",
+            task.assignee.as_deref().unwrap_or("-").to_string(),
+        );
+        push_field_line(
+            &mut lines,
+            "planned_assignee",
+            task.planned_assignee.as_deref().unwrap_or("-").to_string(),
+        );
+        lines.push(Line::from(""));
+        lines.push(section_header("Description"));
+        match task.description.as_deref() {
+            Some(desc) if !desc.is_empty() => {
+                for line in desc.lines() {
+                    lines.push(Line::from(line.to_string()));
+                }
+            }
+            _ => lines.push(Line::from(Span::styled(
+                "(none)",
+                Style::default().fg(Color::DarkGray),
+            ))),
+        }
+        lines.push(Line::from(""));
+        lines.push(section_header("Blocked by"));
+        if task.blocked_by.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "(none)",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            for dep in &task.blocked_by {
+                match store.get(*dep) {
+                    Some(t) => lines.push(Line::from(format!(
+                        "{}  {:<12}  {}",
+                        t.id,
+                        t.status.as_str(),
+                        t.title
+                    ))),
+                    None => lines.push(Line::from(format!("{dep}  (missing)"))),
+                }
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(section_header("Notes"));
+        if task.notes.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "(none)",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            for note in &task.notes {
+                lines.push(Line::from(format!(
+                    "[{} · {}] {}",
+                    super::app::format_age(now, note.timestamp_secs),
+                    note.author,
+                    note.body
+                )));
+            }
+        }
+        self.render_scrollable_lines(f, area, lines, TaskTab::Task);
+    }
+
+    fn render_comments_tab(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        task: &Task,
+        layout: &mut super::app::LayoutRects,
+    ) {
+        let visible = area.height as usize;
+        self.last_visible.comments = area.height.max(1);
+        if task.comments.is_empty() {
+            self.comments_cursor = 0;
+            self.comments_scroll = 0;
+            f.render_widget(
+                Paragraph::new("No comments.")
+                    .style(Style::default().fg(Color::DarkGray))
+                    .wrap(Wrap { trim: false }),
+                area,
+            );
+            return;
+        }
+        self.comments_cursor = self.comments_cursor.min(task.comments.len() - 1);
+        track_scroll(
+            &mut self.comments_scroll,
+            self.comments_cursor,
+            visible.max(1),
+            task.comments.len(),
+        );
+        let now = now_secs();
+        for (row, comment) in task
+            .comments
+            .iter()
+            .enumerate()
+            .skip(self.comments_scroll as usize)
+            .take(visible)
+        {
+            let y = area.y + (row - self.comments_scroll as usize) as u16;
+            let rect = Rect::new(area.x, y, area.width, 1);
+            layout.task_detail_comment_rows.push((comment.id, rect));
+            let selected = row == self.comments_cursor;
+            let style = selection_style(selected);
+            let prefix = format!(
+                "[{} · {}] ",
+                super::app::format_age(now, comment.timestamp_secs),
+                comment.author
+            );
+            let preview =
+                truncate_to_width(&format!("{prefix}{}", one_line(&comment.body)), area.width);
+            f.render_widget(
+                Paragraph::new(Span::styled(preview, style)).style(style),
+                rect,
+            );
+        }
+    }
+
+    fn render_todos_tab(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        task: &Task,
+        layout: &mut super::app::LayoutRects,
+    ) {
+        let visible = area.height as usize;
+        self.last_visible.todos = area.height.max(1);
+        if task.todos.is_empty() {
+            self.todos_cursor = 0;
+            self.todos_scroll = 0;
+            f.render_widget(
+                Paragraph::new("No TODOs.")
+                    .style(Style::default().fg(Color::DarkGray))
+                    .wrap(Wrap { trim: false }),
+                area,
+            );
+            return;
+        }
+        self.todos_cursor = self.todos_cursor.min(task.todos.len() - 1);
+        track_scroll(
+            &mut self.todos_scroll,
+            self.todos_cursor,
+            visible.max(1),
+            task.todos.len(),
+        );
+        for (row, todo) in task
+            .todos
+            .iter()
+            .enumerate()
+            .skip(self.todos_scroll as usize)
+            .take(visible)
+        {
+            let y = area.y + (row - self.todos_scroll as usize) as u16;
+            let rect = Rect::new(area.x, y, area.width, 1);
+            layout.task_detail_todo_rows.push((todo.id, rect));
+            let selected = row == self.todos_cursor;
+            let mut style = selection_style(selected);
+            if !selected && todo.status == TodoStatus::Completed {
+                style = style
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::CROSSED_OUT);
+            }
+            let preview = truncate_to_width(
+                &format!("{} {}", todo.status.glyph(), one_line(&todo.body)),
+                area.width,
+            );
+            f.render_widget(
+                Paragraph::new(Span::styled(preview, style)).style(style),
+                rect,
+            );
+        }
+    }
+
+    fn render_review_tab(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        task: &Task,
+        layout: &mut super::app::LayoutRects,
+    ) {
+        self.last_visible.review = area.height.max(1);
+        layout.task_detail_review_section = Some(area);
+        let Some(report) = task.review_report.as_ref() else {
+            let text = "No review report — task has not been submitted for review.";
+            let x = area.x.saturating_add(
+                area.width
+                    .saturating_sub(UnicodeWidthStr::width(text) as u16)
+                    / 2,
+            );
+            let y = area.y.saturating_add(area.height / 2);
+            let rect = Rect::new(x, y, area.width.saturating_sub(x.saturating_sub(area.x)), 1);
+            f.render_widget(
+                Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
+                rect,
+            );
+            self.review_scroll = 0;
+            return;
+        };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        lines.push(section_header("Changes made"));
+        for line in report.changes_made.lines() {
+            lines.push(Line::from(line.to_string()));
+        }
+        lines.push(Line::from(Span::styled(
+            "─".repeat(area.width as usize),
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(section_header("Demo instructions"));
+        for line in report.demo_instructions.lines() {
+            lines.push(Line::from(line.to_string()));
+        }
+        self.render_scrollable_lines(f, area, lines, TaskTab::Review);
+    }
+
+    fn render_scrollable_lines(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        lines: Vec<Line<'static>>,
+        tab: TaskTab,
+    ) {
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let max_scroll = paragraph
+            .line_count(area.width)
+            .saturating_sub(area.height as usize)
+            .min(u16::MAX as usize) as u16;
+        let scroll = match tab {
+            TaskTab::Task => &mut self.task_scroll,
+            TaskTab::Review => &mut self.review_scroll,
+            _ => return,
+        };
+        if *scroll > max_scroll {
+            *scroll = max_scroll;
+        }
+        f.render_widget(paragraph.scroll((*scroll, 0)), area);
+    }
+
+    fn render_popover(&mut self, f: &mut Frame, area: Rect, store: &TaskStore) {
+        let Some(popover) = self.popover.as_mut() else {
+            return;
+        };
+        let Some(task) = store.get(self.task_id) else {
+            return;
+        };
+        let now = now_secs();
+        let (title, body) = match popover.kind {
+            PopoverKind::Todo => {
+                let len = task.todos.len();
+                let cursor = self.todos_cursor.min(len.saturating_sub(1));
+                let body = task
+                    .todos
+                    .get(cursor)
+                    .map(|td| td.body.clone())
+                    .unwrap_or_default();
+                (format!(" TODO {} of {} ", cursor + 1, len), body)
+            }
+            PopoverKind::Comment => {
+                let len = task.comments.len();
+                let cursor = self.comments_cursor.min(len.saturating_sub(1));
+                let body = task
+                    .comments
+                    .get(cursor)
+                    .map(|c| {
+                        format!(
+                            "[{} · {}]\n\n{}",
+                            super::app::format_age(now, c.timestamp_secs),
+                            c.author,
+                            c.body
+                        )
+                    })
+                    .unwrap_or_default();
+                (format!(" Comment {} of {} ", cursor + 1, len), body)
+            }
+        };
+        let (body_height, max_scroll) =
+            super::ui::render_text_popover(f, area, title, body, popover.scroll);
+        popover.last_body_height = body_height;
+        popover.last_max_scroll = max_scroll;
+        if popover.scroll > max_scroll {
+            popover.scroll = max_scroll;
+        }
+    }
+
+    pub fn handle_key(&mut self, code: KeyCode) {
+        if self.handle_popover_key(code) {
+            return;
+        }
+        match code {
+            KeyCode::Char('[') => self.active_tab = self.active_tab.prev(),
+            KeyCode::Char(']') | KeyCode::Tab => self.active_tab = self.active_tab.next(),
+            KeyCode::Char('1') => self.active_tab = TaskTab::Task,
+            KeyCode::Char('2') => self.active_tab = TaskTab::Comments,
+            KeyCode::Char('3') => self.active_tab = TaskTab::Todos,
+            KeyCode::Char('4') => self.active_tab = TaskTab::Review,
+            KeyCode::Char('j') | KeyCode::Down => self.scroll_active(1),
+            KeyCode::Char('k') | KeyCode::Up => self.scroll_active(-1),
+            KeyCode::PageDown => self.page_active(1),
+            KeyCode::PageUp => self.page_active(-1),
+            _ => {}
+        }
+    }
+
+    fn handle_popover_key(&mut self, code: KeyCode) -> bool {
+        let Some(popover) = self.popover.as_mut() else {
+            return false;
+        };
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.popover = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                popover.scroll = popover
+                    .scroll
+                    .saturating_add(1)
+                    .min(popover.last_max_scroll);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                popover.scroll = popover.scroll.saturating_sub(1);
+            }
+            KeyCode::PageDown => {
+                popover.scroll = popover
+                    .scroll
+                    .saturating_add(popover.last_body_height.max(1))
+                    .min(popover.last_max_scroll);
+            }
+            KeyCode::PageUp => {
+                popover.scroll = popover
+                    .scroll
+                    .saturating_sub(popover.last_body_height.max(1));
+            }
+            _ => {}
+        }
+        true
+    }
+
+    pub fn move_comments_cursor(&mut self, delta: i32, len: usize) {
+        self.comments_cursor = move_index(self.comments_cursor, delta, len);
+    }
+
+    pub fn move_todos_cursor(&mut self, delta: i32, len: usize) {
+        self.todos_cursor = move_index(self.todos_cursor, delta, len);
+    }
+
+    pub fn page_comments_cursor(&mut self, delta_pages: i32, len: usize) {
+        let delta = i32::from(self.last_visible.comments.max(1)).saturating_mul(delta_pages);
+        self.move_comments_cursor(delta, len);
+    }
+
+    pub fn page_todos_cursor(&mut self, delta_pages: i32, len: usize) {
+        let delta = i32::from(self.last_visible.todos.max(1)).saturating_mul(delta_pages);
+        self.move_todos_cursor(delta, len);
+    }
+
+    pub fn open_popover(&mut self, kind: PopoverKind) {
+        self.popover = Some(Popover {
+            kind,
+            scroll: 0,
+            last_body_height: 0,
+            last_max_scroll: 0,
+        });
+    }
+
+    fn scroll_active(&mut self, delta: i32) {
+        let scroll = match self.active_tab {
+            TaskTab::Task => &mut self.task_scroll,
+            TaskTab::Review => &mut self.review_scroll,
+            _ => return,
+        };
+        if delta >= 0 {
+            *scroll = scroll.saturating_add(delta as u16);
+        } else {
+            *scroll = scroll.saturating_sub((-delta) as u16);
+        }
+    }
+
+    fn page_active(&mut self, delta_pages: i32) {
+        let visible = match self.active_tab {
+            TaskTab::Task => self.last_visible.task,
+            TaskTab::Review => self.last_visible.review,
+            _ => 1,
+        }
+        .max(1);
+        self.scroll_active(i32::from(visible).saturating_mul(delta_pages));
+    }
+
+    pub fn handle_mouse(&mut self, layout: &super::app::LayoutRects, pos: (u16, u16)) -> bool {
+        if let Some((tab, _)) = layout
+            .task_detail_tabs
+            .iter()
+            .find(|(_, rect)| super::app::rect_contains(*rect, pos))
+            .copied()
+        {
+            self.active_tab = tab;
+            return true;
+        }
+        match self.active_tab {
+            TaskTab::Comments => {
+                if let Some(row) = layout
+                    .task_detail_comment_rows
+                    .iter()
+                    .position(|(_, rect)| super::app::rect_contains(*rect, pos))
+                {
+                    self.comments_cursor = self.comments_scroll as usize + row;
+                    return true;
+                }
+            }
+            TaskTab::Todos => {
+                if let Some(row) = layout
+                    .task_detail_todo_rows
+                    .iter()
+                    .position(|(_, rect)| super::app::rect_contains(*rect, pos))
+                {
+                    self.todos_cursor = self.todos_scroll as usize + row;
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn push_field_line(lines: &mut Vec<Line<'static>>, label: &'static str, value: String) {
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{label}: "),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(value),
+    ]));
+}
+
+fn section_header(label: &'static str) -> Line<'static> {
+    Line::from(Span::styled(
+        label,
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn selection_style(selected: bool) -> Style {
+    if selected {
+        Style::default()
+            .bg(Color::Cyan)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    }
+}
+
+fn move_index(current: usize, delta: i32, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let max = (len - 1) as i32;
+    ((current as i32) + delta).clamp(0, max) as usize
+}
+
+fn track_scroll(scroll: &mut u16, cursor: usize, visible: usize, len: usize) {
+    if len <= visible {
+        *scroll = 0;
+        return;
+    }
+    let top = *scroll as usize;
+    if cursor < top {
+        *scroll = cursor as u16;
+    } else if cursor >= top + visible {
+        *scroll = cursor.saturating_sub(visible.saturating_sub(1)) as u16;
+    }
+    let max = len.saturating_sub(visible) as u16;
+    if *scroll > max {
+        *scroll = max;
+    }
+}
+
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_to_width(s: &str, width: u16) -> String {
+    let width = width as usize;
+    if UnicodeWidthStr::width(s) <= width {
+        return s.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    let ellipsis = "…";
+    let ellipsis_width = UnicodeWidthStr::width(ellipsis);
+    for ch in s.chars() {
+        let w = UnicodeWidthStr::width(ch.to_string().as_str());
+        if used + w + ellipsis_width > width {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out.push_str(ellipsis);
+    out
+}
+
 /// Fields (and buttons) in the modal form, laid out in tab order.
 /// Buttons participate in Tab cycling and can also be clicked; they
 /// carry no editable value.
@@ -98,16 +821,6 @@ pub enum FormField {
     PlannedAssignee,
     /// Task-dependency list. Enter opens a multi-select picker.
     BlockedBy,
-    /// Read-only collapsible TODO list. Enter toggles collapse;
-    /// when expanded, j/k or arrows scroll the inner box. Add /
-    /// edit / delete still go through the dedicated `o` overlay
-    /// from the task list.
-    Todos,
-    /// Read-only collapsible Comments list. Enter toggles collapse;
-    /// when expanded, j/k or arrows scroll the inner box. Add /
-    /// edit / delete still go through the dedicated `c` overlay
-    /// from the task list.
-    Comments,
     /// Approve a `Planning` task (only present in tab order when the
     /// underlying task is in Planning + assigned to user). Routes
     /// the task to its `planned_assignee` and flips status to
@@ -130,8 +843,6 @@ impl FormField {
             Self::Status => "Status",
             Self::PlannedAssignee => "On approve",
             Self::BlockedBy => "Blocked by",
-            Self::Todos => "TODOs",
-            Self::Comments => "Comments",
             Self::Approve => "Approve",
             Self::Reject => "Reject",
             Self::Ok => "OK",
@@ -252,43 +963,6 @@ pub struct TaskForm {
     /// When `Some`, the multi-select blocked-by picker is overlaid
     /// on the form.
     pub blocked_by_picker: Option<BlockedByPicker>,
-    /// Whether the read-only TODOs section is collapsed (default `true`
-    /// = collapsed, so opening a task doesn't dump everything at once).
-    /// Toggled with Enter while the `Todos` field is focused.
-    pub todos_collapsed: bool,
-    /// Whether the read-only Comments section is collapsed (default
-    /// `true`). Toggled with Enter while the `Comments` field is
-    /// focused.
-    pub comments_collapsed: bool,
-    /// Vertical scroll offset (in rows) for the expanded TODOs box.
-    /// Clamped each frame against the rendered row count; auto-tracked
-    /// to keep `todos_cursor` in view.
-    pub todos_scroll: u16,
-    /// Vertical scroll offset (in rows) for the expanded Comments box.
-    /// Clamped each frame against the rendered row count; auto-tracked
-    /// to keep `comments_cursor` in view.
-    pub comments_scroll: u16,
-    /// Selected row index inside the expanded TODOs box. Used by Space
-    /// (toggle) and mouse clicks. Clamped against the live todo count
-    /// each render.
-    pub todos_cursor: usize,
-    /// Selected row index inside the expanded Comments box. Used by
-    /// `a`/`e`/`d` and mouse clicks. Clamped against the live comment
-    /// count each render.
-    pub comments_cursor: usize,
-    /// Full-body preview popover for the cursor-selected TODO or
-    /// comment row.
-    pub popover_open: Option<PopoverKind>,
-    /// Vertical scroll offset inside the full-body preview popover.
-    pub popover_scroll: u16,
-    /// Last rendered visible row count for the expanded TODOs /
-    /// Comments section box. Key handlers fall back to 1 before the
-    /// first render.
-    pub last_section_visible: u16,
-    /// Last rendered body height inside the preview popover.
-    pub last_popover_body_height: u16,
-    /// Last computed max scroll for the preview popover body.
-    pub last_popover_max_scroll: u16,
     /// Unused sink returned by `field_mut` for button variants so
     /// the signature can stay `&mut String` without panics. Key
     /// handlers gate character input on `FormField::is_button` so
@@ -323,17 +997,6 @@ impl TaskForm {
             assignee_options: vec![String::new()],
             picker: None,
             blocked_by_picker: None,
-            todos_collapsed: true,
-            comments_collapsed: true,
-            todos_scroll: 0,
-            comments_scroll: 0,
-            todos_cursor: 0,
-            comments_cursor: 0,
-            popover_open: None,
-            popover_scroll: 0,
-            last_section_visible: 0,
-            last_popover_body_height: 0,
-            last_popover_max_scroll: 0,
             _button_sink: String::new(),
             show_approval_buttons: false,
         }
@@ -364,17 +1027,6 @@ impl TaskForm {
             assignee_options: vec![String::new()],
             picker: None,
             blocked_by_picker: None,
-            todos_collapsed: true,
-            comments_collapsed: true,
-            todos_scroll: 0,
-            comments_scroll: 0,
-            todos_cursor: 0,
-            comments_cursor: 0,
-            popover_open: None,
-            popover_scroll: 0,
-            last_section_visible: 0,
-            last_popover_body_height: 0,
-            last_popover_max_scroll: 0,
             _button_sink: String::new(),
             show_approval_buttons,
         }
@@ -472,8 +1124,7 @@ impl TaskForm {
 
     /// All fields in tab order. For Add, the Status field is
     /// skipped since new tasks derive their status from whether an
-    /// assignee is set; the read-only Todos/Comments sections are
-    /// also skipped (a brand-new task has neither). Ok and Cancel
+    /// assignee is set. Ok and Cancel
     /// buttons are always last so Tabbing lands you on them before
     /// wrapping to Title.
     pub fn tab_order(&self) -> Vec<FormField> {
@@ -500,8 +1151,6 @@ impl TaskForm {
                     v.push(FormField::PlannedAssignee);
                 }
                 v.push(FormField::BlockedBy);
-                v.push(FormField::Todos);
-                v.push(FormField::Comments);
                 v
             }
         };
@@ -529,8 +1178,7 @@ impl TaskForm {
     }
 
     /// Returns a mutable string ref for text-backed fields.
-    /// Non-text fields (buttons, the list-picker `BlockedBy`, the
-    /// read-only `Todos`/`Comments` boxes) have no editable string
+    /// Non-text fields (buttons and the list-picker `BlockedBy`) have no editable string
     /// value; callers must gate character input before writing. The
     /// sink is returned for those variants to keep the signature
     /// `&mut String` without panics.
@@ -542,8 +1190,6 @@ impl TaskForm {
             FormField::PlannedAssignee => &mut self.planned_assignee,
             FormField::Status => &mut self.status,
             FormField::BlockedBy
-            | FormField::Todos
-            | FormField::Comments
             | FormField::Approve
             | FormField::Reject
             | FormField::Ok
@@ -559,119 +1205,11 @@ impl TaskForm {
             FormField::PlannedAssignee => &self.planned_assignee,
             FormField::Status => &self.status,
             FormField::BlockedBy
-            | FormField::Todos
-            | FormField::Comments
             | FormField::Approve
             | FormField::Reject
             | FormField::Ok
             | FormField::Cancel => "",
         }
-    }
-
-    pub fn open_popover(&mut self, kind: PopoverKind) {
-        self.popover_open = Some(kind);
-        self.popover_scroll = 0;
-    }
-
-    pub fn close_popover(&mut self) {
-        self.popover_open = None;
-        self.popover_scroll = 0;
-    }
-
-    pub fn scroll_popover(&mut self, delta: i32, max: u16) {
-        if delta >= 0 {
-            self.popover_scroll = self.popover_scroll.saturating_add(delta as u16).min(max);
-        } else {
-            self.popover_scroll = self.popover_scroll.saturating_sub((-delta) as u16);
-        }
-    }
-
-    pub fn page_form_section_cursor(
-        &mut self,
-        delta_pages: i32,
-        kind: PopoverKind,
-        list_len: usize,
-    ) {
-        if list_len == 0 {
-            match kind {
-                PopoverKind::Todo => self.todos_cursor = 0,
-                PopoverKind::Comment => self.comments_cursor = 0,
-            }
-            return;
-        }
-        let visible = self.last_section_visible.max(1) as i32;
-        let delta = visible.saturating_mul(delta_pages);
-        let max = list_len.saturating_sub(1) as i32;
-        let cursor = match kind {
-            PopoverKind::Todo => &mut self.todos_cursor,
-            PopoverKind::Comment => &mut self.comments_cursor,
-        };
-        *cursor = ((*cursor as i32) + delta).clamp(0, max) as usize;
-    }
-
-    pub fn jump_form_section_cursor(&mut self, end: bool, kind: PopoverKind, list_len: usize) {
-        let target = if end { list_len.saturating_sub(1) } else { 0 };
-        match kind {
-            PopoverKind::Todo => self.todos_cursor = target,
-            PopoverKind::Comment => self.comments_cursor = target,
-        }
-    }
-
-    pub fn scroll_form_section_viewport(&mut self, delta: i32, kind: PopoverKind, list_len: usize) {
-        let visible = self.last_section_visible.max(1) as usize;
-        let max = list_len.saturating_sub(visible) as u16;
-        let scroll = match kind {
-            PopoverKind::Todo => &mut self.todos_scroll,
-            PopoverKind::Comment => &mut self.comments_scroll,
-        };
-        if delta >= 0 {
-            *scroll = scroll.saturating_add(delta as u16).min(max);
-        } else {
-            *scroll = scroll.saturating_sub((-delta) as u16);
-        }
-    }
-
-    /// Flip the TODOs collapse flag. Resets the section's scroll +
-    /// cursor so re-expanding always lands at the top.
-    pub fn toggle_todos_collapsed(&mut self) {
-        self.todos_collapsed = !self.todos_collapsed;
-        self.todos_scroll = 0;
-        self.todos_cursor = 0;
-        self.close_popover();
-    }
-
-    /// Flip the Comments collapse flag. Resets the section's scroll
-    /// + cursor so re-expanding always lands at the top.
-    pub fn toggle_comments_collapsed(&mut self) {
-        self.comments_collapsed = !self.comments_collapsed;
-        self.comments_scroll = 0;
-        self.comments_cursor = 0;
-        self.close_popover();
-    }
-
-    /// Move the TODOs cursor by `delta` rows, clamped to `len`. The
-    /// renderer auto-tracks `todos_scroll` to keep the cursor in
-    /// view. No-op when the list is empty.
-    pub fn move_todos_cursor(&mut self, delta: i32, len: usize) {
-        if len == 0 {
-            self.todos_cursor = 0;
-            return;
-        }
-        let max = (len - 1) as i32;
-        let next = (self.todos_cursor as i32 + delta).clamp(0, max);
-        self.todos_cursor = next as usize;
-    }
-
-    /// Move the Comments cursor by `delta` rows, clamped to `len`.
-    /// Same auto-scroll behaviour as `move_todos_cursor`.
-    pub fn move_comments_cursor(&mut self, delta: i32, len: usize) {
-        if len == 0 {
-            self.comments_cursor = 0;
-            return;
-        }
-        let max = (len - 1) as i32;
-        let next = (self.comments_cursor as i32 + delta).clamp(0, max);
-        self.comments_cursor = next as usize;
     }
 
     /// Open the multi-select picker for Blocked-by. `all_tasks` is
@@ -920,6 +1458,13 @@ pub enum TasksPrompt {
     /// Composing a new TODO body on `task_id`. Triggered by `a`
     /// while the form's TODOs section is focused + expanded.
     AddTodo { task_id: Uuid, body: String },
+    /// Editing an existing TODO body. Pre-populated from the current
+    /// value so the same bottom prompt can be used from the detail tab.
+    EditTodo {
+        task_id: Uuid,
+        todo_id: Uuid,
+        body: String,
+    },
     /// Awaiting y/n on a TODO delete confirmation.
     ConfirmDeleteTodo {
         task_id: Uuid,
@@ -954,49 +1499,18 @@ pub enum TasksPrompt {
         task_id: Uuid,
         options: Vec<String>,
         selected: usize,
+        field: ReviewPromptField,
+        changes_made: String,
+        demo_instructions: String,
+        error: Option<String>,
     },
 }
 
-/// The two sub-entity overlays (TODOs and Comments) that sit on top
-/// of the Tasks view and let the operator manage a single task's
-/// children. `Prompt` is a shared one-line text-input mode used for
-/// add / edit / delete-confirmation flows.
-#[derive(Debug, Clone)]
-pub enum ChildOverlay {
-    Todos {
-        task_id: Uuid,
-        cursor: usize,
-    },
-    Comments {
-        task_id: Uuid,
-        cursor: usize,
-    },
-    Prompt {
-        task_id: Uuid,
-        kind: ChildPromptKind,
-        buffer: String,
-    },
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ChildPromptKind {
-    AddTodo,
-    EditTodo(Uuid),
-    ConfirmDeleteTodo(Uuid),
-    AddComment,
-    EditComment(Uuid),
-    ConfirmDeleteComment(Uuid),
-}
-
-impl ChildOverlay {
-    /// Which task this overlay belongs to, regardless of state.
-    pub fn task_id(&self) -> Uuid {
-        match self {
-            Self::Todos { task_id, .. }
-            | Self::Comments { task_id, .. }
-            | Self::Prompt { task_id, .. } => *task_id,
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewPromptField {
+    ChangesMade,
+    DemoInstructions,
+    Reviewer,
 }
 
 #[derive(Debug, Default)]
@@ -1004,11 +1518,6 @@ pub struct TasksScreen {
     pub selected_row: usize,
     pub form: Option<TaskForm>,
     pub prompt: Option<TasksPrompt>,
-    /// The TODOs or Comments overlay for a task, when open.
-    /// Mutually exclusive with `form` / `prompt` in practice; the key
-    /// handler gates on this field's presence before routing any
-    /// normal task-view keys.
-    pub child_overlay: Option<ChildOverlay>,
     /// Transient error/success message shown at the bottom of the
     /// task area. Cleared on next key press.
     pub status_msg: Option<String>,
@@ -1099,49 +1608,6 @@ impl TasksScreen {
     pub fn close_modal(&mut self) {
         self.form = None;
         self.prompt = None;
-        self.child_overlay = None;
-    }
-
-    // ---- Child overlays (TODOs + Comments) ----
-
-    pub fn open_todos(&mut self, task_id: Uuid) {
-        self.child_overlay = Some(ChildOverlay::Todos { task_id, cursor: 0 });
-    }
-
-    pub fn open_comments(&mut self, task_id: Uuid) {
-        self.child_overlay = Some(ChildOverlay::Comments { task_id, cursor: 0 });
-    }
-
-    /// Move the cursor in an open Browse overlay, clamped to the
-    /// count of rows available. No-op if the overlay is in a prompt
-    /// state or if there are no rows.
-    pub fn child_overlay_move(&mut self, delta: i32, row_count: usize) {
-        if row_count == 0 {
-            return;
-        }
-        let len = row_count as i32;
-        match self.child_overlay.as_mut() {
-            Some(ChildOverlay::Todos { cursor, .. })
-            | Some(ChildOverlay::Comments { cursor, .. }) => {
-                *cursor = ((*cursor as i32 + delta).rem_euclid(len)) as usize;
-            }
-            _ => {}
-        }
-    }
-
-    /// Jump the Browse cursor to an absolute row (used by
-    /// click-to-select). No-op if the index is out of range.
-    pub fn child_overlay_set_cursor(&mut self, idx: usize, row_count: usize) {
-        if idx >= row_count {
-            return;
-        }
-        match self.child_overlay.as_mut() {
-            Some(ChildOverlay::Todos { cursor, .. })
-            | Some(ChildOverlay::Comments { cursor, .. }) => {
-                *cursor = idx;
-            }
-            _ => {}
-        }
     }
 
     /// Cycle a task's status to the next entry in `STATUS_ORDER`,
@@ -1153,7 +1619,15 @@ impl TasksScreen {
             .ok_or(TaskError::NotFound(task_id))?;
         let next = next_status(current);
         if next == TaskStatus::Review {
-            store.submit_for_review(task_id, OPERATOR.to_string(), OPERATOR.to_string())?;
+            store.submit_for_review(
+                task_id,
+                OPERATOR.to_string(),
+                OPERATOR.to_string(),
+                ReviewReport {
+                    changes_made: "Submitted for review from the TUI status shortcut.".into(),
+                    demo_instructions: "No demo instructions were provided.".into(),
+                },
+            )?;
             return Ok(());
         }
         if current == TaskStatus::Review && next == TaskStatus::Done {
@@ -1805,81 +2279,6 @@ mod tests {
     }
 
     #[test]
-    fn form_section_page_home_end_helpers_clamp_cursor() {
-        let mut form = TaskForm::new_add();
-        form.last_section_visible = 4;
-        form.page_form_section_cursor(1, PopoverKind::Todo, 7);
-        assert_eq!(form.todos_cursor, 4);
-        form.page_form_section_cursor(1, PopoverKind::Todo, 7);
-        assert_eq!(form.todos_cursor, 6);
-        form.page_form_section_cursor(-1, PopoverKind::Todo, 7);
-        assert_eq!(form.todos_cursor, 2);
-        form.jump_form_section_cursor(false, PopoverKind::Todo, 7);
-        assert_eq!(form.todos_cursor, 0);
-        form.jump_form_section_cursor(true, PopoverKind::Todo, 7);
-        assert_eq!(form.todos_cursor, 6);
-    }
-
-    #[test]
-    fn form_section_viewport_scroll_clamps_without_moving_cursor() {
-        let mut form = TaskForm::new_add();
-        form.last_section_visible = 4;
-        form.todos_cursor = 5;
-        form.scroll_form_section_viewport(-1, PopoverKind::Todo, 7);
-        assert_eq!(form.todos_scroll, 0);
-        form.scroll_form_section_viewport(999, PopoverKind::Todo, 7);
-        assert_eq!(form.todos_scroll, 3);
-        assert_eq!(form.todos_cursor, 5);
-    }
-
-    #[test]
-    fn popover_open_close_round_trip_resets_scroll() {
-        let mut form = TaskForm::new_add();
-        assert_eq!(form.popover_open, None);
-        form.open_popover(PopoverKind::Todo);
-        assert_eq!(form.popover_open, Some(PopoverKind::Todo));
-        form.popover_scroll = 4;
-        form.close_popover();
-        assert_eq!(form.popover_open, None);
-        assert_eq!(form.popover_scroll, 0);
-    }
-
-    #[test]
-    fn toggling_todos_section_closes_popover() {
-        let mut form = TaskForm::new_add();
-        form.open_popover(PopoverKind::Todo);
-        form.popover_scroll = 5;
-        form.toggle_todos_collapsed();
-        assert_eq!(form.popover_open, None);
-        assert_eq!(form.popover_scroll, 0);
-    }
-
-    #[test]
-    fn popover_scroll_clamps_to_zero_and_max() {
-        let mut form = TaskForm::new_add();
-        form.scroll_popover(-1, 10);
-        assert_eq!(form.popover_scroll, 0);
-        form.scroll_popover(999, 10);
-        assert_eq!(form.popover_scroll, 10);
-    }
-
-    #[test]
-    fn popover_kind_follows_focused_section_at_open_time() {
-        let mut form = TaskForm::new_add();
-        form.focused_field = FormField::Todos;
-        if form.focused_field == FormField::Todos {
-            form.open_popover(PopoverKind::Todo);
-        }
-        assert_eq!(form.popover_open, Some(PopoverKind::Todo));
-        form.close_popover();
-        form.focused_field = FormField::Comments;
-        if form.focused_field == FormField::Comments {
-            form.open_popover(PopoverKind::Comment);
-        }
-        assert_eq!(form.popover_open, Some(PopoverKind::Comment));
-    }
-
-    #[test]
     fn blocked_by_picker_filters_to_active_tasks() {
         let mut s = TaskStore::new();
         let a = s
@@ -2028,17 +2427,6 @@ mod tests {
                 assignee_options: vec!["".into(), "coder".into()],
                 picker: None,
                 blocked_by_picker: None,
-                todos_collapsed: true,
-                comments_collapsed: true,
-                todos_scroll: 0,
-                comments_scroll: 0,
-                todos_cursor: 0,
-                comments_cursor: 0,
-                popover_open: None,
-                popover_scroll: 0,
-                last_section_visible: 0,
-                last_popover_body_height: 0,
-                last_popover_max_scroll: 0,
                 _button_sink: String::new(),
                 show_approval_buttons: false,
             }),
@@ -2129,13 +2517,10 @@ mod tests {
             .unwrap()
             .id;
         let edit = TaskForm::new_edit(s.get(id).unwrap());
-        // Edit: Title, Description, Assignee, Status, BlockedBy,
-        // Todos, Comments, Ok, Cancel.
-        assert_eq!(edit.tab_order().len(), 9);
-        assert_eq!(edit.tab_order()[5], FormField::Todos);
-        assert_eq!(edit.tab_order()[6], FormField::Comments);
-        assert_eq!(edit.tab_order()[7], FormField::Ok);
-        assert_eq!(edit.tab_order()[8], FormField::Cancel);
+        // Edit: Title, Description, Assignee, Status, BlockedBy, Ok, Cancel.
+        assert_eq!(edit.tab_order().len(), 7);
+        assert_eq!(edit.tab_order()[5], FormField::Ok);
+        assert_eq!(edit.tab_order()[6], FormField::Cancel);
     }
 
     #[test]
@@ -2213,6 +2598,7 @@ mod tests {
             assignee: None,
             planned_assignee: None,
             review_submitter: None,
+            review_report: None,
             worktree: None,
             created_by: "a".into(),
             created_at_secs: 0,
