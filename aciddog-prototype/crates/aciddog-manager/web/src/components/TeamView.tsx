@@ -9,6 +9,8 @@ import {
   Card,
   Empty,
   Eyebrow,
+  Icon,
+  Menu,
   Modal,
   Stat,
   Toast,
@@ -159,38 +161,91 @@ export default function TeamView(props: Props): JSX.Element {
             </span>
           </Show>
         </div>
-        <div style={{ display: "flex", gap: "8px" }}>
-          <Button variant="ghost" size="sm" icon="refresh" onClick={load}>
-            Refresh
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            icon="refresh"
-            onClick={handleReload}
-            disabled={reloading()}
-          >
-            {reloading() ? "Reloading…" : "Reload config"}
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            icon="settings"
-            onClick={() => setEditing(true)}
-          >
-            Edit team
-          </Button>
-          <Button
-            variant="danger"
-            size="sm"
-            icon="x"
-            onClick={() => {
-              setRemoveError(null);
-              setShowRemove(true);
-            }}
-          >
-            Remove team
-          </Button>
+        <div class="team-actions">
+          <div class="team-actions-desktop">
+            <Button variant="ghost" size="sm" icon="refresh" onClick={load}>
+              Refresh
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="refresh"
+              onClick={handleReload}
+              disabled={reloading()}
+            >
+              {reloading() ? "Reloading…" : "Reload config"}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              icon="settings"
+              onClick={() => setEditing(true)}
+            >
+              Edit team
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              icon="x"
+              onClick={() => {
+                setRemoveError(null);
+                setShowRemove(true);
+              }}
+            >
+              Remove team
+            </Button>
+          </div>
+          <div class="team-actions-mobile">
+            <Menu
+              align="end"
+              sections={[
+                {
+                  items: [
+                    {
+                      id: "refresh",
+                      label: "Refresh",
+                      icon: "refresh",
+                      onSelect: load,
+                    },
+                    {
+                      id: "reload",
+                      label: reloading() ? "Reloading…" : "Reload config",
+                      icon: "refresh",
+                      disabled: reloading(),
+                      onSelect: handleReload,
+                    },
+                    {
+                      id: "edit",
+                      label: "Edit team",
+                      icon: "settings",
+                      onSelect: () => setEditing(true),
+                    },
+                    {
+                      id: "remove",
+                      label: "Remove team",
+                      icon: "x",
+                      danger: true,
+                      onSelect: () => {
+                        setRemoveError(null);
+                        setShowRemove(true);
+                      },
+                    },
+                  ],
+                },
+              ]}
+              trigger={(api) => (
+                <button
+                  type="button"
+                  aria-label="Team actions"
+                  aria-haspopup="menu"
+                  class="min-h-[44px] min-w-[44px] flex items-center justify-center text-fg-2 hover:text-fg-0"
+                  onClick={() => api.toggle()}
+                >
+                  <Icon name="more-horizontal" size={16} />
+                </button>
+              )}
+            />
+          </div>
         </div>
       </header>
 
@@ -248,8 +303,8 @@ export default function TeamView(props: Props): JSX.Element {
               >
                 Fleet
               </h3>
-              {/* Default .kpi-row repeat(4, 1fr) wraps the 5th tile to row 2, keeping labels readable across widths. */}
-              <div class="kpi-row">
+              {/* Default .kpi-row repeat(4, 1fr) wraps the 5th tile to row 2; mobile (<=640px) override drops to 2-up via .fleet-kpi-row, giving a 2+2+1 layout with centered numbers. */}
+              <div class="kpi-row fleet-kpi-row">
                 <Card padded={true}>
                   <Stat label="Agents" value={v().fleet.agents} />
                 </Card>

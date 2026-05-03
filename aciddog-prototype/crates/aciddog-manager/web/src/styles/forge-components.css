@@ -3250,6 +3250,21 @@ h2.fsidebar-section {
   .empty-action-desktop { display: inline-flex; }
 }
 
+/* Team header action collapse — mirrors empty-action dual-render but at 640px to match TeamView's existing .core-card-dl boundary (decisions/6ae5b669, decisions/0b98c841) */
+.team-actions { display: inline-flex; align-items: center; gap: 8px; }
+.team-actions-desktop { display: inline-flex; gap: 8px; }
+.team-actions-mobile { display: none; }
+@media (max-width: 640px) {
+  .team-actions-desktop { display: none; }
+  .team-actions-mobile { display: inline-flex; }
+}
+
+/* Fleet KPI tiles — scoped marker so we don't fight Charts.tsx KpiRow's inline grid-template-columns override */
+@media (max-width: 640px) {
+  .fleet-kpi-row { grid-template-columns: repeat(2, 1fr); }
+  .fleet-kpi-row .fstat { align-items: center; text-align: center; }
+}
+
 /* Spinner */
 .spinner {
   display: inline-flex;
