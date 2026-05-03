@@ -9,12 +9,14 @@ import type {
   CreateCronRequest,
   CreateInstanceInput,
   CreateUserRequest,
+  CreateManagedDaemonRequest,
   CronListResponse,
   GraphResponse,
   HealthResponse,
   InboxListResponse,
   InstanceSummary,
   LinksResponse,
+  ManagedDaemonView,
   MemoryMutationResponse,
   MutationResponse,
   PatchCronRequest,
@@ -393,6 +395,47 @@ export const api = {
     request<MutationResponse>(`/api/instances/${id}/cron/${jobId}`, {
       method: "DELETE",
     }),
+
+  // Managed daemons (decisions/585d4b15, sibling b91e9691).
+  // `request<T>` already maps 4xx/5xx to `throw new Error(server_error)`,
+  // so callers get the verbatim server message in `err.message`.
+  listManagedDaemons: async (): Promise<ManagedDaemonView[]> => {
+    const raw = await request<ManagedDaemonView[] | { daemons: ManagedDaemonView[] }>(
+      "/api/managed-daemons",
+    );
+    // Tolerate both a bare array and a `{ daemons: [...] }` envelope.
+    if (Array.isArray(raw)) return raw;
+    if (raw && Array.isArray((raw as { daemons?: ManagedDaemonView[] }).daemons)) {
+      return (raw as { daemons: ManagedDaemonView[] }).daemons;
+    }
+    return [];
+  },
+  getManagedDaemon: (id: string) =>
+    request<ManagedDaemonView>(`/api/managed-daemons/${encodeURIComponent(id)}`),
+  createManagedDaemon: (req: CreateManagedDaemonRequest) =>
+    request<ManagedDaemonView>("/api/managed-daemons", {
+      method: "POST",
+      body: JSON.stringify(req),
+    }),
+  deleteManagedDaemon: (id: string) =>
+    request<void>(`/api/managed-daemons/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  startManagedDaemon: (id: string) =>
+    request<ManagedDaemonView>(
+      `/api/managed-daemons/${encodeURIComponent(id)}/start`,
+      { method: "POST" },
+    ),
+  stopManagedDaemon: (id: string) =>
+    request<ManagedDaemonView>(
+      `/api/managed-daemons/${encodeURIComponent(id)}/stop`,
+      { method: "POST" },
+    ),
+  reloadManagedDaemon: (id: string) =>
+    request<ManagedDaemonView>(
+      `/api/managed-daemons/${encodeURIComponent(id)}/reload`,
+      { method: "POST" },
+    ),
 
   // Web UI users
   listUsers: () => request<UserSummary[]>("/api/users"),

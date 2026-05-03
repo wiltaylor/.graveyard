@@ -1,6 +1,7 @@
 import {
   Show,
   createEffect,
+  createMemo,
   createResource,
   createSignal,
   type JSX,
@@ -9,6 +10,7 @@ import AddInstanceForm from "./components/AddInstanceForm";
 import ChannelView from "./components/ChannelView";
 import ChatPane from "./components/ChatPane";
 import CronView from "./components/CronView";
+import DaemonsView from "./components/daemons/DaemonsView";
 import InboxView from "./components/InboxView";
 import InstanceDetail from "./components/InstanceDetail";
 import InstanceTree from "./components/InstanceTree";
@@ -44,6 +46,11 @@ import type {
 
 interface Props {
   username: string;
+  /// Capability gate sourced from `whoami().is_daemon_runner_enabled`
+  /// (decisions/154e9a7d, sibling 33fc8b7b). When false the Daemons
+  /// tab MUST be structurally absent — no DOM node, no listeners,
+  /// no polling. Fail-closed default in App.tsx.
+  isDaemonRunnerEnabled: boolean;
   onLoggedOut: () => void;
 }
 
@@ -55,9 +62,10 @@ type TabId =
   | "repos"
   | "cron"
   | "inbox"
-  | "memory";
+  | "memory"
+  | "daemons";
 
-const TABS: TabItem<TabId>[] = [
+const BASE_TABS: TabItem<TabId>[] = [
   { id: "team", label: "Team", icon: "users" },
   { id: "agents", label: "Agents", icon: "user" },
   { id: "tasks", label: "Tasks", icon: "check" },
@@ -67,6 +75,12 @@ const TABS: TabItem<TabId>[] = [
   { id: "inbox", label: "Inbox", icon: "bell" },
   { id: "memory", label: "Memory", icon: "database" },
 ];
+
+const DAEMONS_TAB: TabItem<TabId> = {
+  id: "daemons",
+  label: "Daemons",
+  icon: "cpu",
+};
 
 export default function AppShell(props: Props): JSX.Element {
   const [instances, { refetch: refetchInstances }] = createResource<
@@ -83,6 +97,14 @@ export default function AppShell(props: Props): JSX.Element {
   const [activeTab, setActiveTab] = createSignal<TabId>("team");
   const [showAddInstance, setShowAddInstance] = createSignal(false);
   const [drawerOpen, setDrawerOpen] = createSignal(false);
+
+  // Conditional tab strip — when the gate is OFF the Daemons entry
+  // is structurally absent. Reactive memo so toggling the prop in
+  // tests / live re-renders flips the tab strip without remounting
+  // the rest of the shell.
+  const tabs = createMemo<TabItem<TabId>[]>(() =>
+    props.isDaemonRunnerEnabled ? [...BASE_TABS, DAEMONS_TAB] : BASE_TABS,
+  );
   let triggerRef: HTMLButtonElement | undefined;
   const closeDrawer = () => setDrawerOpen(false);
 
@@ -415,7 +437,7 @@ export default function AppShell(props: Props): JSX.Element {
                 }}
               >
                 <Tabs
-                  items={TABS}
+                  items={tabs()}
                   active={activeTab()}
                   iconOnlyOnMobile
                   onChange={(id) => {
@@ -525,6 +547,32 @@ export default function AppShell(props: Props): JSX.Element {
 
                 <Show when={activeTab() === "memory"}>
                   <MemoryView instanceId={inst().id} />
+                </Show>
+
+                {/*
+                  Daemons tab — gated on `isDaemonRunnerEnabled`. The
+                  outer `<Show>` over the `tabs()` memo already keeps
+                  the entry out of the tab strip when the gate is off,
+                  but we ALSO guard the content arm so a stale
+                  `activeTab() === 'daemons'` (e.g. someone clicking
+                  before the prop reactively updated) cannot mount the
+                  pane and start polling. Structural absence is the
+                  contract; the createResource inside DaemonsView only
+                  ever runs while this Show arm is true.
+                */}
+                <Show
+                  when={
+                    props.isDaemonRunnerEnabled && activeTab() === "daemons"
+                  }
+                >
+                  <DaemonsView
+                    onOpenInChat={(instanceId) => {
+                      setSelectedId(instanceId);
+                      setActiveTab("agents");
+                      setSelectedAgent(null);
+                      setSelectedChannel(null);
+                    }}
+                  />
                 </Show>
               </div>
             </>

@@ -725,6 +725,63 @@ export interface PatchCronRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Managed daemons — `/api/managed-daemons` surface (decisions/585d4b15).
+//
+// ManagedDaemon* mirror crates/aciddog-manager/src/routes/managed_daemons.rs
+// (sibling b91e9691).
+//
+// Source of truth: in flight at task/b91e9691 worktree, NOT YET MERGED at
+// dispatch time — the planned wire shape from decisions/585d4b15 is the
+// fallback this slice consumes.
+//
+// Sibling drift verified 2026-05-04 against the b91e9691 worktree:
+//   - The actual handler-side struct currently exposes id, paired_instance_id,
+//     name, desired_state, observed_state, socket_path, created_at — it does
+//     NOT yet ship `work_dir` or `last_error`. The plan calls for both
+//     fields (work_dir for the delete-confirm modal copy, last_error for
+//     the detail pane's error surface), so they remain in this client type
+//     per the planning decision; the server is expected to add them before
+//     b91e9691 lands. Until then `last_error` will arrive `null`/missing
+//     and `work_dir` will be `undefined` — both are tolerated additively
+//     per decisions/59ff479f.
+//   - No name-validation regex exists yet in routes/managed_daemons.rs
+//     (sibling 580b77a1 — scaffolding endpoint — still in planning). The
+//     ScaffoldWizard uses /^[a-z0-9][a-z0-9_-]{0,62}$/ as defensive client-
+//     side validation; server is the source of truth on submission.
+//
+// Re-verify on schema drift; tolerate unknown fields per decisions/59ff479f.
+// ---------------------------------------------------------------------------
+
+export type ManagedDaemonDesiredState = "running" | "stopped";
+
+export type ManagedDaemonObservedState =
+  | "starting"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "crashed";
+
+export interface ManagedDaemonView {
+  id: string;
+  paired_instance_id: string | null;
+  name: string;
+  work_dir: string;
+  desired_state: ManagedDaemonDesiredState;
+  observed_state: ManagedDaemonObservedState;
+  socket_path: string;
+  last_error: string | null;
+  created_at: string;
+}
+
+export interface CreateManagedDaemonRequest {
+  name: string;
+  template?: string;
+  start_on_manager_boot?: boolean;
+  idle_timeout_secs?: number | null;
+  start_on_demand?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Web UI users
 // ---------------------------------------------------------------------------
 
