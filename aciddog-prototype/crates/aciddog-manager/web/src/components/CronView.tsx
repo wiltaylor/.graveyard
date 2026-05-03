@@ -553,11 +553,13 @@ function CronFormModal(props: FormProps): JSX.Element {
             label="Target agent"
             value={props.form.target}
             onChange={(v) => update({ target: v })}
-            options={(props.agents ?? []).map((a) => ({
-              value: a.id,
-              label: a.id,
-            }))}
-            placeholder="(select agent)"
+            options={(props.agents ?? [])
+              .filter((a) => a.kind === "agent" || a.kind === "automaton")
+              .map((a) => ({
+                value: a.id,
+                label: a.id,
+              }))}
+            placeholder="(select agent or automaton)"
           />
         </Show>
 

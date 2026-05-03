@@ -421,8 +421,8 @@ pub fn cli_preamble(
         Some(
             "`--tz` defaults to `local` (the box running aciddog — call `info` \
              to resolve). `/exit` and `/quit` are blocked as slash payloads. \
-             Target must be a configured agent (workers cannot be cron \
-             targets). Cross-agent targeting is gated by the same allowlist \
+             Target must be a configured agent or automaton (workers and \
+             unknown ids cannot be cron targets). Cross-agent targeting is gated by the same allowlist \
              as `send`. Workers cannot use `cron` at all. `--catchup-on-startup` \
              (one-off only) re-fires a missed instant on next start — without \
              it, missed one-offs are pruned during reconciliation.",
@@ -930,8 +930,8 @@ pub fn tag_preamble(
         Some(
             "`\"tz\"` defaults to `\"local\"` (the box running aciddog — call \
              `info` to resolve). `/exit` and `/quit` are blocked as slash \
-             payloads. Target must be a configured agent (workers cannot be \
-             cron targets). Cross-agent targeting is gated by the same \
+             payloads. Target must be a configured agent or automaton \
+             (workers and unknown ids cannot be cron targets). Cross-agent targeting is gated by the same \
              allowlist as `send_message`. Workers cannot use `cron` at all. \
              `\"catchup_on_startup\":true` (one-off only) re-fires a missed \
              instant on next start — without it, missed one-offs are pruned \
@@ -1348,7 +1348,7 @@ mod tests {
             "slash blocklist note missing: {p}"
         );
         assert!(
-            lower.contains("workers cannot be cron targets"),
+            lower.contains("workers and unknown ids cannot be cron targets"),
             "worker-target restriction note missing: {p}"
         );
         assert!(

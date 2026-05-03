@@ -6819,10 +6819,16 @@ impl App {
         Ok(chat.display_name.clone())
     }
 
-    /// True when `id` matches a config-declared agent (workers are
-    /// excluded). Used to validate cron `--target` at create time.
-    fn is_configured_agent(&self, id: &str) -> bool {
+    /// True when `id` can receive cron deliveries.
+    fn is_eligible_cron_target(&self, id: &str) -> bool {
         self.config.agents.iter().any(|a| a.id == id)
+            || self.config.automatons.iter().any(|a| {
+                a.id == id
+                    && !matches!(
+                        a.backend,
+                        crate::config::AutomatonBackend::Webservice { .. }
+                    )
+            })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6879,9 +6885,9 @@ impl App {
             return;
         }
 
-        if !self.is_configured_agent(&target) {
+        if !self.is_eligible_cron_target(&target) {
             let _ = reply.send(Response::err(format!(
-                "cron target `{target}` is not a configured agent (workers cannot be cron targets)"
+                "cron target `{target}` must be a configured agent or automaton (workers and unknown ids cannot be cron targets)"
             )));
             return;
         }
@@ -7051,9 +7057,9 @@ impl App {
         let next_oneoff = oneoff.unwrap_or(current_oneoff);
 
         if let Some(ref t) = target {
-            if !self.is_configured_agent(t) {
+            if !self.is_eligible_cron_target(t) {
                 let _ = reply.send(Response::err(format!(
-                    "cron target `{t}` is not a configured agent"
+                    "cron target `{t}` must be a configured agent or automaton (workers and unknown ids cannot be cron targets)"
                 )));
                 return;
             }
@@ -10769,8 +10775,10 @@ impl App {
         if target.is_empty() {
             return Err("target is empty".into());
         }
-        if !self.is_configured_agent(&target) {
-            return Err(format!("target `{target}` is not a configured agent"));
+        if !self.is_eligible_cron_target(&target) {
+            return Err(format!(
+                "target `{target}` must be a configured agent or automaton"
+            ));
         }
 
         let payload_kind = match form.payload_kind {
@@ -17258,6 +17266,84 @@ mod tests {
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["thinking".into()],
+        }
+    }
+
+    fn script_automaton(id: &str) -> Automaton {
+        Automaton {
+            id: id.into(),
+            role: "script automaton".into(),
+            role_description: None,
+            can_message: None,
+            backend: crate::config::AutomatonBackend::Script {
+                command: "cat".into(),
+                args: vec![],
+                cwd: None,
+                env: vec![],
+                timeout_seconds: None,
+            },
+            supervisor: false,
+            sysadmin: false,
+            leader: false,
+            group: None,
+        }
+    }
+
+    fn remote_automaton(id: &str) -> Automaton {
+        Automaton {
+            id: id.into(),
+            role: "remote automaton".into(),
+            role_description: None,
+            can_message: None,
+            backend: crate::config::AutomatonBackend::Remote {
+                transport: crate::config::RemoteTransport::UnixSocket {
+                    path: PathBuf::from("/tmp/aciddog-remote.sock"),
+                },
+                remote_target: "remote_agent".into(),
+                deliver_to: "a".into(),
+                proxy_socket_path: None,
+            },
+            supervisor: false,
+            sysadmin: false,
+            leader: false,
+            group: None,
+        }
+    }
+
+    fn webservice_automaton(id: &str) -> Automaton {
+        Automaton {
+            id: id.into(),
+            role: "webservice automaton".into(),
+            role_description: None,
+            can_message: None,
+            backend: crate::config::AutomatonBackend::Webservice {
+                bind: crate::config::WebserviceBind::UnixSocket {
+                    path: PathBuf::from("/tmp/aciddog-webservice.sock"),
+                },
+                api_key_env: None,
+            },
+            supervisor: false,
+            sysadmin: false,
+            leader: false,
+            group: None,
+        }
+    }
+
+    fn worker_template(id: &str) -> crate::config::Worker {
+        crate::config::Worker {
+            id: id.into(),
+            role: "worker".into(),
+            role_description: None,
+            model: Some("m".into()),
+            instructions: "i".into(),
+            tools: None,
+            can_create_workers: None,
+            can_run_workflows: None,
+            ai_core: None,
+            memory_banks: None,
+            skills: None,
+            compaction: None,
+            group: None,
         }
     }
 
@@ -24612,6 +24698,25 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         }
     }
 
+    #[test]
+    fn is_eligible_cron_target_accepts_agents_and_supported_automatons_only() {
+        let mut cfg = sample_config();
+        cfg.automatons = vec![
+            script_automaton("script_auto"),
+            remote_automaton("remote_auto"),
+            webservice_automaton("web_auto"),
+        ];
+        cfg.workers.push(worker_template("researcher"));
+        let app = App::new(cfg);
+
+        assert!(app.is_eligible_cron_target("a"));
+        assert!(app.is_eligible_cron_target("script_auto"));
+        assert!(app.is_eligible_cron_target("remote_auto"));
+        assert!(!app.is_eligible_cron_target("web_auto"));
+        assert!(!app.is_eligible_cron_target("researcher"));
+        assert!(!app.is_eligible_cron_target("ghost"));
+    }
+
     #[tokio::test]
     async fn info_returns_local_and_utc_lines() {
         let mut app = App::new(sample_config());
@@ -24635,7 +24740,9 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
 
     #[tokio::test]
     async fn cron_add_persists_and_lists() {
-        let mut app = App::new(sample_config());
+        let mut cfg = sample_config();
+        cfg.automatons.push(script_automaton("script_auto"));
+        let mut app = App::new(cfg);
         wire_up_agent_ids_and_channels(&mut app);
         let sender = app.chats[0].session_id.unwrap();
 
@@ -24647,6 +24754,29 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         let resp = rx.await.unwrap();
         assert!(resp.ok, "{resp:?}");
         assert_eq!(app.cron.len(), 1);
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: cron_add_request(
+                sender,
+                "script_auto",
+                "message",
+                "automaton ping",
+                "15 * * * *",
+                false,
+            ),
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok, "{resp:?}");
+        assert_eq!(app.cron.len(), 2);
+        let automaton_job_id = app
+            .cron
+            .all()
+            .iter()
+            .find(|j| j.target_agent == "script_auto")
+            .expect("automaton cron job persisted")
+            .id;
 
         let (tx, rx) = oneshot::channel();
         app.handle_agent_socket_event(AgentSocketEvent {
@@ -24664,6 +24794,25 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         assert!(resp.ok);
         let body = resp.message.unwrap();
         assert!(body.contains("→ b"), "list output: {body}");
+        assert!(body.contains("→ script_auto"), "list output: {body}");
+
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::CronShow {
+                    id: automaton_job_id,
+                },
+            },
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok);
+        let body = resp.message.unwrap();
+        assert!(
+            body.contains("target_agent:       script_auto"),
+            "show output: {body}"
+        );
     }
 
     #[tokio::test]
@@ -24691,6 +24840,53 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         );
         assert!(payload.contains("ping</Message>"), "got: {payload}");
         // One-off should be gone after firing.
+        assert_eq!(app.cron.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn cron_add_accepts_script_automaton_and_tick_dispatches_to_its_chat() {
+        let mut cfg = sample_config();
+        cfg.automatons.push(script_automaton("script_auto"));
+        let mut app = App::new(cfg);
+        wire_up_agent_ids_and_channels(&mut app);
+        let sender = app.chats[0].session_id.unwrap();
+        let automaton_idx = app
+            .chats
+            .iter()
+            .position(|c| c.display_name == "script_auto" && c.parent_idx.is_none())
+            .expect("automaton chat");
+        let (automaton_tx, mut automaton_rx) = mpsc::channel::<String>(16);
+        app.chats[automaton_idx].agent_tx = Some(automaton_tx);
+
+        let past = (chrono::Utc::now() - chrono::Duration::seconds(1)).naive_utc();
+        let past_str = past.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let (tx, rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: cron_add_request(
+                sender,
+                "script_auto",
+                "message",
+                "automaton ping",
+                &past_str,
+                true,
+            ),
+            reply: tx,
+        });
+        let resp = rx.await.unwrap();
+        assert!(resp.ok, "{resp:?}");
+        assert_eq!(app.cron.len(), 1);
+        assert_eq!(app.cron.all()[0].target_agent, "script_auto");
+
+        app.tick_cron(chrono::Utc::now());
+        let payload = automaton_rx.recv().await.expect("delivered to automaton");
+        assert!(
+            payload.starts_with("<Message from=\"cron:a:"),
+            "got: {payload}"
+        );
+        assert!(
+            payload.contains("automaton ping</Message>"),
+            "got: {payload}"
+        );
         assert_eq!(app.cron.len(), 0);
     }
 
@@ -24802,8 +24998,8 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
             resp.error
                 .as_deref()
                 .unwrap_or("")
-                .contains("not a configured agent"),
-            "expected configured-agent error: {resp:?}"
+                .contains("workers and unknown ids cannot be cron targets"),
+            "expected cron-target eligibility error: {resp:?}"
         );
     }
 

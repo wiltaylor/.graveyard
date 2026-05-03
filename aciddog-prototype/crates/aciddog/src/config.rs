@@ -4171,6 +4171,25 @@ mod tests {
     }
 
     #[test]
+    fn can_send_accepts_automaton_senders_and_recipients() {
+        let cfg = parse_config(
+            r#"
+                team default { description = "t" }
+                agent alice { role = "r" instructions = "i" can_message = ["logger"] }
+                automaton logger {
+                    role = "x"
+                    command = "cat"
+                    can_message = ["alice"]
+                }
+            "#,
+            &dummy_path(),
+        )
+        .unwrap();
+        assert!(cfg.can_send("logger", "alice"));
+        assert!(cfg.can_send("alice", "logger"));
+    }
+
+    #[test]
     fn can_send_honors_empty_allowlist() {
         let cfg = parse_config(
             r#"
