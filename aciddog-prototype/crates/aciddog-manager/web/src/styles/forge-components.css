@@ -3101,3 +3101,74 @@
   .field.error input{border-color:var(--danger)}
   .help{font-size:11px;color:var(--fg-2)}
   .help.error{color:var(--danger-fg)}
+
+/* Skip-link - visually hidden until focused; sits above Modal (z-index 300) and drawer (z-index 291) */
+.skip-link {
+  position: absolute; top: -40px; left: 0;
+  padding: 8px 12px;
+  background: var(--accent); color: var(--accent-contrast);
+  z-index: 400;
+  border-radius: var(--r-sm);
+  font: inherit; font-size: 13px; font-weight: 600;
+  text-decoration: none;
+}
+.skip-link:focus, .skip-link:focus-visible {
+  top: 8px; left: 8px;
+  outline: 2px solid var(--accent-contrast); outline-offset: 2px;
+}
+
+/* Sidebar section <h2> - explicit rule so the headings render identically to the existing div .fsidebar-section */
+h2.fsidebar-section {
+  margin: 0;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--fg-2);
+  padding: 14px 10px 6px;
+}
+/* For the Instances heading inside a flex .fsidebar-section wrapper - strip h2 UA defaults and inherit from parent */
+.fsidebar-section-title {
+  margin: 0; font: inherit; letter-spacing: inherit;
+  text-transform: inherit; color: inherit; padding: 0;
+}
+
+/* Loading-row wrapper for Spinner + caption (mirrors prior padding/colour) */
+.fsidebar-loading {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px; color: var(--fg-2);
+}
+
+/* Dual-CTA visibility helpers - no JS resize listener; mirrors T1's max-width:768px boundary */
+.empty-action-mobile { display: inline-flex; }
+.empty-action-desktop { display: none; }
+@media (min-width: 769px) {
+  .empty-action-mobile { display: none; }
+  .empty-action-desktop { display: inline-flex; }
+}
+
+/* Spinner */
+.spinner {
+  display: inline-flex;
+  width: var(--size, 16px); height: var(--size, 16px);
+  vertical-align: middle;
+}
+.spinner-ring {
+  display: block; width: 100%; height: 100%;
+  border: 2px solid transparent;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spinner-rot 0.9s linear infinite;
+}
+@keyframes spinner-rot { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner-ring {
+    animation: spinner-pulse 1.4s ease-in-out infinite;
+    border-top-color: var(--accent);
+    border-right-color: var(--accent);
+    border-bottom-color: var(--accent);
+    border-left-color: var(--accent);
+  }
+  @keyframes spinner-pulse {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+  }
+}

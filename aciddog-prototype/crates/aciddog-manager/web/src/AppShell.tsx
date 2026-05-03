@@ -28,6 +28,7 @@ import {
   Empty,
   Icon,
   Modal,
+  Spinner,
   Tabs,
   ToastHost,
 } from "./components/ui";
@@ -186,6 +187,10 @@ export default function AppShell(props: Props): JSX.Element {
         "grid-template-rows": "48px 1fr",
       }}
     >
+      {/* Skip-link must remain OUTSIDE T2 drawer portal so Tab from <body> hits it before any focus trap */}
+      <a class="skip-link" href="#app-main-content">
+        Skip to main content
+      </a>
       <header class="ftopbar">
         <button
           ref={(el) => (triggerRef = el)}
@@ -264,7 +269,7 @@ export default function AppShell(props: Props): JSX.Element {
               padding: "14px 6px 6px 10px",
             }}
           >
-            <span>Instances</span>
+            <h2 class="fsidebar-section-title">Instances</h2>
             <button
               type="button"
               onClick={() => setShowAddInstance(true)}
@@ -278,14 +283,9 @@ export default function AppShell(props: Props): JSX.Element {
           <Show
             when={!instances.loading}
             fallback={
-              <div
-                style={{
-                  padding: "8px 10px",
-                  "font-size": "12px",
-                  color: "var(--fg-2)",
-                }}
-              >
-                Loading…
+              <div class="fsidebar-loading">
+                <Spinner size={14} label="Loading instances" />
+                <span>Loading…</span>
               </div>
             }
           >
@@ -320,7 +320,7 @@ export default function AppShell(props: Props): JSX.Element {
             />
           </Show>
 
-          <div class="fsidebar-section">Settings</div>
+          <h2 class="fsidebar-section">Settings</h2>
           <SettingsTree
             selected={settingsSelection()}
             onSelect={selectSettings}
@@ -338,7 +338,9 @@ export default function AppShell(props: Props): JSX.Element {
       </Modal>
 
       <main
+        id="app-main-content"
         class="app-main"
+        tabindex={-1}
         style={{
           padding: "0",
           display: "flex",
@@ -362,8 +364,32 @@ export default function AppShell(props: Props): JSX.Element {
           fallback={
             <Show when={!settingsSelection()}>
               <div style={{ padding: "32px" }}>
-                <Empty title="No instance selected">
-                  Select an instance from the left, or add a new one.
+                <Empty
+                  title="No instance selected"
+                  action={
+                    <>
+                      <span class="empty-action-mobile">
+                        <Button
+                          variant="primary"
+                          icon="menu"
+                          onClick={() => setDrawerOpen(true)}
+                        >
+                          Show instances
+                        </Button>
+                      </span>
+                      <span class="empty-action-desktop">
+                        <Button
+                          variant="secondary"
+                          icon="plus"
+                          onClick={() => setShowAddInstance(true)}
+                        >
+                          Add instance
+                        </Button>
+                      </span>
+                    </>
+                  }
+                >
+                  Select an instance, or add a new one.
                 </Empty>
               </div>
             </Show>

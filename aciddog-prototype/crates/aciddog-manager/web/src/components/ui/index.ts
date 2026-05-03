@@ -20,6 +20,7 @@ export type { StatTone } from "./Stat";
 export { default as Kbd } from "./Kbd";
 export { default as Eyebrow } from "./Eyebrow";
 export { default as Empty } from "./Empty";
+export { default as Spinner } from "./Spinner";
 
 export { default as Toast } from "./Toast";
 export type { ToastTone } from "./Toast";
