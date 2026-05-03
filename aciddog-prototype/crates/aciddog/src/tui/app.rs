@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use clap::Parser;
 
+use super::transcript::build_restart_transcript;
 use crate::agent_ipc::{self, AgentSocketEvent, HistorySelector, RequestCmd, Response};
 use crate::ai::{
     AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, CodexCliCore, CopilotCliCore,
@@ -33,6 +34,8 @@ use crate::memory::MemoryRegistry;
 use crate::repos::{self, compute_branch_diff, DiffOutcome};
 use crate::tasks::{Task, TaskFilter, TaskPatch, TaskStatus, TaskStore, TodoStatus};
 use crate::usage;
+
+const RESTART_CORE_PREAMBLE: &str = "Your prior AI-core session was lost; you are picking up where it left off.\n\nThe transcript below is your previous self's conversation - read it as your own history, then continue from where it stops. Tool side-effects (files written, etc.) already happened in the world; re-derive state from disk rather than trusting it from memory.\n";
 use crate::wire_repos::{
     WireDiffLine, WireDiffLineKind, WireDiffOutcome, WireRepository, WireWorktree,
 };
@@ -780,10 +783,21 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             task,
             cwd: _,
             properties: _,
+            ai_core_override: _,
         } => ChatBlock::worker_spawn(template, task),
         RequestCmd::WorkerComplete { body } => ChatBlock::worker_complete(body),
         RequestCmd::WorkerArchive { worker } => {
             ChatBlock::from_tool_use(&format!("aciddog worker archive --id {worker}"), input)
+        }
+        RequestCmd::WorkerRestartCore {
+            worker,
+            ai_core_override,
+        } => {
+            let summary = match ai_core_override {
+                Some(ai_core) => format!("restart-core {worker} ai-core={ai_core}"),
+                None => format!("restart-core {worker}"),
+            };
+            ChatBlock::from_tool_use(&summary, input)
         }
         RequestCmd::RemoteSessionBound { name } => {
             // Internal registration — shouldn't surface on any pane,
@@ -1068,6 +1082,16 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             &format!("aciddog worker force-archive --id {worker}"),
             input,
         ),
+        RequestCmd::WorkerForceRestartCore {
+            worker,
+            ai_core_override,
+        } => {
+            let summary = match ai_core_override {
+                Some(ai_core) => format!("force-restart-core {worker} ai-core={ai_core}"),
+                None => format!("force-restart-core {worker}"),
+            };
+            ChatBlock::from_tool_use(&summary, input)
+        }
         RequestCmd::ServerShutdown => ChatBlock::from_tool_use("aciddog server shutdown", input),
         RequestCmd::ServerExit => ChatBlock::from_tool_use("aciddog server exit", input),
         RequestCmd::ServerReload => ChatBlock::from_tool_use("aciddog server reload", input),
@@ -1799,6 +1823,16 @@ pub struct AgentChat {
     /// `can_create_workers` for nested spawns and to rebuild the tool
     /// list / instructions on resurrection.
     pub worker_template: Option<String>,
+    /// Original worker-create brief. Runtime-only restart-core context;
+    /// the JSONL session log remains the canonical transcript record.
+    pub spawn_task_brief: Option<String>,
+    /// Resolved cwd used for the original worker spawn. Runtime-only
+    /// restart-core context so restart logic can inherit the actual
+    /// path rather than recomputing from potentially stale task state.
+    pub spawn_cwd: Option<String>,
+    /// Free-form properties supplied to the original worker spawn.
+    /// Runtime-only restart-core context for remote-worker backends.
+    pub spawn_properties: Option<serde_json::Value>,
     /// Display name for the agent list. Matches the config id for
     /// statically declared agents and `<template>#<uuid-prefix>` for
     /// worker instances. Also used as the `send --to` target.
@@ -1964,6 +1998,9 @@ impl Default for AgentChat {
             session_id: None,
             parent_idx: None,
             worker_template: None,
+            spawn_task_brief: None,
+            spawn_cwd: None,
+            spawn_properties: None,
             display_name: String::new(),
             kind: ChatKind::default(),
             automaton_last_exit: None,
@@ -3727,14 +3764,29 @@ impl App {
                 task,
                 cwd,
                 properties,
+                ai_core_override,
             } => {
-                self.handle_worker_create(idx, template, task, cwd, properties, reply);
+                self.handle_worker_create(
+                    idx,
+                    template,
+                    task,
+                    cwd,
+                    properties,
+                    ai_core_override,
+                    reply,
+                );
             }
             RequestCmd::WorkerComplete { body } => {
                 self.handle_worker_complete(idx, body, reply);
             }
             RequestCmd::WorkerArchive { worker } => {
                 self.handle_worker_archive(idx, worker, reply);
+            }
+            RequestCmd::WorkerRestartCore {
+                worker,
+                ai_core_override,
+            } => {
+                self.handle_worker_restart_core(idx, worker, ai_core_override, reply);
             }
             RequestCmd::RemoteSessionBound { name } => {
                 if let Some(chat) = self.chats.get_mut(idx) {
@@ -4152,6 +4204,12 @@ impl App {
             RequestCmd::WorkerForceArchive { worker } => {
                 self.handle_admin_worker_force_archive(idx, worker, reply);
             }
+            RequestCmd::WorkerForceRestartCore {
+                worker,
+                ai_core_override,
+            } => {
+                self.handle_admin_worker_force_restart_core(idx, worker, ai_core_override, reply);
+            }
             RequestCmd::ServerShutdown => {
                 self.handle_admin_server_shutdown(idx, reply);
             }
@@ -4389,6 +4447,7 @@ impl App {
         task: String,
         cwd: Option<String>,
         properties: Option<serde_json::Value>,
+        ai_core_override: Option<String>,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
         // Resolve the sender's "template id" for the allowlist check.
@@ -4450,7 +4509,10 @@ impl App {
         let session_id = Uuid::new_v4();
         let display_name = format!("{}#{}", template, &session_id.to_string()[..8]);
 
-        let core = match self.config.effective_ai_core(worker.ai_core.as_deref()) {
+        let core = match self
+            .config
+            .effective_ai_core(ai_core_override.as_deref().or(worker.ai_core.as_deref()))
+        {
             Some(c) => c,
             None => {
                 let _ = reply.send(Response::err(format!(
@@ -4606,6 +4668,9 @@ impl App {
         chat.open_session_log(&cwd, system_prompt_text.as_deref());
         // Surface the initial task as a user message on the worker's
         // pane so its chat reads naturally.
+        chat.spawn_task_brief = Some(task.clone());
+        chat.spawn_cwd = cwd_override.as_ref().map(|path| path.display().to_string());
+        chat.spawn_properties = properties.clone();
         chat.push_block(ChatBlock::user(task.clone()));
 
         let new_idx = self.chats.len();
@@ -4745,6 +4810,190 @@ impl App {
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
         self.archive_worker(sender_idx, worker_display, false, reply);
+    }
+
+    fn handle_worker_restart_core(
+        &mut self,
+        sender_idx: usize,
+        worker_display: String,
+        ai_core_override: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        self.restart_core_worker(sender_idx, &worker_display, ai_core_override, false, reply);
+    }
+
+    fn restart_core_worker(
+        &mut self,
+        sender_idx: usize,
+        worker_display: &str,
+        ai_core_override: Option<String>,
+        bypass_parent_check: bool,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(target_idx) = self
+            .chats
+            .iter()
+            .position(|c| c.display_name == worker_display)
+        else {
+            let _ = reply.send(Response::err(format!("unknown worker {worker_display}")));
+            return;
+        };
+
+        let Some(parent_idx) = self.chats.get(target_idx).and_then(|c| c.parent_idx) else {
+            let _ = reply.send(Response::err(format!(
+                "worker {worker_display} has no parent (force-restart-core via supervisor surface)"
+            )));
+            return;
+        };
+        if !bypass_parent_check && parent_idx != sender_idx {
+            let _ = reply.send(Response::err(
+                "only the parent that spawned this worker may restart-core it",
+            ));
+            return;
+        }
+
+        if let Some(id) = ai_core_override.as_deref() {
+            if !self.config.ai_cores.iter().any(|core| core.id == id) {
+                let known: Vec<&str> = self
+                    .config
+                    .ai_cores
+                    .iter()
+                    .map(|core| core.id.as_str())
+                    .collect();
+                let _ = reply.send(Response::err(format!(
+                    "unknown ai_core \"{id}\"; declared cores: {}",
+                    known.join(", ")
+                )));
+                return;
+            }
+        }
+
+        if !bypass_parent_check {
+            let Some(parent) = self.chats.get(parent_idx) else {
+                let _ = reply.send(Response::err(format!(
+                    "worker {worker_display} parent is no longer present"
+                )));
+                return;
+            };
+            if parent.hibernated {
+                let _ = reply.send(Response::err(format!(
+                    "parent {} is hibernated; use \"worker force-restart-core\" (supervisor surface) to bypass the parent check",
+                    parent.display_name
+                )));
+                return;
+            }
+        }
+
+        let Some(broken) = self.chats.get(target_idx) else {
+            let _ = reply.send(Response::err(format!("unknown worker {worker_display}")));
+            return;
+        };
+        let Some(template) = broken.worker_template.clone() else {
+            let _ = reply.send(Response::err(format!(
+                "worker {worker_display} has no template"
+            )));
+            return;
+        };
+        let brief = broken.spawn_task_brief.clone().or_else(|| {
+            broken.blocks.iter().find_map(|block| match block {
+                ChatBlock::UserText { text } => Some(text.clone()),
+                _ => None,
+            })
+        });
+        let brief = brief.unwrap_or_default();
+        let spawn_cwd = broken.spawn_cwd.clone();
+        let spawn_properties = broken.spawn_properties.clone();
+        let broken_display = broken.display_name.clone();
+        let old_session = broken
+            .session_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let session_hash =
+            (!broken.session_hash.is_empty()).then_some(broken.session_hash.as_str());
+        let transcript = build_restart_transcript(&broken.blocks, 32 * 1024, session_hash);
+        let block_count = broken.blocks.len();
+        let transcript_chars = transcript.chars().count();
+        let composed_prompt = format!(
+            "{RESTART_CORE_PREAMBLE}\n## Transcript\n\n{transcript}\n\n## Original brief\n\n{brief}"
+        );
+
+        let (new_display, new_session) = match self.spawn_restart_worker_via_create(
+            parent_idx,
+            template,
+            composed_prompt,
+            spawn_cwd,
+            spawn_properties,
+            ai_core_override,
+        ) {
+            Ok(spawned) => spawned,
+            Err(e) => {
+                let _ = reply.send(Response::err(e));
+                return;
+            }
+        };
+
+        if let Some(chat) = self.chats.get_mut(target_idx) {
+            chat.push_block(ChatBlock::system_info(format!(
+                "[restart-core] replaced by {new_display}; old session {old_session} JSONL retained for forensics"
+            )));
+        }
+        if let Some(chat) = self
+            .chats
+            .iter_mut()
+            .find(|chat| chat.display_name == new_display)
+        {
+            chat.push_block(ChatBlock::system_info(format!(
+                "[restart-core] resumed from {broken_display}; transcript contains {block_count} blocks ({transcript_chars} chars after cap)"
+            )));
+        }
+
+        let (archive_tx, archive_rx) = tokio::sync::oneshot::channel();
+        drop(archive_rx);
+        self.archive_worker(sender_idx, broken_display, true, archive_tx);
+
+        let _ = reply.send(Response::ok(format!("{new_display} {new_session}")));
+    }
+
+    fn spawn_restart_worker_via_create(
+        &mut self,
+        parent_idx: usize,
+        template: String,
+        task: String,
+        cwd: Option<String>,
+        properties: Option<serde_json::Value>,
+        ai_core_override: Option<String>,
+    ) -> Result<(String, Uuid), String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.handle_worker_create(
+            parent_idx,
+            template,
+            task,
+            cwd,
+            properties,
+            ai_core_override,
+            tx,
+        );
+        let resp = futures::executor::block_on(rx)
+            .map_err(|_| "worker create reply dropped".to_string())?;
+        if !resp.ok {
+            return Err(resp
+                .error
+                .unwrap_or_else(|| "worker create failed".to_string()));
+        }
+        let message = resp
+            .message
+            .ok_or_else(|| "worker create returned no message".to_string())?;
+        let mut parts = message.split_whitespace();
+        let display = parts
+            .next()
+            .ok_or_else(|| "worker create returned empty message".to_string())?
+            .to_string();
+        let session = parts
+            .next()
+            .ok_or_else(|| "worker create returned no session id".to_string())?;
+        let session = Uuid::parse_str(session)
+            .map_err(|e| format!("worker create returned invalid session id: {e}"))?;
+        Ok((display, session))
     }
 
     /// Shared archive body used by both `handle_worker_archive`
@@ -9364,6 +9613,20 @@ impl App {
             return;
         }
         self.archive_worker(sender_idx, worker, true, reply);
+    }
+
+    fn handle_admin_worker_force_restart_core(
+        &mut self,
+        sender_idx: usize,
+        worker: String,
+        ai_core_override: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+        self.restart_core_worker(sender_idx, &worker, ai_core_override, true, reply);
     }
 
     fn handle_admin_server_shutdown(
@@ -20117,6 +20380,82 @@ mod tests {
         (app, ai_rx)
     }
 
+    fn push_broken_worker(app: &mut App, parent_idx: usize) -> usize {
+        let session_id = Uuid::new_v4();
+        let display_name = format!("researcher#{}", &session_id.to_string()[..8]);
+        let idx = app.chats.len();
+        app.chats.push(AgentChat {
+            blocks: vec![
+                ChatBlock::user("original brief"),
+                ChatBlock::ai_markdown("partial answer"),
+            ],
+            parent_idx: Some(parent_idx),
+            worker_template: Some("researcher".into()),
+            spawn_task_brief: Some("original brief".into()),
+            spawn_cwd: None,
+            spawn_properties: Some(json!({"repo":"acme/foo"})),
+            display_name,
+            kind: ChatKind::Worker,
+            session_id: Some(session_id),
+            status: AgentStatus::Working,
+            hibernated: false,
+            session_hash: "deadbeefcafe".into(),
+            ..Default::default()
+        });
+        idx
+    }
+
+    async fn spawn_researcher_worker_for_restart_smoke(app: &mut App, brief: &str) -> usize {
+        let sender = app.chats[0].session_id.unwrap();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::WorkerCreate {
+                    template: "researcher".into(),
+                    task: brief.into(),
+                    cwd: None,
+                    properties: None,
+                    ai_core_override: None,
+                },
+            },
+            reply: reply_tx,
+        });
+        let resp = reply_rx.await.unwrap();
+        assert!(resp.ok, "worker create failed: {resp:?}");
+        let display = resp
+            .message
+            .as_deref()
+            .and_then(|msg| msg.split_whitespace().next())
+            .expect("worker create response missing display name");
+        app.chats
+            .iter()
+            .position(|chat| chat.display_name == display)
+            .expect("spawned worker chat missing")
+    }
+
+    fn first_user_text(chat: &AgentChat) -> &str {
+        chat.blocks
+            .iter()
+            .find_map(|block| match block {
+                ChatBlock::UserText { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("missing user text block")
+    }
+
+    fn has_system_info_containing(chat: &AgentChat, needle: &str) -> bool {
+        chat.blocks.iter().any(|block| {
+            matches!(
+                block,
+                ChatBlock::System {
+                    text,
+                    kind: super::super::blocks::SystemKind::Info,
+                } if text.contains(needle)
+            )
+        })
+    }
+
     #[test]
     fn worker_create_initial_task_dispatch_independent_of_wake_policy() {
         // Focused helper test: the full worker_create path immediately
@@ -20154,6 +20493,7 @@ mod tests {
                     task: "anything".into(),
                     cwd: None,
                     properties: None,
+                    ai_core_override: None,
                 },
             },
             reply: reply_tx,
@@ -20181,6 +20521,7 @@ mod tests {
                     task: "t".into(),
                     cwd: None,
                     properties: None,
+                    ai_core_override: None,
                 },
             },
             reply: reply_tx,
@@ -20205,6 +20546,7 @@ mod tests {
                     task: "find FOO".into(),
                     cwd: None,
                     properties: None,
+                    ai_core_override: None,
                 },
             },
             reply: reply_tx,
@@ -20216,6 +20558,9 @@ mod tests {
         let worker = app.chats.last().unwrap();
         assert_eq!(worker.parent_idx, Some(0));
         assert_eq!(worker.worker_template.as_deref(), Some("researcher"));
+        assert_eq!(worker.spawn_task_brief.as_deref(), Some("find FOO"));
+        assert!(worker.spawn_cwd.is_none());
+        assert!(worker.spawn_properties.is_none());
         assert!(
             worker.display_name.starts_with("researcher#"),
             "unexpected display name: {}",
@@ -20229,6 +20574,217 @@ mod tests {
             .iter()
             .any(|b| matches!(b, ChatBlock::WorkerSpawn { .. }));
         assert!(parent_has_spawn_block, "missing WorkerSpawn on parent");
+    }
+
+    #[tokio::test]
+    async fn restart_core_rejects_unknown_ai_core_without_state_change() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        let worker_idx = push_broken_worker(&mut app, 0);
+        let sender = app.chats[0].session_id.unwrap();
+        let worker = app.chats[worker_idx].display_name.clone();
+        let chats_before = app.chats.len();
+        let blocks_before = app.chats[worker_idx].blocks.len();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::WorkerRestartCore {
+                    worker,
+                    ai_core_override: Some("ghost-core".into()),
+                },
+            },
+            reply: reply_tx,
+        });
+
+        let resp = reply_rx.await.unwrap();
+        assert!(!resp.ok);
+        assert_eq!(
+            resp.error.as_deref(),
+            Some("unknown ai_core \"ghost-core\"; declared cores: default")
+        );
+        assert_eq!(app.chats.len(), chats_before);
+        assert_eq!(app.chats[worker_idx].blocks.len(), blocks_before);
+        assert!(!app.chats[worker_idx].hibernated);
+    }
+
+    #[tokio::test]
+    async fn restart_core_rejects_hibernated_parent_without_state_change() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        app.chats[0].hibernated = true;
+        app.chats[0].status = AgentStatus::Hibernated;
+        let worker_idx = push_broken_worker(&mut app, 0);
+        let sender = app.chats[0].session_id.unwrap();
+        let worker = app.chats[worker_idx].display_name.clone();
+        let chats_before = app.chats.len();
+        let blocks_before = app.chats[worker_idx].blocks.len();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::WorkerRestartCore {
+                    worker,
+                    ai_core_override: None,
+                },
+            },
+            reply: reply_tx,
+        });
+
+        let resp = reply_rx.await.unwrap();
+        assert!(!resp.ok);
+        assert_eq!(
+            resp.error.as_deref(),
+            Some(
+                "parent coder is hibernated; use \"worker force-restart-core\" (supervisor surface) to bypass the parent check"
+            )
+        );
+        assert_eq!(app.chats.len(), chats_before);
+        assert_eq!(app.chats[worker_idx].blocks.len(), blocks_before);
+        assert!(!app.chats[worker_idx].hibernated);
+    }
+
+    #[tokio::test]
+    async fn force_restart_core_skips_hibernated_parent_guard() {
+        let mut cfg = worker_config();
+        cfg.agents[1].supervisor = true;
+        let (mut app, _rx) = prime_worker_app(cfg);
+        app.chats[0].hibernated = true;
+        app.chats[0].status = AgentStatus::Hibernated;
+        let worker_idx = push_broken_worker(&mut app, 0);
+        let sender = app.chats[1].session_id.unwrap();
+        let worker = app.chats[worker_idx].display_name.clone();
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.handle_agent_socket_event(AgentSocketEvent {
+            request: crate::agent_ipc::Request {
+                agent_id: sender,
+                cmd: RequestCmd::WorkerForceRestartCore {
+                    worker,
+                    ai_core_override: None,
+                },
+            },
+            reply: reply_tx,
+        });
+
+        let resp = reply_rx.await.unwrap();
+        assert!(resp.ok, "force restart failed: {resp:?}");
+        let message = resp.message.unwrap();
+        assert!(message.starts_with("researcher#"), "got: {message}");
+        assert!(app.chats[worker_idx].hibernated);
+        let replacement = app.chats.last().unwrap();
+        assert_eq!(replacement.parent_idx, Some(0));
+        let first_user = replacement.blocks.iter().find_map(|block| match block {
+            ChatBlock::UserText { text } => Some(text),
+            _ => None,
+        });
+        let first_user = first_user.expect("replacement missing first user prompt");
+        assert!(first_user.contains("Your prior AI-core session was lost"));
+        assert!(first_user.contains("## Transcript"));
+        assert!(first_user.contains("## Original brief"));
+        assert!(first_user.contains("original brief"));
+    }
+
+    #[tokio::test]
+    async fn restart_core_smoke_in_process_replays_transcript_and_archives_old() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        let brief = "investigate the restart smoke path";
+        let worker_idx = spawn_researcher_worker_for_restart_smoke(&mut app, brief).await;
+        let broken_display = app.chats[worker_idx].display_name.clone();
+        let broken_template = app.chats[worker_idx].worker_template.clone();
+        let broken_parent = app.chats[worker_idx].parent_idx;
+        let broken_hash = app.chats[worker_idx].session_hash.clone();
+        let jsonl_path =
+            super::super::chat_log::chat_dir(&std::env::current_dir().unwrap(), &broken_display)
+                .join(format!("{broken_hash}.jsonl"));
+        assert!(
+            std::fs::metadata(&jsonl_path).is_ok(),
+            "missing {jsonl_path:?}"
+        );
+
+        app.chats[worker_idx].push_block(ChatBlock::user("status update"));
+        app.chats[worker_idx].push_block(ChatBlock::ai_markdown("I found the likely failure."));
+        app.chats[worker_idx].push_block(ChatBlock::BashTool {
+            command: "printf smoke".into(),
+            stdout: "smoke".into(),
+            is_error: false,
+            collapsed: true,
+            pending: false,
+        });
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.restart_core_worker(0, &broken_display, None, false, reply_tx);
+        let resp = reply_rx.await.unwrap();
+        assert!(resp.ok, "restart-core failed: {resp:?}");
+        let new_display = resp
+            .message
+            .as_deref()
+            .and_then(|msg| msg.split_whitespace().next())
+            .expect("restart-core response missing display name")
+            .to_string();
+        let replacement = app
+            .chats
+            .iter()
+            .find(|chat| chat.display_name == new_display)
+            .expect("replacement worker missing");
+
+        assert_eq!(replacement.worker_template, broken_template);
+        assert_eq!(replacement.parent_idx, broken_parent);
+        let first_user = first_user_text(replacement);
+        assert!(first_user.contains("Your prior AI-core session was lost"));
+        assert!(first_user.contains("## Transcript"));
+        assert!(first_user.contains(brief));
+        assert!(!first_user.contains("blocks elided in the middle"));
+        assert!(first_user.contains("printf smoke"));
+
+        let broken = &app.chats[worker_idx];
+        assert!(broken.hibernated);
+        assert!(has_system_info_containing(
+            broken,
+            &format!("[restart-core] replaced by {new_display}")
+        ));
+        assert!(has_system_info_containing(
+            replacement,
+            &format!("[restart-core] resumed from {broken_display}")
+        ));
+        assert!(
+            std::fs::metadata(&jsonl_path).is_ok(),
+            "restart-core should retain {jsonl_path:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_core_smoke_over_cap_transcript_carries_elision_marker() {
+        let (mut app, _rx) = prime_worker_app(worker_config());
+        let brief = "investigate an over-cap transcript";
+        let worker_idx = spawn_researcher_worker_for_restart_smoke(&mut app, brief).await;
+        let broken_display = app.chats[worker_idx].display_name.clone();
+
+        for i in 0..200 {
+            app.chats[worker_idx].push_block(ChatBlock::ai_markdown(format!(
+                "filler block {i}: {}",
+                "x".repeat(500)
+            )));
+        }
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        app.restart_core_worker(0, &broken_display, None, false, reply_tx);
+        let resp = reply_rx.await.unwrap();
+        assert!(resp.ok, "restart-core failed: {resp:?}");
+        let new_display = resp
+            .message
+            .as_deref()
+            .and_then(|msg| msg.split_whitespace().next())
+            .expect("restart-core response missing display name")
+            .to_string();
+        let replacement = app
+            .chats
+            .iter()
+            .find(|chat| chat.display_name == new_display)
+            .expect("replacement worker missing");
+        let first_user = first_user_text(replacement);
+        assert!(first_user.contains("blocks elided in the middle"));
+        assert!(first_user.contains("see prior session JSONL"));
     }
 
     static WORKER_CWD_TEST_PATH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -20279,6 +20835,7 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
                     task,
                     cwd,
                     properties: None,
+                    ai_core_override: None,
                 },
             },
             reply: reply_tx,
@@ -20418,6 +20975,7 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
                     task: task_id.to_string(),
                     cwd: None,
                     properties: None,
+                    ai_core_override: None,
                 },
             },
             reply: reply_tx,

@@ -87,6 +87,8 @@ pub enum RequestCmd {
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         properties: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ai_core_override: Option<String>,
     },
     /// Deliver a final report to the parent and hibernate the calling
     /// worker. Only valid when the caller is itself a worker.
@@ -99,6 +101,15 @@ pub enum RequestCmd {
     /// Validated to be called by the worker's parent.
     WorkerArchive {
         worker: String,
+    },
+    /// Parent-initiated restart of a worker's AI core. Drops the
+    /// worker's IPC channels, hibernates it, and composes a fresh
+    /// worker that resumes from the archived worker's log.
+    /// Validated to be called by the worker's parent.
+    WorkerRestartCore {
+        worker: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ai_core_override: Option<String>,
     },
     /// Internal: remote-worker cores use this to register their
     /// backend session identifier with the orchestrator once the
@@ -634,6 +645,14 @@ pub enum RequestCmd {
     WorkerForceArchive {
         worker: String,
     },
+    /// Supervisor: restart any worker's AI core by display id,
+    /// bypassing the parent-ownership check that `WorkerRestartCore`
+    /// enforces.
+    WorkerForceRestartCore {
+        worker: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ai_core_override: Option<String>,
+    },
     /// Sysadmin: begin graceful shutdown of the orchestrator. Idle
     /// agents are put to sleep; working agents are allowed to finish
     /// their current turn before the process exits.
@@ -848,6 +867,7 @@ mod tests {
                 task: "find FOO".into(),
                 cwd: None,
                 properties: None,
+                ai_core_override: None,
             },
         };
         let s = serde_json::to_string(&req).unwrap();
@@ -869,6 +889,7 @@ mod tests {
                 task: "refactor foo".into(),
                 cwd: None,
                 properties: Some(serde_json::json!({"repo":"acme/foo","branch":"main"})),
+                ai_core_override: None,
             },
         };
         let s = serde_json::to_string(&req).unwrap();
@@ -898,6 +919,7 @@ mod tests {
                 task: "t".into(),
                 cwd: None,
                 properties: None,
+                ai_core_override: None,
             },
         };
         let back: Request = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
@@ -907,11 +929,55 @@ mod tests {
                 task,
                 cwd,
                 properties,
+                ai_core_override,
             } => {
                 assert_eq!(template, "r");
                 assert_eq!(task, "t");
                 assert!(cwd.is_none());
                 assert!(properties.is_none());
+                assert!(ai_core_override.is_none());
+            }
+            other => panic!("expected WorkerCreate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_create_roundtrips_with_ai_core_override() {
+        let req = Request {
+            agent_id: Uuid::new_v4(),
+            cmd: RequestCmd::WorkerCreate {
+                template: "r".into(),
+                task: "t".into(),
+                cwd: None,
+                properties: None,
+                ai_core_override: Some("claude-sonnet-fake".into()),
+            },
+        };
+        let back: Request = serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        match back.cmd {
+            RequestCmd::WorkerCreate {
+                ai_core_override, ..
+            } => {
+                assert_eq!(ai_core_override.as_deref(), Some("claude-sonnet-fake"));
+            }
+            other => panic!("expected WorkerCreate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_create_deserializes_old_payload_without_ai_core_override() {
+        let raw = r#"{
+            "agent_id":"00000000-0000-0000-0000-000000000000",
+            "cmd":"worker_create",
+            "template":"r",
+            "task":"t"
+        }"#;
+        let back: Request = serde_json::from_str(raw).unwrap();
+        match back.cmd {
+            RequestCmd::WorkerCreate {
+                ai_core_override, ..
+            } => {
+                assert!(ai_core_override.is_none());
             }
             other => panic!("expected WorkerCreate, got {other:?}"),
         }
@@ -933,6 +999,118 @@ mod tests {
                 assert_eq!(worker, "jules_refactor#abcd1234");
             }
             other => panic!("expected WorkerArchive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_restart_core_roundtrips_with_ai_core_override() {
+        let req = Request {
+            agent_id: Uuid::new_v4(),
+            cmd: RequestCmd::WorkerRestartCore {
+                worker: "jules_refactor#abcd1234".into(),
+                ai_core_override: Some("claude-sonnet-fake".into()),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"worker_restart_core\""), "got: {s}");
+        assert!(
+            s.contains("\"ai_core_override\":\"claude-sonnet-fake\""),
+            "got: {s}"
+        );
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::WorkerRestartCore {
+                worker,
+                ai_core_override,
+            } => {
+                assert_eq!(worker, "jules_refactor#abcd1234");
+                assert_eq!(ai_core_override.as_deref(), Some("claude-sonnet-fake"));
+            }
+            other => panic!("expected WorkerRestartCore, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_restart_core_roundtrips_without_ai_core_override() {
+        let req = Request {
+            agent_id: Uuid::new_v4(),
+            cmd: RequestCmd::WorkerRestartCore {
+                worker: "jules_refactor#abcd1234".into(),
+                ai_core_override: None,
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"worker_restart_core\""), "got: {s}");
+        assert!(!s.contains("ai_core_override"), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::WorkerRestartCore {
+                worker,
+                ai_core_override,
+            } => {
+                assert_eq!(worker, "jules_refactor#abcd1234");
+                assert!(ai_core_override.is_none());
+            }
+            other => panic!("expected WorkerRestartCore, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_force_restart_core_roundtrips_with_ai_core_override() {
+        let req = Request {
+            agent_id: Uuid::new_v4(),
+            cmd: RequestCmd::WorkerForceRestartCore {
+                worker: "jules_refactor#abcd1234".into(),
+                ai_core_override: Some("claude-sonnet-fake".into()),
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(
+            s.contains("\"cmd\":\"worker_force_restart_core\""),
+            "got: {s}"
+        );
+        assert!(
+            s.contains("\"ai_core_override\":\"claude-sonnet-fake\""),
+            "got: {s}"
+        );
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::WorkerForceRestartCore {
+                worker,
+                ai_core_override,
+            } => {
+                assert_eq!(worker, "jules_refactor#abcd1234");
+                assert_eq!(ai_core_override.as_deref(), Some("claude-sonnet-fake"));
+            }
+            other => panic!("expected WorkerForceRestartCore, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_force_restart_core_roundtrips_without_ai_core_override() {
+        let req = Request {
+            agent_id: Uuid::new_v4(),
+            cmd: RequestCmd::WorkerForceRestartCore {
+                worker: "jules_refactor#abcd1234".into(),
+                ai_core_override: None,
+            },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(
+            s.contains("\"cmd\":\"worker_force_restart_core\""),
+            "got: {s}"
+        );
+        assert!(!s.contains("ai_core_override"), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::WorkerForceRestartCore {
+                worker,
+                ai_core_override,
+            } => {
+                assert_eq!(worker, "jules_refactor#abcd1234");
+                assert!(ai_core_override.is_none());
+            }
+            other => panic!("expected WorkerForceRestartCore, got {other:?}"),
         }
     }
 

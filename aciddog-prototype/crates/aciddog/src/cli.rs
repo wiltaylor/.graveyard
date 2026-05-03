@@ -783,6 +783,15 @@ pub enum WorkerCommand {
         #[arg(long)]
         id: String,
     },
+    /// Restart a worker's AI core (resume from log) — composes a fresh worker reusing template/parent/cwd/properties and seeds the new prompt with the broken worker's transcript.
+    RestartCore {
+        /// Worker display id as reported by `worker create`.
+        #[arg(long)]
+        id: String,
+        /// Override the AI core id for the restarted worker.
+        #[arg(long, value_name = "ID")]
+        ai_core: Option<String>,
+    },
     /// Supervisor-only: list every running worker, optionally scoped
     /// to a single parent agent.
     List {
@@ -796,6 +805,15 @@ pub enum WorkerCommand {
         /// Worker display id.
         #[arg(long)]
         id: String,
+    },
+    /// Supervisor-only: force-restart a worker's AI core by display id.
+    ForceRestartCore {
+        /// Worker display id.
+        #[arg(long)]
+        id: String,
+        /// Override the AI core id for the restarted worker.
+        #[arg(long, value_name = "ID")]
+        ai_core: Option<String>,
     },
 }
 
@@ -1027,6 +1045,50 @@ mod tests {
                 assert_eq!(id, "jules_refactor#abcd1234");
             }
             other => panic!("expected Worker::Archive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_worker_restart_core() {
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "worker",
+            "restart-core",
+            "--id",
+            "jules_refactor#abcd1234",
+            "--ai-core",
+            "claude-sonnet-fake",
+        ])
+        .expect("parses");
+        match args.cmd {
+            AgentCommand::Worker {
+                cmd: WorkerCommand::RestartCore { id, ai_core },
+            } => {
+                assert_eq!(id, "jules_refactor#abcd1234");
+                assert_eq!(ai_core.as_deref(), Some("claude-sonnet-fake"));
+            }
+            other => panic!("expected Worker::RestartCore, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_args_parses_worker_force_restart_core() {
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "worker",
+            "force-restart-core",
+            "--id",
+            "jules_refactor#abcd1234",
+        ])
+        .expect("parses");
+        match args.cmd {
+            AgentCommand::Worker {
+                cmd: WorkerCommand::ForceRestartCore { id, ai_core },
+            } => {
+                assert_eq!(id, "jules_refactor#abcd1234");
+                assert!(ai_core.is_none());
+            }
+            other => panic!("expected Worker::ForceRestartCore, got {other:?}"),
         }
     }
 

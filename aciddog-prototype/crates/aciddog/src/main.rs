@@ -277,6 +277,7 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
                 task,
                 cwd,
                 properties: parsed,
+                ai_core_override: None,
             }
         }
         AgentCommand::Worker {
@@ -285,6 +286,12 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
         AgentCommand::Worker {
             cmd: WorkerCommand::Archive { id },
         } => RequestCmd::WorkerArchive { worker: id },
+        AgentCommand::Worker {
+            cmd: WorkerCommand::RestartCore { id, ai_core },
+        } => RequestCmd::WorkerRestartCore {
+            worker: id,
+            ai_core_override: ai_core,
+        },
         AgentCommand::Task {
             cmd:
                 TaskCommand::Add {
@@ -673,6 +680,12 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
         AgentCommand::Worker {
             cmd: WorkerCommand::ForceArchive { id },
         } => RequestCmd::WorkerForceArchive { worker: id },
+        AgentCommand::Worker {
+            cmd: WorkerCommand::ForceRestartCore { id, ai_core },
+        } => RequestCmd::WorkerForceRestartCore {
+            worker: id,
+            ai_core_override: ai_core,
+        },
         AgentCommand::Server {
             cmd: ServerCommand::Shutdown,
         } => RequestCmd::ServerShutdown,
