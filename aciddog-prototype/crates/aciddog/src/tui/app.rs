@@ -61,6 +61,42 @@ fn rendered_height_for_block(idx: usize, blocks: &[ChatBlock], width: u16) -> u1
         .unwrap_or(1)
 }
 
+/// Walk `anchor` upward by `amount` rendered rows, decrementing
+/// `block_idx` and seeding `within = h_prev.saturating_sub(1)` whenever
+/// we cross a block boundary (per `decisions/f5499dfe` Option B —
+/// localised height helper, NOT a `reconcile_anchor` backward branch).
+/// Each loop iteration consumes exactly one rendered row, so the
+/// caller can pass the wheel-tick `amount` directly. Clamps at the
+/// top of the buffer.
+///
+/// Shared by `App::scroll_up` (agent chat) and
+/// `App::scroll_channel_up` (channel transcript) so the two surfaces
+/// can never diverge — the boundary-crossing fix is the contract.
+fn anchor_scroll_up(anchor: &mut ScrollAnchor, blocks: &[ChatBlock], width: u16, amount: u16) {
+    let mut left = amount;
+    while left > 0 {
+        if anchor.within > 0 {
+            anchor.within -= 1;
+            left -= 1;
+        } else if anchor.block_idx > 0 {
+            anchor.block_idx -= 1;
+            let h = rendered_height_for_block(anchor.block_idx, blocks, width);
+            anchor.within = h.saturating_sub(1);
+            left -= 1;
+        } else {
+            break;
+        }
+    }
+}
+
+/// Walk `anchor` downward by `amount` rendered rows. The renderer's
+/// `reconcile_anchor` rolls `within` forward into the next block on
+/// the next frame, so we only need to grow `within` here. Mirror of
+/// `anchor_scroll_up` for the down-wheel direction.
+fn anchor_scroll_down(anchor: &mut ScrollAnchor, amount: u16) {
+    anchor.within = anchor.within.saturating_add(amount);
+}
+
 /// Capacity of the per-`App` chat-block broadcast channel. Larger than
 /// the webservice's mail-only `InboundEvent` backlog (256) because
 /// block events include every tool call and assistant-text chunk —
@@ -1690,15 +1726,21 @@ pub struct ChannelState {
     pub blocks: Vec<ChatBlock>,
     pub input: String,
     pub input_cursor: usize,
-    /// Reserved for future wrap-aware channel input navigation;
-    /// v1 renders the buffer on a single row with char-level cursor.
-    #[allow(dead_code)]
+    /// Mouse-wheel scroll position for the channel transcript. Read
+    /// by `render_channel_chat` (when `sticky_bottom == false`) and
+    /// written by `App::scroll_channel_{up,down}`. See plan 10d44e9b.
     pub anchor: ScrollAnchor,
     pub sticky_bottom: bool,
     /// Reserved for future per-block selection (copy/collapse);
     /// channel messages are not collapsible today.
     #[allow(dead_code)]
     pub selected_block: Option<usize>,
+    /// Cached full-height render of the anchor block, mirrors the
+    /// `AgentChat::anchor_scratch` optimisation. The channel
+    /// renderer doesn't currently populate it (one-shot scratch per
+    /// frame is fine while channel transcripts stay short); kept on
+    /// the struct so the cache can be turned on without touching the
+    /// shape. See plan 10d44e9b.
     #[allow(dead_code)]
     pub anchor_scratch: Option<super::blocks::AnchorScratch>,
     pub input_scroll: u16,
@@ -5797,6 +5839,9 @@ impl App {
         state.blocks.push(ChatBlock::system_info(format!(
             "meeting channel `{id}` created (ephemeral — dies when ended or on exit)"
         )));
+        // Mirror AgentChat::push_block: snap to bottom on every
+        // block append. See plan 10d44e9b.
+        state.sticky_bottom = true;
         self.channels.push(state);
         Ok(self.channels.len() - 1)
     }
@@ -14446,6 +14491,9 @@ impl App {
             CommandOutcome::Shutdown => unreachable!("handled above"),
             CommandOutcome::Message(text) => {
                 ch.blocks.push(ChatBlock::system_info(text));
+                // Mirror AgentChat::push_block: snap to bottom on
+                // every block append. See plan 10d44e9b.
+                ch.sticky_bottom = true;
             }
             CommandOutcome::Reset => {
                 // Keep only the welcome banner (which always lives
@@ -14495,6 +14543,8 @@ impl App {
                 ch.blocks.push(ChatBlock::system_info(
                     "/compact is a no-op in channels — there is no agent session here to compact",
                 ));
+                // see plan 10d44e9b
+                ch.sticky_bottom = true;
             }
             CommandOutcome::Reload => {
                 let result = self.reload();
@@ -14504,6 +14554,8 @@ impl App {
                         Err(e) => ChatBlock::system_error(format!("reload failed: {e}")),
                     };
                     ch.blocks.push(block);
+                    // see plan 10d44e9b
+                    ch.sticky_bottom = true;
                 }
             }
             CommandOutcome::Stop | CommandOutcome::Sleep | CommandOutcome::Awake => {
@@ -14513,6 +14565,8 @@ impl App {
                 ch.blocks.push(ChatBlock::system_info(
                     "/stop, /sleep, /awake target agents — run them from an agent's pane",
                 ));
+                // see plan 10d44e9b
+                ch.sticky_bottom = true;
             }
             CommandOutcome::RunWorkflow { workflow_id } => {
                 let result = self.start_workflow_with_defaults(&workflow_id);
@@ -14523,6 +14577,8 @@ impl App {
                     ))),
                     Err(msg) => ch.blocks.push(ChatBlock::system_warn(msg)),
                 }
+                // see plan 10d44e9b
+                ch.sticky_bottom = true;
             }
             CommandOutcome::CreateMeeting { id } => {
                 let result = self.create_meeting(id.clone());
@@ -14534,6 +14590,8 @@ impl App {
                     Err(msg) => {
                         if let Some(ch) = self.channels.get_mut(idx) {
                             ch.blocks.push(ChatBlock::system_warn(msg));
+                            // see plan 10d44e9b
+                            ch.sticky_bottom = true;
                         }
                     }
                 }
@@ -14543,6 +14601,8 @@ impl App {
                 if let Err(msg) = self.channel_add_member_by_id(&channel_id, &agent) {
                     if let Some(ch) = self.channels.get_mut(idx) {
                         ch.blocks.push(ChatBlock::system_warn(msg));
+                        // see plan 10d44e9b
+                        ch.sticky_bottom = true;
                     }
                 }
             }
@@ -14551,6 +14611,8 @@ impl App {
                 if let Err(msg) = self.channel_kick_member_by_id(&channel_id, &agent) {
                     if let Some(ch) = self.channels.get_mut(idx) {
                         ch.blocks.push(ChatBlock::system_warn(msg));
+                        // see plan 10d44e9b
+                        ch.sticky_bottom = true;
                     }
                 }
             }
@@ -14559,29 +14621,41 @@ impl App {
                 if let Err(msg) = self.channel_leave_by_id(&channel_id) {
                     if let Some(ch) = self.channels.get_mut(idx) {
                         ch.blocks.push(ChatBlock::system_warn(msg));
+                        // see plan 10d44e9b
+                        ch.sticky_bottom = true;
                     }
                 }
             }
             CommandOutcome::AuthLogin { provider, name } => {
                 let msg = handle_auth_login(&provider, &name);
                 ch.blocks.push(ChatBlock::system_info(msg));
+                // see plan 10d44e9b
+                ch.sticky_bottom = true;
             }
             CommandOutcome::AuthLogout { name } => {
                 let msg = handle_auth_logout(&name);
                 ch.blocks.push(ChatBlock::system_info(msg));
+                // see plan 10d44e9b
+                ch.sticky_bottom = true;
             }
             CommandOutcome::AuthList => {
                 let msg = handle_auth_list();
                 ch.blocks.push(ChatBlock::system_info(msg));
+                // see plan 10d44e9b
+                ch.sticky_bottom = true;
             }
             CommandOutcome::AuthStatus { name } => {
                 let msg = handle_auth_status(name.as_deref());
                 ch.blocks.push(ChatBlock::system_info(msg));
+                // see plan 10d44e9b
+                ch.sticky_bottom = true;
             }
             CommandOutcome::Unknown { name, hint } => {
                 ch.blocks.push(ChatBlock::system_warn(format!(
                     "unknown command: /{name} — {hint}"
                 )));
+                // see plan 10d44e9b
+                ch.sticky_bottom = true;
             }
         }
     }
@@ -14981,6 +15055,14 @@ impl App {
                         }
                     }
                 }
+                // Channel-view wheel scroll: route to the channel's
+                // own anchor, never the (hidden) agent's. See plan 10d44e9b.
+                if matches!(self.active_view, ActiveView::Channel(_))
+                    && self.mouse_in_chat_scroll_zone(pos)
+                {
+                    self.scroll_channel_up(3);
+                    return;
+                }
                 if self.mouse_in_chat_scroll_zone(pos) {
                     self.scroll_up(3);
                 }
@@ -15028,6 +15110,14 @@ impl App {
                             return;
                         }
                     }
+                }
+                // Channel-view wheel scroll: route to the channel's
+                // own anchor, never the (hidden) agent's. See plan 10d44e9b.
+                if matches!(self.active_view, ActiveView::Channel(_))
+                    && self.mouse_in_chat_scroll_zone(pos)
+                {
+                    self.scroll_channel_down(3);
+                    return;
                 }
                 if self.mouse_in_chat_scroll_zone(pos) {
                     self.scroll_down(3);
@@ -15845,20 +15935,7 @@ impl App {
             return;
         };
         chat.sticky_bottom = false;
-        let mut left = amount;
-        while left > 0 {
-            if chat.anchor.within > 0 {
-                chat.anchor.within -= 1;
-                left -= 1;
-            } else if chat.anchor.block_idx > 0 {
-                chat.anchor.block_idx -= 1;
-                let h = rendered_height_for_block(chat.anchor.block_idx, &chat.blocks, width);
-                chat.anchor.within = h.saturating_sub(1);
-                left -= 1;
-            } else {
-                break;
-            }
-        }
+        anchor_scroll_up(&mut chat.anchor, &chat.blocks, width, amount);
     }
 
     fn scroll_down(&mut self, amount: u16) {
@@ -15871,7 +15948,42 @@ impl App {
         // block when we reach the end, so we only need to grow `within`
         // here. The renderer's scratch-buffer path gives us true per-row
         // scroll; the anchor always lands inside a valid block.
-        chat.anchor.within = chat.anchor.within.saturating_add(amount);
+        anchor_scroll_down(&mut chat.anchor, amount);
+    }
+
+    /// Wheel-up handler for the channel transcript. Mirrors
+    /// `App::scroll_up` for `AgentChat`: clears `sticky_bottom`,
+    /// then walks the channel's `ScrollAnchor` up `amount` rendered
+    /// rows via the shared `anchor_scroll_up` helper. No-op if the
+    /// chat-history rect is unset (no live frame yet) or the
+    /// selected channel is gone. See plan 10d44e9b.
+    fn scroll_channel_up(&mut self, amount: u16) {
+        let width = self
+            .layout
+            .chat_history_inner
+            .map(|rect| rect.width.saturating_sub(1).max(1))
+            .unwrap_or(1);
+        if self.layout.chat_history_inner.is_none() {
+            return;
+        }
+        let Some(ch) = self.channels.get_mut(self.selected_channel) else {
+            return;
+        };
+        ch.sticky_bottom = false;
+        anchor_scroll_up(&mut ch.anchor, &ch.blocks, width, amount);
+    }
+
+    /// Wheel-down handler for the channel transcript. Mirrors
+    /// `App::scroll_down` for `AgentChat`. See plan 10d44e9b.
+    fn scroll_channel_down(&mut self, amount: u16) {
+        if self.layout.chat_history_inner.is_none() {
+            return;
+        }
+        let Some(ch) = self.channels.get_mut(self.selected_channel) else {
+            return;
+        };
+        ch.sticky_bottom = false;
+        anchor_scroll_down(&mut ch.anchor, amount);
     }
 
     fn mouse_in_chat_scroll_zone(&self, pos: (u16, u16)) -> bool {
@@ -18681,6 +18793,171 @@ mod tests {
         assert_eq!(app.current_chat().unwrap().anchor, ScrollAnchor::default());
         app.scroll_up(7);
         assert_eq!(app.current_chat().unwrap().anchor, ScrollAnchor::default());
+    }
+
+    /// Channel mouse-wheel scroll-up advances the channel's anchor
+    /// up by N rendered rows within the current block. Mirrors the
+    /// agent-chat path; see plan 10d44e9b.
+    #[test]
+    fn channel_scroll_up_advances_anchor_by_n_rows() {
+        let mut app = App::new(sample_config_with_channel());
+        app.layout.chat_history_inner = Some(Rect::new(0, 20, 80, 10));
+        let height_width = app
+            .layout
+            .chat_history_inner
+            .unwrap()
+            .width
+            .saturating_sub(1);
+        app.selected_channel = 0;
+        let ch = app.channels.get_mut(0).expect("channel 0 present");
+        ch.blocks.clear();
+        ch.blocks.push(user_block_with_height(height_width, 20));
+        ch.anchor = ScrollAnchor {
+            block_idx: 0,
+            within: 15,
+        };
+        ch.sticky_bottom = false;
+
+        app.scroll_channel_up(3);
+        let a = app.channels[0].anchor;
+        assert_eq!(a.block_idx, 0);
+        assert_eq!(a.within, 12);
+        assert!(!app.channels[0].sticky_bottom);
+    }
+
+    /// Channel mouse-wheel scroll-down grows `within` by N rows;
+    /// `reconcile_anchor` rolls forward into the next block on the
+    /// next frame. See plan 10d44e9b.
+    #[test]
+    fn channel_scroll_down_advances_anchor_by_n_rows() {
+        let mut app = App::new(sample_config_with_channel());
+        app.layout.chat_history_inner = Some(Rect::new(0, 20, 80, 10));
+        let height_width = app
+            .layout
+            .chat_history_inner
+            .unwrap()
+            .width
+            .saturating_sub(1);
+        app.selected_channel = 0;
+        let ch = app.channels.get_mut(0).expect("channel 0 present");
+        ch.blocks.clear();
+        ch.blocks.push(user_block_with_height(height_width, 20));
+        ch.anchor = ScrollAnchor {
+            block_idx: 0,
+            within: 5,
+        };
+        ch.sticky_bottom = false;
+
+        app.scroll_channel_down(3);
+        let a = app.channels[0].anchor;
+        assert_eq!(a.block_idx, 0);
+        assert_eq!(a.within, 8);
+        assert!(!app.channels[0].sticky_bottom);
+    }
+
+    /// Non-regression for `decisions/f5499dfe`: every iteration of
+    /// `scroll_channel_up` consumes exactly ONE rendered row, even
+    /// when crossing block boundaries (the boundary arm decrements
+    /// `block_idx` and seeds `within = h_prev.saturating_sub(1)`).
+    /// Same shape as the agent-side
+    /// `scroll_up_across_multiple_blocks_consumes_exact_rows`.
+    #[test]
+    fn channel_scroll_up_across_block_boundary_consumes_exact_rows() {
+        let mut app = App::new(sample_config_with_channel());
+        app.layout.chat_history_inner = Some(Rect::new(0, 20, 80, 10));
+        let height_width = app
+            .layout
+            .chat_history_inner
+            .unwrap()
+            .width
+            .saturating_sub(1);
+        app.selected_channel = 0;
+        let ch = app.channels.get_mut(0).expect("channel 0 present");
+        ch.blocks.clear();
+        for _ in 0..5 {
+            ch.blocks.push(user_block_with_height(height_width, 10));
+        }
+        for (idx, block) in ch.blocks.iter().enumerate() {
+            assert_eq!(block.height(height_width), 10, "block {idx} height changed");
+        }
+        ch.anchor = ScrollAnchor {
+            block_idx: 4,
+            within: 5,
+        };
+        ch.sticky_bottom = false;
+
+        let scrolls = [1, 3, 7, 1, 3, 7, 1, 3, 7, 1, 3, 7, 1, 3, 7, 1];
+        for amount in scrolls {
+            let before_anchor = app.channels[0].anchor;
+            let before = flat_chat_anchor(&app.channels[0].blocks, before_anchor, height_width);
+            app.scroll_channel_up(amount);
+            let after_anchor = app.channels[0].anchor;
+            let after = flat_chat_anchor(&app.channels[0].blocks, after_anchor, height_width);
+            assert_eq!(
+                after,
+                before.saturating_sub(amount as u32),
+                "scroll_channel_up({amount}) from {before_anchor:?} landed at {after_anchor:?}"
+            );
+        }
+
+        assert_eq!(app.channels[0].anchor, ScrollAnchor::default());
+        app.scroll_channel_up(7);
+        assert_eq!(app.channels[0].anchor, ScrollAnchor::default());
+    }
+
+    /// A wheel-up event on the chat zone with `active_view ==
+    /// Channel(0)` advances the channel's anchor and leaves the
+    /// agent's anchor at `self.selected` untouched. Pre-fix the
+    /// dispatch fell through to `App::scroll_up`, silently mutating
+    /// the (hidden) agent's anchor. See plan 10d44e9b.
+    #[test]
+    fn channel_wheel_event_routes_to_channel_anchor() {
+        let mut app = App::new(sample_config_with_channel());
+        app.layout.chat_history_inner = Some(Rect::new(0, 20, 80, 10));
+        let height_width = app
+            .layout
+            .chat_history_inner
+            .unwrap()
+            .width
+            .saturating_sub(1);
+
+        // Seed the channel transcript with a tall block so within-block
+        // scrolling is exercised.
+        app.selected_channel = 0;
+        app.active_view = ActiveView::Channel(0);
+        let ch = app.channels.get_mut(0).expect("channel 0 present");
+        ch.blocks.clear();
+        ch.blocks.push(user_block_with_height(height_width, 20));
+        ch.anchor = ScrollAnchor {
+            block_idx: 0,
+            within: 10,
+        };
+        ch.sticky_bottom = false;
+
+        // Snapshot agent state at self.selected so we can prove it
+        // doesn't move when the wheel fires on a channel view.
+        let agent_anchor_before = app.current_chat().unwrap().anchor;
+        let agent_sticky_before = app.current_chat().unwrap().sticky_bottom;
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 5,
+            row: 25,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        // Channel anchor moved one wheel tick (3 rows) toward the start.
+        let a = app.channels[0].anchor;
+        assert_eq!(a.block_idx, 0);
+        assert_eq!(a.within, 7);
+        assert!(!app.channels[0].sticky_bottom);
+
+        // Agent anchor at self.selected is untouched.
+        assert_eq!(app.current_chat().unwrap().anchor, agent_anchor_before);
+        assert_eq!(
+            app.current_chat().unwrap().sticky_bottom,
+            agent_sticky_before
+        );
     }
 
     #[test]

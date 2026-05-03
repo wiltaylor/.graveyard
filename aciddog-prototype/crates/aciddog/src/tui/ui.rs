@@ -647,9 +647,12 @@ fn render_agent_chat(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
 
 /// Render a single channel's transcript in the main area. Much
 /// simpler than `render_agent_chat` — channel blocks don't nest or
-/// collapse, there are no tool blocks or thinking indicator, and
-/// only one scroll anchor matters: sticky-bottom. For v1 we just
-/// render the last N blocks that fit vertically, bottom-aligned.
+/// collapse, there are no tool blocks or thinking indicator. Two
+/// rendering paths: when `sticky_bottom == true` we bottom-align the
+/// last N blocks (cheap, lazy-height); when the user has scrolled up
+/// (`sticky_bottom == false`) we honour `ch.anchor` via the same
+/// `reconcile_anchor` + `LazyHeights` pattern `render_chat` uses for
+/// the agent transcript. See plan 10d44e9b.
 fn render_channel_chat(f: &mut Frame, area: Rect, app: &mut App, idx: usize) -> Rect {
     let focused = app.focus == Focus::Chat;
     let title = match app.channels.get(idx) {
@@ -666,65 +669,111 @@ fn render_channel_chat(f: &mut Frame, area: Rect, app: &mut App, idx: usize) -> 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let Some(ch) = app.channels.get(idx) else {
+    let Some(ch) = app.channels.get_mut(idx) else {
         return inner;
     };
     if inner.width == 0 || inner.height == 0 || ch.blocks.is_empty() {
         return inner;
     }
 
-    // Find the window of blocks that fits at the bottom of the
-    // viewport, computing heights lazily from the end. Historically
-    // this pass computed heights for the whole transcript up-front,
-    // which turned into a per-frame O(N) wrap-math tax once a channel
-    // loaded its full 500-line tail from disk — noticeable as lag
-    // whenever the ticker fires at 10 Hz for a Working agent.
-    let mut window: Vec<(usize, u16)> = Vec::new();
-    let mut total_rows: u32 = 0;
-    for i in (0..ch.blocks.len()).rev() {
-        // Caller passes the post-selection-shift width: ChatBlock::render reserves
-        // col 0 for the selection indicator, and height arms subtract only their
-        // own per-variant overhead.
-        let h = ch.blocks[i].height(inner.width.saturating_sub(1));
-        total_rows = total_rows.saturating_add(h as u32);
-        window.push((i, h));
-        if total_rows >= inner.height as u32 {
-            break;
+    if ch.sticky_bottom {
+        // Find the window of blocks that fits at the bottom of the
+        // viewport, computing heights lazily from the end. Historically
+        // this pass computed heights for the whole transcript up-front,
+        // which turned into a per-frame O(N) wrap-math tax once a channel
+        // loaded its full 500-line tail from disk — noticeable as lag
+        // whenever the ticker fires at 10 Hz for a Working agent.
+        let mut window: Vec<(usize, u16)> = Vec::new();
+        let mut total_rows: u32 = 0;
+        for i in (0..ch.blocks.len()).rev() {
+            // Caller passes the post-selection-shift width: ChatBlock::render reserves
+            // col 0 for the selection indicator, and height arms subtract only their
+            // own per-variant overhead.
+            let h = ch.blocks[i].height(inner.width.saturating_sub(1));
+            total_rows = total_rows.saturating_add(h as u32);
+            window.push((i, h));
+            if total_rows >= inner.height as u32 {
+                break;
+            }
         }
-    }
-    window.reverse();
+        window.reverse();
 
-    // If the visible run overflows the viewport, clip rows off the
-    // top of the first block so the last row aligns to the bottom.
-    let mut clip_rows = if total_rows > inner.height as u32 {
-        (total_rows - inner.height as u32) as u16
-    } else {
-        0
-    };
+        // If the visible run overflows the viewport, clip rows off the
+        // top of the first block so the last row aligns to the bottom.
+        let mut clip_rows = if total_rows > inner.height as u32 {
+            (total_rows - inner.height as u32) as u16
+        } else {
+            0
+        };
+        let mut y = inner.y;
+        let end_y = inner.y.saturating_add(inner.height);
+        let mut tmp_buttons: Vec<ChatButton> = Vec::new();
+        for &(block_idx, h) in &window {
+            if y >= end_y {
+                break;
+            }
+            // By construction clip_rows < heights[first] once we reach
+            // here (we stopped accumulating as soon as we filled the
+            // viewport), so at most the first block gets a partial crop.
+            let real_h = h.saturating_sub(clip_rows);
+            if real_h == 0 {
+                continue;
+            }
+            let visible_h = real_h.min(end_y - y);
+            if clip_rows > 0 {
+                let scratch_area = Rect::new(0, 0, inner.width, h);
+                let mut scratch = Buffer::empty(scratch_area);
+                ch.blocks[block_idx].render(&mut scratch, scratch_area, &mut tmp_buttons, 0, false);
+                blit_rows(&scratch, clip_rows, visible_h, f.buffer_mut(), inner.x, y);
+                clip_rows = 0;
+            } else {
+                let rect = Rect::new(inner.x, y, inner.width, visible_h);
+                ch.blocks[block_idx].render(f.buffer_mut(), rect, &mut tmp_buttons, 0, false);
+            }
+            y = y.saturating_add(visible_h);
+        }
+        return inner;
+    }
+
+    // Anchor-driven path: the user has scrolled up (sticky_bottom ==
+    // false). Mirror `render_chat`'s reconcile_anchor + LazyHeights
+    // pattern so per-frame work stays O(visible). See plan 10d44e9b.
+    let mut heights = LazyHeights::new(&ch.blocks, inner.width.saturating_sub(1), false);
+    reconcile_anchor(
+        &mut ch.anchor,
+        ch.sticky_bottom,
+        ch.blocks.len(),
+        &mut heights,
+        inner.height,
+    );
+
+    let start_idx = ch.anchor.block_idx;
+    let within = ch.anchor.within;
     let mut y = inner.y;
     let end_y = inner.y.saturating_add(inner.height);
     let mut tmp_buttons: Vec<ChatButton> = Vec::new();
-    for &(block_idx, h) in &window {
+
+    let total_blocks = heights.len();
+    for i in start_idx..total_blocks {
         if y >= end_y {
             break;
         }
-        // By construction clip_rows < heights[first] once we reach
-        // here (we stopped accumulating as soon as we filled the
-        // viewport), so at most the first block gets a partial crop.
-        let real_h = h.saturating_sub(clip_rows);
-        if real_h == 0 {
+        let h = heights.get(i);
+        let is_anchor = i == start_idx && within > 0 && within < h;
+        let natural_h = if is_anchor { h - within } else { h };
+        let visible_h = natural_h.min(end_y - y);
+        if visible_h == 0 {
             continue;
         }
-        let visible_h = real_h.min(end_y - y);
-        if clip_rows > 0 {
+
+        if is_anchor {
             let scratch_area = Rect::new(0, 0, inner.width, h);
             let mut scratch = Buffer::empty(scratch_area);
-            ch.blocks[block_idx].render(&mut scratch, scratch_area, &mut tmp_buttons, 0, false);
-            blit_rows(&scratch, clip_rows, visible_h, f.buffer_mut(), inner.x, y);
-            clip_rows = 0;
+            ch.blocks[i].render(&mut scratch, scratch_area, &mut tmp_buttons, 0, false);
+            blit_rows(&scratch, within, visible_h, f.buffer_mut(), inner.x, y);
         } else {
             let rect = Rect::new(inner.x, y, inner.width, visible_h);
-            ch.blocks[block_idx].render(f.buffer_mut(), rect, &mut tmp_buttons, 0, false);
+            ch.blocks[i].render(f.buffer_mut(), rect, &mut tmp_buttons, 0, false);
         }
         y = y.saturating_add(visible_h);
     }
