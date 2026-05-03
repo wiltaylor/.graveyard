@@ -1902,6 +1902,7 @@ mod repos_panel_tests {
             compactions: vec![],
             channels,
             repositories: vec![],
+            cron_jobs: vec![],
             workflows,
             webhooks: vec![],
             thinking_messages: vec!["thinking".into()],

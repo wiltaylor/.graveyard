@@ -781,6 +781,7 @@ mod tests {
             compactions: vec![],
             channels: vec![],
             repositories: vec![],
+            cron_jobs: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["t".into()],

@@ -422,6 +422,43 @@ pub struct Repository {
     pub branch: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CronJobKind {
+    Message,
+    Command,
+}
+
+impl CronJobKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::Command => "command",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CronJobBlock {
+    pub id: String,
+    pub target: String,
+    pub kind: CronJobKind,
+    pub payload: String,
+    pub schedule: String,
+    #[serde(default = "default_cron_tz")]
+    pub tz: crate::cron::CronTz,
+    #[serde(default)]
+    pub oneoff: bool,
+    #[serde(default)]
+    pub catchup_on_startup: bool,
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+fn default_cron_tz() -> crate::cron::CronTz {
+    crate::cron::CronTz::Local
+}
+
 /// A named, persistent memory bank. Declared at the fleet level and
 /// referenced by agents/workers via their `memory_banks` allowlist.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -967,6 +1004,8 @@ pub struct AciddogConfig {
     /// repository exists under `<config-dir>/repos/<id>` and refuses to
     /// start on drift instead of clobbering local state.
     pub repositories: Vec<Repository>,
+    /// Cron jobs declared in WCL and reapplied on startup and `/reload`.
+    pub cron_jobs: Vec<CronJobBlock>,
     /// Named workflows declared at the fleet level. Agents opt in to
     /// trigger a workflow via their `can_run_workflows` allowlist.
     pub workflows: Vec<Workflow>,
@@ -1142,6 +1181,12 @@ pub enum ConfigError {
 
     #[error("repository id `{id}` is invalid: {reason}")]
     InvalidRepositoryId { id: String, reason: String },
+
+    #[error("cron id `{id}` is invalid: {reason}")]
+    InvalidCronId { id: String, reason: String },
+
+    #[error("cron `{id}` block is invalid: {reason}")]
+    InvalidCronBlock { id: String, reason: String },
 
     #[error(
         "compaction `{id}` on `{actor}` uses strategy `harness`, but that \
@@ -1366,7 +1411,16 @@ pub fn load_config(path: &Path) -> Result<AciddogConfig, ConfigError> {
 }
 
 pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, ConfigError> {
-    let doc = parse(source, ParseOptions::default());
+    let doc = parse(
+        source,
+        ParseOptions {
+            root_dir: origin
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf(),
+            ..ParseOptions::default()
+        },
+    );
 
     if doc.has_errors() {
         let details = doc
@@ -1380,6 +1434,13 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
             if let Some(id) = duplicate_repository_id(&repositories) {
                 return Err(ConfigError::DuplicateId {
                     kind: "repository".to_string(),
+                    id,
+                });
+            }
+            let cron_jobs = doc.blocks_of_type_resolved("cron");
+            if let Some(id) = duplicate_cron_id(&cron_jobs) {
+                return Err(ConfigError::DuplicateId {
+                    kind: "cron".to_string(),
                     id,
                 });
             }
@@ -1661,6 +1722,12 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         })
         .collect::<Result<_, _>>()?;
 
+    let cron_jobs: Vec<CronJobBlock> = doc
+        .blocks_of_type_resolved("cron")
+        .iter()
+        .map(parse_cron_job_block)
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+
     let workflows = doc
         .blocks_of_type_resolved("workflow")
         .iter()
@@ -1677,6 +1744,7 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
     validate_compaction_refs(&team, &agents, &workers, &ai_cores, &compactions)?;
     validate_channel_refs(&agents, &automatons, &channels)?;
     validate_repository_names(&repositories)?;
+    validate_cron_jobs(&cron_jobs)?;
     validate_workflow_refs(&workflows, &workers)?;
     validate_workflow_allowlists(&agents, &workers, &workflows)?;
     validate_automaton_refs(&agents, &automatons)?;
@@ -1727,9 +1795,44 @@ pub fn parse_config(source: &str, origin: &Path) -> Result<AciddogConfig, Config
         compactions,
         channels,
         repositories,
+        cron_jobs,
         workflows,
         webhooks,
         thinking_messages,
+    })
+}
+
+fn parse_cron_job_block(b: &wcl_lang::BlockRef) -> Result<CronJobBlock, ConfigError> {
+    let id = require_cron_id(b)?;
+    let kind_symbol = require_symbol(b, "kind")?;
+    let kind = match kind_symbol.as_str() {
+        "message" => CronJobKind::Message,
+        "command" => CronJobKind::Command,
+        other => {
+            return Err(ConfigError::InvalidCronBlock {
+                id,
+                reason: format!("unknown kind `{other}` (expected :message or :command)"),
+            })
+        }
+    };
+    let target = require_string(b, "target")?;
+    let payload = require_string(b, "payload")?;
+    let schedule = require_string(b, "schedule")?;
+    let tz = optional_cron_tz(b, "tz")?.unwrap_or(crate::cron::CronTz::Local);
+    let oneoff = optional_bool(b, "oneoff")?.unwrap_or(false);
+    let catchup_on_startup = optional_bool(b, "catchup_on_startup")?.unwrap_or(false);
+    let disabled = optional_bool(b, "disabled")?.unwrap_or(false);
+
+    Ok(CronJobBlock {
+        id,
+        target,
+        kind,
+        payload,
+        schedule,
+        tz,
+        oneoff,
+        catchup_on_startup,
+        disabled,
     })
 }
 
@@ -2247,6 +2350,58 @@ fn validate_repository_names(repositories: &[Repository]) -> Result<(), ConfigEr
             return Err(ConfigError::InvalidRepositoryId {
                 id: repo.id.clone(),
                 reason: "must not contain `..`".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_cron_jobs(cron_jobs: &[CronJobBlock]) -> Result<(), ConfigError> {
+    let mut seen = std::collections::HashSet::new();
+    for job in cron_jobs {
+        if !seen.insert(job.id.as_str()) {
+            return Err(ConfigError::DuplicateId {
+                kind: "cron".to_string(),
+                id: job.id.clone(),
+            });
+        }
+        if job.id.trim().is_empty() {
+            return Err(ConfigError::InvalidCronId {
+                id: job.id.clone(),
+                reason: "must not be empty".to_string(),
+            });
+        }
+        if job.target.trim().is_empty() {
+            return Err(ConfigError::InvalidCronBlock {
+                id: job.id.clone(),
+                reason: "target must not be empty".to_string(),
+            });
+        }
+        crate::cron::parse_payload(job.kind.as_str(), job.payload.clone()).map_err(|e| {
+            ConfigError::InvalidCronBlock {
+                id: job.id.clone(),
+                reason: e,
+            }
+        })?;
+        crate::cron::parse_schedule(&job.schedule, job.oneoff).map_err(|e| {
+            ConfigError::InvalidCronBlock {
+                id: job.id.clone(),
+                reason: e.to_string(),
+            }
+        })?;
+        if job.catchup_on_startup && !job.oneoff {
+            return Err(ConfigError::InvalidCronBlock {
+                id: job.id.clone(),
+                reason: "catchup_on_startup is only valid for one-off jobs".to_string(),
+            });
+        }
+        if job.oneoff && job.catchup_on_startup {
+            return Err(ConfigError::InvalidCronBlock {
+                id: job.id.clone(),
+                reason: format!(
+                    "cron block {:?}: oneoff=true with catchup_on_startup=true is not supported in WCL because WCL is reapplied on every /reload, which would re-fire the one-off after the standard one-off-after-fire prune. For exactly-once-ever catchup semantics, use the imperative path: aciddog cron add --oneoff --catchup-on-startup --target <id> --schedule <iso8601> --kind <kind> --payload <text>",
+                    job.id
+                ),
             });
         }
     }
@@ -3307,10 +3462,27 @@ fn require_repository_id(block: &wcl_lang::BlockRef) -> Result<String, ConfigErr
     }
 }
 
+fn require_cron_id(block: &wcl_lang::BlockRef) -> Result<String, ConfigError> {
+    require_id(&block.id, &block.kind)
+}
+
 fn duplicate_repository_id(blocks: &[wcl_lang::BlockRef]) -> Option<String> {
     let mut seen = std::collections::HashSet::new();
     for block in blocks {
         let Ok(id) = require_repository_id(block) else {
+            continue;
+        };
+        if !seen.insert(id.clone()) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+fn duplicate_cron_id(blocks: &[wcl_lang::BlockRef]) -> Option<String> {
+    let mut seen = std::collections::HashSet::new();
+    for block in blocks {
+        let Ok(id) = require_cron_id(block) else {
             continue;
         };
         if !seen.insert(id.clone()) {
@@ -3393,6 +3565,33 @@ fn optional_symbol(block: &wcl_lang::BlockRef, attr: &str) -> Result<Option<Stri
             attr: attr.to_string(),
         }),
     }
+}
+
+fn optional_cron_tz(
+    block: &wcl_lang::BlockRef,
+    attr: &str,
+) -> Result<Option<crate::cron::CronTz>, ConfigError> {
+    let Some(value) = block.get(attr) else {
+        return Ok(None);
+    };
+    let raw = match value {
+        Value::String(s) | Value::Identifier(s) | Value::Symbol(s) => s,
+        _ => {
+            return Err(ConfigError::BadAttributeType {
+                kind: block.kind.clone(),
+                attr: attr.to_string(),
+            })
+        }
+    };
+    crate::cron::CronTz::parse(raw)
+        .map(Some)
+        .map_err(|e| ConfigError::InvalidCronBlock {
+            id: block
+                .id
+                .clone()
+                .unwrap_or_else(|| "<missing-id>".to_string()),
+            reason: e.to_string(),
+        })
 }
 
 fn optional_bool(block: &wcl_lang::BlockRef, attr: &str) -> Result<Option<bool>, ConfigError> {
@@ -3539,6 +3738,234 @@ mod tests {
         assert_eq!(cfg.repositories[0].id, "foo");
         assert_eq!(cfg.repositories[0].url, "https://example.com/foo.git");
         assert_eq!(cfg.repositories[0].branch, None);
+    }
+
+    #[test]
+    fn parses_cron_block_with_defaults() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha { role = "x" instructions = "y" }
+            cron idle_sweep {
+                target = "alpha"
+                kind = :message
+                payload = "tick"
+                schedule = "*/5 * * * *"
+            }
+        "#;
+        let cfg = parse_config(src, &dummy_path()).unwrap();
+        assert_eq!(cfg.cron_jobs.len(), 1);
+        let job = &cfg.cron_jobs[0];
+        assert_eq!(job.id, "idle_sweep");
+        assert_eq!(job.target, "alpha");
+        assert_eq!(job.kind, CronJobKind::Message);
+        assert_eq!(job.tz, crate::cron::CronTz::Local);
+        assert!(!job.oneoff);
+        assert!(!job.catchup_on_startup);
+        assert!(!job.disabled);
+    }
+
+    #[test]
+    fn rejects_invalid_cron_blocks() {
+        let cases = [
+            (
+                "blocked",
+                r#"
+                    cron bad {
+                        target = "alpha"
+                        kind = :command
+                        payload = "/exit"
+                        schedule = "*/5 * * * *"
+                    }
+                "#,
+                "bad",
+            ),
+            (
+                "command_without_slash",
+                r#"
+                    cron bad {
+                        target = "alpha"
+                        kind = :command
+                        payload = "version"
+                        schedule = "*/5 * * * *"
+                    }
+                "#,
+                "bad",
+            ),
+            (
+                "malformed_schedule",
+                r#"
+                    cron bad {
+                        target = "alpha"
+                        kind = :message
+                        payload = "tick"
+                        schedule = "not a schedule"
+                    }
+                "#,
+                "bad",
+            ),
+            (
+                "catchup_recurring",
+                r#"
+                    cron bad {
+                        target = "alpha"
+                        kind = :message
+                        payload = "tick"
+                        schedule = "*/5 * * * *"
+                        catchup_on_startup = true
+                    }
+                "#,
+                "bad",
+            ),
+            (
+                "oneoff_catchup",
+                r#"
+                    cron one_shot_catchup {
+                        target = "alpha"
+                        kind = :message
+                        payload = "tick"
+                        schedule = "2026-05-03T12:30:00"
+                        oneoff = true
+                        catchup_on_startup = true
+                    }
+                "#,
+                "one_shot_catchup",
+            ),
+            (
+                "missing_target",
+                r#"
+                    cron bad {
+                        target = "   "
+                        kind = :message
+                        payload = "tick"
+                        schedule = "*/5 * * * *"
+                    }
+                "#,
+                "bad",
+            ),
+        ];
+
+        for (name, cron, block_id) in cases {
+            let src = format!(
+                r#"
+                team default {{ description = "t" }}
+                agent alpha {{ role = "x" instructions = "y" }}
+                {cron}
+                "#
+            );
+            let err = parse_config(&src, &dummy_path()).unwrap_err();
+            assert!(
+                matches!(&err, ConfigError::InvalidCronBlock { id, .. } if id == block_id),
+                "{name}: got {err:?}"
+            );
+            if name == "oneoff_catchup" {
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("one_shot_catchup"),
+                    "expected block id in error: {msg}"
+                );
+                assert!(
+                    msg.contains("aciddog cron add --oneoff --catchup-on-startup"),
+                    "expected imperative workaround in error: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_wcl_one_off_with_catchup_on_startup_pointing_at_imperative_path() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha { role = "x" instructions = "y" }
+            cron retry_once {
+                target = "alpha"
+                kind = :message
+                payload = "tick"
+                schedule = "2026-05-03T12:30:00"
+                oneoff = true
+                catchup_on_startup = true
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            &err,
+            ConfigError::InvalidCronBlock { id, .. } if id == "retry_once"
+        ));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("retry_once"),
+            "expected block id in error: {msg}"
+        );
+        assert!(
+            msg.contains("aciddog cron add --oneoff --catchup-on-startup"),
+            "expected imperative workaround in error: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_cron_ids() {
+        let src = r#"
+            team default { description = "t" }
+            agent alpha { role = "x" instructions = "y" }
+            cron bad {
+                target = "alpha"
+                kind = :message
+                payload = "tick"
+                schedule = "*/5 * * * *"
+            }
+            cron bad {
+                target = "alpha"
+                kind = :message
+                payload = "tock"
+                schedule = "*/10 * * * *"
+            }
+        "#;
+        let err = parse_config(src, &dummy_path()).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::DuplicateId { kind, id } if kind == "cron" && id == "bad"
+        ));
+    }
+
+    #[test]
+    fn load_config_resolves_imported_cron_blocks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().join("aciddog.wcl");
+        let child = tmp.path().join("cron.wcl");
+        std::fs::write(
+            &parent,
+            r#"
+                import "./cron.wcl"
+                team default { description = "t" }
+                agent alpha { role = "x" instructions = "y" }
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            &child,
+            r#"
+                cron first {
+                    target = "alpha"
+                    kind = :message
+                    payload = "tick"
+                    schedule = "*/7 * * * *"
+                }
+                cron second {
+                    target = "alpha"
+                    kind = :message
+                    payload = "tock"
+                    schedule = "*/11 * * * *"
+                }
+            "#,
+        )
+        .unwrap();
+
+        let cfg = load_config(&parent).unwrap();
+        assert_eq!(cfg.cron_jobs.len(), 2);
+        assert_eq!(cfg.cron_jobs[0].id, "first");
+        assert_eq!(cfg.cron_jobs[0].schedule, "*/7 * * * *");
+        assert_eq!(cfg.cron_jobs[1].id, "second");
+        crate::cron::parse_schedule(&cfg.cron_jobs[0].schedule, false).unwrap();
+        crate::cron::parse_schedule(&cfg.cron_jobs[1].schedule, false).unwrap();
     }
 
     #[test]

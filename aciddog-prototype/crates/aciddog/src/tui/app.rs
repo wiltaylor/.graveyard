@@ -1280,39 +1280,6 @@ fn history_block_line(b: &ChatBlock) -> String {
     format!("{kind}: {text_clean}")
 }
 
-/// Parse a `--kind` flag value into a [`crate::cron::CronPayload`].
-/// Returns the same human-readable error a CLI surface would.
-fn parse_cron_payload(kind: &str, payload: String) -> Result<crate::cron::CronPayload, String> {
-    match kind.trim().to_ascii_lowercase().as_str() {
-        "message" => {
-            let p = crate::cron::CronPayload::Message { body: payload };
-            crate::cron::validate_payload(&p).map_err(|e| e.to_string())?;
-            Ok(p)
-        }
-        "command" => {
-            let p = crate::cron::CronPayload::SlashCommand { command: payload };
-            crate::cron::validate_payload(&p).map_err(|e| e.to_string())?;
-            Ok(p)
-        }
-        other => Err(format!(
-            "invalid kind `{other}` (expected `message` or `command`)"
-        )),
-    }
-}
-
-/// Parse a `--schedule` flag plus the `--oneoff` toggle into a
-/// [`crate::cron::CronSchedule`].
-fn parse_cron_schedule(
-    schedule: &str,
-    oneoff: bool,
-) -> Result<crate::cron::CronSchedule, crate::cron::CronError> {
-    if oneoff {
-        crate::cron::parse_oneoff(schedule)
-    } else {
-        crate::cron::parse_recurring(schedule)
-    }
-}
-
 /// One-line summary of a cron job for `cron list`. Calls out
 /// targets that no longer match a configured agent so the operator
 /// can see broken jobs at a glance.
@@ -2747,6 +2714,11 @@ pub struct App {
     /// one-offs pruned unless they opted into catchup; recurring
     /// `next_run` recomputed from now).
     pub cron: crate::cron::CronStore,
+    /// Deterministic UUIDs produced by the previous WCL cron reapply
+    /// pass. UUID v5 values do not retain their namespace, so this set
+    /// is the authoritative old-WCL set used to reap removed blocks
+    /// without touching imperatively-added cron jobs.
+    pub wcl_cron_ids: std::collections::HashSet<Uuid>,
     /// Woken whenever a cron mutation might change the next-due
     /// instant. The scheduler arm of `event_loop` awaits both
     /// `sleep_until(next_due)` and this notify, so newly-added jobs
@@ -3065,6 +3037,7 @@ impl App {
             socket_events_tx: None,
             tasks: TaskStore::new(),
             cron: crate::cron::CronStore::new(),
+            wcl_cron_ids: std::collections::HashSet::new(),
             cron_invalidate: std::sync::Arc::new(tokio::sync::Notify::new()),
             memory: None,
             active_view: ActiveView::default(),
@@ -3092,6 +3065,21 @@ impl App {
             inbox_screen: super::inbox_view::InboxScreen::default(),
             cron_screen: super::cron_view::CronScreen::default(),
         }
+    }
+
+    pub(super) fn reapply_wcl_crons(&mut self) -> Result<(), crate::cron::CronError> {
+        let old_wcl_cron_ids = std::mem::take(&mut self.wcl_cron_ids);
+        let outcome = crate::cron::reapply_wcl_crons(
+            &mut self.cron,
+            &self.config.cron_jobs,
+            &old_wcl_cron_ids,
+        )?;
+        self.wcl_cron_ids = outcome.ids;
+        for event in outcome.events {
+            let _ = self.cron_event_tx.send(event);
+        }
+        self.cron_invalidate.notify_one();
+        Ok(())
     }
 
     pub fn current_chat(&self) -> Option<&AgentChat> {
@@ -7129,7 +7117,7 @@ impl App {
             }
         };
 
-        let payload = match parse_cron_payload(&kind, payload) {
+        let payload = match crate::cron::parse_payload(&kind, payload) {
             Ok(p) => p,
             Err(e) => {
                 let _ = reply.send(Response::err(e));
@@ -7137,7 +7125,7 @@ impl App {
             }
         };
 
-        let schedule = match parse_cron_schedule(&schedule, oneoff) {
+        let schedule = match crate::cron::parse_schedule(&schedule, oneoff) {
             Ok(s) => s,
             Err(e) => {
                 let _ = reply.send(Response::err(e.to_string()));
@@ -7351,7 +7339,7 @@ impl App {
         };
 
         let new_payload = match (kind, payload) {
-            (Some(k), Some(p)) => match parse_cron_payload(&k, p) {
+            (Some(k), Some(p)) => match crate::cron::parse_payload(&k, p) {
                 Ok(pl) => Some(pl),
                 Err(e) => {
                     let _ = reply.send(Response::err(e));
@@ -7368,7 +7356,7 @@ impl App {
         };
 
         let new_schedule = match schedule.as_deref() {
-            Some(s) => match parse_cron_schedule(s, next_oneoff) {
+            Some(s) => match crate::cron::parse_schedule(s, next_oneoff) {
                 Ok(parsed) => Some(parsed),
                 Err(e) => {
                     let _ = reply.send(Response::err(e.to_string()));
@@ -11102,11 +11090,11 @@ impl App {
             super::cron_view::CronPayloadKind::Message => "message",
             super::cron_view::CronPayloadKind::SlashCommand => "command",
         };
-        let payload = parse_cron_payload(payload_kind, form.payload_body.clone())?;
+        let payload = crate::cron::parse_payload(payload_kind, form.payload_body.clone())?;
 
         let oneoff = form.schedule_kind == CronScheduleKind::OneOff;
         let schedule =
-            parse_cron_schedule(&form.schedule_text, oneoff).map_err(|e| e.to_string())?;
+            crate::cron::parse_schedule(&form.schedule_text, oneoff).map_err(|e| e.to_string())?;
 
         if form.catchup_on_startup && !oneoff {
             return Err("catchup_on_startup only applies to one-off jobs".into());
@@ -16832,6 +16820,7 @@ mod tests {
             compactions: vec![],
             channels: vec![],
             repositories: vec![],
+            cron_jobs: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["thinking".into()],
@@ -17137,6 +17126,7 @@ mod tests {
             compactions: vec![],
             channels: vec![],
             repositories: vec![],
+            cron_jobs: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["t".into()],
@@ -17205,6 +17195,7 @@ mod tests {
             compactions: vec![],
             channels: vec![],
             repositories: vec![],
+            cron_jobs: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["t".into()],
@@ -17231,6 +17222,7 @@ mod tests {
             compactions: vec![],
             channels: vec![],
             repositories: vec![],
+            cron_jobs: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["t".into()],
@@ -17284,6 +17276,7 @@ mod tests {
             compactions: vec![],
             channels: vec![],
             repositories: vec![],
+            cron_jobs: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["t".into()],
@@ -17388,6 +17381,7 @@ mod tests {
             compactions: vec![],
             channels: vec![],
             repositories: vec![],
+            cron_jobs: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["thinking".into()],
@@ -20192,6 +20186,7 @@ mod tests {
             compactions: vec![],
             channels: vec![],
             repositories: vec![],
+            cron_jobs: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["thinking".into()],
@@ -21573,6 +21568,7 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
             compactions: vec![],
             channels: vec![],
             repositories: vec![],
+            cron_jobs: vec![],
             workflows: vec![],
             webhooks: vec![],
             thinking_messages: vec!["thinking".into()],
@@ -24493,6 +24489,26 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         assert!(!app.is_eligible_cron_target("ghost"));
     }
 
+    fn wcl_cron_block(
+        id: &str,
+        target: &str,
+        payload: &str,
+        schedule: &str,
+        oneoff: bool,
+    ) -> crate::config::CronJobBlock {
+        crate::config::CronJobBlock {
+            id: id.into(),
+            target: target.into(),
+            kind: crate::config::CronJobKind::Message,
+            payload: payload.into(),
+            schedule: schedule.into(),
+            tz: crate::cron::CronTz::Utc,
+            oneoff,
+            catchup_on_startup: false,
+            disabled: false,
+        }
+    }
+
     #[tokio::test]
     async fn info_returns_local_and_utc_lines() {
         let mut app = App::new(sample_config());
@@ -24588,6 +24604,91 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         assert!(
             body.contains("target_agent:       script_auto"),
             "show output: {body}"
+        );
+    }
+
+    #[test]
+    fn reapply_wcl_crons_emits_created_updated_removed_events() {
+        let mut app = App::new(sample_config());
+        let mut rx = app.cron_event_tx.subscribe();
+        let id = crate::cron::wcl_cron_id("idle_sweep");
+
+        app.config.cron_jobs = vec![wcl_cron_block(
+            "idle_sweep",
+            "b",
+            "tick",
+            "*/5 * * * *",
+            false,
+        )];
+        app.reapply_wcl_crons().unwrap();
+        match rx.try_recv().unwrap() {
+            crate::cron::CronEvent::Created { job } => assert_eq!(job.id, id),
+            other => panic!("expected Created, got {other:?}"),
+        }
+
+        app.config.cron_jobs = vec![wcl_cron_block(
+            "idle_sweep",
+            "b",
+            "tick",
+            "*/10 * * * *",
+            false,
+        )];
+        app.reapply_wcl_crons().unwrap();
+        match rx.try_recv().unwrap() {
+            crate::cron::CronEvent::Updated { job } => assert_eq!(job.id, id),
+            other => panic!("expected Updated, got {other:?}"),
+        }
+
+        app.config.cron_jobs.clear();
+        app.reapply_wcl_crons().unwrap();
+        match rx.try_recv().unwrap() {
+            crate::cron::CronEvent::Removed { id: removed } => assert_eq!(removed, id),
+            other => panic!("expected Removed, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn wcl_future_one_off_fires_exactly_once_and_reloads_are_noops() {
+        let mut cfg = sample_config();
+        let mut wcl_creator = cfg.agents[0].clone();
+        wcl_creator.id = "wcl".into();
+        cfg.agents.push(wcl_creator);
+        let mut app = App::new(cfg);
+        let mut agent_rxs = wire_up_agent_ids_and_channels(&mut app);
+        let run_at = chrono::Utc::now() + chrono::Duration::seconds(2);
+        let run_at_str = run_at.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let id = crate::cron::wcl_cron_id("one_shot");
+        app.config.cron_jobs = vec![wcl_cron_block("one_shot", "b", "ping", &run_at_str, true)];
+
+        app.reapply_wcl_crons().unwrap();
+        let before = app.cron.get(id).expect("WCL one-off inserted").clone();
+        app.reapply_wcl_crons().unwrap();
+        let after = app.cron.get(id).expect("WCL one-off still present").clone();
+        assert_eq!(before.id, after.id);
+        assert_eq!(before.payload, after.payload);
+        assert_eq!(before.schedule, after.schedule);
+        assert_eq!(before.next_run, after.next_run);
+
+        let sleep_for = (run_at - chrono::Utc::now())
+            .to_std()
+            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+            + std::time::Duration::from_millis(250);
+        tokio::time::sleep(sleep_for).await;
+        app.tick_cron(chrono::Utc::now());
+        let delivered = agent_rxs[1].recv().await.expect("one-off delivered");
+        assert!(delivered.contains("ping</Message>"), "got: {delivered}");
+        assert!(app.cron.get(id).is_none(), "one-off should be pruned");
+
+        app.reapply_wcl_crons().unwrap();
+        app.reapply_wcl_crons().unwrap();
+        assert!(
+            app.cron.get(id).is_none(),
+            "past WCL one-off was reinserted"
+        );
+        assert!(
+            agent_rxs[1].try_recv().is_err(),
+            "past reload must not deliver a second fire"
         );
     }
 

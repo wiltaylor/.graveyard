@@ -22,7 +22,8 @@ just ci         # fmt check + clippy + tests
 ## Config
 
 The TUI loads `aciddog.wcl` from the current working directory. See
-[`demo/aciddog.wcl`](demo/aciddog.wcl) for a working example.
+[`demo/aciddog.wcl`](demo/aciddog.wcl) for a working example and
+[`docs/wcl.md`](docs/wcl.md) for block reference notes.
 
 ## Secrets
 

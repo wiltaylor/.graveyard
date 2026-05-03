@@ -12,6 +12,7 @@
 //! (resolved via `chrono::Local`). `next_run` is always stored as
 //! `Utc` so the scheduler is tz-agnostic.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -20,6 +21,15 @@ use cron::Schedule;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
+
+/// WCL cron namespace. Do not change this value: runtime UUIDs of
+/// WCL-declared cron jobs are UUID v5 hashes of the block id against
+/// this namespace, so changing it would orphan existing WCL cron jobs.
+pub const NAMESPACE_CRON_WCL: Uuid = Uuid::from_u128(0x61842da1_8d65_4f99_9d56_fa64d84833b5);
+
+pub fn wcl_cron_id(block_id: &str) -> Uuid {
+    Uuid::new_v5(&NAMESPACE_CRON_WCL, block_id.as_bytes())
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -211,6 +221,12 @@ pub struct ReconcileReport {
     pub recomputed_recurring: Vec<Uuid>,
     /// Recurring jobs whose schedule is unreachable — disabled.
     pub disabled_unreachable: Vec<Uuid>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ReapplyWclCronsOutcome {
+    pub ids: HashSet<Uuid>,
+    pub events: Vec<CronEvent>,
 }
 
 #[derive(Debug, Default)]
@@ -603,6 +619,34 @@ pub fn validate_schedule(s: &CronSchedule) -> Result<(), CronError> {
     Ok(())
 }
 
+/// Parse a user-facing cron payload kind and body into a validated payload.
+pub fn parse_payload(kind: &str, payload: String) -> Result<CronPayload, String> {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "message" => {
+            let p = CronPayload::Message { body: payload };
+            validate_payload(&p).map_err(|e| e.to_string())?;
+            Ok(p)
+        }
+        "command" => {
+            let p = CronPayload::SlashCommand { command: payload };
+            validate_payload(&p).map_err(|e| e.to_string())?;
+            Ok(p)
+        }
+        other => Err(format!(
+            "invalid kind `{other}` (expected `message` or `command`)"
+        )),
+    }
+}
+
+/// Parse a user-facing schedule plus one-off flag into a validated schedule.
+pub fn parse_schedule(schedule: &str, oneoff: bool) -> Result<CronSchedule, CronError> {
+    if oneoff {
+        parse_oneoff(schedule)
+    } else {
+        parse_recurring(schedule)
+    }
+}
+
 /// Parse a recurring expression string from the wire (CLI or tag).
 ///
 /// Accepts both 5-field POSIX cron (`min hour dom mon dow`) and the
@@ -674,6 +718,100 @@ pub fn compute_next_run(
     }
 }
 
+pub fn reapply_wcl_crons(
+    store: &mut CronStore,
+    blocks: &[crate::config::CronJobBlock],
+    previous_wcl_ids: &HashSet<Uuid>,
+) -> Result<ReapplyWclCronsOutcome, CronError> {
+    let mut wanted = HashSet::new();
+    let mut events = Vec::new();
+
+    for block in blocks {
+        let id = wcl_cron_id(&block.id);
+        let next_job = cron_job_from_block(id, block)?;
+        let Some(next_job) = next_job else {
+            continue;
+        };
+        wanted.insert(id);
+        match store.jobs.iter().position(|j| j.id == id) {
+            None => {
+                events.push(CronEvent::Created {
+                    job: WireCronJob::from(&next_job),
+                });
+                store.jobs.push(next_job);
+            }
+            Some(pos) if cron_job_matches_block(&store.jobs[pos], block) => {}
+            Some(pos) => {
+                events.push(CronEvent::Updated {
+                    job: WireCronJob::from(&next_job),
+                });
+                store.jobs[pos] = next_job;
+            }
+        }
+    }
+
+    for old_id in previous_wcl_ids.difference(&wanted) {
+        if let Some(pos) = store.jobs.iter().position(|j| j.id == *old_id) {
+            store.jobs.remove(pos);
+            events.push(CronEvent::Removed { id: *old_id });
+        }
+    }
+
+    store.persist()?;
+    Ok(ReapplyWclCronsOutcome {
+        ids: wanted,
+        events,
+    })
+}
+
+fn cron_job_from_block(
+    id: Uuid,
+    block: &crate::config::CronJobBlock,
+) -> Result<Option<CronJob>, CronError> {
+    let payload =
+        parse_payload(block.kind.as_str(), block.payload.clone()).map_err(|e| match e {
+            s if s.contains("must not be empty") => CronError::EmptyPayload,
+            s if s.contains("must start") => CronError::InvalidSlashCommand,
+            s if s.contains("blocked") => CronError::BlockedSlashCommand,
+            _ => CronError::InvalidSlashCommand,
+        })?;
+    let schedule = parse_schedule(&block.schedule, block.oneoff)?;
+    let now = Utc::now();
+    let next_run = compute_next_run(&schedule, block.tz, now)?;
+    if block.oneoff && !block.catchup_on_startup && next_run <= now {
+        return Ok(None);
+    }
+    Ok(CronJob {
+        id,
+        target_agent: block.target.trim().to_string(),
+        payload,
+        schedule,
+        timezone: block.tz,
+        catchup_on_startup: block.catchup_on_startup,
+        enabled: !block.disabled,
+        created_by: "wcl".to_string(),
+        created_at: now,
+        last_run: None,
+        next_run: if block.disabled { None } else { Some(next_run) },
+    }
+    .into())
+}
+
+fn cron_job_matches_block(job: &CronJob, block: &crate::config::CronJobBlock) -> bool {
+    let Ok(payload) = parse_payload(block.kind.as_str(), block.payload.clone()) else {
+        return false;
+    };
+    let Ok(schedule) = parse_schedule(&block.schedule, block.oneoff) else {
+        return false;
+    };
+    job.target_agent == block.target.trim()
+        && job.payload == payload
+        && job.schedule == schedule
+        && job.timezone == block.tz
+        && job.catchup_on_startup == block.catchup_on_startup
+        && job.enabled != block.disabled
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,6 +820,16 @@ mod tests {
 
     fn mk_store() -> CronStore {
         CronStore::new()
+    }
+
+    #[test]
+    fn wcl_cron_id_is_deterministic_for_same_block_id() {
+        assert_eq!(wcl_cron_id("idle_sweep"), wcl_cron_id("idle_sweep"));
+    }
+
+    #[test]
+    fn wcl_cron_id_differs_for_different_block_ids() {
+        assert_ne!(wcl_cron_id("idle_sweep"), wcl_cron_id("daily_digest"));
     }
 
     fn msg(body: &str) -> CronPayload {
@@ -706,6 +854,20 @@ mod tests {
         // Build a one-off as `now + secs` in UTC wall-clock terms.
         let when = (Utc::now() + Duration::seconds(secs)).naive_utc();
         CronSchedule::OneOff { run_at_local: when }
+    }
+
+    fn wcl_block(id: &str, payload: &str, schedule: &str) -> crate::config::CronJobBlock {
+        crate::config::CronJobBlock {
+            id: id.to_string(),
+            target: "reviewer".to_string(),
+            kind: crate::config::CronJobKind::Message,
+            payload: payload.to_string(),
+            schedule: schedule.to_string(),
+            tz: CronTz::Utc,
+            oneoff: false,
+            catchup_on_startup: false,
+            disabled: false,
+        }
     }
 
     // ─── CronTz ──────────────────────────────────────────────────────
@@ -767,6 +929,165 @@ mod tests {
         for s in ["/version", "/foo bar", "/anything-goes"] {
             validate_payload(&cmd(s)).expect("allowed");
         }
+    }
+
+    // ─── parse_payload / parse_schedule ─────────────────────────────
+
+    #[test]
+    fn parse_payload_accepts_message() {
+        assert_eq!(
+            parse_payload("message", "ping".to_string()).unwrap(),
+            msg("ping")
+        );
+    }
+
+    #[test]
+    fn parse_payload_accepts_command() {
+        assert_eq!(
+            parse_payload("command", "/version".to_string()).unwrap(),
+            cmd("/version")
+        );
+    }
+
+    #[test]
+    fn parse_payload_rejects_blocked_slash_commands() {
+        for s in ["/exit", "/quit", "/shutdown"] {
+            let err = parse_payload("command", s.to_string()).unwrap_err();
+            assert!(
+                err.contains("blocked"),
+                "expected blocked error for `{s}`, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_payload_rejects_empty_payload() {
+        let err = parse_payload("message", "   ".to_string()).unwrap_err();
+        assert!(err.contains("must not be empty"));
+    }
+
+    #[test]
+    fn parse_schedule_accepts_recurring_schedule() {
+        assert_eq!(
+            parse_schedule("*/5 * * * *", false).unwrap(),
+            recur("0 */5 * * * *")
+        );
+    }
+
+    #[test]
+    fn parse_schedule_accepts_oneoff_schedule() {
+        let sched = parse_schedule("2026-05-03T12:30", true).unwrap();
+        assert!(matches!(sched, CronSchedule::OneOff { .. }));
+    }
+
+    #[test]
+    fn parse_schedule_rejects_malformed_schedule() {
+        assert!(matches!(
+            parse_schedule("not a schedule", false),
+            Err(CronError::InvalidExpression(_))
+        ));
+    }
+
+    // ─── reapply_wcl_crons ──────────────────────────────────────────
+
+    #[test]
+    fn reapply_wcl_crons_creates_missing_job() {
+        let mut s = mk_store();
+        let block = wcl_block("idle_sweep", "tick", "*/5 * * * *");
+        let ids = reapply_wcl_crons(&mut s, &[block.clone()], &HashSet::new())
+            .unwrap()
+            .ids;
+        let id = wcl_cron_id("idle_sweep");
+        assert!(ids.contains(&id));
+        let job = s.get(id).unwrap();
+        assert_eq!(job.target_agent, block.target);
+        assert_eq!(job.payload, msg("tick"));
+        assert!(job.next_run.is_some());
+    }
+
+    #[test]
+    fn reapply_wcl_crons_matching_job_is_noop() {
+        let mut s = mk_store();
+        let block = wcl_block("idle_sweep", "tick", "*/5 * * * *");
+        let ids = reapply_wcl_crons(&mut s, &[block.clone()], &HashSet::new())
+            .unwrap()
+            .ids;
+        let id = wcl_cron_id("idle_sweep");
+        let before = s.get(id).unwrap().clone();
+        let ids2 = reapply_wcl_crons(&mut s, &[block], &ids).unwrap().ids;
+        let after = s.get(id).unwrap().clone();
+        assert_eq!(ids, ids2);
+        assert_eq!(before.id, after.id);
+        assert_eq!(before.last_run, after.last_run);
+        assert_eq!(before.next_run, after.next_run);
+        assert_eq!(before.created_at, after.created_at);
+    }
+
+    #[test]
+    fn reapply_wcl_crons_replaces_drifting_payload() {
+        let mut s = mk_store();
+        let block = wcl_block("idle_sweep", "tick", "*/5 * * * *");
+        let ids = reapply_wcl_crons(&mut s, &[block], &HashSet::new())
+            .unwrap()
+            .ids;
+        let id = wcl_cron_id("idle_sweep");
+        s.jobs.iter_mut().find(|j| j.id == id).unwrap().last_run = Some(Utc::now());
+        let changed = wcl_block("idle_sweep", "tock", "*/5 * * * *");
+        reapply_wcl_crons(&mut s, &[changed], &ids).unwrap();
+        let job = s.get(id).unwrap();
+        assert_eq!(job.payload, msg("tock"));
+        assert_eq!(job.last_run, None);
+        assert!(job.next_run.is_some());
+    }
+
+    #[test]
+    fn reapply_wcl_crons_replaces_drifting_schedule() {
+        let mut s = mk_store();
+        let block = wcl_block("idle_sweep", "tick", "*/5 * * * *");
+        let ids = reapply_wcl_crons(&mut s, &[block], &HashSet::new())
+            .unwrap()
+            .ids;
+        let id = wcl_cron_id("idle_sweep");
+        let changed = wcl_block("idle_sweep", "tick", "*/10 * * * *");
+        reapply_wcl_crons(&mut s, &[changed], &ids).unwrap();
+        let job = s.get(id).unwrap();
+        assert_eq!(job.schedule, recur("0 */10 * * * *"));
+        assert_eq!(job.last_run, None);
+        assert!(job.next_run.is_some());
+    }
+
+    #[test]
+    fn reapply_wcl_crons_removes_prior_wcl_orphans() {
+        let mut s = mk_store();
+        let block = wcl_block("idle_sweep", "tick", "*/5 * * * *");
+        let ids = reapply_wcl_crons(&mut s, &[block], &HashSet::new())
+            .unwrap()
+            .ids;
+        reapply_wcl_crons(&mut s, &[], &ids).unwrap();
+        assert!(s.get(wcl_cron_id("idle_sweep")).is_none());
+    }
+
+    #[test]
+    fn reapply_wcl_crons_leaves_runtime_jobs_untouched() {
+        let mut s = mk_store();
+        let runtime_id = s
+            .add(
+                "reviewer".into(),
+                msg("runtime"),
+                recur("0 * * * * *"),
+                CronTz::Utc,
+                false,
+                true,
+                "alice".into(),
+            )
+            .unwrap()
+            .id;
+        let block = wcl_block("idle_sweep", "tick", "*/5 * * * *");
+        let ids = reapply_wcl_crons(&mut s, &[block], &HashSet::new())
+            .unwrap()
+            .ids;
+        reapply_wcl_crons(&mut s, &[], &ids).unwrap();
+        assert!(s.get(runtime_id).is_some());
     }
 
     // ─── compute_next_run ────────────────────────────────────────────

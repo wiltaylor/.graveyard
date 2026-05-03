@@ -288,6 +288,18 @@ pub(crate) async fn boot_orchestrator(
         spawn_automaton_core(&mut app, idx, &automaton);
     }
 
+    match app.reapply_wcl_crons() {
+        Ok(()) => {
+            // WCL reapply inserts only jobs that still represent a
+            // future fire; startup reconciliation then handles the
+            // persisted imperative cron set.
+            if let Err(e) = app.cron.reconcile_on_startup(chrono::Utc::now()) {
+                warn!(error = %e, "cron startup reconciliation after WCL reapply failed");
+            }
+        }
+        Err(e) => warn!(error = %e, "failed to reapply WCL cron blocks at boot"),
+    }
+
     drop(ai_tx);
     // `app.ai_tx` retains a sender clone so runtime worker spawns can
     // route their stream into the same loop. That clone is dropped

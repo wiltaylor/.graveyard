@@ -6,10 +6,9 @@
 //! Workers are template-driven and don't need reconciliation — new
 //! instances pick up the new config naturally on the next spawn.
 //!
-//! Cron is intentionally NOT reloaded here. Cron jobs are not declared
-//! in WCL today; they live entirely in `.aciddog/cron.json` and are
-//! mutated through the cron CLI / TUI view. Reloading the WCL has no
-//! cron-relevant content to reconcile.
+//! WCL-declared cron jobs are reapplied after agents, channels,
+//! workflows, and automatons so target resolution sees the refreshed
+//! fleet. Imperatively-created cron jobs remain untouched.
 //!
 //! Failure modes:
 //! - Parse error → `App::config` is left untouched; the caller pushes
@@ -75,11 +74,7 @@ impl App {
         let channel_outcome = self.apply_channel_plan(&channel_plan);
         let workflow_outcome = self.apply_workflow_clamp();
         let automaton_outcome = self.apply_automaton_plan(&automaton_plan);
-
-        // Defensive cron wakeup — cron isn't reloaded but a long
-        // reload window may have starved its scheduler arm; this
-        // re-evaluates the next-due-at on the next event-loop tick.
-        self.cron_invalidate.notify_one();
+        self.reapply_wcl_crons().map_err(|e| e.to_string())?;
 
         Ok(format!(
             "reload: agents +{}/-{}/~{} ({}), channels +{}/-{}/~{}, workflows {}, automatons +{}/-{}/~{}",
