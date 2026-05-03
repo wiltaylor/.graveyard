@@ -16,6 +16,13 @@ pub struct AppState {
     /// subsystem is not started. Driven by `--enable-daemon-runner`
     /// / `ACIDDOG_MANAGER_ENABLE_DAEMON_RUNNER`. Default OFF.
     pub is_daemon_runner_enabled: bool,
+    /// Owns the OS child processes for managed daemons.
+    ///
+    /// Sibling 33fc8b7b will populate this conditional on
+    /// `is_daemon_runner_enabled`. Until that lands, the field is
+    /// always `None` and any consumer must treat the runner as
+    /// optional.
+    pub daemon_runner: Option<Arc<crate::daemon_runner::DaemonRunner>>,
 }
 
 impl AppState {
@@ -30,6 +37,7 @@ impl AppState {
             auth,
             data_dir: Arc::new(data_dir),
             is_daemon_runner_enabled,
+            daemon_runner: None,
         }
     }
 

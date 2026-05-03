@@ -53,6 +53,14 @@ pub struct CliArgs {
     #[arg(long, env = "ACIDDOG_MANAGER_ENABLE_DAEMON_RUNNER", global = true)]
     pub enable_daemon_runner: bool,
 
+    /// Path to the `aciddog` binary used to spawn managed daemon
+    /// children. When unset the runner falls back to its 3-tier
+    /// resolver: sibling-of-current-exe, then PATH walk. Wired through
+    /// `daemon_runner::resolve_aciddog_binary` once sibling 33fc8b7b
+    /// flips the gate.
+    #[arg(long, env = "ACIDDOG_BINARY", global = true)]
+    pub aciddog_binary: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }

@@ -30,7 +30,8 @@ async fn main() -> Result<()> {
     seed::ensure_admin_user(&pool).await?;
     let _ = session::purge_expired(&pool).await;
 
-    let state = AppState::new(
+    let _aciddog_binary = args.aciddog_binary.clone();
+    let mut state = AppState::new(
         pool,
         AuthConfig {
             cookie_secure: args.cookie_secure,
@@ -38,6 +39,10 @@ async fn main() -> Result<()> {
         args.data_dir.clone(),
         args.enable_daemon_runner,
     );
+    // TODO(33fc8b7b): construct DaemonRunner here when
+    // is_daemon_runner_enabled is true; pass args.aciddog_binary to
+    // resolve_aciddog_binary().
+    state.daemon_runner = None;
     let router = routes::build_router(state.clone());
 
     if state.is_daemon_runner_enabled {

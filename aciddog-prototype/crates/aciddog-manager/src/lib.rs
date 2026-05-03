@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod client;
 pub mod config;
+pub mod daemon_runner;
 pub mod db;
 pub mod error;
 pub mod ipc;
