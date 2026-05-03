@@ -2,20 +2,11 @@ import { Show, createResource, createSignal, type JSX } from "solid-js";
 import { api } from "../api";
 import type {
   AgentListResponse,
-  AgentRow,
   HealthResponse,
   InstanceSummary,
 } from "../types";
-import {
-  Badge,
-  Button,
-  Card,
-  Empty,
-  Eyebrow,
-  Table,
-  Toast,
-} from "./ui";
-import { agentStatusVisual } from "./agents/agentStatus";
+import { Button, Card, Empty, Toast } from "./ui";
+import AgentTree from "./agents/AgentTree";
 
 interface Props {
   instance: InstanceSummary;
@@ -180,170 +171,20 @@ export default function InstanceDetail(props: Props): JSX.Element {
                   </div>
                 }
               >
-                {(() => {
-                  // Build a parent-id map once per render scope so the
-                  // ID column can compute worker depth in O(1) per row
-                  // (mirrors the TUI's `parent_idx` resolution at
-                  // `crates/aciddog/src/tui/ui.rs:340-383`). Workers
-                  // can't spawn workers today, so depth caps at 1; we
-                  // still walk a bounded number of hops defensively in
-                  // case a future schema introduces deeper chains.
-                  const byId = new Map<string, AgentRow>();
-                  for (const a of resp().agents) byId.set(a.id, a);
-                  const depthOf = (a: AgentRow): number => {
-                    let depth = 0;
-                    let cur: AgentRow | undefined = a;
-                    while (cur && cur.parent !== null && depth < 3) {
-                      const next = byId.get(cur.parent);
-                      if (!next) {
-                        // Race / missing parent — render as depth 1
-                        // (matches TUI graceful degradation).
-                        return Math.max(depth, 1);
-                      }
-                      cur = next;
-                      depth += 1;
-                    }
-                    return depth;
-                  };
-                  return (
-                    <Table
-                      // Two-key stable sort: bucket by `group` in
-                      // first-appearance order (named groups first,
-                      // ungrouped last to mirror the TUI sidebar's
-                      // `(ungrouped)` placement), then within each bucket
-                      // pin leader=true rows first. Older daemons that
-                      // emit the legacy 5/6-column table have group=null
-                      // on every row — the bucketing collapses to a single
-                      // (ungrouped) section and the leader sort still
-                      // applies, so the layout degrades gracefully.
-                      rows={(() => {
-                        const order: (string | null)[] = [];
-                        for (const a of resp().agents) {
-                          const g = a.group ?? null;
-                          if (!order.includes(g)) order.push(g);
-                        }
-                        if (!order.includes(null)) order.push(null);
-                        const indexOfBucket = (g: string | null) => {
-                          const i = order.indexOf(g);
-                          return i === -1 ? order.length : i;
-                        };
-                        return [...resp().agents].sort((a, b) => {
-                          const ag = a.group ?? null;
-                          const bg = b.group ?? null;
-                          const ai = indexOfBucket(ag);
-                          const bi = indexOfBucket(bg);
-                          if (ai !== bi) return ai - bi;
-                          const aIsLeader = a.leader && a.parent === null;
-                          const bIsLeader = b.leader && b.parent === null;
-                          if (aIsLeader === bIsLeader) return 0;
-                          return aIsLeader ? -1 : 1;
-                        });
-                      })()}
-                      rowKey={(a) => a.id}
-                      onRowClick={(a) => props.onSelectAgent(a.id)}
-                      columns={[
-                        {
-                          key: "id",
-                          header: <Eyebrow>ID</Eyebrow>,
-                          render: (a) => {
-                            const depth = depthOf(a);
-                            const indent = "↳ ".repeat(depth);
-                            return (
-                              <span
-                                style={{
-                                  color: "var(--accent-fg)",
-                                  "font-weight": "500",
-                                }}
-                              >
-                                <Show when={depth > 0}>
-                                  <span
-                                    aria-hidden="true"
-                                    style={{ "margin-right": "0.15em" }}
-                                  >
-                                    {indent}
-                                  </span>
-                                </Show>
-                                <Show when={a.leader && a.parent === null}>
-                                  <span
-                                    title="leader"
-                                    aria-label="leader"
-                                    style={{ "margin-right": "0.35em" }}
-                                  >
-                                    👑
-                                  </span>
-                                </Show>
-                                {a.id}
-                                <Show when={a.parent !== null}>
-                                  <span
-                                    style={{
-                                      color: "var(--fg-2)",
-                                      "margin-left": "0.4em",
-                                    }}
-                                  >
-                                    [worker]
-                                  </span>
-                                </Show>
-                              </span>
-                            );
-                          },
-                        },
-                        {
-                          key: "group",
-                          header: <Eyebrow>Group</Eyebrow>,
-                          render: (a) => (
-                            <span
-                              style={{
-                                color: a.group ? "var(--fg-1)" : "var(--fg-2)",
-                                "font-style": a.group ? "normal" : "italic",
-                              }}
-                            >
-                              {a.group ?? "(ungrouped)"}
-                            </span>
-                          ),
-                        },
-                        {
-                          key: "kind",
-                          header: <Eyebrow>Kind</Eyebrow>,
-                          render: (a) => <Badge tone="neutral">{a.kind}</Badge>,
-                        },
-                        {
-                          key: "status",
-                          header: <Eyebrow>Status</Eyebrow>,
-                          // Canonical source of the (kind, status)
-                          // strings is the TUI's `status_label` at
-                          // `crates/aciddog/src/tui/app.rs:9270-9281`
-                          // and the dot palette at
-                          // `crates/aciddog/src/tui/ui.rs:340-383`.
-                          // Keep this arm in sync with `agentStatusVisual`
-                          // — never inline a tone map here again.
-                          render: (a) => {
-                            const v = agentStatusVisual(a.kind, a.status);
-                            return (
-                              <Badge tone={v.tone} dot>
-                                {v.glyph} {v.label}
-                              </Badge>
-                            );
-                          },
-                        },
-                        {
-                          key: "parent",
-                          header: <Eyebrow>Parent</Eyebrow>,
-                          render: (a) => (
-                            <span style={{ color: "var(--fg-2)" }}>
-                              {a.parent ?? "—"}
-                            </span>
-                          ),
-                        },
-                        {
-                          key: "ai_core",
-                          header: <Eyebrow>AI core</Eyebrow>,
-                          mono: true,
-                          render: (a) => a.ai_core ?? "—",
-                        },
-                      ]}
-                    />
-                  );
-                })()}
+                {/*
+                  All bucketing / leader-pin / orphan / hide-hibernated
+                  logic lives in `groupAgents` (see
+                  `agents/agentTree.ts`); the rendering side is a dumb
+                  walk over the resulting tree (see
+                  `agents/AgentTree.tsx`). Hibernated workers are
+                  hidden by default — the daemon will still ship them
+                  in the response, the renderer just drops them so the
+                  card stays scannable.
+                */}
+                <AgentTree
+                  rows={resp().agents}
+                  onSelectAgent={(id) => props.onSelectAgent(id)}
+                />
               </Show>
             </Show>
           )}
