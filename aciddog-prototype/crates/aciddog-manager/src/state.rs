@@ -29,6 +29,13 @@ pub struct AppState {
     /// successful `set_desired_state` write; the reconciler tick wakes
     /// within milliseconds rather than waiting up to a tick-interval.
     pub reconciler_notify: Arc<ReconcilerNotify>,
+    /// Resolved path to the `aciddog` binary used by both the
+    /// daemon-runner (spawn children) and the scaffolding flow
+    /// (`aciddog init`, `aciddog daemon --check`). Populated in
+    /// `main.rs` from `daemon_runner::resolve_aciddog_binary` when
+    /// `is_daemon_runner_enabled` is true; otherwise `None`. Wrapped in
+    /// `Arc<PathBuf>` so cloning `AppState` (per request) stays cheap.
+    pub aciddog_binary: Option<Arc<PathBuf>>,
 }
 
 impl AppState {
@@ -45,6 +52,7 @@ impl AppState {
             is_daemon_runner_enabled,
             daemon_runner: None,
             reconciler_notify: Arc::new(ReconcilerNotify::new()),
+            aciddog_binary: None,
         }
     }
 
@@ -54,5 +62,13 @@ impl AppState {
 
     pub fn marketplaces_dir(&self) -> PathBuf {
         self.data_dir.join("marketplaces")
+    }
+
+    /// Root directory holding per-team work_dirs scaffolded by
+    /// `scaffolding::create_managed_daemon`. Each managed daemon owns
+    /// `<teams_dir>/<name>/` with its `aciddog.wcl` + `.aciddog/` socket
+    /// parent inside.
+    pub fn teams_dir(&self) -> PathBuf {
+        self.data_dir.join("teams")
     }
 }

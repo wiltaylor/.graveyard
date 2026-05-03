@@ -505,10 +505,7 @@ async fn spawn_watcher(weak: Weak<DaemonRunner>, id: Uuid, socket_path: PathBuf)
 /// 3. PATH walk via `std::env::var_os("PATH")` and `env::split_paths`.
 ///
 /// First match wins. Returns `BinaryNotFound` when nothing exists.
-#[allow(dead_code)] // wired up by sibling 33fc8b7b.
-pub(crate) fn resolve_aciddog_binary(
-    explicit: Option<PathBuf>,
-) -> Result<PathBuf, DaemonRunnerError> {
+pub fn resolve_aciddog_binary(explicit: Option<PathBuf>) -> Result<PathBuf, DaemonRunnerError> {
     if let Some(path) = explicit {
         if is_executable_file(&path) {
             return Ok(path);

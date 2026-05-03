@@ -8,6 +8,7 @@ pub mod ipc;
 pub mod model;
 pub mod reconciler;
 pub mod routes;
+pub mod scaffolding;
 pub mod seed;
 pub mod skills;
 pub mod state;

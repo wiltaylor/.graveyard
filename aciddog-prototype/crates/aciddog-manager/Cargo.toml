@@ -51,6 +51,10 @@ path = "src/main.rs"
 name = "daemon_runner_shim"
 path = "src/bin/daemon_runner_shim.rs"
 
+[[bin]]
+name = "aciddog_init_shim"
+path = "src/bin/aciddog_init_shim.rs"
+
 [lints.clippy]
 too_many_arguments = "allow"
 type_complexity = "allow"

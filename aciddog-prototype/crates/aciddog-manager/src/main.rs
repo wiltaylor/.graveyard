@@ -1,7 +1,9 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use aciddog_manager::auth::AuthConfig;
 use aciddog_manager::config::{CliArgs, Command};
+use aciddog_manager::daemon_runner;
 use aciddog_manager::model::session;
 use aciddog_manager::{db, reconciler, routes, seed, state::AppState};
 use anyhow::{Context, Result};
@@ -30,7 +32,6 @@ async fn main() -> Result<()> {
     seed::ensure_admin_user(&pool).await?;
     let _ = session::purge_expired(&pool).await;
 
-    let _aciddog_binary = args.aciddog_binary.clone();
     let mut state = AppState::new(
         pool,
         AuthConfig {
@@ -43,6 +44,22 @@ async fn main() -> Result<()> {
     // is_daemon_runner_enabled is true; pass args.aciddog_binary to
     // resolve_aciddog_binary().
     state.daemon_runner = None;
+    if state.is_daemon_runner_enabled {
+        // Resolve once and cache on AppState. The scaffolding flow
+        // (`aciddog init`, `aciddog daemon --check`) and the eventual
+        // daemon-runner share this path. When the gate is OFF we leave
+        // `aciddog_binary = None` and `scaffolding::create_managed_daemon`
+        // refuses to run.
+        match daemon_runner::resolve_aciddog_binary(args.aciddog_binary.clone()) {
+            Ok(p) => state.aciddog_binary = Some(Arc::new(p)),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "could not resolve aciddog binary; managed-daemon scaffolding will fail until --aciddog-binary or PATH is fixed"
+                );
+            }
+        }
+    }
     let router = routes::build_router(state.clone());
 
     if state.is_daemon_runner_enabled {
