@@ -28,6 +28,13 @@ pub enum AppError {
 
     #[error("remote: {0}")]
     Remote(#[from] anyhow::Error),
+
+    /// Internal misconfiguration / impossible-state. Maps to 500. Used by
+    /// `routes/managed_daemons.rs` when the daemon-runner gate is on but
+    /// the runtime `state.daemon_runner` was never wired (config bug —
+    /// should never fire in production once `main.rs` initialises it).
+    #[error("internal: {0}")]
+    Internal(String),
 }
 
 impl IntoResponse for AppError {
@@ -49,6 +56,13 @@ impl IntoResponse for AppError {
             AppError::Remote(e) => {
                 tracing::warn!(error = %e, "remote error");
                 (StatusCode::BAD_GATEWAY, e.to_string())
+            }
+            AppError::Internal(_) => {
+                tracing::error!(error = %self, "internal error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                )
             }
         };
         (status, Json(json!({ "error": message }))).into_response()
