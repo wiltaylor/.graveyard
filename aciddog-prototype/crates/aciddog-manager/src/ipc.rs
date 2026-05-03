@@ -303,7 +303,10 @@ pub enum RequestCmd {
     /// Supervisor branch diff against a repo's default branch.
     /// Response carries `wire_repos::WireDiffOutcome` in
     /// `IpcResponse::data`.
-    RepoDiffJson { repo_id: String, branch: String },
+    RepoDiffJson {
+        repo_id: String,
+        branch: String,
+    },
     // ---- Skills ----------------------------------------------------
     /// Sysadmin: list every skill directory under the daemon's
     /// `.aciddog/skills/`. Distinct from the agent-scoped `SkillList`

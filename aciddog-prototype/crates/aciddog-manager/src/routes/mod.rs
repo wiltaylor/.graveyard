@@ -72,10 +72,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         // Repos
         .route("/instances/:id/repos", get(repos::list))
-        .route(
-            "/instances/:id/repos/:repo_id/diff",
-            post(repos::diff),
-        )
+        .route("/instances/:id/repos/:repo_id/diff", post(repos::diff))
         // Inbox
         .route("/instances/:id/inbox", get(inbox::list))
         .route("/instances/:id/inbox/:index", delete(inbox::delete))

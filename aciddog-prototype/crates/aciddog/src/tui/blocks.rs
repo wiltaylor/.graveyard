@@ -2535,7 +2535,7 @@ mod tests {
         if let ChatBlock::BashTool { stdout, .. } = &mut bash {
             *stdout = long_lines('D', 58, 4);
         }
-        let blocks = vec![
+        let blocks = [
             ChatBlock::user("A".repeat(92)),
             ChatBlock::system_info("B".repeat(92)),
             ChatBlock::channel_message("agent", "C".repeat(92)),

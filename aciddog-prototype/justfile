@@ -124,7 +124,7 @@ run-manager: manager-frontend-build
 
 # Build everything
 [group('build')]
-build: manager-frontend-build app-build manager-build
+build: manager-frontend-install manager-frontend-build app-build manager-build
 
 # Build aciddog (release) and install via `cargo install --path`
 [group('install')]
@@ -138,15 +138,15 @@ manager-install: manager-frontend-build
 
 # Build and install aciddog + aciddog-manager (release) into $CARGO_HOME/bin and install the WCL schema
 [group('install')]
-install: manager-frontend-build app-install manager-install wcl-schema-install
+install: manager-frontend-install manager-frontend-build app-install manager-install wcl-schema-install
 
 # Run every test
 [group('test')]
-test: app-test manager-test
+test: manager-frontend-install app-test manager-test
 
 # Full CI pipeline: fmt check, lint, tests (app + manager)
 [group('ci')]
-ci: app-fmt-check app-lint app-test manager-fmt-check manager-lint manager-test
+ci: manager-frontend-install app-fmt-check app-lint app-test manager-fmt-check manager-lint manager-test
 
 # Stamp a version string into both Cargo.toml files and the web package.json. Used by the release workflow before building.
 [group('release')]

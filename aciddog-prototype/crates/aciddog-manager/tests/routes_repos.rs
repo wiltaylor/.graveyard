@@ -71,10 +71,7 @@ struct StubDaemon {
     default_branch: &'static str,
 }
 
-async fn rpc_stub(
-    State(stub): State<StubDaemon>,
-    Json(req): Json<Value>,
-) -> Json<Value> {
+async fn rpc_stub(State(stub): State<StubDaemon>, Json(req): Json<Value>) -> Json<Value> {
     assert_eq!(req["cmd"], "repo_diff_json");
     assert_eq!(req["repo_id"], "repo-a");
 
