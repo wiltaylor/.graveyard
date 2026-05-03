@@ -1,4 +1,4 @@
-import { For, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show, type Accessor, type JSX } from "solid-js";
 import Icon, { type IconName } from "./Icon";
 
 export interface TreeNode {
@@ -25,8 +25,48 @@ interface RowProps {
   depth: number;
   selectedId?: string | null;
   expanded: Set<string>;
+  focusedId: string | null;
+  setFocusedId: (id: string) => void;
+  getVisible: Accessor<VisibleRow[]>;
   onToggle: (id: string) => void;
   onSelect?: (id: string) => void;
+}
+
+interface VisibleRow {
+  id: string;
+  depth: number;
+  parentId: string | null;
+  hasKids: boolean;
+  expanded: boolean;
+}
+
+function flattenVisible(nodes: TreeNode[], expanded: Set<string>): VisibleRow[] {
+  const rows: VisibleRow[] = [];
+
+  const visit = (items: TreeNode[], depth: number, parentId: string | null) => {
+    for (const node of items) {
+      const hasKids = node.hasChildren ?? Boolean(node.children && node.children.length > 0);
+      const isOpen = expanded.has(node.id);
+      rows.push({
+        id: node.id,
+        depth,
+        parentId,
+        hasKids,
+        expanded: isOpen,
+      });
+      if (hasKids && isOpen && node.children) {
+        visit(node.children, depth + 1, node.id);
+      }
+    }
+  };
+
+  visit(nodes, 0, null);
+  return rows;
+}
+
+function cssEscape(value: string): string {
+  if (globalThis.CSS?.escape) return globalThis.CSS.escape(value);
+  return value.replace(/["\\]/g, "\\$&");
 }
 
 function TreeRow(props: RowProps): JSX.Element {
@@ -35,11 +75,62 @@ function TreeRow(props: RowProps): JSX.Element {
   const isOpen = () => props.expanded.has(props.node.id);
 
   const handleRowClick = () => {
+    props.setFocusedId(props.node.id);
     props.onSelect?.(props.node.id);
   };
   const handleChevron = (ev: MouseEvent) => {
     ev.stopPropagation();
     if (hasKids()) props.onToggle(props.node.id);
+  };
+  const handleKeyDown = (ev: KeyboardEvent) => {
+    const visible = props.getVisible();
+    const index = visible.findIndex((row) => row.id === props.node.id);
+    const current = visible[index];
+    const focusRow = (id: string | null | undefined) => {
+      if (id) props.setFocusedId(id);
+    };
+
+    // TODO: typeahead first-letter jump — out of scope for v1, see follow-up ticket.
+    switch (ev.key) {
+      case "Enter":
+      case " ":
+      case "Spacebar":
+        ev.preventDefault();
+        props.onSelect?.(props.node.id);
+        break;
+      case "ArrowDown":
+        ev.preventDefault();
+        if (current) focusRow(visible[index + 1]?.id ?? current.id);
+        break;
+      case "ArrowUp":
+        ev.preventDefault();
+        if (current) focusRow(visible[index - 1]?.id ?? current.id);
+        break;
+      case "ArrowRight":
+        ev.preventDefault();
+        if (hasKids() && !isOpen()) {
+          props.onToggle(props.node.id);
+        } else if (isOpen()) {
+          focusRow(visible.find((row) => row.parentId === props.node.id)?.id);
+        }
+        break;
+      case "ArrowLeft":
+        ev.preventDefault();
+        if (isOpen()) {
+          props.onToggle(props.node.id);
+        } else {
+          focusRow(current?.parentId);
+        }
+        break;
+      case "Home":
+        ev.preventDefault();
+        focusRow(visible[0]?.id);
+        break;
+      case "End":
+        ev.preventDefault();
+        focusRow(visible[visible.length - 1]?.id);
+        break;
+    }
   };
 
   return (
@@ -47,9 +138,16 @@ function TreeRow(props: RowProps): JSX.Element {
       <div
         class="tn"
         data-selected={props.selectedId === props.node.id ? "true" : "false"}
+        data-id={props.node.id}
+        role="treeitem"
+        aria-selected={props.selectedId === props.node.id ? "true" : "false"}
+        aria-level={props.depth + 1}
+        aria-expanded={hasKids() ? (isOpen() ? "true" : "false") : undefined}
+        tabIndex={props.focusedId === props.node.id ? 0 : -1}
         style={{ "padding-left": `${4 + props.depth * 14}px` }}
         onClick={handleRowClick}
         onDblClick={() => hasKids() && props.onToggle(props.node.id)}
+        onKeyDown={handleKeyDown}
       >
         <span class="tn-chev" onClick={handleChevron} aria-hidden="true">
           <Show when={hasKids()}>
@@ -92,6 +190,9 @@ function TreeRow(props: RowProps): JSX.Element {
               depth={props.depth + 1}
               selectedId={props.selectedId}
               expanded={props.expanded}
+              focusedId={props.focusedId}
+              setFocusedId={props.setFocusedId}
+              getVisible={props.getVisible}
               onToggle={props.onToggle}
               onSelect={props.onSelect}
             />
@@ -103,8 +204,37 @@ function TreeRow(props: RowProps): JSX.Element {
 }
 
 export default function Tree(props: TreeProps): JSX.Element {
+  let treeEl!: HTMLDivElement;
+  const visibleRows = createMemo(() => flattenVisible(props.nodes, props.expanded));
+  const [focusedId, setFocusedId] = createSignal<string | null>(null);
+
+  createEffect(() => {
+    const visible = visibleRows();
+    const focused = focusedId();
+    if (focused && visible.some((row) => row.id === focused)) return;
+
+    const selected = props.selectedId;
+    const next =
+      selected && visible.some((row) => row.id === selected) ? selected : visible[0]?.id ?? null;
+    setFocusedId(next);
+  });
+
+  createEffect(() => {
+    const id = focusedId();
+    if (!id) return;
+
+    queueMicrotask(() => {
+      const root = treeEl;
+      if (!root?.isConnected) return;
+      const row = root.querySelector<HTMLElement>(`[data-id="${cssEscape(id)}"]`);
+      if (!row) return;
+      row.focus({ preventScroll: true });
+      row.scrollIntoView({ block: "nearest" });
+    });
+  });
+
   return (
-    <div class="tree" role="tree">
+    <div class="tree" role="tree" ref={treeEl}>
       <Show
         when={props.nodes.length > 0}
         fallback={
@@ -126,6 +256,9 @@ export default function Tree(props: TreeProps): JSX.Element {
               depth={0}
               selectedId={props.selectedId}
               expanded={props.expanded}
+              focusedId={focusedId()}
+              setFocusedId={setFocusedId}
+              getVisible={visibleRows}
               onToggle={props.onToggle}
               onSelect={props.onSelect}
             />

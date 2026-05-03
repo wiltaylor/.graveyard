@@ -697,6 +697,16 @@
   .tree::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
   .tree::-webkit-scrollbar-track { background: transparent; }
 
+  /* The global :focus-visible rule in forge-tokens.css L393-397 uses outline-offset:2px,
+     which is clipped by .tree { overflow-y:auto } on 26px-tall .tn rows.
+     Use an inset box-shadow ring instead. */
+  .tree .tn:focus { outline: none; }
+  .tree .tn:focus-visible {
+    box-shadow: inset 0 0 0 2px var(--accent);
+    outline: none;
+    border-radius: 3px;
+  }
+
   /* ── Node row ─────────────────────────────────────────────────────── */
   .tn {
     position: relative;
