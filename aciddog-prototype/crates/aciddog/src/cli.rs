@@ -532,6 +532,22 @@ pub enum TaskCommand {
     /// Atomically claim the oldest unassigned task and move it to
     /// `in_progress` with the calling agent as assignee.
     Take,
+    /// Approve a planning task assigned to the human user and route
+    /// it to its planned assignee. This is the Planning lifecycle,
+    /// not the in-progress review approval handled by review-approve.
+    Approve {
+        #[arg(long)]
+        id: Uuid,
+    },
+    /// Reject a planning task assigned to the human user with a
+    /// required revision reason. This is the Planning lifecycle, not
+    /// the in-progress review rejection handled by review-reject.
+    Reject {
+        #[arg(long)]
+        id: Uuid,
+        #[arg(long)]
+        reason: String,
+    },
     /// Submit an in-progress task for reviewer sign-off.
     Review {
         #[arg(long)]
@@ -1512,6 +1528,46 @@ mod tests {
                 assert_eq!(note.as_deref(), Some("ship it"));
             }
             other => panic!("expected Task::ReviewApprove, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_task_approve() {
+        let id = Uuid::new_v4();
+        let args =
+            AgentArgs::try_parse_from(["aciddog", "task", "approve", "--id", &id.to_string()])
+                .unwrap();
+        match args.cmd {
+            AgentCommand::Task {
+                cmd: TaskCommand::Approve { id: parsed },
+            } => {
+                assert_eq!(parsed, id);
+            }
+            other => panic!("expected Task::Approve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_task_reject() {
+        let id = Uuid::new_v4();
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "task",
+            "reject",
+            "--id",
+            &id.to_string(),
+            "--reason",
+            "needs revision",
+        ])
+        .unwrap();
+        match args.cmd {
+            AgentCommand::Task {
+                cmd: TaskCommand::Reject { id: parsed, reason },
+            } => {
+                assert_eq!(parsed, id);
+                assert_eq!(reason, "needs revision");
+            }
+            other => panic!("expected Task::Reject, got {other:?}"),
         }
     }
 

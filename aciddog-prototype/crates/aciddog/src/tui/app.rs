@@ -919,6 +919,11 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             let (k, s, b) = task_op_summary(&TaskCommand::Remove { id });
             ChatBlock::task_op(k, s, b)
         }
+        RequestCmd::TaskApprove { id } => ChatBlock::task_op(
+            crate::tui::blocks::TaskOpKind::Update,
+            format!("Approve: {}", short_id(id)),
+            String::new(),
+        ),
         RequestCmd::TaskReject { id, reason } => ChatBlock::task_op(
             crate::tui::blocks::TaskOpKind::Update,
             format!("Reject: {}", short_id(id)),
@@ -3891,6 +3896,9 @@ impl App {
             RequestCmd::TaskRemove { id } => {
                 self.handle_task_remove(idx, id, reply);
             }
+            RequestCmd::TaskApprove { id } => {
+                self.handle_task_approve(idx, id, reply);
+            }
             RequestCmd::TaskReject { id, reason } => {
                 self.handle_task_reject(idx, id, reason, reply);
             }
@@ -6802,6 +6810,30 @@ impl App {
         match self.tasks.remove(id) {
             Ok(_) => {
                 let _ = reply.send(Response::ok("task removed"));
+            }
+            Err(e) => {
+                let _ = reply.send(Response::err(e.to_string()));
+            }
+        }
+    }
+
+    /// Handle a TaskApprove IPC. Routes through
+    /// `approve_planning_task` so the Planning -> Approved mutation,
+    /// planned-assignee handoff, and wake notification stay shared.
+    fn handle_task_approve(
+        &mut self,
+        sender_idx: usize,
+        id: Uuid,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        let Some(sender) = self.chats.get(sender_idx) else {
+            let _ = reply.send(Response::err("unknown sender"));
+            return;
+        };
+        let who = sender.display_name.clone();
+        match self.approve_planning_task(id, &who) {
+            Ok(target) => {
+                let _ = reply.send(Response::ok(format!("approved; routed to {target}")));
             }
             Err(e) => {
                 let _ = reply.send(Response::err(e.to_string()));
@@ -11668,6 +11700,51 @@ impl App {
 
         match code {
             KeyCode::Esc | KeyCode::Char('q') => self.close_task_detail(),
+            KeyCode::Char('y') => {
+                if let Some(id) = self.detail_task_id() {
+                    let approvable = self
+                        .tasks
+                        .get(id)
+                        .map(|t| {
+                            t.status == crate::tasks::TaskStatus::Planning
+                                && t.assignee.as_deref() == Some(crate::config::USER_INBOX_ID)
+                        })
+                        .unwrap_or(false);
+                    if !approvable {
+                        self.tasks_screen.status_msg =
+                            Some("only planning tasks assigned to user can be approved".into());
+                    } else {
+                        match self.approve_planning_task(id, OPERATOR) {
+                            Ok(target) => {
+                                self.tasks_screen.status_msg = Some(format!("approved → {target}"));
+                            }
+                            Err(e) => {
+                                self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                            }
+                        }
+                        let rows = TasksScreen::rows(&self.tasks);
+                        self.tasks_screen.reclamp(&rows);
+                    }
+                }
+            }
+            KeyCode::Char('N') => {
+                if let Some(id) = self.detail_task_id() {
+                    let approvable = self
+                        .tasks
+                        .get(id)
+                        .map(|t| {
+                            t.status == crate::tasks::TaskStatus::Planning
+                                && t.assignee.as_deref() == Some(crate::config::USER_INBOX_ID)
+                        })
+                        .unwrap_or(false);
+                    if !approvable {
+                        self.tasks_screen.status_msg =
+                            Some("only planning tasks assigned to user can be rejected".into());
+                    } else {
+                        self.open_reject_prompt_for_form(id);
+                    }
+                }
+            }
             KeyCode::Char('e')
                 if self
                     .task_detail
@@ -13372,6 +13449,24 @@ impl App {
                         }
                         let rows = TasksScreen::rows(&self.tasks);
                         self.tasks_screen.reclamp(&rows);
+                    }
+                }
+            }
+            KeyCode::Char('N') => {
+                if let Some(id) = self.tasks_screen.selected_task_id(&rows) {
+                    let approvable = self
+                        .tasks
+                        .get(id)
+                        .map(|t| {
+                            t.status == crate::tasks::TaskStatus::Planning
+                                && t.assignee.as_deref() == Some(crate::config::USER_INBOX_ID)
+                        })
+                        .unwrap_or(false);
+                    if !approvable {
+                        self.tasks_screen.status_msg =
+                            Some("only planning tasks assigned to user can be rejected".into());
+                    } else {
+                        self.open_reject_prompt_for_form(id);
                     }
                 }
             }
@@ -16070,6 +16165,16 @@ pub(crate) fn task_op_summary(
             String::new(),
         ),
         TaskCommand::Take => (TaskOpKind::Take, "Take".to_string(), String::new()),
+        TaskCommand::Approve { id } => (
+            TaskOpKind::Update,
+            format!("Approve: {}", short_id(*id)),
+            String::new(),
+        ),
+        TaskCommand::Reject { id, reason } => (
+            TaskOpKind::Update,
+            format!("Reject: {}", short_id(*id)),
+            reason.clone(),
+        ),
         TaskCommand::Review {
             id,
             reviewer,
@@ -23844,6 +23949,170 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
             Some("run the app")
         );
         assert!(app.tasks_screen.prompt.is_none());
+    }
+
+    #[test]
+    fn task_detail_y_approves_planning_user_task() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add_planning(
+                "plan".into(),
+                None,
+                "a".into(),
+                "planner".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::TaskDetail { task_id: id };
+        app.focus = Focus::TaskDetail;
+        app.task_detail = Some(TaskDetailScreen::new(id));
+
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+
+        let t = app.tasks.get(id).unwrap();
+        assert_eq!(t.status, crate::tasks::TaskStatus::Approved);
+        assert_eq!(t.assignee.as_deref(), Some("a"));
+        assert_eq!(t.planned_assignee, None);
+        assert_eq!(app.active_view, ActiveView::TaskDetail { task_id: id });
+        assert_eq!(app.focus, Focus::TaskDetail);
+        assert_eq!(app.tasks_screen.status_msg.as_deref(), Some("approved → a"));
+    }
+
+    #[test]
+    fn task_detail_y_rejects_non_planning_task_without_mutating_store() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add(
+                "work".into(),
+                None,
+                Some(OPERATOR.to_string()),
+                "seed".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        app.tasks
+            .update(
+                id,
+                TaskPatch {
+                    status: Some(crate::tasks::TaskStatus::InProgress),
+                    ..Default::default()
+                },
+                OPERATOR,
+            )
+            .unwrap();
+        app.active_view = ActiveView::TaskDetail { task_id: id };
+        app.focus = Focus::TaskDetail;
+        app.task_detail = Some(TaskDetailScreen::new(id));
+
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+
+        let t = app.tasks.get(id).unwrap();
+        assert_eq!(t.status, crate::tasks::TaskStatus::InProgress);
+        assert_eq!(t.assignee.as_deref(), Some(OPERATOR));
+        assert_eq!(
+            app.tasks_screen.status_msg.as_deref(),
+            Some("only planning tasks assigned to user can be approved")
+        );
+    }
+
+    #[test]
+    fn task_detail_capital_n_opens_reject_prompt() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add_planning(
+                "plan".into(),
+                None,
+                "a".into(),
+                "planner".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::TaskDetail { task_id: id };
+        app.focus = Focus::TaskDetail;
+        app.task_detail = Some(TaskDetailScreen::new(id));
+
+        app.handle_key(KeyCode::Char('N'), KeyModifiers::NONE);
+
+        assert!(matches!(
+            app.tasks_screen.prompt,
+            Some(TasksPrompt::RejectPlan { task_id, ref body })
+                if task_id == id && body.is_empty()
+        ));
+    }
+
+    #[test]
+    fn tasks_list_capital_n_opens_reject_prompt() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add_planning(
+                "plan".into(),
+                None,
+                "a".into(),
+                "planner".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+
+        app.handle_key(KeyCode::Char('N'), KeyModifiers::NONE);
+
+        assert!(matches!(
+            app.tasks_screen.prompt,
+            Some(TasksPrompt::RejectPlan { task_id, ref body })
+                if task_id == id && body.is_empty()
+        ));
+    }
+
+    #[test]
+    fn tasks_list_capital_n_rejects_non_planning_task_without_mutating_store() {
+        let mut app = App::new(sample_config());
+        let id = app
+            .tasks
+            .add(
+                "work".into(),
+                None,
+                Some(OPERATOR.to_string()),
+                "seed".into(),
+                Vec::new(),
+            )
+            .unwrap()
+            .id;
+        app.tasks
+            .update(
+                id,
+                TaskPatch {
+                    status: Some(crate::tasks::TaskStatus::InProgress),
+                    ..Default::default()
+                },
+                OPERATOR,
+            )
+            .unwrap();
+        app.active_view = ActiveView::Tasks;
+        app.focus = Focus::Tasks;
+        let rows = TasksScreen::rows(&app.tasks);
+        app.tasks_screen.reclamp(&rows);
+
+        app.handle_key(KeyCode::Char('N'), KeyModifiers::NONE);
+
+        let t = app.tasks.get(id).unwrap();
+        assert_eq!(t.status, crate::tasks::TaskStatus::InProgress);
+        assert_eq!(t.assignee.as_deref(), Some(OPERATOR));
+        assert!(app.tasks_screen.prompt.is_none());
+        assert_eq!(
+            app.tasks_screen.status_msg.as_deref(),
+            Some("only planning tasks assigned to user can be rejected")
+        );
     }
 
     #[test]

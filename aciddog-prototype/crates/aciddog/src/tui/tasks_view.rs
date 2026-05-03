@@ -589,6 +589,7 @@ impl TaskDetailScreen {
             KeyCode::Char('k') | KeyCode::Up => self.scroll_active(-1),
             KeyCode::PageDown => self.page_active(1),
             KeyCode::PageUp => self.page_active(-1),
+            // y/N (Planning approve/reject) handled one layer up in App::handle_key_task_detail.
             _ => {}
         }
     }

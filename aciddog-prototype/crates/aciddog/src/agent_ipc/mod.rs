@@ -245,6 +245,12 @@ pub enum RequestCmd {
     TaskRemove {
         id: Uuid,
     },
+    /// Approve a planning task (human-only flow). Atomically flips
+    /// Planning→Approved, reassigns to planned_assignee, clears
+    /// planned_assignee, notifies new owner.
+    TaskApprove {
+        id: Uuid,
+    },
     /// Reject a `planning` task (human-only flow). Atomically
     /// appends `reason` as a `Rejected: ...` comment, reassigns the
     /// task back to its `created_by` for revision, and pings the
@@ -1425,6 +1431,24 @@ mod tests {
                 assert_eq!(note.as_deref(), Some("ship it"));
             }
             other => panic!("expected TaskReviewApprove, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_approve_ipc_roundtrips() {
+        let id = Uuid::new_v4();
+        let req = Request {
+            agent_id: Uuid::nil(),
+            cmd: RequestCmd::TaskApprove { id },
+        };
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("\"cmd\":\"task_approve\""), "got: {s}");
+        let back: Request = serde_json::from_str(&s).unwrap();
+        match back.cmd {
+            RequestCmd::TaskApprove { id: parsed } => {
+                assert_eq!(parsed, id);
+            }
+            other => panic!("expected TaskApprove, got {other:?}"),
         }
     }
 

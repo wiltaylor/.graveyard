@@ -1336,7 +1336,7 @@ fn render_tasks_input(f: &mut Frame, area: Rect, app: &App) -> Rect {
                 if t.status == crate::tasks::TaskStatus::Planning
                     && t.assignee.as_deref() == Some(crate::config::USER_INBOX_ID) =>
             {
-                "y approve · a add · e/⏎ edit · d del · t take · n note · s status · esc back"
+                "y approve · N reject · a add · e/⏎ edit · d del · t take · n note · s status · esc back"
             }
             Some(t)
                 if t.status == crate::tasks::TaskStatus::InProgress

@@ -287,6 +287,16 @@ pub fn cli_preamble(
                 desc: "Atomically claim the oldest unblocked unassigned task (moves to `in_progress`, assigned to you).",
             },
             Row {
+                cmd: "task approve",
+                params: "`--id <uuid>`",
+                desc: "Approve a planning task assigned to `user`; routes it to `planned_assignee` (Planning lifecycle, distinct from review-approve).",
+            },
+            Row {
+                cmd: "task reject",
+                params: "`--id <uuid>` `--reason \"<text>\"`",
+                desc: "Reject a planning task with feedback; sends it back to the creator and keeps it in planning (distinct from review-reject).",
+            },
+            Row {
                 cmd: "task remove",
                 params: "`--id <uuid>`",
                 desc: "Delete; also prunes the id from any dependents' blocked-by lists.",
@@ -779,6 +789,16 @@ pub fn tag_preamble(
                 cmd: "task_take",
                 params: "—",
                 desc: "Atomically claim the oldest unblocked unassigned task (moves to `in_progress`, assigned to you).",
+            },
+            Row {
+                cmd: "task_approve",
+                params: "`\"id\":\"<uuid>\"`",
+                desc: "Approve a planning task assigned to `user`; routes it to `planned_assignee` (Planning lifecycle, distinct from task_review_approve).",
+            },
+            Row {
+                cmd: "task_reject",
+                params: "`\"id\":\"<uuid>\"`, `\"reason\":\"<text>\"`",
+                desc: "Reject a planning task with feedback; sends it back to the creator and keeps it in planning (distinct from task_review_reject).",
             },
             Row {
                 cmd: "task_remove",
@@ -1321,6 +1341,14 @@ mod tests {
         assert!(p.contains("| task add |"), "task add row missing: {p}");
         assert!(p.contains("| task take |"), "task take row missing: {p}");
         assert!(
+            p.contains("| task approve |"),
+            "task approve row missing: {p}"
+        );
+        assert!(
+            p.contains("| task reject |"),
+            "task reject row missing: {p}"
+        );
+        assert!(
             p.contains("team-wide; no allowlist"),
             "unconditional note missing: {p}"
         );
@@ -1640,6 +1668,14 @@ mod tests {
         let p = tag_preamble(&[], &[], &[], &[], &[], true, false, false);
         assert!(p.contains("| task_add |"), "task_add row missing: {p}");
         assert!(p.contains("| task_take |"), "task_take row missing: {p}");
+        assert!(
+            p.contains("| task_approve |"),
+            "task_approve row missing: {p}"
+        );
+        assert!(
+            p.contains("| task_reject |"),
+            "task_reject row missing: {p}"
+        );
     }
 
     #[test]
