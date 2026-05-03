@@ -24,6 +24,7 @@ import UsersView from "./components/UsersView";
 import WorkflowsView from "./components/WorkflowsView";
 import {
   Button,
+  Drawer,
   Empty,
   Icon,
   Modal,
@@ -79,10 +80,14 @@ export default function AppShell(props: Props): JSX.Element {
     createSignal<SettingsNodeId | null>(null);
   const [activeTab, setActiveTab] = createSignal<TabId>("team");
   const [showAddInstance, setShowAddInstance] = createSignal(false);
+  const [drawerOpen, setDrawerOpen] = createSignal(false);
+  let triggerRef: HTMLButtonElement | undefined;
+  const closeDrawer = () => setDrawerOpen(false);
 
   const selectInstance = (id: string | null) => {
     if (id !== null) setSettingsSelection(null);
     setSelectedId(id);
+    closeDrawer();
   };
 
   const selectSettings = (id: SettingsNodeId) => {
@@ -90,6 +95,7 @@ export default function AppShell(props: Props): JSX.Element {
     setSelectedAgent(null);
     setSelectedChannel(null);
     setSettingsSelection(id);
+    closeDrawer();
   };
   const [agentsByInstance, setAgentsByInstance] = createSignal<
     Record<string, AgentListResponse>
@@ -181,6 +187,17 @@ export default function AppShell(props: Props): JSX.Element {
       }}
     >
       <header class="ftopbar">
+        <button
+          ref={(el) => (triggerRef = el)}
+          type="button"
+          class="ftopbar-hamburger"
+          aria-controls="app-sidebar"
+          aria-expanded={drawerOpen()}
+          aria-label={drawerOpen() ? "Close navigation" : "Open navigation"}
+          onClick={() => setDrawerOpen((v) => !v)}
+        >
+          <Icon name="menu" size={18} />
+        </button>
         <div class="ftopbar-brand">
           <img src="/logo-mark.svg" alt="" style={{ height: "20px" }} />
           <span style={{ "font-weight": "600", "font-size": "14px" }}>
@@ -224,74 +241,92 @@ export default function AppShell(props: Props): JSX.Element {
         </div>
       </header>
 
-      <aside class="fsidebar" style={{ overflow: "auto" }}>
-        <div
-          class="fsidebar-section"
-          style={{
-            display: "flex",
-            "align-items": "center",
-            "justify-content": "space-between",
-            padding: "14px 6px 6px 10px",
-          }}
+      <Drawer
+        open={drawerOpen()}
+        onClose={closeDrawer}
+        triggerRef={() => triggerRef ?? null}
+        labelledBy="app-sidebar-label"
+      >
+        <aside
+          id="app-sidebar"
+          classList={{ fsidebar: true, "is-drawer-open": drawerOpen() }}
+          style={{ overflow: "auto" }}
         >
-          <span>Instances</span>
-          <button
-            type="button"
-            onClick={() => setShowAddInstance(true)}
-            aria-label="Add instance"
-            title="Add instance"
-            class="ftopbar-icon-btn"
+          <h2 id="app-sidebar-label" class="sr-only">
+            Navigation
+          </h2>
+          <div
+            class="fsidebar-section"
+            style={{
+              display: "flex",
+              "align-items": "center",
+              "justify-content": "space-between",
+              padding: "14px 6px 6px 10px",
+            }}
           >
-            <Icon name="plus" size={14} />
-          </button>
-        </div>
-        <Show
-          when={!instances.loading}
-          fallback={
-            <div
-              style={{
-                padding: "8px 10px",
-                "font-size": "12px",
-                color: "var(--fg-2)",
-              }}
+            <span>Instances</span>
+            <button
+              type="button"
+              onClick={() => setShowAddInstance(true)}
+              aria-label="Add instance"
+              title="Add instance"
+              class="ftopbar-icon-btn"
             >
-              Loading…
-            </div>
-          }
-        >
-          <InstanceTree
-            instances={instances() ?? []}
-            selectedId={selectedId()}
-            selectedAgent={selectedAgent()}
-            selectedChannel={selectedChannel()}
-            onSelect={selectInstance}
-            onSelectAgent={(instId, agentId) => {
-              selectInstance(instId);
-              setSelectedAgent(agentId);
-              setSelectedChannel(null);
-              setActiveTab("agents");
-            }}
-            onSelectChannel={(instId, channelId) => {
-              selectInstance(instId);
-              setSelectedChannel(channelId);
-              setSelectedAgent(null);
-              setActiveTab("agents");
-            }}
-            agentsFor={(id) => agentsByInstance()[id]}
-            channelsFor={(id) => channelsByInstance()[id]}
-            onExpand={(id) => {
-              if (!agentsByInstance()[id]) loadAgents(id);
-              if (!channelsByInstance()[id]) loadChannels(id);
-            }}
-          />
-        </Show>
+              <Icon name="plus" size={14} />
+            </button>
+          </div>
+          <Show
+            when={!instances.loading}
+            fallback={
+              <div
+                style={{
+                  padding: "8px 10px",
+                  "font-size": "12px",
+                  color: "var(--fg-2)",
+                }}
+              >
+                Loading…
+              </div>
+            }
+          >
+            <InstanceTree
+              instances={instances() ?? []}
+              selectedId={selectedId()}
+              selectedAgent={selectedAgent()}
+              selectedChannel={selectedChannel()}
+              onSelect={selectInstance}
+              onSelectAgent={(instId, agentId) => {
+                setSettingsSelection(null);
+                setSelectedId(instId);
+                setSelectedAgent(agentId);
+                setSelectedChannel(null);
+                setActiveTab("agents");
+                closeDrawer();
+              }}
+              onSelectChannel={(instId, channelId) => {
+                setSettingsSelection(null);
+                setSelectedId(instId);
+                setSelectedChannel(channelId);
+                setSelectedAgent(null);
+                setActiveTab("agents");
+                closeDrawer();
+              }}
+              agentsFor={(id) => agentsByInstance()[id]}
+              channelsFor={(id) => channelsByInstance()[id]}
+              onExpand={(id) => {
+                if (!agentsByInstance()[id]) loadAgents(id);
+                if (!channelsByInstance()[id]) loadChannels(id);
+              }}
+            />
+          </Show>
 
-        <div class="fsidebar-section">Settings</div>
-        <SettingsTree
-          selected={settingsSelection()}
-          onSelect={selectSettings}
-        />
-      </aside>
+          <div class="fsidebar-section">Settings</div>
+          <SettingsTree
+            selected={settingsSelection()}
+            onSelect={selectSettings}
+          />
+        </aside>
+      </Drawer>
 
       <Modal
         open={showAddInstance()}

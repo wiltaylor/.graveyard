@@ -21,6 +21,7 @@
 
 .app-shell > .ftopbar  { grid-area: topbar; }
 .app-shell > .fsidebar { grid-area: sidebar; }
+.app-shell > .fsidebar-drawer-panel { grid-area: sidebar; min-height: 0; }
 .app-shell > .app-main { grid-area: main; }
 
 /* ---------------- Sidebar -------------------------------------------------- */
@@ -83,6 +84,61 @@
   background: transparent; border: 0; border-radius: 4px; color: var(--fg-1); cursor: pointer;
 }
 .ftopbar-icon-btn:hover { background: var(--bg-2); color: var(--fg-0); }
+.ftopbar-hamburger {
+  display: none;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--fg-1);
+  cursor: pointer;
+}
+.ftopbar-hamburger:hover { background: var(--bg-2); color: var(--fg-0); }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border: 0;
+}
+.fsidebar-drawer-backdrop { display: none; }
+
+@media (max-width: 768px) {
+  .ftopbar-hamburger { display: inline-flex; }
+  .fsidebar {
+    position: fixed;
+    top: 48px;
+    bottom: 0;
+    left: 0;
+    width: min(85vw, 320px);
+    transform: translateX(-100%);
+    transition: transform var(--dur-2) var(--ease-out);
+    z-index: 291;
+    background: var(--bg-1);
+    border-right: 1px solid var(--border-strong);
+    overflow-y: auto;
+  }
+  .fsidebar.is-drawer-open { transform: translateX(0); }
+  .fsidebar-drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgb(0 0 0 / 0.5);
+    backdrop-filter: blur(4px);
+    z-index: 290;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fsidebar { transition: none; }
+}
 
 /* ---------------- Main content -------------------------------------------- */
 .app-main { overflow: auto; padding: 24px 28px; }
@@ -3011,4 +3067,3 @@
   .field.error input{border-color:var(--danger)}
   .help{font-size:11px;color:var(--fg-2)}
   .help.error{color:var(--danger-fg)}
-

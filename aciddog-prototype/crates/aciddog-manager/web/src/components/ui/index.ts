@@ -40,6 +40,7 @@ export { default as Menu } from "./Menu";
 export type { MenuItem, MenuSection } from "./Menu";
 
 export { default as Modal } from "./Modal";
+export { default as Drawer } from "./Drawer";
 
 export { default as Tabs } from "./Tabs";
 export type { TabItem } from "./Tabs";
