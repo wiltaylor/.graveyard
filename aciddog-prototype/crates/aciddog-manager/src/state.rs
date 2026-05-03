@@ -4,6 +4,7 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use crate::auth::AuthConfig;
+use crate::reconciler::ReconcilerNotify;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -23,6 +24,11 @@ pub struct AppState {
     /// always `None` and any consumer must treat the runner as
     /// optional.
     pub daemon_runner: Option<Arc<crate::daemon_runner::DaemonRunner>>,
+    /// Cross-handler wakeup channel into the reconciler. Sibling
+    /// `b91e9691` calls `state.reconciler_notify.poke(id)` after every
+    /// successful `set_desired_state` write; the reconciler tick wakes
+    /// within milliseconds rather than waiting up to a tick-interval.
+    pub reconciler_notify: Arc<ReconcilerNotify>,
 }
 
 impl AppState {
@@ -38,6 +44,7 @@ impl AppState {
             data_dir: Arc::new(data_dir),
             is_daemon_runner_enabled,
             daemon_runner: None,
+            reconciler_notify: Arc::new(ReconcilerNotify::new()),
         }
     }
 

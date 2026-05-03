@@ -14,6 +14,7 @@ mod process;
 mod registry;
 
 use std::env;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -51,6 +52,64 @@ pub(crate) mod placeholder {
 }
 
 pub use placeholder::{DesiredState, ManagedDaemonRow};
+
+// Use `impl Future` in trait position (Rust 1.75+, repo has no MSRV
+// floor and ships with cargo 1.92). Keeps the unit-test seam free of
+// the `async-trait` macro and avoids an extra dependency.
+/// Test seam for the reconciler: the four `DaemonRunner` methods that
+/// the reconciler dispatches to. Production wiring uses the blanket
+/// `impl DaemonRunnerControl for Arc<DaemonRunner>` below; unit tests
+/// substitute a mock.
+pub trait DaemonRunnerControl: Send + Sync + 'static {
+    fn spawn(
+        &self,
+        row: ManagedDaemonRow,
+    ) -> impl Future<Output = Result<(), DaemonRunnerError>> + Send;
+    fn stop(
+        &self,
+        id: Uuid,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<(), DaemonRunnerError>> + Send;
+    fn status(&self, id: Uuid) -> impl Future<Output = Option<ObservedState>> + Send;
+    fn adopt(
+        &self,
+        id: Uuid,
+        socket_path: PathBuf,
+    ) -> impl Future<Output = Result<AdoptOutcome, DaemonRunnerError>> + Send;
+}
+
+impl DaemonRunnerControl for Arc<DaemonRunner> {
+    fn spawn(
+        &self,
+        row: ManagedDaemonRow,
+    ) -> impl Future<Output = Result<(), DaemonRunnerError>> + Send {
+        let this = Arc::clone(self);
+        async move { DaemonRunner::spawn(&this, row).await }
+    }
+
+    fn stop(
+        &self,
+        id: Uuid,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<(), DaemonRunnerError>> + Send {
+        let this = Arc::clone(self);
+        async move { DaemonRunner::stop(&this, id, timeout).await }
+    }
+
+    fn status(&self, id: Uuid) -> impl Future<Output = Option<ObservedState>> + Send {
+        let this = Arc::clone(self);
+        async move { DaemonRunner::status(&this, id).await }
+    }
+
+    fn adopt(
+        &self,
+        id: Uuid,
+        socket_path: PathBuf,
+    ) -> impl Future<Output = Result<AdoptOutcome, DaemonRunnerError>> + Send {
+        let this = Arc::clone(self);
+        async move { DaemonRunner::adopt(&this, id, socket_path).await }
+    }
+}
 
 /// Outcome of an `adopt` call.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

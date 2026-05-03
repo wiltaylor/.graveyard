@@ -6,6 +6,7 @@ pub mod db;
 pub mod error;
 pub mod ipc;
 pub mod model;
+pub mod reconciler;
 pub mod routes;
 pub mod seed;
 pub mod skills;

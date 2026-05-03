@@ -8,9 +8,10 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::model::instance::{InstanceRow, InstanceSummary};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DesiredState {
+    #[default]
     Stopped,
     Running,
 }
@@ -31,12 +32,6 @@ impl DesiredState {
                 "unknown desired_state `{other}`"
             ))),
         }
-    }
-}
-
-impl Default for DesiredState {
-    fn default() -> Self {
-        DesiredState::Stopped
     }
 }
 

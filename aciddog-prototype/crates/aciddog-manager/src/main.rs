@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use aciddog_manager::auth::AuthConfig;
 use aciddog_manager::config::{CliArgs, Command};
 use aciddog_manager::model::session;
-use aciddog_manager::{db, routes, seed, state::AppState};
+use aciddog_manager::{db, reconciler, routes, seed, state::AppState};
 use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::net::TcpListener;
@@ -47,7 +47,14 @@ async fn main() -> Result<()> {
 
     if state.is_daemon_runner_enabled {
         tracing::info!("daemon-runner enabled");
-        // TODO(799b7b92): start reconciler / daemon_runner subsystem here
+        if state.daemon_runner.is_some() {
+            tokio::spawn(reconciler::run(state.clone()));
+        } else {
+            tracing::warn!(
+                "daemon-runner gate is on but state.daemon_runner is None; \
+                 reconciler not spawned"
+            );
+        }
     }
 
     let addr: SocketAddr = args
