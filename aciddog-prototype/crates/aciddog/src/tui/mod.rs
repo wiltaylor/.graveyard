@@ -20,6 +20,8 @@ mod ui;
 pub(crate) mod workflow_view;
 
 pub use app::run;
+#[doc(hidden)]
+pub use app::test_support;
 pub use blocks::{ChatBlock, MailDirection, SystemKind, TaskOpKind};
 pub use cores_view::agents_using_core;
 pub use inbox_view::InboxMessage;
