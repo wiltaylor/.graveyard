@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::agent_ipc::{AgentSocketEvent, Request, RequestCmd, Response};
 use crate::ai::claude_code::{PromptParts, MAX_TAG_CHAIN_ROUNDS};
 use crate::ai::core::{AICore, AIError};
-use crate::ai::event::{AIEvent, TurnUsage};
+use crate::ai::event::{AIEvent, CodexFailureKind, TurnUsage};
 use crate::ai::tag_call;
 use crate::ai::tools::{RegistryConfig, ToolRegistry};
 use crate::openai_auth;
@@ -269,6 +269,7 @@ impl AICore for OpenAiChatgptCore {
 
             let _ = tx
                 .send(AIEvent::Error {
+                    kind: CodexFailureKind::Unknown,
                     message: format!(
                         "aciddog: tag-call chain exceeded {MAX_TAG_CHAIN_ROUNDS} rounds in a single \
                          turn; stopping. Wait for the next user prompt instead of emitting more calls."
@@ -332,6 +333,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                     let _ = ctx
                         .tx
                         .send(AIEvent::Error {
+                            kind: CodexFailureKind::Unknown,
                             message: format!("openai_chatgpt: {e}"),
                             raw: None,
                         })
@@ -373,6 +375,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                 let _ = ctx
                     .tx
                     .send(AIEvent::Error {
+                        kind: CodexFailureKind::Unknown,
                         message: format!("openai_chatgpt: request failed: {e}"),
                         raw: None,
                     })
@@ -388,6 +391,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
             let _ = ctx
                 .tx
                 .send(AIEvent::Error {
+                    kind: CodexFailureKind::Unknown,
                     message: format!("openai_chatgpt: HTTP {status}: {snippet}"),
                     raw: None,
                 })
@@ -414,6 +418,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                     let _ = ctx
                         .tx
                         .send(AIEvent::Error {
+                            kind: CodexFailureKind::Unknown,
                             message: format!("openai_chatgpt: stream error: {e}"),
                             raw: None,
                         })
@@ -496,6 +501,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                         let _ = ctx
                             .tx
                             .send(AIEvent::Error {
+                                kind: CodexFailureKind::Unknown,
                                 message: format!(
                                     "openai_chatgpt: response.failed ({code}): {message}"
                                 ),
@@ -643,6 +649,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
     let _ = ctx
         .tx
         .send(AIEvent::Error {
+            kind: CodexFailureKind::Unknown,
             message: format!(
                 "openai_chatgpt: native tool-use loop exceeded {MAX_NATIVE_TOOL_ROUNDS} rounds; stopping."
             ),

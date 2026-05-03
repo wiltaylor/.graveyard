@@ -19,7 +19,7 @@ use crate::agent_ipc::preamble::{
 use crate::agent_ipc::{AgentSocketEvent, Request, RequestCmd, Response};
 
 use super::core::{AICore, AIError};
-use super::event::{parse_line, AIEvent};
+use super::event::{parse_line, AIEvent, CodexFailureKind};
 use super::tag_call;
 use super::tools::docs::built_in_tool_doc;
 
@@ -517,6 +517,7 @@ async fn run_round(
             };
             let _ = tx
                 .send(AIEvent::Error {
+                    kind: CodexFailureKind::Unknown,
                     message: err.to_string(),
                     raw: None,
                 })
@@ -582,6 +583,7 @@ async fn run_round(
             Err(e) => {
                 let _ = tx
                     .send(AIEvent::Error {
+                        kind: CodexFailureKind::Unknown,
                         message: format!("stdout read error: {e}"),
                         raw: None,
                     })
@@ -607,6 +609,7 @@ async fn run_round(
             );
             let _ = tx
                 .send(AIEvent::Error {
+                    kind: CodexFailureKind::Unknown,
                     message: msg,
                     raw: None,
                 })
@@ -615,6 +618,7 @@ async fn run_round(
         Err(e) => {
             let _ = tx
                 .send(AIEvent::Error {
+                    kind: CodexFailureKind::Unknown,
                     message: format!("failed to await claude child: {e}"),
                     raw: None,
                 })
@@ -711,6 +715,7 @@ async fn run_chain(
     // its next turn that aciddog stopped chaining.
     let _ = tx
         .send(AIEvent::Error {
+            kind: CodexFailureKind::Unknown,
             message: format!(
                 "aciddog: tag-call chain exceeded {MAX_TAG_CHAIN_ROUNDS} rounds in a single \
                  turn; stopping. Wait for the next user prompt instead of emitting more calls."

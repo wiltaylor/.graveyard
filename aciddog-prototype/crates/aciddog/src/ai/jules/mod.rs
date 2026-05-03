@@ -35,7 +35,7 @@ use uuid::Uuid;
 use crate::agent_ipc::preamble::{tag_preamble, tag_worker_preamble};
 use crate::agent_ipc::{AgentSocketEvent, Request, RequestCmd, Response};
 use crate::ai::core::{AICore, AIError};
-use crate::ai::event::AIEvent;
+use crate::ai::event::{AIEvent, CodexFailureKind};
 
 const JULES_BASE_URL: &str = "https://jules.googleapis.com/v1alpha";
 const DEFAULT_POLL_SECONDS: u64 = 10;
@@ -336,6 +336,7 @@ impl AICore for JulesCore {
                 let msg = format!("jules: env var `{api_key_env}` is not set or empty");
                 let _ = tx
                     .send(AIEvent::Error {
+                        kind: CodexFailureKind::Unknown,
                         message: msg.clone(),
                         raw: None,
                     })
@@ -403,6 +404,7 @@ impl AICore for JulesCore {
                             let msg = format!("jules: session create failed: {e}");
                             let _ = tx
                                 .send(AIEvent::Error {
+                                    kind: CodexFailureKind::Unknown,
                                     message: msg.clone(),
                                     raw: None,
                                 })
@@ -434,6 +436,7 @@ impl AICore for JulesCore {
                         let msg = format!("jules: turn dispatch failed: {e}");
                         let _ = tx
                             .send(AIEvent::Error {
+                                kind: CodexFailureKind::Unknown,
                                 message: msg.clone(),
                                 raw: None,
                             })
@@ -536,6 +539,7 @@ impl AICore for JulesCore {
                         Err(PollError::Other(msg)) => {
                             let _ = tx
                                 .send(AIEvent::Error {
+                                    kind: CodexFailureKind::Unknown,
                                     message: format!("jules: activities poll error: {msg}"),
                                     raw: None,
                                 })
@@ -560,6 +564,7 @@ impl AICore for JulesCore {
                     Err(PollError::Other(msg)) => {
                         let _ = tx
                             .send(AIEvent::Error {
+                                kind: CodexFailureKind::Unknown,
                                 message: format!("jules: session fetch error: {msg}"),
                                 raw: None,
                             })

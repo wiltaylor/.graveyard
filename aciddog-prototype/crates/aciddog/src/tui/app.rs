@@ -24,9 +24,9 @@ use clap::Parser;
 use super::transcript::build_restart_transcript;
 use crate::agent_ipc::{self, AgentSocketEvent, HistorySelector, RequestCmd, Response};
 use crate::ai::{
-    AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, CodexCliCore, CopilotCliCore,
-    GeminiCliCore, JulesCore, JulesProperties, OpenAiApiCore, OpenAiChatgptCore, PromptParts,
-    WorkerCtx,
+    AICore, AIEvent, AciddogCliCtx, AnthropicApiCore, ClaudeCodeCore, CodexCliCore,
+    CodexFailureKind, CopilotCliCore, GeminiCliCore, JulesCore, JulesProperties, OpenAiApiCore,
+    OpenAiChatgptCore, PromptParts, WorkerCtx,
 };
 use crate::cli::{AgentArgs, AgentCommand};
 use crate::config::{AciddogConfig, AiCore, AiCoreKind};
@@ -3736,8 +3736,21 @@ impl App {
                     self.finish_pending_compaction(idx);
                 }
             }
-            AIEvent::Error { message, .. } => {
-                chat.push_block(ChatBlock::system_error(message));
+            AIEvent::Error { kind, message, .. } => {
+                // Cheap surface for the new codex quota-exhausted
+                // classification: prefix the system-error block so the
+                // operator can tell quota errors apart at a glance. Any
+                // richer behaviour (distinct ChatBlock variant, theming,
+                // banner, failover) belongs in the reaction follow-up.
+                let rendered = match kind {
+                    CodexFailureKind::QuotaExhausted => {
+                        format!("[quota-exhausted] {message}")
+                    }
+                    CodexFailureKind::Unknown
+                    | CodexFailureKind::AuthFailed
+                    | CodexFailureKind::Transient => message,
+                };
+                chat.push_block(ChatBlock::system_error(rendered));
                 chat.set_status_and_emit(AgentStatus::Error);
             }
             AIEvent::Stopped => {
@@ -16551,6 +16564,7 @@ pub(super) async fn run_core(
                     .send((
                         idx,
                         AIEvent::Error {
+                            kind: CodexFailureKind::Unknown,
                             message: format!("turn failed: {e}"),
                             raw: None,
                         },
@@ -19170,6 +19184,7 @@ mod tests {
         app.handle_ai_event(
             0,
             AIEvent::Error {
+                kind: CodexFailureKind::Unknown,
                 message: "API down".into(),
                 raw: None,
             },
@@ -19360,6 +19375,7 @@ mod tests {
         app.handle_ai_event(
             0,
             AIEvent::Error {
+                kind: CodexFailureKind::Unknown,
                 message: "boom".into(),
                 raw: None,
             },

@@ -34,7 +34,7 @@ use uuid::Uuid;
 use crate::agent_ipc::{AgentSocketEvent, Request, RequestCmd, Response};
 use crate::ai::claude_code::{PromptParts, MAX_TAG_CHAIN_ROUNDS};
 use crate::ai::core::{AICore, AIError};
-use crate::ai::event::{parse_usage_anthropic, AIEvent, TurnUsage};
+use crate::ai::event::{parse_usage_anthropic, AIEvent, CodexFailureKind, TurnUsage};
 use crate::ai::tag_call;
 use crate::ai::tools::{RegistryConfig, ToolRegistry};
 
@@ -191,6 +191,7 @@ impl AICore for AnthropicApiCore {
             let Some(api_key) = api_key else {
                 let _ = tx
                     .send(AIEvent::Error {
+                        kind: CodexFailureKind::Unknown,
                         message: format!(
                             "anthropic_api: env var `{api_key_env}` is not set or empty"
                         ),
@@ -295,6 +296,7 @@ impl AICore for AnthropicApiCore {
 
             let _ = tx
                 .send(AIEvent::Error {
+                    kind: CodexFailureKind::Unknown,
                     message: format!(
                         "aciddog: tag-call chain exceeded {MAX_TAG_CHAIN_ROUNDS} rounds in a single \
                          turn; stopping. Wait for the next user prompt instead of emitting more calls."
@@ -367,6 +369,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                 let _ = ctx
                     .tx
                     .send(AIEvent::Error {
+                        kind: CodexFailureKind::Unknown,
                         message: format!("anthropic_api: request failed: {e}"),
                         raw: None,
                     })
@@ -382,6 +385,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
             let _ = ctx
                 .tx
                 .send(AIEvent::Error {
+                    kind: CodexFailureKind::Unknown,
                     message: format!("anthropic_api: HTTP {status}: {snippet}"),
                     raw: None,
                 })
@@ -410,6 +414,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                     let _ = ctx
                         .tx
                         .send(AIEvent::Error {
+                            kind: CodexFailureKind::Unknown,
                             message: format!("anthropic_api: stream error: {e}"),
                             raw: None,
                         })
@@ -575,6 +580,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
                         let _ = ctx
                             .tx
                             .send(AIEvent::Error {
+                                kind: CodexFailureKind::Unknown,
                                 message: msg,
                                 raw: Some(ev.data),
                             })
@@ -688,6 +694,7 @@ async fn run_native_tool_loop(ctx: InnerCtx) -> Result<Option<String>, ()> {
     let _ = ctx
         .tx
         .send(AIEvent::Error {
+            kind: CodexFailureKind::Unknown,
             message: format!(
                 "anthropic_api: native tool-use loop exceeded {MAX_NATIVE_TOOL_ROUNDS} rounds; stopping."
             ),

@@ -1,6 +1,13 @@
 use serde_json::Value;
 use uuid::Uuid;
 
+// Re-exported so every `AIEvent::Error { kind, .. }` producer site can
+// reach the classification enum through the same `use super::event::*` /
+// `use crate::ai::event::*` import they already have for `AIEvent`.
+// Defined in the codex core because it's the only core that emits
+// non-`Unknown` variants today; the cross-core lift is a separate spike.
+pub use crate::ai::codex_cli::CodexFailureKind;
+
 /// Token usage in aciddog's canonical accounting shape.
 ///
 /// `input_tokens` excludes cache reads. Providers that report cache
@@ -83,6 +90,11 @@ pub enum AIEvent {
         raw: Value,
     },
     Error {
+        /// Best-effort classification. Defaults to
+        /// [`CodexFailureKind::Unknown`] at every producer site outside
+        /// the codex CLI's two new detectors, preserving today's behaviour
+        /// for consumers that don't discriminate on this field.
+        kind: CodexFailureKind,
         message: String,
         raw: Option<Value>,
     },
@@ -143,6 +155,7 @@ pub fn parse_line(line: &str) -> Vec<AIEvent> {
         Ok(v) => v,
         Err(e) => {
             return vec![AIEvent::Error {
+                kind: CodexFailureKind::Unknown,
                 message: format!("failed to parse stream line: {e}"),
                 raw: None,
             }];
@@ -204,6 +217,7 @@ fn parse_system(raw: Value) -> Vec<AIEvent> {
         Some(id) => id,
         None => {
             return vec![AIEvent::Error {
+                kind: CodexFailureKind::Unknown,
                 message: format!(
                     "system.init missing or invalid session_id: {:?}",
                     session_id_str
