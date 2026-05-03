@@ -63,3 +63,4 @@ restart-core, channel SSE, etc.) as ADRs is future work.
 - [ADR-0004 — Per-daemon lifecycle policy + sticky desired_state; wake mechanics deferred](./0004-per-daemon-lifecycle-policy.md)
 - [ADR-0005 — Capability gate via CLI/env; routes return 404 when off](./0005-capability-gate-cli-env.md)
 - [ADR-0006 — Scaffolding contract: manager-injected :webservice automaton](./0006-scaffolding-contract-webservice-injection.md)
+- [ADR-0007 — Wake-on-request via daemon-canonical socket + reconciler-coordinated retry](./0007-wake-on-request-transport.md)
