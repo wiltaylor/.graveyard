@@ -66,3 +66,4 @@ restart-core, channel SSE, etc.) as ADRs is future work.
 - [ADR-0007 — Wake-on-request via daemon-canonical socket + reconciler-coordinated retry](./0007-wake-on-request-transport.md)
 - [ADR-0009 — Foreman built-in automaton](./0009-foreman-automaton.md)
 - [ADR-0010 — Idle-detection refactor: situation enum, scope filters, configurable prompts](./0010-idle-detection-refactor.md)
+- [ADR-0011 — Multi-owner WorkflowEngine with concurrency caps and filtered events](./0011-workflow-multi-owner.md)
