@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -1129,10 +1129,13 @@ fn block_for_aciddog_tag_call(input: &serde_json::Value) -> ChatBlock {
             ChatBlock::from_tool_use(&format!("aciddog inbox delete --index {index}"), input)
         }
         RequestCmd::WorkerList { .. } => ChatBlock::from_tool_use("aciddog worker list", input),
-        RequestCmd::WorkerForceArchive { worker } => ChatBlock::from_tool_use(
+        RequestCmd::WorkerForceArchive { worker, .. } => ChatBlock::from_tool_use(
             &format!("aciddog worker force-archive --id {worker}"),
             input,
         ),
+        RequestCmd::WorkerPruneOrphans => {
+            ChatBlock::from_tool_use("aciddog worker prune-orphans", input)
+        }
         RequestCmd::WorkerForceRestartCore {
             worker,
             ai_core_override,
@@ -1884,6 +1887,12 @@ pub struct AgentChat {
     /// `self.chats` so existing `parent_idx` indices remain stable and
     /// the JSONL transcript on disk is preserved for forensics.
     pub archived: bool,
+    /// Set when a working worker's parent archives mid-turn; consumed
+    /// in `handle_worker_complete` to self-archive on natural
+    /// completion. Runtime-only flag (matches the `spawn_*` precedent
+    /// in `decisions/938fa631`); not serialised because workers don't
+    /// persist across orchestrator restart.
+    pub archive_when_done: bool,
     /// Set on remote-worker chats when the upstream session has
     /// reached a terminal state (`FAILED`, or was archived via
     /// `worker archive`). Unlike local hibernated workers, these
@@ -2045,6 +2054,7 @@ impl Default for AgentChat {
             ai_core_id: None,
             hibernated: false,
             archived: false,
+            archive_when_done: false,
             remote_terminal: false,
             remote_session_name: None,
             asleep: false,
@@ -3295,6 +3305,19 @@ impl App {
     }
 
     #[allow(dead_code)]
+    fn live_children(&self, idx: usize) -> Vec<String> {
+        self.chats
+            .iter()
+            .filter(|chat| {
+                !chat.archived
+                    && chat.parent_idx == Some(idx)
+                    && chat.status != AgentStatus::Hibernated
+            })
+            .map(|chat| chat.display_name.clone())
+            .collect()
+    }
+
+    #[allow(dead_code)]
     fn agent_tree_active(&self, idx: usize) -> bool {
         self.chats
             .get(idx)
@@ -4386,8 +4409,14 @@ impl App {
             RequestCmd::WorkerList { parent } => {
                 self.handle_admin_worker_list(idx, parent, reply);
             }
-            RequestCmd::WorkerForceArchive { worker } => {
-                self.handle_admin_worker_force_archive(idx, worker, reply);
+            RequestCmd::WorkerForceArchive {
+                worker,
+                force_stop_children,
+            } => {
+                self.handle_admin_worker_force_archive(idx, worker, force_stop_children, reply);
+            }
+            RequestCmd::WorkerPruneOrphans => {
+                self.handle_admin_worker_prune_orphans(idx, reply);
             }
             RequestCmd::WorkerForceRestartCore {
                 worker,
@@ -4958,6 +4987,8 @@ impl App {
                 .map(|c| matches!(c.kind, AiCoreKind::Jules { .. }))
                 .unwrap_or(false)
         };
+        let mut should_archive_when_done = false;
+        let mut archive_parent_idx = parent_idx;
         if let Some(chat) = self.chats.get_mut(sender_idx) {
             chat.push_block(ChatBlock::WorkerComplete {
                 body: body.clone(),
@@ -4973,6 +5004,8 @@ impl App {
             if is_remote {
                 chat.remote_terminal = true;
             }
+            should_archive_when_done = chat.archive_when_done;
+            archive_parent_idx = chat.parent_idx.unwrap_or(parent_idx);
         }
 
         // A hibernated worker is hidden from the agent list. If the
@@ -4983,6 +5016,12 @@ impl App {
         }
 
         let _ = reply.send(Response::ok("hibernated"));
+
+        if should_archive_when_done {
+            let (archive_tx, archive_rx) = tokio::sync::oneshot::channel();
+            drop(archive_rx);
+            self.archive_worker(archive_parent_idx, sender_display, true, false, archive_tx);
+        }
     }
 
     /// Parent-initiated close of a worker. Tears down the backend
@@ -4995,7 +5034,7 @@ impl App {
         worker_display: String,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
-        self.archive_worker(sender_idx, worker_display, false, reply);
+        self.archive_worker(sender_idx, worker_display, false, false, reply);
     }
 
     fn handle_worker_restart_core(
@@ -5135,7 +5174,7 @@ impl App {
 
         let (archive_tx, archive_rx) = tokio::sync::oneshot::channel();
         drop(archive_rx);
-        self.archive_worker(sender_idx, broken_display, true, archive_tx);
+        self.archive_worker(sender_idx, broken_display, true, false, archive_tx);
 
         let _ = reply.send(Response::ok(format!("{new_display} {new_session}")));
     }
@@ -5197,6 +5236,7 @@ impl App {
         sender_idx: usize,
         worker_display: String,
         bypass_parent_check: bool,
+        force_stop: bool,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
         let Some(target_idx) = self
@@ -5238,49 +5278,10 @@ impl App {
         // may rotate it while aciddog is running) and the backend
         // session identifier the core registered via
         // `RemoteSessionBound` once Jules accepted its create call.
-        let jules_delete: Option<(String, String)> = {
-            let chat = self.chats.get(target_idx);
-            let core_id = chat.and_then(|c| c.ai_core_id.clone());
-            let session_name = chat.and_then(|c| c.remote_session_name.clone());
-            let kind = core_id.as_ref().and_then(|id| {
-                self.config
-                    .ai_cores
-                    .iter()
-                    .find(|c| &c.id == id)
-                    .map(|c| c.kind.clone())
-            });
-            match (kind, session_name) {
-                (Some(AiCoreKind::Jules { api_key_env, .. }), Some(name)) => {
-                    Some((api_key_env, name))
-                }
-                // A Jules chat whose session never got registered
-                // (create failed, or archive arrived before the
-                // create response) has nothing to delete — skip the
-                // remote call. Non-Jules cores also skip.
-                _ => None,
-            }
-        };
+        let jules_delete = self.jules_delete_for_chat(target_idx);
 
         // Hibernate locally: drop channels, mark terminal.
-        let old_session = self.chats.get(target_idx).and_then(|c| c.session_id);
-        if let Some(chat) = self.chats.get_mut(target_idx) {
-            chat.user_tx = None;
-            chat.agent_tx = None;
-            chat.cancel_tx = None;
-            chat.set_status_and_emit(AgentStatus::Hibernated);
-            chat.hibernated = true;
-            chat.archived = true;
-            chat.remote_terminal = true;
-            chat.push_block(ChatBlock::WorkerComplete {
-                body: "archived by parent".to_string(),
-                is_error: false,
-                collapsed: true,
-                pending: false,
-            });
-        }
-        if let Some(old_session) = old_session {
-            self.agent_ids.remove(&old_session);
-        }
+        self.tombstone_chat_slot(target_idx, "archived by parent", jules_delete);
 
         // Snap selection off the now-hibernated worker. Prefer the
         // target's parent; fall back to the caller's pane when
@@ -5293,6 +5294,70 @@ impl App {
         // returns quickly — parent shouldn't be blocked on network
         // teardown, and a failure here can't un-archive the local
         // pane anyway.
+        let cascaded = self.cascade_archive_descendants(target_idx, force_stop);
+        let body = if cascaded.is_empty() {
+            "archived".to_string()
+        } else {
+            format!(
+                "archived (cascade-archived {} children: {})",
+                cascaded.len(),
+                cascaded.join(", ")
+            )
+        };
+        let _ = reply.send(Response::ok(body));
+    }
+
+    fn tombstone_chat_slot(
+        &mut self,
+        idx: usize,
+        note: &str,
+        jules_delete: Option<(String, String)>,
+    ) {
+        let old_session = self.chats.get(idx).and_then(|c| c.session_id);
+        if let Some(chat) = self.chats.get_mut(idx) {
+            chat.user_tx = None;
+            chat.agent_tx = None;
+            chat.cancel_tx = None;
+            chat.set_status_and_emit(AgentStatus::Hibernated);
+            chat.hibernated = true;
+            chat.archived = true;
+            chat.archive_when_done = false;
+            chat.remote_terminal = true;
+            chat.push_block(ChatBlock::WorkerComplete {
+                body: note.to_string(),
+                is_error: false,
+                collapsed: true,
+                pending: false,
+            });
+        }
+        if let Some(old_session) = old_session {
+            self.agent_ids.remove(&old_session);
+        }
+        Self::spawn_jules_delete(jules_delete);
+    }
+
+    fn jules_delete_for_chat(&self, idx: usize) -> Option<(String, String)> {
+        let chat = self.chats.get(idx);
+        let core_id = chat.and_then(|c| c.ai_core_id.clone());
+        let session_name = chat.and_then(|c| c.remote_session_name.clone());
+        let kind = core_id.as_ref().and_then(|id| {
+            self.config
+                .ai_cores
+                .iter()
+                .find(|c| &c.id == id)
+                .map(|c| c.kind.clone())
+        });
+        match (kind, session_name) {
+            (Some(AiCoreKind::Jules { api_key_env, .. }), Some(name)) => Some((api_key_env, name)),
+            // A Jules chat whose session never got registered
+            // (create failed, or archive arrived before the
+            // create response) has nothing to delete. Non-Jules cores
+            // also skip.
+            _ => None,
+        }
+    }
+
+    fn spawn_jules_delete(jules_delete: Option<(String, String)>) {
         if let Some((api_key_env, session_name)) = jules_delete {
             tokio::spawn(async move {
                 let Ok(api_key) = std::env::var(&api_key_env) else {
@@ -5319,8 +5384,68 @@ impl App {
                 }
             });
         }
+    }
 
-        let _ = reply.send(Response::ok("archived"));
+    /// This is the ONLY entry point that fans cascade-archive across
+    /// descendants. Any future code path that flips `chat.archived =
+    /// true` MUST call this helper or refactor it into a shared
+    /// tombstone-with-cascade helper. Crash paths (`AIEvent::Error`
+    /// at ~:3820, `AutomatonExit { code: Some(n!=0) }` at ~:3875)
+    /// intentionally leave `archived = false` — they are recoverable,
+    /// not orphan-creating; cascade is gated on `archived = true`,
+    /// not on Error status.
+    fn cascade_archive_descendants(&mut self, parent_idx: usize, force_stop: bool) -> Vec<String> {
+        let mut queue = VecDeque::from([parent_idx]);
+        let mut descendants = Vec::new();
+        while let Some(current) = queue.pop_front() {
+            for (idx, chat) in self.chats.iter().enumerate() {
+                if chat.parent_idx == Some(current) && !chat.archived {
+                    descendants.push(idx);
+                    queue.push_back(idx);
+                }
+            }
+        }
+
+        let mut tombstoned_indices = Vec::new();
+        let mut tombstoned_ids = Vec::new();
+        for idx in descendants {
+            let Some(chat) = self.chats.get(idx) else {
+                continue;
+            };
+            let display = chat.display_name.clone();
+            let status = chat.status;
+            if status == AgentStatus::Working && !force_stop {
+                if let Some(chat) = self.chats.get_mut(idx) {
+                    chat.archive_when_done = true;
+                }
+                continue;
+            }
+
+            let jules_delete = self.jules_delete_for_chat(idx);
+            if status == AgentStatus::Working {
+                if let Some(cancel_tx) = self.chats.get(idx).and_then(|c| c.cancel_tx.clone()) {
+                    let _ = cancel_tx.try_send(());
+                }
+            }
+            let note = if status == AgentStatus::Working && force_stop {
+                "force-archived by cascade"
+            } else {
+                "archived by cascade"
+            };
+            self.tombstone_chat_slot(idx, note, jules_delete);
+            tombstoned_indices.push(idx);
+            tombstoned_ids.push(display);
+        }
+
+        if tombstoned_indices.contains(&self.selected) {
+            self.selected = self
+                .chats
+                .get(parent_idx)
+                .and_then(|c| c.parent_idx)
+                .unwrap_or(0);
+        }
+
+        tombstoned_ids
     }
 
     /// Restart a hibernated worker so a newly delivered message can be
@@ -6164,6 +6289,20 @@ impl App {
         }
 
         let Some(recipient_idx) = self.chats.iter().position(|c| c.display_name == to) else {
+            if let Some(parent_idx) = sender_parent_idx {
+                if self
+                    .chats
+                    .get(parent_idx)
+                    .map(|c| c.display_name == to && c.archived)
+                    .unwrap_or(false)
+                {
+                    self.archive_sender_for_archived_parent(sender_id);
+                    let _ = reply.send(Response::err(
+                        "parent has been archived; this worker has been archived",
+                    ));
+                    return;
+                }
+            }
             let _ = reply.send(Response::err(format!("no agent named {to}")));
             return;
         };
@@ -6240,6 +6379,13 @@ impl App {
             .map(|c| c.archived)
             .unwrap_or(false)
         {
+            if sender_parent_idx == Some(recipient_idx) {
+                self.archive_sender_for_archived_parent(sender_id);
+                let _ = reply.send(Response::err(
+                    "parent has been archived; this worker has been archived",
+                ));
+                return;
+            }
             let _ = reply.send(Response::err(format!(
                 "{to} has been archived; spawn a fresh worker"
             )));
@@ -6300,6 +6446,18 @@ impl App {
             }
         });
         let _ = reply.send(Response::ok("queued"));
+    }
+
+    fn archive_sender_for_archived_parent(&mut self, sender_display: String) {
+        let supervisor_idx = self
+            .chats
+            .iter()
+            .enumerate()
+            .find_map(|(idx, _)| self.is_supervisor(idx).then_some(idx))
+            .unwrap_or(0);
+        let (archive_tx, archive_rx) = tokio::sync::oneshot::channel();
+        drop(archive_rx);
+        self.archive_worker(supervisor_idx, sender_display, true, true, archive_tx);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -9926,13 +10084,65 @@ impl App {
         &mut self,
         sender_idx: usize,
         worker: String,
+        force_stop_children: bool,
         reply: tokio::sync::oneshot::Sender<Response>,
     ) {
         if !self.is_supervisor(sender_idx) {
             let _ = reply.send(Response::err("not a supervisor"));
             return;
         }
-        self.archive_worker(sender_idx, worker, true, reply);
+        self.archive_worker(sender_idx, worker, true, force_stop_children, reply);
+    }
+
+    /// Between-restart cleanup verb. Orchestrator restart implicitly
+    /// drains all worker chats wholesale because `tui/boot.rs:582-609`
+    /// does not rehydrate workers — only declared agents/automatons
+    /// spawn at boot. This verb exists for the case where the operator
+    /// wants to clean up live-session orphans without bouncing the
+    /// daemon.
+    fn handle_admin_worker_prune_orphans(
+        &mut self,
+        sender_idx: usize,
+        reply: tokio::sync::oneshot::Sender<Response>,
+    ) {
+        if !self.is_supervisor(sender_idx) {
+            let _ = reply.send(Response::err("not a supervisor"));
+            return;
+        }
+
+        let orphans: Vec<String> = self
+            .chats
+            .iter()
+            .filter(|chat| {
+                chat.parent_idx
+                    .map(|parent| self.chats.get(parent).map(|c| c.archived).unwrap_or(true))
+                    .unwrap_or(false)
+                    && !chat.archived
+            })
+            .map(|chat| chat.display_name.clone())
+            .collect();
+
+        let mut pruned = Vec::new();
+        for display in orphans {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.archive_worker(sender_idx, display.clone(), true, true, tx);
+            if futures::executor::block_on(rx)
+                .map(|resp| resp.ok)
+                .unwrap_or(false)
+            {
+                pruned.push(display);
+            }
+        }
+
+        if pruned.is_empty() {
+            let _ = reply.send(Response::ok("no orphans found"));
+        } else {
+            let _ = reply.send(Response::ok(format!(
+                "pruned {} orphans: {}",
+                pruned.len(),
+                pruned.join(", ")
+            )));
+        }
     }
 
     fn handle_admin_worker_force_restart_core(
@@ -17395,6 +17605,7 @@ pub mod test_support {
             supervisor_session,
             RequestCmd::WorkerForceArchive {
                 worker: worker_id.clone(),
+                force_stop_children: false,
             },
         )
         .await;
@@ -17425,6 +17636,271 @@ pub mod test_support {
             agent_list_response,
             archived,
             agent_id_present,
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct CascadeHibernatedResult {
+        pub archive_response: Response,
+        pub worker_list_response: Response,
+        pub agent_status_response: Response,
+        pub agent_list_response: Response,
+        pub parent_archived: bool,
+        pub child_archived: bool,
+        pub parent_agent_id_present: bool,
+        pub child_agent_id_present: bool,
+        pub child_id: String,
+    }
+
+    #[derive(Debug)]
+    pub struct CascadeDeferredResult {
+        pub archive_response: Response,
+        pub complete_response: Response,
+        pub parent_archived: bool,
+        pub child_archived_after_archive: bool,
+        pub child_archive_when_done_after_archive: bool,
+        pub child_archived_after_complete: bool,
+    }
+
+    #[derive(Debug)]
+    pub struct CascadeForceStopResult {
+        pub archive_response: Response,
+        pub parent_archived: bool,
+        pub child_archived: bool,
+        pub child_archive_when_done: bool,
+        pub cancel_signals: usize,
+    }
+
+    #[derive(Debug)]
+    pub struct CascadeMixedResult {
+        pub deferred_child_archive_when_done: bool,
+        pub deferred_child_archived: bool,
+        pub hibernated_grandchild_archived: bool,
+        pub ready_child_archived: bool,
+        pub first_summary: Vec<String>,
+        pub second_summary: Vec<String>,
+    }
+
+    #[derive(Debug)]
+    pub struct PruneOrphansResult {
+        pub first_response: Response,
+        pub second_response: Response,
+        pub child_archived: bool,
+    }
+
+    #[derive(Debug)]
+    pub struct ArchivedParentMailResult {
+        pub response: Response,
+        pub worker_archived: bool,
+        pub worker_agent_id_present: bool,
+    }
+
+    fn seed_supervisor(app: &mut App) -> Uuid {
+        let supervisor_session = Uuid::new_v4();
+        app.chats[0].session_id = Some(supervisor_session);
+        app.agent_ids
+            .insert(supervisor_session, "supervisor".into());
+        app.chats[0].agent_tx = Some(tokio::sync::mpsc::channel::<String>(8).0);
+        supervisor_session
+    }
+
+    fn push_worker(
+        app: &mut App,
+        display: &str,
+        parent_idx: usize,
+        status: AgentStatus,
+        archived: bool,
+    ) -> (usize, Uuid) {
+        let session = Uuid::new_v4();
+        let idx = app.chats.len();
+        app.chats.push(AgentChat {
+            display_name: display.to_string(),
+            parent_idx: Some(parent_idx),
+            worker_template: Some("tester".into()),
+            session_id: Some(session),
+            status,
+            hibernated: status == AgentStatus::Hibernated,
+            user_tx: Some(tokio::sync::mpsc::unbounded_channel::<String>().0),
+            agent_tx: Some(tokio::sync::mpsc::channel::<String>(8).0),
+            kind: ChatKind::Worker,
+            ever_prompted: false,
+            archived,
+            ..Default::default()
+        });
+        app.agent_ids.insert(session, display.to_string());
+        (idx, session)
+    }
+
+    pub async fn parent_archive_cascade_hibernated_child() -> CascadeHibernatedResult {
+        let mut app = App::new(archive_test_config());
+        let supervisor_session = seed_supervisor(&mut app);
+        let (parent_idx, parent_session) = push_worker(&mut app, "A", 0, AgentStatus::Ready, false);
+        let (child_idx, child_session) =
+            push_worker(&mut app, "B", parent_idx, AgentStatus::Hibernated, false);
+
+        let archive_response = dispatch(
+            &mut app,
+            supervisor_session,
+            RequestCmd::WorkerArchive { worker: "A".into() },
+        )
+        .await;
+        let worker_list_response = dispatch(
+            &mut app,
+            supervisor_session,
+            RequestCmd::WorkerList { parent: None },
+        )
+        .await;
+        let agent_status_response = dispatch(
+            &mut app,
+            supervisor_session,
+            RequestCmd::AgentStatus { agent: "B".into() },
+        )
+        .await;
+        let agent_list_response =
+            dispatch(&mut app, supervisor_session, RequestCmd::AgentList).await;
+
+        CascadeHibernatedResult {
+            archive_response,
+            worker_list_response,
+            agent_status_response,
+            agent_list_response,
+            parent_archived: app.chats[parent_idx].archived,
+            child_archived: app.chats[child_idx].archived,
+            parent_agent_id_present: app.agent_ids.contains_key(&parent_session),
+            child_agent_id_present: app.agent_ids.contains_key(&child_session),
+            child_id: "B".into(),
+        }
+    }
+
+    pub async fn parent_archive_defers_working_child() -> CascadeDeferredResult {
+        let mut app = App::new(archive_test_config());
+        let supervisor_session = seed_supervisor(&mut app);
+        let (parent_idx, _) = push_worker(&mut app, "A", 0, AgentStatus::Ready, false);
+        let (child_idx, child_session) =
+            push_worker(&mut app, "B", parent_idx, AgentStatus::Working, false);
+
+        let archive_response = dispatch(
+            &mut app,
+            supervisor_session,
+            RequestCmd::WorkerArchive { worker: "A".into() },
+        )
+        .await;
+        let child_archived_after_archive = app.chats[child_idx].archived;
+        let child_archive_when_done_after_archive = app.chats[child_idx].archive_when_done;
+        let complete_response = dispatch(
+            &mut app,
+            child_session,
+            RequestCmd::WorkerComplete {
+                body: "done".into(),
+            },
+        )
+        .await;
+
+        CascadeDeferredResult {
+            archive_response,
+            complete_response,
+            parent_archived: app.chats[parent_idx].archived,
+            child_archived_after_archive,
+            child_archive_when_done_after_archive,
+            child_archived_after_complete: app.chats[child_idx].archived,
+        }
+    }
+
+    pub async fn force_archive_with_force_stop_children() -> CascadeForceStopResult {
+        let mut app = App::new(archive_test_config());
+        let supervisor_session = seed_supervisor(&mut app);
+        let (parent_idx, _) = push_worker(&mut app, "A", 0, AgentStatus::Ready, false);
+        let (child_idx, _) = push_worker(&mut app, "B", parent_idx, AgentStatus::Working, false);
+        let (cancel_tx, mut cancel_rx) = tokio::sync::mpsc::channel::<()>(8);
+        app.chats[child_idx].cancel_tx = Some(cancel_tx);
+
+        let archive_response = dispatch(
+            &mut app,
+            supervisor_session,
+            RequestCmd::WorkerForceArchive {
+                worker: "A".into(),
+                force_stop_children: true,
+            },
+        )
+        .await;
+        let mut cancel_signals = 0;
+        while cancel_rx.try_recv().is_ok() {
+            cancel_signals += 1;
+        }
+
+        CascadeForceStopResult {
+            archive_response,
+            parent_archived: app.chats[parent_idx].archived,
+            child_archived: app.chats[child_idx].archived,
+            child_archive_when_done: app.chats[child_idx].archive_when_done,
+            cancel_signals,
+        }
+    }
+
+    pub fn cascade_helper_mixed_descendants() -> CascadeMixedResult {
+        let mut app = App::new(archive_test_config());
+        seed_supervisor(&mut app);
+        let (parent_idx, _) = push_worker(&mut app, "A", 0, AgentStatus::Working, false);
+        let (working_idx, _) = push_worker(&mut app, "B", parent_idx, AgentStatus::Working, false);
+        let (hibernated_idx, _) =
+            push_worker(&mut app, "C", working_idx, AgentStatus::Hibernated, false);
+        let (ready_idx, _) = push_worker(&mut app, "D", parent_idx, AgentStatus::Ready, false);
+
+        app.tombstone_chat_slot(parent_idx, "archived by test", None);
+        let first_summary = app.cascade_archive_descendants(parent_idx, false);
+        let deferred_child_archive_when_done = app.chats[working_idx].archive_when_done;
+        app.tombstone_chat_slot(working_idx, "archived after completion", None);
+        let second_summary = app.cascade_archive_descendants(parent_idx, false);
+
+        CascadeMixedResult {
+            deferred_child_archive_when_done,
+            deferred_child_archived: app.chats[working_idx].archived,
+            hibernated_grandchild_archived: app.chats[hibernated_idx].archived,
+            ready_child_archived: app.chats[ready_idx].archived,
+            first_summary,
+            second_summary,
+        }
+    }
+
+    pub async fn prune_orphans_archives_existing_orphans() -> PruneOrphansResult {
+        let mut app = App::new(archive_test_config());
+        let supervisor_session = seed_supervisor(&mut app);
+        let (parent_idx, _) = push_worker(&mut app, "A", 0, AgentStatus::Hibernated, true);
+        let (child_idx, _) = push_worker(&mut app, "B", parent_idx, AgentStatus::Working, false);
+
+        let first_response =
+            dispatch(&mut app, supervisor_session, RequestCmd::WorkerPruneOrphans).await;
+        let second_response =
+            dispatch(&mut app, supervisor_session, RequestCmd::WorkerPruneOrphans).await;
+
+        PruneOrphansResult {
+            first_response,
+            second_response,
+            child_archived: app.chats[child_idx].archived,
+        }
+    }
+
+    pub async fn worker_self_archives_when_mailing_archived_parent() -> ArchivedParentMailResult {
+        let mut app = App::new(archive_test_config());
+        seed_supervisor(&mut app);
+        let (parent_idx, _) = push_worker(&mut app, "P", 0, AgentStatus::Hibernated, true);
+        let (worker_idx, worker_session) =
+            push_worker(&mut app, "W", parent_idx, AgentStatus::Ready, false);
+
+        let response = dispatch(
+            &mut app,
+            worker_session,
+            RequestCmd::SendMessage {
+                to: "P".into(),
+                body: "ping".into(),
+            },
+        )
+        .await;
+
+        ArchivedParentMailResult {
+            response,
+            worker_archived: app.chats[worker_idx].archived,
+            worker_agent_id_present: app.agent_ids.contains_key(&worker_session),
         }
     }
 }
@@ -21961,7 +22437,7 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         app.agent_ids.insert(session_id, worker_id.clone());
 
         let (first_tx, first_rx) = oneshot::channel();
-        app.archive_worker(0, worker_id.clone(), false, first_tx);
+        app.archive_worker(0, worker_id.clone(), false, false, first_tx);
         let first = first_rx.await.unwrap();
         assert!(first.ok, "first archive failed: {first:?}");
         assert_eq!(first.message.as_deref(), Some("archived"));
@@ -21969,7 +22445,7 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         assert!(!app.agent_ids.contains_key(&session_id));
 
         let (second_tx, second_rx) = oneshot::channel();
-        app.archive_worker(0, worker_id, false, second_tx);
+        app.archive_worker(0, worker_id, false, false, second_tx);
         let second = second_rx.await.unwrap();
         assert!(second.ok, "second archive failed: {second:?}");
         assert_eq!(second.message.as_deref(), Some("already archived"));

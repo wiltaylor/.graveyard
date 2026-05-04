@@ -652,7 +652,12 @@ pub enum RequestCmd {
     /// parent-ownership check that `WorkerArchive` enforces.
     WorkerForceArchive {
         worker: String,
+        #[serde(default)]
+        force_stop_children: bool,
     },
+    /// Supervisor: clean up live-session workers whose parent slot is
+    /// missing or archived.
+    WorkerPruneOrphans,
     /// Supervisor: restart any worker's AI core by display id,
     /// bypassing the parent-ownership check that `WorkerRestartCore`
     /// enforces.

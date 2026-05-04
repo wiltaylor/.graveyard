@@ -697,8 +697,18 @@ async fn run_agent_mode(agent_id: String, socket_path: String) -> Result<ExitCod
             cmd: WorkerCommand::List { parent },
         } => RequestCmd::WorkerList { parent },
         AgentCommand::Worker {
-            cmd: WorkerCommand::ForceArchive { id },
-        } => RequestCmd::WorkerForceArchive { worker: id },
+            cmd:
+                WorkerCommand::ForceArchive {
+                    id,
+                    force_stop_children,
+                },
+        } => RequestCmd::WorkerForceArchive {
+            worker: id,
+            force_stop_children,
+        },
+        AgentCommand::Worker {
+            cmd: WorkerCommand::PruneOrphans,
+        } => RequestCmd::WorkerPruneOrphans,
         AgentCommand::Worker {
             cmd: WorkerCommand::ForceRestartCore { id, ai_core },
         } => RequestCmd::WorkerForceRestartCore {

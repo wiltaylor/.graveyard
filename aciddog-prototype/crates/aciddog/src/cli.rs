@@ -825,7 +825,14 @@ pub enum WorkerCommand {
         /// Worker display id.
         #[arg(long)]
         id: String,
+        /// Immediately cancel and tombstone working descendants
+        /// instead of waiting for their natural completion.
+        #[arg(long)]
+        force_stop_children: bool,
     },
+    /// Supervisor-only: archive workers whose parent was already
+    /// archived or removed in the current live session.
+    PruneOrphans,
     /// Supervisor-only: force-restart a worker's AI core by display id.
     ForceRestartCore {
         /// Worker display id.
@@ -1093,6 +1100,38 @@ mod tests {
 
     #[test]
     fn agent_args_parses_worker_force_restart_core() {
+        let args = AgentArgs::try_parse_from([
+            "aciddog",
+            "worker",
+            "force-archive",
+            "--id",
+            "jules_refactor#abcd1234",
+            "--force-stop-children",
+        ])
+        .expect("parses");
+        match args.cmd {
+            AgentCommand::Worker {
+                cmd:
+                    WorkerCommand::ForceArchive {
+                        id,
+                        force_stop_children,
+                    },
+            } => {
+                assert_eq!(id, "jules_refactor#abcd1234");
+                assert!(force_stop_children);
+            }
+            other => panic!("expected Worker::ForceArchive, got {other:?}"),
+        }
+
+        let args =
+            AgentArgs::try_parse_from(["aciddog", "worker", "prune-orphans"]).expect("parses");
+        assert!(matches!(
+            args.cmd,
+            AgentCommand::Worker {
+                cmd: WorkerCommand::PruneOrphans
+            }
+        ));
+
         let args = AgentArgs::try_parse_from([
             "aciddog",
             "worker",
