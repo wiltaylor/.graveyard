@@ -1,6 +1,6 @@
 # ADR-0011 — Multi-owner WorkflowEngine with concurrency caps and filtered events
 
-**Status:** Proposed · **Date:** 2026-05-04 · **Deciders:** code_reviewer#5099eb3b, arch_consultant, dev_lead
+**Status:** Accepted · **Date:** 2026-05-04 · **Deciders:** code_reviewer#5099eb3b, arch_consultant, dev_lead
 
 ## Context
 
