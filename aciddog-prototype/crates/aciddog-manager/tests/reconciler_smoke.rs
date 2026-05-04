@@ -54,7 +54,10 @@ fn write_wrapper(wrapper_path: &Path, shim: &Path, extra_args: &[&str]) {
 /// "the aciddog binary"; it actually exec's the shim.
 async fn build_state_with_runner(wrapper: PathBuf) -> (AppState, Arc<DaemonRunner>) {
     let pool = db::connect_memory().await.expect("memory db");
-    let runner = DaemonRunner::new(wrapper);
+    let runner = DaemonRunner::new(
+        wrapper,
+        aciddog_manager::daemon_runner::CapturePolicy::default(),
+    );
     let mut state = AppState::new(
         pool,
         AuthConfig {

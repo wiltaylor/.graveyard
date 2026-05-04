@@ -13,12 +13,20 @@
 //!     `\r\n\r\n` and reply with `HTTP/1.1 200 OK` so `Client::health()`
 //!     succeeds. Without the flag the loop just accept-and-holds, which
 //!     is what the existing `daemon_runner_smoke` tests rely on.
+//!   * `--emit-stdout-bytes <N>` / `--emit-stderr-bytes <N>` /
+//!     `--hold-after-emit` (added by sibling 3bc8a0d0 for the
+//!     log_capture integration test) write `N` bytes of `'A'`s on the
+//!     respective stream in 80-byte newline-terminated chunks. After
+//!     both emissions the shim exits 0, OR (with `--hold-after-emit`)
+//!     falls through to the existing socket loop so the runner watcher
+//!     can still observe `Running`.
 //!
 //! Uses only deps already present in the crate (`tokio` + std). `nix`
 //! is intentionally not used here — `tokio::signal::unix` is enough.
 
 use std::env;
 use std::fs;
+use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -32,6 +40,9 @@ async fn main() -> ExitCode {
     let mut exit_immediately = false;
     let mut serve_health = false;
     let mut socket_arg: Option<PathBuf> = None;
+    let mut emit_stdout_bytes: u64 = 0;
+    let mut emit_stderr_bytes: u64 = 0;
+    let mut hold_after_emit = false;
 
     let mut args = env::args().skip(1);
     while let Some(a) = args.next() {
@@ -41,6 +52,13 @@ async fn main() -> ExitCode {
             "--socket" => {
                 socket_arg = args.next().map(PathBuf::from);
             }
+            "--emit-stdout-bytes" => {
+                emit_stdout_bytes = args.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+            "--emit-stderr-bytes" => {
+                emit_stderr_bytes = args.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+            "--hold-after-emit" => hold_after_emit = true,
             _ => {
                 // Unknown flags are ignored so the test driver can pass
                 // through arbitrary trailing args without breakage.
@@ -51,6 +69,21 @@ async fn main() -> ExitCode {
     if exit_immediately {
         eprintln!("daemon_runner_shim: --exit-immediately, exiting non-zero");
         return ExitCode::from(2);
+    }
+
+    // Sibling 3bc8a0d0: drive the log_capture path. Each emission is
+    // chunked into 80-byte 'A' lines so the line-oriented reader on
+    // the manager side has plenty of newlines to chew through.
+    if emit_stdout_bytes > 0 {
+        emit_stream(emit_stdout_bytes, false);
+    }
+    if emit_stderr_bytes > 0 {
+        emit_stream(emit_stderr_bytes, true);
+    }
+    if (emit_stdout_bytes > 0 || emit_stderr_bytes > 0) && !hold_after_emit {
+        // No socket loop requested: exit cleanly so tests that only
+        // exercise the capture path don't have to teardown the listener.
+        return ExitCode::SUCCESS;
     }
 
     let socket_path =
@@ -153,5 +186,41 @@ async fn main() -> ExitCode {
                 }
             }
         }
+    }
+}
+
+/// Emit `total` bytes of `'A'`s onto the chosen stream, chunked into
+/// 80-byte lines (79 'A's + '\n', so each line is exactly 80 bytes
+/// of content + terminator) until the budget is met. The final partial
+/// line (if any) is also newline-terminated so the manager-side line
+/// reader sees a clean EOL boundary.
+fn emit_stream(total: u64, stderr: bool) {
+    const CHUNK: usize = 80;
+    let mut remaining = total;
+    let mut buf = Vec::with_capacity(CHUNK);
+    if stderr {
+        let mut out = std::io::stderr().lock();
+        while remaining > 0 {
+            buf.clear();
+            let n = std::cmp::min(remaining, CHUNK as u64) as usize;
+            let body_len = if n > 0 { n - 1 } else { 0 };
+            buf.extend(std::iter::repeat_n(b'A', body_len));
+            buf.push(b'\n');
+            let _ = out.write_all(&buf);
+            remaining = remaining.saturating_sub(n as u64);
+        }
+        let _ = out.flush();
+    } else {
+        let mut out = std::io::stdout().lock();
+        while remaining > 0 {
+            buf.clear();
+            let n = std::cmp::min(remaining, CHUNK as u64) as usize;
+            let body_len = if n > 0 { n - 1 } else { 0 };
+            buf.extend(std::iter::repeat_n(b'A', body_len));
+            buf.push(b'\n');
+            let _ = out.write_all(&buf);
+            remaining = remaining.saturating_sub(n as u64);
+        }
+        let _ = out.flush();
     }
 }

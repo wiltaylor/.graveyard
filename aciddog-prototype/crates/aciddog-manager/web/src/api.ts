@@ -646,3 +646,23 @@ export function cronEventsUrl(id: string): string {
 export function tasksEventsUrl(id: string): string {
   return `/api/instances/${id}/tasks/events`;
 }
+
+/// Path for an EventSource that streams stdout/stderr captured from a
+/// managed daemon (sibling 3bc8a0d0). `follow=1` keeps the stream open
+/// and tails new lines via the per-child broadcaster; `follow=0`
+/// (default for the helper's no-args variant) drains the in-memory ring
+/// once and closes. `since` is a byte-anchored cursor; the browser also
+/// auto-supplies `Last-Event-ID` on reconnect, so most callers can
+/// leave it unset.
+export function daemonLogsUrl(
+  id: string,
+  opts?: { follow?: 0 | 1; since?: number },
+): string {
+  const qs = new URLSearchParams();
+  if (opts?.follow !== undefined) qs.set("follow", String(opts.follow));
+  if (opts?.since !== undefined) qs.set("since", String(opts.since));
+  const query = qs.toString();
+  return `/api/managed-daemons/${encodeURIComponent(id)}/logs${
+    query ? `?${query}` : ""
+  }`;
+}

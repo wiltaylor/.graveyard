@@ -61,6 +61,37 @@ pub struct CliArgs {
     #[arg(long, env = "ACIDDOG_BINARY", global = true)]
     pub aciddog_binary: Option<PathBuf>,
 
+    /// Rotating-log threshold for per-child manager-side stdio capture
+    /// (sibling 3bc8a0d0). Rotation happens on the next write that
+    /// crosses this size. Default 10 MiB.
+    #[arg(
+        long,
+        env = "ACIDDOG_MANAGER_DAEMON_LOG_MAX_BYTES",
+        default_value_t = 10 * 1024 * 1024,
+        global = true
+    )]
+    pub daemon_runner_log_max_bytes: u64,
+
+    /// How many historical rotated log files to retain
+    /// (`.log.1`..`.log.<max_files>`). Default 3.
+    #[arg(
+        long,
+        env = "ACIDDOG_MANAGER_DAEMON_LOG_MAX_FILES",
+        default_value_t = 3,
+        global = true
+    )]
+    pub daemon_runner_log_max_files: u8,
+
+    /// Per-child in-memory ring buffer cap (bytes). Drives the SSE
+    /// replay window for `/api/managed-daemons/:id/logs`. Default 1 MiB.
+    #[arg(
+        long,
+        env = "ACIDDOG_MANAGER_DAEMON_LOG_RING_BYTES",
+        default_value_t = 1024 * 1024,
+        global = true
+    )]
+    pub daemon_runner_log_ring_bytes: usize,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }

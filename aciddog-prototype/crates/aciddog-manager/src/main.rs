@@ -59,6 +59,20 @@ async fn main() -> Result<()> {
                 );
             }
         }
+        // Sibling 3bc8a0d0 — populate the per-child stdio capture
+        // policy from CLI/env. Default-on values match
+        // `CapturePolicy::default()`; explicit flags propagate.
+        state.capture_policy = daemon_runner::CapturePolicy {
+            max_size_bytes: args.daemon_runner_log_max_bytes,
+            max_files: args.daemon_runner_log_max_files,
+            ring_bytes: args.daemon_runner_log_ring_bytes,
+        };
+        if let Some(binary) = state.aciddog_binary.as_ref() {
+            state.daemon_runner = Some(daemon_runner::DaemonRunner::new(
+                (**binary).clone(),
+                state.capture_policy.clone(),
+            ));
+        }
     }
     let router = routes::build_router(state.clone());
 

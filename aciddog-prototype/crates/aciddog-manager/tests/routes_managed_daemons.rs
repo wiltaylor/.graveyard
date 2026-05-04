@@ -243,7 +243,10 @@ async fn router_with_runner(workdir: &Path) -> (axum::Router, SqlitePool, Arc<Da
         &shim_path(),
         &["--socket", socket_path.to_str().unwrap()],
     );
-    let runner = DaemonRunner::new(wrapper);
+    let runner = DaemonRunner::new(
+        wrapper,
+        aciddog_manager::daemon_runner::CapturePolicy::default(),
+    );
     let router = build_router(pool.clone(), true, Some(runner.clone()));
     (router, pool, runner)
 }

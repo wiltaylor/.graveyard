@@ -1,12 +1,21 @@
-//! Stdio::null() v1 contract — sibling 3bc8a0d0 will swap to Stdio::piped()
-//! and add the fan-out task. Do NOT add log capture in this file.
+//! Stdio posture — both stdout AND stderr are `Stdio::piped()` so
+//! sibling 3bc8a0d0's `log_capture::start_capture` can fan-out to the
+//! ring buffer + rotating on-disk file. The v1 `Stdio::null()` stub-out
+//! has been removed.
 //!
-//! The daemon already writes its own `./aciddog.log` from inside the
+//! The daemon still writes its own `./aciddog.log` from inside the
 //! process (`crates/aciddog/src/main.rs:222`); that log lands in CWD,
-//! which is `row.work_dir`. v1 of `daemon_runner` therefore drops both
-//! manager-side stdio streams to `/dev/null`. When sibling 3bc8a0d0
-//! lands log capture it will flip these to `Stdio::piped()` and spin a
-//! fan-out task off the resulting pipes — keep that seam clean.
+//! which is `row.work_dir`. The pipes captured here are PURELY the
+//! manager-side mirror of whatever the child wrote to its inherited
+//! stdio (e.g. panic backtraces, early-boot `eprintln!`s before the
+//! daemon's logger is up).
+//!
+//! `kill_on_drop(true)` keeps a leaked `Child` from orphaning the OS
+//! process. The pipes returned via the `Child` move with the `Child`
+//! into `DaemonRunner::spawn`, which immediately hands the child to
+//! `log_capture::start_capture` (that function `take()`s stdout +
+//! stderr, returning the pipe-stripped `Child` so the registry's
+//! lifecycle code keeps working without seeing the pipes).
 
 use std::path::Path;
 use std::process::Stdio;
@@ -30,15 +39,17 @@ pub enum ObservedState {
     Crashed,
 }
 
-/// Spawn `<binary> daemon` with `work_dir` as CWD, both stdio streams
-/// dropped to `/dev/null`, and `kill_on_drop(true)` so a leaked
-/// `ChildHandle` cannot orphan an OS process.
+/// Spawn `<binary> daemon` with `work_dir` as CWD. Both stdio streams
+/// are piped so [`crate::daemon_runner::log_capture::start_capture`]
+/// can mirror them into the ring buffer + rotating writer.
+/// `kill_on_drop(true)` ensures a leaked `Child` cannot orphan an OS
+/// process.
 pub(crate) fn spawn_child(binary: &Path, work_dir: &Path) -> std::io::Result<Child> {
     Command::new(binary)
         .arg("daemon")
         .current_dir(work_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
 }

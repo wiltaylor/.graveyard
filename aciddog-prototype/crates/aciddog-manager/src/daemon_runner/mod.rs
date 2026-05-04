@@ -10,6 +10,7 @@
 //! adopt(id, socket_path)`.
 
 mod lifecycle;
+mod log_capture;
 mod process;
 mod registry;
 
@@ -28,6 +29,9 @@ use uuid::Uuid;
 use registry::{ChildHandle, Registry};
 
 pub use lifecycle::{next_action, ReconcilerAction};
+pub use log_capture::{
+    CapturePolicy, CapturedLine, OptionalCapturePolicy, RingBufferHandle, Stream,
+};
 pub use process::ObservedState;
 
 /// TEMPORARY: replace with `model::managed_daemon::*` once sibling
@@ -153,6 +157,7 @@ pub enum DaemonRunnerError {
 /// `aciddog` binary used to spawn children.
 pub struct DaemonRunner {
     aciddog_binary: PathBuf,
+    capture_policy: CapturePolicy,
     registry: Registry,
 }
 
@@ -160,9 +165,15 @@ impl DaemonRunner {
     /// Construct a new runner. Wrap in `Arc` so background spawn-watch
     /// tasks can hold a `Weak` back-pointer without pinning the runner
     /// forever.
-    pub fn new(aciddog_binary: PathBuf) -> Arc<Self> {
+    ///
+    /// The `capture_policy` drives the per-child stdio capture (sibling
+    /// 3bc8a0d0). Tests and smoke paths can pass
+    /// [`CapturePolicy::default`]; production wires the value from
+    /// `--daemon-runner-log-*` CLI flags via `AppState::capture_policy`.
+    pub fn new(aciddog_binary: PathBuf, capture_policy: CapturePolicy) -> Arc<Self> {
         Arc::new(Self {
             aciddog_binary,
+            capture_policy,
             registry: Registry::new(),
         })
     }
@@ -195,6 +206,13 @@ impl DaemonRunner {
             .map_err(DaemonRunnerError::Spawn)?;
         let pid = child.id();
 
+        // Wire stdio capture: hand the child (with piped stdout/stderr)
+        // to the per-child fan-out task. start_capture takes the pipes
+        // by-value via child.stdout.take()/stderr.take() and returns
+        // the (now pipe-stripped) Child for the registry to track.
+        let (logs, logs_shutdown, child) =
+            log_capture::start_capture(&row.work_dir, self.capture_policy.clone(), child);
+
         let handle = ChildHandle {
             child: Some(child),
             pid,
@@ -202,6 +220,8 @@ impl DaemonRunner {
             work_dir: row.work_dir.clone(),
             socket_path: row.socket_path.clone(),
             spawned_at: Instant::now(),
+            logs: Some(logs),
+            logs_shutdown: Some(logs_shutdown),
         };
 
         if let Err(_rejected) = self.registry.insert(row.id, handle).await {
@@ -402,11 +422,44 @@ impl DaemonRunner {
             work_dir,
             socket_path,
             spawned_at: Instant::now(),
+            // Adopted entries have no manager-side pipes; logs are
+            // unavailable and `is_managed` returns false (the SSE route
+            // 409s on adopted ids).
+            logs: None,
+            logs_shutdown: None,
         };
         if let Err(_rejected) = self.registry.insert(id, handle).await {
             return Err(DaemonRunnerError::AlreadyTracked(id));
         }
         Ok(AdoptOutcome::Adopted)
+    }
+
+    /// Returns the per-child stdio capture handle for `id` if the
+    /// runner spawned the process (i.e. it has manager-side pipes).
+    /// Returns `None` for unknown ids AND for adopted entries
+    /// (`child = None`, no pipe to read).
+    pub async fn logs_handle(self: &Arc<Self>, id: Uuid) -> Option<RingBufferHandle> {
+        self.registry
+            .with_handle_mut(id, |h| {
+                if h.child.is_some() {
+                    h.logs.clone()
+                } else {
+                    None
+                }
+            })
+            .await
+            .flatten()
+    }
+
+    /// True iff the registry holds an entry for `id` AND the entry was
+    /// spawned by this manager (has a `Child` handle). Used by the
+    /// SSE logs route to disambiguate the `404 not-found` vs
+    /// `409 adopted` outcome.
+    pub async fn is_managed(self: &Arc<Self>, id: Uuid) -> bool {
+        self.registry
+            .with_handle_mut(id, |h| h.child.is_some())
+            .await
+            .unwrap_or(false)
     }
 }
 

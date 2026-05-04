@@ -12,9 +12,10 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use tokio::process::Child;
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
+use super::log_capture;
 use super::process::ObservedState;
 
 /// Per-daemon state held by the runner.
@@ -38,6 +39,21 @@ pub(crate) struct ChildHandle {
     pub(crate) work_dir: PathBuf,
     pub(crate) socket_path: PathBuf,
     pub(crate) spawned_at: Instant,
+    /// Stdio capture handle (manager-side mirror of the child's
+    /// stdout/stderr). `None` for adopted entries (no manager-spawned
+    /// process to capture from).
+    ///
+    /// The route layer reaches this via
+    /// [`crate::daemon_runner::DaemonRunner::logs_handle`] — it never
+    /// touches the registry directly.
+    pub(crate) logs: Option<log_capture::RingBufferHandle>,
+    /// One-shot shutdown signal for the per-child fan-out task spawned
+    /// by `log_capture::start_capture`. Decoupled from the child's
+    /// `kill_on_drop(true)` because the fan-out task survives a
+    /// straight-up `Child::drop` (it owns the pipes by-value); the
+    /// signal is the canonical way to end capture before the pipes
+    /// EOF on their own. Sent (and `take()`d) by `Registry::remove`.
+    pub(crate) logs_shutdown: Option<oneshot::Sender<()>>,
 }
 
 /// Thin wrapper around a `tokio::sync::Mutex<HashMap<Uuid, ChildHandle>>`.
@@ -65,9 +81,17 @@ impl Registry {
     }
 
     /// Take the entry out of the map and return it.
+    ///
+    /// Sends the entry's `logs_shutdown` signal before returning so the
+    /// per-child capture task ends promptly even when the caller drops
+    /// the returned `ChildHandle` synchronously.
     pub(crate) async fn remove(&self, id: Uuid) -> Option<ChildHandle> {
         let mut guard = self.inner.lock().await;
-        guard.remove(&id)
+        let mut entry = guard.remove(&id)?;
+        if let Some(tx) = entry.logs_shutdown.take() {
+            let _ = tx.send(());
+        }
+        Some(entry)
     }
 
     /// Quick state read — copies the `ObservedState` and drops the guard.

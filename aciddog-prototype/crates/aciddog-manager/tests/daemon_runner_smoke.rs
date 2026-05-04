@@ -22,8 +22,8 @@ use tokio::net::UnixListener;
 use uuid::Uuid;
 
 use aciddog_manager::daemon_runner::{
-    next_action, AdoptOutcome, DaemonRunner, DaemonRunnerError, DesiredState, ManagedDaemonRow,
-    ObservedState, ReconcilerAction,
+    next_action, AdoptOutcome, CapturePolicy, DaemonRunner, DaemonRunnerError, DesiredState,
+    ManagedDaemonRow, ObservedState, ReconcilerAction,
 };
 
 // --- §A. Pure-fn lifecycle truth-table coverage --------------------------
@@ -176,7 +176,7 @@ async fn spawn_then_stop_drives_running_then_clears_registry() {
         &["--socket", socket_path.to_str().unwrap()],
     );
 
-    let runner = DaemonRunner::new(wrapper);
+    let runner = DaemonRunner::new(wrapper, CapturePolicy::default());
     let id = Uuid::new_v4();
     let row = ManagedDaemonRow {
         id,
@@ -222,7 +222,7 @@ async fn spawn_then_reload_is_noop_on_state() {
         &["--socket", socket_path.to_str().unwrap()],
     );
 
-    let runner = DaemonRunner::new(wrapper);
+    let runner = DaemonRunner::new(wrapper, CapturePolicy::default());
     let id = Uuid::new_v4();
     let row = ManagedDaemonRow {
         id,
@@ -271,7 +271,7 @@ async fn adopt_then_stop_or_reload_returns_adopted_not_controlled() {
         }
     });
 
-    let runner = DaemonRunner::new(shim_path());
+    let runner = DaemonRunner::new(shim_path(), CapturePolicy::default());
     let id = Uuid::new_v4();
 
     let outcome = runner
@@ -310,7 +310,7 @@ async fn adopt_returns_not_responding_when_socket_dead() {
     let dir = tempdir().expect("tempdir");
     let dead_path = dir.path().join("never-bound.sock");
 
-    let runner = DaemonRunner::new(shim_path());
+    let runner = DaemonRunner::new(shim_path(), CapturePolicy::default());
     let id = Uuid::new_v4();
 
     let outcome = runner.adopt(id, dead_path).await.expect("adopt ok");
@@ -336,7 +336,7 @@ async fn crash_transitions_to_crashed() {
     let wrapper = work_dir.path().join("shim-fail.sh");
     write_wrapper(&wrapper, &shim_path(), &["--exit-immediately"]);
 
-    let runner = DaemonRunner::new(wrapper);
+    let runner = DaemonRunner::new(wrapper, CapturePolicy::default());
     let id = Uuid::new_v4();
     let row = ManagedDaemonRow {
         id,

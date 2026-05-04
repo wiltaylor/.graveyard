@@ -26,15 +26,21 @@
 //! planning, so the POST `/` handler ships as a documented 501 Not
 //! Implemented — see `create()` below for the breadcrumb.
 
+use std::convert::Infallible;
 use std::time::Duration;
 
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
 use crate::daemon_runner::{DaemonRunner, DaemonRunnerError, ObservedState};
@@ -362,6 +368,176 @@ pub async fn reload(
     ))
 }
 
+/// Query params for `GET /api/managed-daemons/:id/logs`.
+///
+/// `follow=1` keeps the stream open and tails new lines via the
+/// per-child broadcaster; `follow=0` (default) drains the in-memory
+/// ring buffer once and closes. `since=<offset>` is a byte-anchored
+/// cursor — typically populated from the prior connection's last
+/// `id:` field via the browser's automatic `Last-Event-ID` header,
+/// but explicit `?since=` overrides the header.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct LogsQuery {
+    pub follow: Option<u8>,
+    pub since: Option<u64>,
+}
+
+/// `GET /api/managed-daemons/:id/logs[?follow=0|1&since=<u64>]` —
+/// stream stdout/stderr captured from the managed child as SSE.
+///
+/// Behaviour (sibling 3bc8a0d0):
+///   * `404` if the runner has no entry for `id`.
+///   * `409 {"error": "adopted: no manager-side capture"}` for
+///     adopted entries (`child = None`, no pipe to read).
+///   * Replay phase: drain `RingBufferHandle::since(<since>)`. If the
+///     cursor is older than the oldest retained line, emit one
+///     `event: gap\ndata: {"dropped_until": <offset>}` first.
+///   * Each replayed line is one
+///     `id: <offset>\nevent: line\ndata: {"ts","stream","line"}`.
+///   * `follow=0` (default): the stream ends after the replay; no
+///     broadcast subscription, no keepalive.
+///   * `follow=1`: AFTER the replay, attach a `broadcast::Receiver`
+///     and stream indefinitely. `BroadcastStreamRecvError::Lagged(n)`
+///     becomes a named `lagged` event so the UI can render a
+///     `[lagged: N events dropped]` marker.
+///   * Headers: `Cache-Control: no-cache, no-store, must-revalidate`
+///     and `x-accel-buffering: no` so reverse proxies (nginx, Caddy)
+///     don't coalesce SSE frames.
+pub async fn logs(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<LogsQuery>,
+    headers: HeaderMap,
+) -> Response {
+    // Resolve `since` from the query string, falling back to the
+    // browser's auto-supplied Last-Event-ID, then 0.
+    let since = query
+        .since
+        .or_else(|| {
+            headers
+                .get("Last-Event-ID")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+        })
+        .unwrap_or(0);
+
+    // Resolve the per-child handle. None can mean either:
+    //   * the runner doesn't track this id (404), or
+    //   * the entry is adopted and has no pipes (409).
+    let runner = match state.daemon_runner.as_ref() {
+        Some(r) => r,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    let handle = runner.logs_handle(id).await;
+    if handle.is_none() {
+        // Distinguish adopted from missing.
+        if runner.is_managed(id).await {
+            // Should not happen — managed entries always have logs —
+            // but be defensive and surface as a 500 so a future
+            // regression is visible.
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "managed entry without logs handle"})),
+            )
+                .into_response();
+        }
+        // Either id is unknown OR entry is adopted (no pipe).
+        // The brief asks for 404 unknown vs 409 adopted.
+        // `is_managed(id) == false` covers BOTH the missing AND adopted
+        // cases; we need a separate "exists" check.
+        let exists_adopted = registry_has_id(runner, id).await;
+        return if exists_adopted {
+            (
+                StatusCode::CONFLICT,
+                Json(json!({"error": "adopted: no manager-side capture"})),
+            )
+                .into_response()
+        } else {
+            StatusCode::NOT_FOUND.into_response()
+        };
+    }
+    let handle = handle.expect("checked Some above");
+
+    // Replay snapshot.
+    let (replay_entries, gap) = handle.since(since).await;
+    let follow = query.follow == Some(1);
+
+    // Build the replay stream.
+    let mut replay: Vec<Result<Event, Infallible>> = Vec::with_capacity(replay_entries.len() + 1);
+    if let Some(offset) = gap {
+        if let Ok(ev) = Event::default()
+            .event("gap")
+            .json_data(json!({"dropped_until": offset}))
+        {
+            replay.push(Ok(ev));
+        }
+    }
+    for entry in replay_entries {
+        if let Some(ev) = line_event(&entry) {
+            replay.push(Ok(ev));
+        }
+    }
+    let replay_stream = futures::stream::iter(replay);
+
+    if follow {
+        let rx = handle.subscribe();
+        let live = BroadcastStream::new(rx).filter_map(|msg| async move {
+            match msg {
+                Ok(line) => line_event(&line).map(Ok::<_, Infallible>),
+                Err(BroadcastStreamRecvError::Lagged(n)) => Event::default()
+                    .event("lagged")
+                    .json_data(json!({"dropped": n}))
+                    .ok()
+                    .map(Ok::<_, Infallible>),
+            }
+        });
+        let combined = replay_stream.chain(live);
+        let sse = Sse::new(combined).keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keepalive"),
+        );
+        let mut resp = sse.into_response();
+        attach_sse_headers(resp.headers_mut());
+        resp
+    } else {
+        let sse = Sse::new(replay_stream);
+        let mut resp = sse.into_response();
+        attach_sse_headers(resp.headers_mut());
+        resp
+    }
+}
+
+fn attach_sse_headers(headers: &mut HeaderMap) {
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+    );
+    headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
+}
+
+fn line_event(line: &crate::daemon_runner::CapturedLine) -> Option<Event> {
+    let body = String::from_utf8_lossy(&line.bytes);
+    Event::default()
+        .id(line.offset.to_string())
+        .event("line")
+        .json_data(json!({
+            "ts": line.ts,
+            "stream": line.stream,
+            "line": body,
+        }))
+        .ok()
+}
+
+/// True iff the runner tracks `id` regardless of whether it owns the
+/// child. Used to distinguish "not found (404)" from "adopted (409)"
+/// in the SSE logs handler.
+async fn registry_has_id(runner: &std::sync::Arc<DaemonRunner>, id: Uuid) -> bool {
+    runner.status(id).await.is_some()
+}
+
 // ---------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------
@@ -388,6 +564,11 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route("/:id/start", post(start))
         .route("/:id/stop", post(stop))
         .route("/:id/reload", post(reload))
+        // Sibling 3bc8a0d0 — SSE tail of stdout/stderr captured by
+        // log_capture::start_capture. Concrete route, no /*rest catch-all
+        // (b91e9691's merge dropped it), so any unknown sub-path falls
+        // through to the parent's 404.
+        .route("/:id/logs", get(logs))
         .layer(axum::middleware::from_fn_with_state(
             state,
             crate::auth::require_admin,

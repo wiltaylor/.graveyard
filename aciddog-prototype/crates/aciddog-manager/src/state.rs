@@ -4,6 +4,7 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use crate::auth::AuthConfig;
+use crate::daemon_runner::CapturePolicy;
 use crate::reconciler::ReconcilerNotify;
 
 #[derive(Clone)]
@@ -36,6 +37,12 @@ pub struct AppState {
     /// `is_daemon_runner_enabled` is true; otherwise `None`. Wrapped in
     /// `Arc<PathBuf>` so cloning `AppState` (per request) stays cheap.
     pub aciddog_binary: Option<Arc<PathBuf>>,
+    /// Per-child stdio capture policy (sibling 3bc8a0d0). Driven by
+    /// `--daemon-runner-log-max-bytes / --max-files / --ring-bytes`
+    /// (and the matching env vars). Defaulted at construction; main.rs
+    /// overwrites with the CLI-derived value when the gate is on.
+    /// Cheap to clone (three primitives).
+    pub capture_policy: CapturePolicy,
 }
 
 impl AppState {
@@ -53,6 +60,7 @@ impl AppState {
             daemon_runner: None,
             reconciler_notify: Arc::new(ReconcilerNotify::new()),
             aciddog_binary: None,
+            capture_policy: CapturePolicy::default(),
         }
     }
 
