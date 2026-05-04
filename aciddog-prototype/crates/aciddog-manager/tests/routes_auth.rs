@@ -1,6 +1,8 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use aciddog_manager::auth::{AuthConfig, COOKIE_NAME};
+use aciddog_manager::daemon_runner::{CapturePolicy, DaemonRunner};
 use aciddog_manager::model::user;
 use aciddog_manager::{db, routes, state::AppState};
 use axum::body::{to_bytes, Body};
@@ -14,7 +16,16 @@ const PASSWORD: &str = "tester-password";
 async fn router() -> axum::Router {
     let pool = db::connect_memory().await.unwrap();
     user::insert(&pool, USERNAME, PASSWORD).await.unwrap();
-    let state = AppState::new(pool, AuthConfig::default(), PathBuf::from("."), false);
+    let aciddog_binary = Arc::new(PathBuf::from("/bin/true"));
+    let runner = DaemonRunner::new((*aciddog_binary).clone(), CapturePolicy::default());
+    let state = AppState::new(
+        pool,
+        AuthConfig::default(),
+        PathBuf::from("."),
+        aciddog_binary,
+        runner,
+        CapturePolicy::default(),
+    );
     routes::build_router(state)
 }
 

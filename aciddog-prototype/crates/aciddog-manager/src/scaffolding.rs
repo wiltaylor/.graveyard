@@ -12,6 +12,7 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -601,7 +602,7 @@ fn rollback_filesystem(work_dir: &Path, we_created_workdir: bool) {
 /// as a 201 body; this signature is locked.
 ///
 /// Pipeline:
-/// 1. Verify `state.aciddog_binary` is populated (daemon-runner gate).
+/// 1. Read the startup-resolved `state.aciddog_binary`.
 /// 2. [`validate_name`] -> normalised `name`.
 /// 3. [`compute_paths`] -> `work_dir` etc.
 /// 4. [`check_idempotency`] (DB lookup + on-disk inspection).
@@ -621,11 +622,7 @@ pub async fn create_managed_daemon(
     state: &AppState,
     input: CreateManagedDaemonRequest,
 ) -> AppResult<(ManagedDaemonSummary, InstanceSummary)> {
-    let aciddog_binary = state.aciddog_binary.as_ref().ok_or_else(|| {
-        AppError::Remote(anyhow::anyhow!(
-            "aciddog_binary not initialised; daemon-runner gate must be enabled"
-        ))
-    })?;
+    let aciddog_binary = Arc::clone(&state.aciddog_binary);
     let aciddog_binary_path: &Path = aciddog_binary.as_ref();
 
     let name = validate_name(&input.name)?;

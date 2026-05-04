@@ -62,11 +62,7 @@ describe("mobile drawer ARIA and focus", () => {
 
   it("toggles aria-controls and aria-expanded on the hamburger", async () => {
     render(() => (
-      <AppShell
-        username="operator"
-        isDaemonRunnerEnabled={false}
-        onLoggedOut={vi.fn()}
-      />
+      <AppShell username="operator" onLoggedOut={vi.fn()} />
     ));
 
     const trigger = screen.getByRole("button", { name: "Open navigation" });
@@ -86,11 +82,7 @@ describe("mobile drawer ARIA and focus", () => {
 
   it("restores focus to the hamburger after backdrop dismissal", async () => {
     render(() => (
-      <AppShell
-        username="operator"
-        isDaemonRunnerEnabled={false}
-        onLoggedOut={vi.fn()}
-      />
+      <AppShell username="operator" onLoggedOut={vi.fn()} />
     ));
 
     const trigger = screen.getByRole("button", { name: "Open navigation" });

@@ -7,8 +7,6 @@
 //!   `set_desired_state`, etc.).
 //! - **`799b7b92`** — the `daemon_runner` subsystem (registry,
 //!   `spawn`/`stop`/`status`/`adopt`, lifecycle truth-table).
-//! - **`33fc8b7b`** — capability gate (`is_daemon_runner_enabled`,
-//!   `state.daemon_runner: Option<Arc<DaemonRunner>>`).
 //! - **`b91e9691`** — public `/api/managed-daemons` routes; calls
 //!   `state.reconciler_notify.poke(id)` on every successful
 //!   `set_desired_state` write.
@@ -143,19 +141,10 @@ impl Default for ReconcilerNotify {
     }
 }
 
-/// Public entry point — spawn this from `main` after the daemon-runner
-/// gate fires. Owns the reconciler task forever; never returns.
+/// Public entry point — spawn this from `main` after manager startup.
+/// Owns the reconciler task forever; never returns.
 pub async fn run(state: AppState) {
-    let runner = match state.daemon_runner.as_ref() {
-        Some(r) => Arc::clone(r),
-        None => {
-            tracing::error!(
-                "reconciler::run called with daemon_runner = None — \
-                 main.rs mis-wiring; aborting"
-            );
-            return;
-        }
-    };
+    let runner = Arc::clone(&state.daemon_runner);
 
     if let Err(e) = boot_adopt(&state, &runner).await {
         // Don't exit — the tick loop can recover next pass.
@@ -294,13 +283,7 @@ fn jittered_interval(tick: Duration) -> Duration {
 /// state's daemon_runner. Public because `tests/reconciler_smoke.rs`
 /// is an external crate; not part of the stable surface.
 pub async fn run_for_test_boot_only(state: &AppState) -> AppResult<()> {
-    match state.daemon_runner.as_ref() {
-        Some(runner) => boot_adopt(state, &Arc::clone(runner)).await,
-        None => {
-            tracing::warn!("run_for_test_boot_only called with daemon_runner = None");
-            Ok(())
-        }
-    }
+    boot_adopt(state, &Arc::clone(&state.daemon_runner)).await
 }
 
 /// Boot-time adoption pass. For each row in `managed_daemons`:
@@ -783,13 +766,20 @@ mod tests {
     /// Construct an in-memory AppState for unit tests.
     async fn test_state() -> AppState {
         let pool = db::connect_memory().await.expect("memory db");
+        let aciddog_binary = Arc::new(std::path::PathBuf::from("/bin/true"));
+        let runner = DaemonRunner::new(
+            (*aciddog_binary).clone(),
+            crate::daemon_runner::CapturePolicy::default(),
+        );
         AppState::new(
             pool,
             AuthConfig {
                 cookie_secure: false,
             },
             std::env::temp_dir(),
-            true,
+            aciddog_binary,
+            runner,
+            crate::daemon_runner::CapturePolicy::default(),
         )
     }
 

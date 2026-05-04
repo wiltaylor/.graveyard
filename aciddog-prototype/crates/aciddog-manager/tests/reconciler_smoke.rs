@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aciddog_manager::auth::AuthConfig;
-use aciddog_manager::daemon_runner::{DaemonRunner, ObservedState};
+use aciddog_manager::daemon_runner::{CapturePolicy, DaemonRunner, ObservedState};
 use aciddog_manager::db;
 use aciddog_manager::model::managed_daemon::DesiredState;
 use aciddog_manager::reconciler;
@@ -54,19 +54,17 @@ fn write_wrapper(wrapper_path: &Path, shim: &Path, extra_args: &[&str]) {
 /// "the aciddog binary"; it actually exec's the shim.
 async fn build_state_with_runner(wrapper: PathBuf) -> (AppState, Arc<DaemonRunner>) {
     let pool = db::connect_memory().await.expect("memory db");
-    let runner = DaemonRunner::new(
-        wrapper,
-        aciddog_manager::daemon_runner::CapturePolicy::default(),
-    );
-    let mut state = AppState::new(
+    let runner = DaemonRunner::new(wrapper.clone(), CapturePolicy::default());
+    let state = AppState::new(
         pool,
         AuthConfig {
             cookie_secure: false,
         },
         std::env::temp_dir(),
-        true,
+        Arc::new(wrapper),
+        Arc::clone(&runner),
+        CapturePolicy::default(),
     );
-    state.daemon_runner = Some(Arc::clone(&runner));
     (state, runner)
 }
 

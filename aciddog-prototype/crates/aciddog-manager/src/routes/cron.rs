@@ -248,6 +248,7 @@ mod tests {
 
     use chrono::{TimeZone, Utc};
     use serde_json::{json, Value};
+    use std::sync::Arc;
     use tokio::net::TcpListener;
 
     use crate::auth::AuthConfig;
@@ -321,7 +322,19 @@ mod tests {
         )
         .await
         .unwrap();
-        let state = AppState::new(pool, AuthConfig::default(), ".".into(), false);
+        let aciddog_binary = Arc::new(std::path::PathBuf::from("/bin/true"));
+        let runner = crate::daemon_runner::DaemonRunner::new(
+            (*aciddog_binary).clone(),
+            crate::daemon_runner::CapturePolicy::default(),
+        );
+        let state = AppState::new(
+            pool,
+            AuthConfig::default(),
+            ".".into(),
+            aciddog_binary,
+            runner,
+            crate::daemon_runner::CapturePolicy::default(),
+        );
 
         let Json(resp) = list(State(state), Path(instance.id)).await.unwrap();
 

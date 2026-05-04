@@ -180,16 +180,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(protected)
         .merge(skills);
 
-    // ADR-0005 daemon-runner capability gate. When OFF, the
-    // /managed-daemons subtree is not registered at all (404, not
-    // 403 — capability literally absent). When ON, an empty router
-    // with require_admin baked in at the group root is mounted;
-    // sibling b91e9691 will register concrete handlers on top.
-    let api = if state.is_daemon_runner_enabled {
-        api.nest("/managed-daemons", managed_daemons::routes(state.clone()))
-    } else {
-        api
-    };
+    let api = api.nest("/managed-daemons", managed_daemons::routes(state.clone()));
 
     Router::new()
         .nest("/api", api)

@@ -78,15 +78,20 @@ impl Fixture {
         let wrapper_path = data_dir.path().join("aciddog-shim.sh");
         write_wrapper(&wrapper_path, &shim_path(), env);
 
-        let mut state = AppState::new(
+        let runner = aciddog_manager::daemon_runner::DaemonRunner::new(
+            wrapper_path.clone(),
+            aciddog_manager::daemon_runner::CapturePolicy::default(),
+        );
+        let state = AppState::new(
             pool,
             AuthConfig {
                 cookie_secure: false,
             },
             data_dir.path().to_path_buf(),
-            true,
+            Arc::new(wrapper_path),
+            runner,
+            aciddog_manager::daemon_runner::CapturePolicy::default(),
         );
-        state.aciddog_binary = Some(Arc::new(wrapper_path));
 
         let work_dir_root = data_dir.path().join("teams");
 
@@ -467,15 +472,21 @@ async fn env_allowlist_holds() {
     let data_dir = tempfile::tempdir().expect("tempdir");
     let db_path = data_dir.path().join("manager.db");
     let pool = db::connect(&db_path).await.expect("db connect");
-    let mut state = AppState::new(
+    let shim = shim_path();
+    let runner = aciddog_manager::daemon_runner::DaemonRunner::new(
+        shim.clone(),
+        aciddog_manager::daemon_runner::CapturePolicy::default(),
+    );
+    let state = AppState::new(
         pool,
         AuthConfig {
             cookie_secure: false,
         },
         data_dir.path().to_path_buf(),
-        true,
+        Arc::new(shim),
+        runner,
+        aciddog_manager::daemon_runner::CapturePolicy::default(),
     );
-    state.aciddog_binary = Some(Arc::new(shim_path()));
     let work_dir_root = data_dir.path().join("teams");
 
     // Setting an env var here is process-global; other tests don't

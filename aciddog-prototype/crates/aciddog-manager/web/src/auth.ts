@@ -2,11 +2,7 @@ import { request } from "./api";
 
 export interface WhoamiResponse {
   username: string;
-  /// Capability gate: true when the manager process was started with
-  /// `--enable-daemon-runner` (or the env equivalent). Server-side
-  /// field is already populated per decisions/154e9a7d (sibling
-  /// 33fc8b7b, merged at b820a48). Frontend MUST default to `false`
-  /// when absent — fail-closed gate.
+  // @deprecated — kept for one release per ADR-0008 (always true). Will be removed in the follow-up release.
   is_daemon_runner_enabled: boolean;
 }
 

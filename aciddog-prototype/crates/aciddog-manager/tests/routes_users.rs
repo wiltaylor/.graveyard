@@ -1,6 +1,8 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use aciddog_manager::auth::AuthConfig;
+use aciddog_manager::daemon_runner::{CapturePolicy, DaemonRunner};
 use aciddog_manager::model::user;
 use aciddog_manager::{db, routes, state::AppState};
 use axum::body::{to_bytes, Body};
@@ -15,7 +17,16 @@ const BOB: &str = "bob";
 const BOB_PW: &str = "bob-password";
 
 async fn router_with_pool(pool: SqlitePool) -> axum::Router {
-    let state = AppState::new(pool, AuthConfig::default(), PathBuf::from("."), false);
+    let aciddog_binary = Arc::new(PathBuf::from("/bin/true"));
+    let runner = DaemonRunner::new((*aciddog_binary).clone(), CapturePolicy::default());
+    let state = AppState::new(
+        pool,
+        AuthConfig::default(),
+        PathBuf::from("."),
+        aciddog_binary,
+        runner,
+        CapturePolicy::default(),
+    );
     routes::build_router(state)
 }
 

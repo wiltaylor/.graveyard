@@ -26,10 +26,8 @@ pub struct ChangePasswordRequest {
 #[derive(Debug, Serialize)]
 pub struct UserResponse {
     pub username: String,
-    /// ADR-0005 daemon-runner capability. Echoed from
-    /// `AppState::is_daemon_runner_enabled` so the frontend can
-    /// gate UI on bootstrap (login + whoami) without a separate
-    /// capabilities probe.
+    /// TODO(follow-up): remove this field one release after ADR-0008
+    /// (deprecation window per ADR-0008 §Migration). Hardcoded true.
     pub is_daemon_runner_enabled: bool,
 }
 
@@ -56,7 +54,7 @@ pub async fn login(
         StatusCode::OK,
         Json(UserResponse {
             username: row.username,
-            is_daemon_runner_enabled: state.is_daemon_runner_enabled,
+            is_daemon_runner_enabled: true,
         }),
     )
         .into_response();
@@ -90,7 +88,7 @@ pub async fn whoami(State(state): State<AppState>, req: Request) -> AppResult<Js
     };
     Ok(Json(UserResponse {
         username: user.username,
-        is_daemon_runner_enabled: state.is_daemon_runner_enabled,
+        is_daemon_runner_enabled: true,
     }))
 }
 

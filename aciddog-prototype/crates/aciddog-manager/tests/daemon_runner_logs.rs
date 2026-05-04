@@ -63,15 +63,17 @@ fn write_wrapper(wrapper_path: &Path, shim: &Path, extra_args: &[&str]) {
 }
 
 async fn build_router_with_runner(pool: SqlitePool, runner: Arc<DaemonRunner>) -> axum::Router {
-    let mut state = AppState::new(
+    let aciddog_binary = Arc::new(PathBuf::from("/bin/true"));
+    let state = AppState::new(
         pool,
         AuthConfig {
             cookie_secure: false,
         },
         PathBuf::from("."),
-        true,
+        aciddog_binary,
+        runner,
+        aciddog_manager::daemon_runner::CapturePolicy::default(),
     );
-    state.daemon_runner = Some(runner);
     routes::build_router(state)
 }
 

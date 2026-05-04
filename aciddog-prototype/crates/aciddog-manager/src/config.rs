@@ -39,25 +39,9 @@ pub struct CliArgs {
     #[arg(long, env = "ACIDDOG_MANAGER_COOKIE_SECURE", global = true)]
     pub cookie_secure: bool,
 
-    /// Enable the daemon-runner capability (ADR-0005).
-    ///
-    /// Presence of either the CLI flag or the env var (any value, including empty)
-    /// turns this ON; default is OFF. Mirrors the cookie_secure precedent — see
-    /// the cookie_secure field in this file for the same bool+env shape.
-    ///
-    /// When OFF, the router skips /api/managed-daemons entirely (404, not 403 —
-    /// the capability is literally absent) and the reconciler/daemon_runner
-    /// subsystem is not started. When ON, /api/managed-daemons gets the
-    /// require_admin layer at group root (concrete handlers land in sibling
-    /// b91e9691).
-    #[arg(long, env = "ACIDDOG_MANAGER_ENABLE_DAEMON_RUNNER", global = true)]
-    pub enable_daemon_runner: bool,
-
     /// Path to the `aciddog` binary used to spawn managed daemon
-    /// children. When unset the runner falls back to its 3-tier
-    /// resolver: sibling-of-current-exe, then PATH walk. Wired through
-    /// `daemon_runner::resolve_aciddog_binary` once sibling 33fc8b7b
-    /// flips the gate.
+    /// children. When unset the manager resolves it from a sibling
+    /// binary, then PATH.
     #[arg(long, env = "ACIDDOG_BINARY", global = true)]
     pub aciddog_binary: Option<PathBuf>,
 

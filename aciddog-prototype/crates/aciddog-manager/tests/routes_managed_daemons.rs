@@ -1,21 +1,14 @@
-//! ADR-0005 daemon-runner capability gate tests + route-handler tests
-//! for `/api/managed-daemons`.
+//! Always-on daemon-runner route-handler tests for
+//! `/api/managed-daemons`.
 //!
-//! The first half of this file is the smoke-test suite from sibling
-//! 33fc8b7b (gate ON/OFF, whoami, login response). The second half is
-//! sibling b91e9691: list / get_one / start / stop / reload / delete
-//! + the 501 stub for the create handler.
-//!
-//! Pins owned by 33fc8b7b's slice (not duplicated here):
-//! - Gate OFF: `/api/managed-daemons*` is literally absent → 404.
-//! - Gate ON, no session: → 401.
-//! - whoami / login responses echo `is_daemon_runner_enabled`.
+//! The first half of this file covers route registration, auth, and the
+//! one-release auth response compatibility field. The second half is
+//! list / get_one / start / stop / reload / delete + create.
 //!
 //! ## daemon_runner injection in tests
 //!
-//! `state.daemon_runner` is `Option<Arc<DaemonRunner>>` and `DaemonRunner`
-//! is a CONCRETE type (no trait), so we cannot substitute a mock. Two
-//! integration paths are used:
+//! `DaemonRunner` is a CONCRETE type (no trait), so we cannot substitute
+//! a mock. Two integration paths are used:
 //!
 //! - `adopt(id, socket_path)` against a pre-bound `tokio::net::UnixListener`
 //!   gives us an entry whose `status(id)` returns `ObservedState::Running`
@@ -44,7 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aciddog_manager::auth::AuthConfig;
-use aciddog_manager::daemon_runner::DaemonRunner;
+use aciddog_manager::daemon_runner::{CapturePolicy, DaemonRunner};
 use aciddog_manager::model::managed_daemon::{self, CreateManagedDaemon};
 use aciddog_manager::model::user;
 use aciddog_manager::{db, routes, state::AppState};
@@ -59,6 +52,40 @@ use uuid::Uuid;
 
 const ADMIN: &str = "admin";
 const ADMIN_PW: &str = "admin-password";
+const NON_ADMIN: &str = "alice";
+const NON_ADMIN_PW: &str = "alice-password";
+
+const ADMIN_PROTECTED_ROUTES: &[(Method, &str)] = &[
+    (Method::GET, "/api/managed-daemons"),
+    (Method::POST, "/api/managed-daemons"),
+    (
+        Method::GET,
+        "/api/managed-daemons/00000000-0000-0000-0000-000000000001",
+    ),
+    (
+        Method::DELETE,
+        "/api/managed-daemons/00000000-0000-0000-0000-000000000001",
+    ),
+    (
+        Method::POST,
+        "/api/managed-daemons/00000000-0000-0000-0000-000000000001/start",
+    ),
+    (
+        Method::POST,
+        "/api/managed-daemons/00000000-0000-0000-0000-000000000001/stop",
+    ),
+    (
+        Method::POST,
+        "/api/managed-daemons/00000000-0000-0000-0000-000000000001/reload",
+    ),
+    (
+        Method::GET,
+        "/api/managed-daemons/00000000-0000-0000-0000-000000000001/logs",
+    ),
+];
+// MIRROR of routes/managed_daemons.rs require_admin layer (lines 560-576).
+// If you add a route there, add it here.
+// require_admin coverage regression per security_consultant on ADR-0008 (TODO 85e34b7d).
 
 // ---------------------------------------------------------------------
 // Shared test harness (mirrors `tests/routes_instances.rs` shape).
@@ -67,24 +94,23 @@ const ADMIN_PW: &str = "admin-password";
 // is a follow-up for the next slice that touches both files.
 // ---------------------------------------------------------------------
 
-async fn router_with_gate(is_daemon_runner_enabled: bool) -> axum::Router {
+async fn router_for_tests() -> axum::Router {
     let pool = db::connect_memory().await.unwrap();
     user::insert(&pool, ADMIN, ADMIN_PW).await.unwrap();
-    build_router(pool, is_daemon_runner_enabled, None)
+    let runner = DaemonRunner::new(PathBuf::from("/bin/true"), CapturePolicy::default());
+    build_router(pool, runner)
 }
 
-fn build_router(
-    pool: SqlitePool,
-    is_daemon_runner_enabled: bool,
-    daemon_runner: Option<Arc<DaemonRunner>>,
-) -> axum::Router {
-    let mut state = AppState::new(
+fn build_router(pool: SqlitePool, daemon_runner: Arc<DaemonRunner>) -> axum::Router {
+    let aciddog_binary = Arc::new(PathBuf::from("/bin/true"));
+    let state = AppState::new(
         pool,
         AuthConfig::default(),
         PathBuf::from("."),
-        is_daemon_runner_enabled,
+        aciddog_binary,
+        daemon_runner,
+        CapturePolicy::default(),
     );
-    state.daemon_runner = daemon_runner;
     routes::build_router(state)
 }
 
@@ -102,14 +128,18 @@ fn cookie_from_set_cookie(raw: &str) -> String {
 }
 
 async fn login_and_get_cookie(app: &axum::Router) -> String {
+    login_and_get_cookie_for(app, ADMIN, ADMIN_PW).await
+}
+
+async fn login_and_get_cookie_for(app: &axum::Router, username: &str, password: &str) -> String {
     let resp = app
         .clone()
         .oneshot(login_request(
-            json!({"username": ADMIN, "password": ADMIN_PW}),
+            json!({ "username": username, "password": password }),
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "admin login should succeed");
+    assert_eq!(resp.status(), StatusCode::OK, "login should succeed");
     cookie_from_set_cookie(
         resp.headers()
             .get("set-cookie")
@@ -158,6 +188,23 @@ fn post_json_with_cookie(uri: &str, body: Value, cookie: &str) -> Request<Body> 
 fn delete_with_cookie(uri: &str, cookie: &str) -> Request<Body> {
     Request::builder()
         .method(Method::DELETE)
+        .uri(uri)
+        .header("cookie", cookie)
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn request_without_cookie(method: Method, uri: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn request_with_cookie(method: Method, uri: &str, cookie: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
         .uri(uri)
         .header("cookie", cookie)
         .body(Body::empty())
@@ -243,11 +290,8 @@ async fn router_with_runner(workdir: &Path) -> (axum::Router, SqlitePool, Arc<Da
         &shim_path(),
         &["--socket", socket_path.to_str().unwrap()],
     );
-    let runner = DaemonRunner::new(
-        wrapper,
-        aciddog_manager::daemon_runner::CapturePolicy::default(),
-    );
-    let router = build_router(pool.clone(), true, Some(runner.clone()));
+    let runner = DaemonRunner::new(wrapper.clone(), CapturePolicy::default());
+    let router = build_router(pool.clone(), runner.clone());
     (router, pool, runner)
 }
 
@@ -294,12 +338,12 @@ async fn wait_for_state(
 }
 
 // ---------------------------------------------------------------------
-// 33fc8b7b smoke tests (unchanged from the foundation slice)
+// Always-on route smoke tests and auth compatibility assertions.
 // ---------------------------------------------------------------------
 
 #[tokio::test]
-async fn gate_off_returns_404_on_managed_daemons_route() {
-    let app = router_with_gate(false).await;
+async fn routes_present_in_router_smoke() {
+    let app = router_for_tests().await;
     let resp = app
         .oneshot(
             Request::builder()
@@ -310,15 +354,12 @@ async fn gate_off_returns_404_on_managed_daemons_route() {
         )
         .await
         .unwrap();
-    // Capability literally absent — NOT 403, NOT 401. The /managed-daemons
-    // subtree was not nested into /api, so axum's fallback (the static
-    // assets handler) returns 404.
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_ne!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn gate_on_with_no_session_returns_401() {
-    let app = router_with_gate(true).await;
+async fn no_session_returns_401() {
+    let app = router_for_tests().await;
     let resp = app
         .oneshot(
             Request::builder()
@@ -333,30 +374,42 @@ async fn gate_on_with_no_session_returns_401() {
 }
 
 #[tokio::test]
-async fn whoami_reports_capability_off() {
-    let app = router_with_gate(false).await;
-    let cookie = login_and_get_cookie(&app).await;
+async fn every_managed_daemon_route_requires_admin() {
+    let pool = db::connect_memory().await.unwrap();
+    user::insert(&pool, ADMIN, ADMIN_PW).await.unwrap();
+    user::insert(&pool, NON_ADMIN, NON_ADMIN_PW).await.unwrap();
+    let runner = DaemonRunner::new(PathBuf::from("/bin/true"), CapturePolicy::default());
+    let app = build_router(pool, runner);
+    let non_admin_cookie = login_and_get_cookie_for(&app, NON_ADMIN, NON_ADMIN_PW).await;
 
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/api/auth/whoami")
-                .header("cookie", &cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["username"], json!(ADMIN));
-    assert_eq!(body["is_daemon_runner_enabled"], json!(false));
+    for (method, uri) in ADMIN_PROTECTED_ROUTES {
+        let no_session = app
+            .clone()
+            .oneshot(request_without_cookie(method.clone(), uri))
+            .await
+            .unwrap();
+        assert_eq!(
+            no_session.status(),
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri} without a session must return 401"
+        );
+
+        let non_admin = app
+            .clone()
+            .oneshot(request_with_cookie(method.clone(), uri, &non_admin_cookie))
+            .await
+            .unwrap();
+        assert_eq!(
+            non_admin.status(),
+            StatusCode::FORBIDDEN,
+            "{method} {uri} with a non-admin session must return 403"
+        );
+    }
 }
 
 #[tokio::test]
-async fn whoami_reports_capability_on() {
-    let app = router_with_gate(true).await;
+async fn whoami_reports_capability() {
+    let app = router_for_tests().await;
     let cookie = login_and_get_cookie(&app).await;
 
     let resp = app
@@ -373,12 +426,13 @@ async fn whoami_reports_capability_on() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["username"], json!(ADMIN));
+    // Compatibility-window assertion per ADR-0008. Field is hardcoded true server-side.
     assert_eq!(body["is_daemon_runner_enabled"], json!(true));
 }
 
 #[tokio::test]
-async fn login_response_echoes_capability_on() {
-    let app = router_with_gate(true).await;
+async fn login_response_echoes_capability() {
+    let app = router_for_tests().await;
     let resp = app
         .oneshot(login_request(
             json!({"username": ADMIN, "password": ADMIN_PW}),
@@ -388,6 +442,7 @@ async fn login_response_echoes_capability_on() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["username"], json!(ADMIN));
+    // Compatibility-window assertion per ADR-0008. Field is hardcoded true server-side.
     assert_eq!(body["is_daemon_runner_enabled"], json!(true));
 }
 

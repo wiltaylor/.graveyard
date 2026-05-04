@@ -48,6 +48,8 @@ The SQLite database auto-migrates on startup. Migrations live under `crates/acid
 | `--data-dir`   | `ACIDDOG_MANAGER_DATA`        | `./aciddog-manager-data`               | Skills catalog and marketplace clones. |
 | `--cookie-secure` | `ACIDDOG_MANAGER_COOKIE_SECURE` | off                              | Add `Secure` to session cookie. Turn on when fronted by TLS. |
 
+The daemon-runner subsystem is always enabled (ADR-0008). It has no on/off knob; only the three log-rotation knobs (`ACIDDOG_MANAGER_DAEMON_LOG_*`) and `--aciddog-binary` remain configurable.
+
 Open `http://127.0.0.1:7000` once it's running; log in with the username/password set above.
 
 ## Manager ↔ daemon relationship

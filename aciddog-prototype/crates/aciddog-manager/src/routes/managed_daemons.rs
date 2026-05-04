@@ -116,18 +116,8 @@ pub struct CreateManagedDaemonRequest {
 // Helpers
 // ---------------------------------------------------------------------
 
-/// Resolve the runtime daemon-runner or fail with a 500.
-///
-/// This branch should be unreachable in production: the gate at
-/// `routes/mod.rs` only nests `/managed-daemons` when
-/// `is_daemon_runner_enabled = true`, and `main.rs` is responsible for
-/// constructing the runner under the same gate. If we get here with a
-/// `None` runner, the binary was misconfigured.
 fn require_runner(state: &AppState) -> AppResult<&std::sync::Arc<DaemonRunner>> {
-    state
-        .daemon_runner
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("daemon_runner not initialised".into()))
+    Ok(&state.daemon_runner)
 }
 
 /// Best-effort lookup of the paired `instances.id` for a managed daemon.
@@ -229,18 +219,7 @@ pub async fn delete(
         return Err(resp);
     }
 
-    let runner = match state.daemon_runner.as_ref() {
-        Some(r) => r,
-        None => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "ok": false,
-                    "error": "daemon_runner not initialised"
-                })),
-            ));
-        }
-    };
+    let runner = &state.daemon_runner;
 
     match runner.stop(id, DELETE_GRACE).await {
         Ok(()) => match managed_daemon::delete_with_paired_instance(&state.pool, id).await {
@@ -425,10 +404,7 @@ pub async fn logs(
     // Resolve the per-child handle. None can mean either:
     //   * the runner doesn't track this id (404), or
     //   * the entry is adopted and has no pipes (409).
-    let runner = match state.daemon_runner.as_ref() {
-        Some(r) => r,
-        None => return StatusCode::NOT_FOUND.into_response(),
-    };
+    let runner = &state.daemon_runner;
 
     let handle = runner.logs_handle(id).await;
     if handle.is_none() {

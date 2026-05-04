@@ -29,10 +29,9 @@ pub enum AppError {
     #[error("remote: {0}")]
     Remote(#[from] anyhow::Error),
 
-    /// Internal misconfiguration / impossible-state. Maps to 500. Used by
-    /// `routes/managed_daemons.rs` when the daemon-runner gate is on but
-    /// the runtime `state.daemon_runner` was never wired (config bug —
-    /// should never fire in production once `main.rs` initialises it).
+    /// Internal misconfiguration / impossible-state. Maps to 500. Used
+    /// by handlers when runtime invariants that should be established at
+    /// startup are missing.
     #[error("internal: {0}")]
     Internal(String),
 }

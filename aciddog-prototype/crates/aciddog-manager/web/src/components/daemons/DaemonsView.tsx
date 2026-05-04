@@ -34,9 +34,8 @@ interface Props {
 /// 4xx/5xx) surface verbatim in the same warning Toast — request<T>
 /// already maps the server's error string into `err.message`.
 ///
-/// NOTE: this component is only ever mounted under
-/// `<Show when={isDaemonRunnerEnabled && activeTab === 'daemons'}>` in
-/// AppShell. When the gate is off the polling timer never starts.
+/// NOTE: this component is only ever mounted under the active Daemons
+/// tab in AppShell.
 export default function DaemonsView(props: Props): JSX.Element {
   const [daemons, { refetch }] = createResource<ManagedDaemonView[]>(() =>
     api.listManagedDaemons(),

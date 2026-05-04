@@ -1,12 +1,11 @@
 /*
-Seven cases covering the Daemons tab slice (task f5f708a1):
-  1. gate_off_omits_daemons_tab
-  2. gate_on_renders_daemons_tab
-  3. list_renders_two_rows_with_correct_pill_tones
-  4. action_button_affordance_running_vs_stopped
-  5. delete_confirm_flow
-  6. scaffold_wizard_invalid_name_does_not_post
-  7. scaffold_wizard_409_keeps_modal_open
+Six cases covering the Daemons tab slice (task f5f708a1):
+  1. renders_daemons_tab
+  2. list_renders_two_rows_with_correct_pill_tones
+  3. action_button_affordance_running_vs_stopped
+  4. delete_confirm_flow
+  5. scaffold_wizard_invalid_name_does_not_post
+  6. scaffold_wizard_409_keeps_modal_open
 
 Mock + render idiom mirrors PickerFilters.test.tsx — vi.hoisted() factory
 plus vi.mock('../../api') so the module-level `api` import inside the
@@ -180,29 +179,9 @@ async function selectFixtureInstance(): Promise<void> {
   });
 }
 
-describe("Daemons tab — gate-conditional rendering", () => {
-  it("gate_off_omits_daemons_tab", async () => {
-    render(() => (
-      <AppShell
-        username="tester"
-        isDaemonRunnerEnabled={false}
-        onLoggedOut={() => {}}
-      />
-    ));
-
-    await selectFixtureInstance();
-
-    expect(screen.queryByRole("tab", { name: /Daemons/i })).toBeNull();
-  });
-
-  it("gate_on_renders_daemons_tab", async () => {
-    render(() => (
-      <AppShell
-        username="tester"
-        isDaemonRunnerEnabled={true}
-        onLoggedOut={() => {}}
-      />
-    ));
+describe("Daemons tab rendering", () => {
+  it("renders_daemons_tab", async () => {
+    render(() => <AppShell username="tester" onLoggedOut={() => {}} />);
 
     await selectFixtureInstance();
 

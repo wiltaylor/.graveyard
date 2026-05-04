@@ -68,15 +68,17 @@ async fn build_state() -> (AppState, Arc<DaemonRunner>) {
         std::path::PathBuf::from("/bin/true"),
         CapturePolicy::default(),
     );
-    let mut state = AppState::new(
+    let aciddog_binary = Arc::new(std::path::PathBuf::from("/bin/true"));
+    let state = AppState::new(
         pool,
         AuthConfig {
             cookie_secure: false,
         },
         std::env::temp_dir(),
-        true,
+        aciddog_binary,
+        Arc::clone(&runner),
+        CapturePolicy::default(),
     );
-    state.daemon_runner = Some(Arc::clone(&runner));
     (state, runner)
 }
 

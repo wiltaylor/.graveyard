@@ -1,7 +1,6 @@
 import {
   Show,
   createEffect,
-  createMemo,
   createResource,
   createSignal,
   type JSX,
@@ -46,11 +45,6 @@ import type {
 
 interface Props {
   username: string;
-  /// Capability gate sourced from `whoami().is_daemon_runner_enabled`
-  /// (decisions/154e9a7d, sibling 33fc8b7b). When false the Daemons
-  /// tab MUST be structurally absent — no DOM node, no listeners,
-  /// no polling. Fail-closed default in App.tsx.
-  isDaemonRunnerEnabled: boolean;
   onLoggedOut: () => void;
 }
 
@@ -74,13 +68,8 @@ const BASE_TABS: TabItem<TabId>[] = [
   { id: "cron", label: "Cron", icon: "clock" },
   { id: "inbox", label: "Inbox", icon: "bell" },
   { id: "memory", label: "Memory", icon: "database" },
+  { id: "daemons", label: "Daemons", icon: "cpu" },
 ];
-
-const DAEMONS_TAB: TabItem<TabId> = {
-  id: "daemons",
-  label: "Daemons",
-  icon: "cpu",
-};
 
 export default function AppShell(props: Props): JSX.Element {
   const [instances, { refetch: refetchInstances }] = createResource<
@@ -98,13 +87,6 @@ export default function AppShell(props: Props): JSX.Element {
   const [showAddInstance, setShowAddInstance] = createSignal(false);
   const [drawerOpen, setDrawerOpen] = createSignal(false);
 
-  // Conditional tab strip — when the gate is OFF the Daemons entry
-  // is structurally absent. Reactive memo so toggling the prop in
-  // tests / live re-renders flips the tab strip without remounting
-  // the rest of the shell.
-  const tabs = createMemo<TabItem<TabId>[]>(() =>
-    props.isDaemonRunnerEnabled ? [...BASE_TABS, DAEMONS_TAB] : BASE_TABS,
-  );
   let triggerRef: HTMLButtonElement | undefined;
   const closeDrawer = () => setDrawerOpen(false);
 
@@ -437,7 +419,7 @@ export default function AppShell(props: Props): JSX.Element {
                 }}
               >
                 <Tabs
-                  items={tabs()}
+                  items={BASE_TABS}
                   active={activeTab()}
                   iconOnlyOnMobile
                   onChange={(id) => {
@@ -549,22 +531,7 @@ export default function AppShell(props: Props): JSX.Element {
                   <MemoryView instanceId={inst().id} />
                 </Show>
 
-                {/*
-                  Daemons tab — gated on `isDaemonRunnerEnabled`. The
-                  outer `<Show>` over the `tabs()` memo already keeps
-                  the entry out of the tab strip when the gate is off,
-                  but we ALSO guard the content arm so a stale
-                  `activeTab() === 'daemons'` (e.g. someone clicking
-                  before the prop reactively updated) cannot mount the
-                  pane and start polling. Structural absence is the
-                  contract; the createResource inside DaemonsView only
-                  ever runs while this Show arm is true.
-                */}
-                <Show
-                  when={
-                    props.isDaemonRunnerEnabled && activeTab() === "daemons"
-                  }
-                >
+                <Show when={activeTab() === "daemons"}>
                   <DaemonsView
                     onOpenInChat={(instanceId) => {
                       setSelectedId(instanceId);
