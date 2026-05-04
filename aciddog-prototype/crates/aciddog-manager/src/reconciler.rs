@@ -46,8 +46,9 @@ use uuid::Uuid;
 
 use crate::client::Client;
 use crate::daemon_runner::{
-    self, next_action, AdoptOutcome, DaemonRunner, DaemonRunnerControl, DaemonRunnerError,
-    ManagedDaemonRow as RunnerRow, ObservedState, ReconcilerAction,
+    self, idle_timeout_action, next_action, ActivityTracker, AdoptOutcome, DaemonRunner,
+    DaemonRunnerControl, DaemonRunnerError, ManagedDaemonRow as RunnerRow, ObservedState,
+    ReconcilerAction,
 };
 use crate::error::AppResult;
 use crate::model::{instance::InstanceRow, managed_daemon};
@@ -193,9 +194,22 @@ pub async fn tick_once<R: DaemonRunnerControl>(
     runner: &R,
     backoff_state: &Arc<Mutex<HashMap<Uuid, ReconcilerRowState>>>,
 ) -> Result<(), ()> {
+    // Resolve the activity tracker once per tick (cheap Arc clone).
+    // `None` when the daemon-runner capability is disabled — the
+    // idle-timeout sweep then short-circuits.
+    let tracker = state.activity_tracker();
     match managed_daemon::list(&state.pool).await {
         Ok(rows) => {
             for row in rows {
+                // ADR-0004 §Activity-tracking / edeb7d11 — idle-timeout
+                // sweep before the standard reconcile pass. Writes
+                // `desired_state = Stopped` on rows that have been idle
+                // longer than their configured `idle_timeout_secs`;
+                // `next_action` then maps the now-stale `(Stopped,
+                // Running)` pair to `Stop` on the next tick.
+                if let Some(t) = tracker.as_ref() {
+                    apply_idle_timeout(&state.pool, runner, &row, t).await;
+                }
                 reconcile_one(runner, &row, backoff_state).await;
             }
             Ok(())
@@ -203,6 +217,66 @@ pub async fn tick_once<R: DaemonRunnerControl>(
         Err(e) => {
             tracing::error!(error = %e, "reconciler: failed to list managed_daemons");
             Err(())
+        }
+    }
+}
+
+/// Per-row idle-timeout policy. Reads the row's observed state via
+/// `runner.status`, the row's `idle_timeout_secs`, and the tracker's
+/// `last_touched(id)` — when the policy says `Some(Stopped)`, persists
+/// `desired_state = Stopped` and forgets the tracker entry so the
+/// next tick observes `(Stopped, Running)` and dispatches `Stop`.
+///
+/// No-op when:
+///   * the row has no `idle_timeout_secs`,
+///   * the row was never seeded (race: created mid-tick or runner
+///     rebuilt — the next `spawn`/`adopt` will seed),
+///   * observed != Running, or
+///   * `now - last_touched <= idle`.
+async fn apply_idle_timeout<R: DaemonRunnerControl>(
+    pool: &sqlx::SqlitePool,
+    runner: &R,
+    summary: &managed_daemon::ManagedDaemonSummary,
+    tracker: &Arc<ActivityTracker>,
+) {
+    let secs = match summary.idle_timeout_secs {
+        Some(s) => s,
+        None => return,
+    };
+    let observed = runner
+        .status(summary.id)
+        .await
+        .unwrap_or(ObservedState::Stopped);
+    if observed != ObservedState::Running {
+        return;
+    }
+    let last = match tracker.last_touched(summary.id) {
+        Some(t) => t,
+        None => return,
+    };
+    let idle = Duration::from_secs(secs as u64);
+    let now = tokio::time::Instant::now();
+    if let Some(new_desired) = idle_timeout_action(Some(idle), observed, last, now) {
+        let model_state = match new_desired {
+            daemon_runner::DesiredState::Stopped => managed_daemon::DesiredState::Stopped,
+            daemon_runner::DesiredState::Running => managed_daemon::DesiredState::Running,
+        };
+        match managed_daemon::set_desired_state(pool, summary.id, model_state).await {
+            Ok(()) => {
+                tracker.forget(summary.id);
+                tracing::info!(
+                    daemon_id = %summary.id,
+                    idle_secs = secs,
+                    "reconciler: idle-timeout flipped desired_state to stopped"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    daemon_id = %summary.id,
+                    error = %e,
+                    "reconciler: idle-timeout set_desired_state failed"
+                );
+            }
         }
     }
 }
@@ -348,6 +422,11 @@ async fn probe_health(socket_path: &str) -> bool {
         socket_path: Some(socket_path.to_string()),
         api_key: None,
         tls_ca_path: None,
+        // Health probes are intentionally side-effect-free — even
+        // when the row IS managed, we don't want the bootstrap probe
+        // to count as activity (the seed-on-adopt hook is the
+        // canonical source of the initial last_touched timestamp).
+        managed_by_id: None,
         created_at: String::new(),
     };
     let client = match Client::from_row(&row) {

@@ -330,6 +330,7 @@ pub async fn insert_with_paired_instance(
         socket_path: Some(input.socket_path),
         api_key: None,
         tls_ca_path: None,
+        managed_by_id: Some(daemon_id_str.clone()),
         created_at: now_str,
     };
     let instance_summary = InstanceSummary::from_row(instance_row)?;

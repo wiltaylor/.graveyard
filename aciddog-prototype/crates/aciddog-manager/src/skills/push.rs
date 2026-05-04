@@ -96,7 +96,7 @@ async fn push_one(
 
 pub async fn load_instance_row(pool: &SqlitePool, id: Uuid) -> AppResult<InstanceRow> {
     let row = sqlx::query_as::<_, InstanceRow>(
-        "SELECT id, name, transport, url, socket_path, api_key, tls_ca_path, created_at FROM instances WHERE id = ?1",
+        "SELECT id, name, transport, url, socket_path, api_key, tls_ca_path, managed_by_id, created_at FROM instances WHERE id = ?1",
     )
     .bind(id.to_string())
     .fetch_optional(pool)

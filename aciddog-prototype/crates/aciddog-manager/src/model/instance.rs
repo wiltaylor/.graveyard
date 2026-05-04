@@ -39,6 +39,13 @@ pub struct InstanceRow {
     pub socket_path: Option<String>,
     pub api_key: Option<String>,
     pub tls_ca_path: Option<String>,
+    /// `Some(daemon_uuid)` when this instance row is paired with a
+    /// `managed_daemons` row (column has been in the schema since
+    /// migration 0005). The IPC client chokepoint uses this to decide
+    /// whether to record a `last_touched` activity tick — a touch is
+    /// only meaningful for daemons under the manager's idle-timeout
+    /// policy. ADR-0004 §Activity-tracking.
+    pub managed_by_id: Option<String>,
     pub created_at: String,
 }
 
@@ -184,7 +191,7 @@ pub async fn insert(pool: &SqlitePool, input: CreateInstance) -> AppResult<Insta
 
 pub async fn list(pool: &SqlitePool) -> AppResult<Vec<InstanceSummary>> {
     let rows: Vec<InstanceRow> = sqlx::query_as(
-        "SELECT id, name, transport, url, socket_path, api_key, tls_ca_path, created_at
+        "SELECT id, name, transport, url, socket_path, api_key, tls_ca_path, managed_by_id, created_at
          FROM instances ORDER BY name ASC",
     )
     .fetch_all(pool)
@@ -194,7 +201,7 @@ pub async fn list(pool: &SqlitePool) -> AppResult<Vec<InstanceSummary>> {
 
 pub async fn fetch(pool: &SqlitePool, id: Uuid) -> AppResult<InstanceRow> {
     let row: Option<InstanceRow> = sqlx::query_as(
-        "SELECT id, name, transport, url, socket_path, api_key, tls_ca_path, created_at
+        "SELECT id, name, transport, url, socket_path, api_key, tls_ca_path, managed_by_id, created_at
          FROM instances WHERE id = ?1",
     )
     .bind(id.to_string())

@@ -42,6 +42,11 @@ nix = { version = "0.29", features = ["signal"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tempfile = "3"
+# Enables `tokio::time::pause`, `advance`, and the `start_paused = true`
+# attribute (gated behind `test-util` feature). Used by the
+# idle-timeout integration tests + activity-tracker unit tests
+# (ADR-0004 §Activity-tracking, edeb7d11).
+tokio = { version = "1", features = ["test-util"] }
 
 [[bin]]
 name = "aciddog-manager"

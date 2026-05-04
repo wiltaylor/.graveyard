@@ -9,6 +9,7 @@
 //! `status(id) / reload(id) / stop(id, timeout) / spawn(row) /
 //! adopt(id, socket_path)`.
 
+mod activity;
 mod lifecycle;
 mod log_capture;
 mod process;
@@ -28,7 +29,8 @@ use uuid::Uuid;
 
 use registry::{ChildHandle, Registry};
 
-pub use lifecycle::{next_action, ReconcilerAction};
+pub use activity::ActivityTracker;
+pub use lifecycle::{idle_timeout_action, next_action, ReconcilerAction};
 pub use log_capture::{
     CapturePolicy, CapturedLine, OptionalCapturePolicy, RingBufferHandle, Stream,
 };
@@ -159,6 +161,11 @@ pub struct DaemonRunner {
     aciddog_binary: PathBuf,
     capture_policy: CapturePolicy,
     registry: Registry,
+    /// Per-managed-daemon `last_touched: Instant` map. ADR-0004
+    /// §Activity-tracking — seeded on `spawn`/`adopt`, touched by the
+    /// IPC client chokepoint, forgotten on successful `stop` and on
+    /// reconciler-driven idle flips.
+    activity: Arc<ActivityTracker>,
 }
 
 impl DaemonRunner {
@@ -175,7 +182,15 @@ impl DaemonRunner {
             aciddog_binary,
             capture_policy,
             registry: Registry::new(),
+            activity: ActivityTracker::new(),
         })
+    }
+
+    /// Hand out a clone of the `Arc<ActivityTracker>` so the
+    /// reconciler tick and the IPC client chokepoint can share the
+    /// same map.
+    pub fn activity_tracker(&self) -> Arc<ActivityTracker> {
+        Arc::clone(&self.activity)
     }
 
     /// Spawn a fresh `aciddog daemon` child for `row`.
@@ -230,6 +245,11 @@ impl DaemonRunner {
             return Err(DaemonRunnerError::AlreadyTracked(row.id));
         }
 
+        // ADR-0004 §Activity-tracking / edeb7d11: seed last_touched so
+        // the start itself counts as activity. Outside the registry
+        // guard's closure (the tracker uses its own lock).
+        self.activity.seed(row.id);
+
         // Spawn the background watcher with a Weak back-pointer so it
         // does not pin the runner in memory.
         let weak: Weak<Self> = Arc::downgrade(self);
@@ -262,7 +282,10 @@ impl DaemonRunner {
         };
 
         if matches!(state, ObservedState::Stopped) {
-            // Idempotent: already stopped.
+            // Idempotent: already stopped. ADR-0004 §Activity-tracking
+            // / edeb7d11: drop the entry so a future re-spawn under
+            // the same Uuid restarts the clock from scratch.
+            self.activity.forget(id);
             return Ok(());
         }
         if !child_some {
@@ -292,6 +315,9 @@ impl DaemonRunner {
             // Concurrent stop drained it first. Treat as success.
             None => {
                 self.registry.remove(id).await;
+                // ADR-0004 §Activity-tracking / edeb7d11: forget on
+                // success so a future re-spawn restarts the clock.
+                self.activity.forget(id);
                 return Ok(());
             }
         };
@@ -310,6 +336,9 @@ impl DaemonRunner {
                 .with_handle_mut(id, |h| h.state = ObservedState::Stopped)
                 .await;
             self.registry.remove(id).await;
+            // ADR-0004 §Activity-tracking / edeb7d11: forget on
+            // SIGTERM-success path.
+            self.activity.forget(id);
             return Ok(());
         }
 
@@ -325,11 +354,20 @@ impl DaemonRunner {
                 .with_handle_mut(id, |h| h.state = ObservedState::Stopped)
                 .await;
             self.registry.remove(id).await;
+            // ADR-0004 §Activity-tracking / edeb7d11: forget on
+            // SIGKILL-success path.
+            self.activity.forget(id);
             return Ok(());
         }
 
         // SIGKILL also failed. Mark Crashed, leave entry for forensics,
         // re-attach the child so a future caller can still observe it.
+        // INTENTIONALLY do NOT forget the activity entry: the row is
+        // forensically interesting and forgetting would let the
+        // reconciler hammer it via repeated idle flips
+        // (last_touched=None => sweep skips => no harm, but a future
+        // policy that touches the entry on observe would reset the
+        // timer instead). Keep state stable on the failure path.
         self.registry
             .with_handle_mut(id, |h| {
                 h.state = ObservedState::Crashed;
@@ -431,6 +469,10 @@ impl DaemonRunner {
         if let Err(_rejected) = self.registry.insert(id, handle).await {
             return Err(DaemonRunnerError::AlreadyTracked(id));
         }
+        // ADR-0004 §Activity-tracking / edeb7d11: seed last_touched
+        // so adoption itself counts as activity. Outside the registry
+        // guard's closure (the tracker uses its own lock).
+        self.activity.seed(id);
         Ok(AdoptOutcome::Adopted)
     }
 

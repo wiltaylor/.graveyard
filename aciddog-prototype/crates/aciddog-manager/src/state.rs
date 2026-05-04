@@ -64,6 +64,14 @@ impl AppState {
         }
     }
 
+    /// Hand out a clone of the runner's `Arc<ActivityTracker>` (or
+    /// `None` when the daemon-runner capability is disabled). ADR-0004
+    /// §Activity-tracking — used by the IPC client chokepoint and the
+    /// reconciler tick to share a single `last_touched` map.
+    pub fn activity_tracker(&self) -> Option<Arc<crate::daemon_runner::ActivityTracker>> {
+        self.daemon_runner.as_ref().map(|r| r.activity_tracker())
+    }
+
     pub fn skills_dir(&self) -> PathBuf {
         self.data_dir.join("skills")
     }

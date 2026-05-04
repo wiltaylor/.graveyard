@@ -15,13 +15,27 @@ use hyper::body::Bytes as HyperBytes;
 use hyper::{Request as HyperRequest, StatusCode as HyperStatus};
 use hyper_util::rt::TokioIo;
 use tokio::net::UnixStream;
+use uuid::Uuid;
 
+use crate::daemon_runner::ActivityTracker;
 use crate::ipc::{IpcResponse, RequestCmd};
 use crate::model::instance::{InstanceRow, Transport};
+
+/// Type alias for the streaming-body returned by [`Client`]'s open_*
+/// methods. Lifted out so the chokepoint helpers and the public
+/// methods can name the same shape without 4-line repetition.
+type BodyStream = std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, anyhow::Error>> + Send>>;
 
 #[derive(Clone)]
 pub struct Client {
     inner: Inner,
+    /// `Some((id, tracker))` iff transport=unix AND
+    /// `row.managed_by_id.is_some()` AND the constructor was given a
+    /// tracker. The chokepoint helpers `unix_request` / `unix_stream`
+    /// touch this on every Unix-socket dispatch — see
+    /// `Self::touch_if_managed` for the doc-comment recording the
+    /// single-site invariant. ADR-0004 §Activity-tracking.
+    activity: Option<(Uuid, Arc<ActivityTracker>)>,
 }
 
 #[derive(Clone)]
@@ -37,8 +51,30 @@ enum Inner {
 }
 
 impl Client {
-    /// Build a client from a stored instance row.
+    /// Build a client from a stored instance row, with no activity
+    /// tracker bound (legacy back-compat for routes that have not yet
+    /// migrated to [`Self::from_row_with_activity`]). Equivalent to
+    /// `from_row_with_activity(row, None)`.
     pub fn from_row(row: &InstanceRow) -> Result<Self> {
+        Self::from_row_with_activity(row, None)
+    }
+
+    /// Build a client from a stored instance row, optionally bound to
+    /// an [`ActivityTracker`].
+    ///
+    /// The activity slot is populated iff:
+    ///
+    /// 1. `tracker` is `Some`,
+    /// 2. transport is `unix`,
+    /// 3. `row.managed_by_id` is `Some` and parses as a Uuid.
+    ///
+    /// All other combinations leave `activity = None` and the
+    /// chokepoint becomes a no-op. Routes that haven't migrated still
+    /// call `from_row(&row)` and silently get `None`.
+    pub fn from_row_with_activity(
+        row: &InstanceRow,
+        tracker: Option<Arc<ActivityTracker>>,
+    ) -> Result<Self> {
         let transport = parse_transport(&row.transport)?;
         match transport {
             Transport::Https => {
@@ -63,6 +99,10 @@ impl Client {
                         base_url: url,
                         bearer: row.api_key.clone().map(Arc::new),
                     },
+                    // HTTPS clients never carry an activity slot —
+                    // the IPC chokepoint is a Unix-socket-only
+                    // concept. ADR-0004 §Activity-tracking.
+                    activity: None,
                 })
             }
             Transport::Unix => {
@@ -70,13 +110,71 @@ impl Client {
                     .socket_path
                     .as_deref()
                     .ok_or_else(|| anyhow!("instance has transport=unix but no socket_path"))?;
+                let activity = match (tracker, row.managed_by_id.as_deref()) {
+                    (Some(t), Some(idstr)) => Uuid::parse_str(idstr).ok().map(|id| (id, t)),
+                    _ => None,
+                };
                 Ok(Self {
                     inner: Inner::Unix {
                         path: Arc::new(PathBuf::from(path)),
                     },
+                    activity,
                 })
             }
         }
+    }
+
+    /// ADR-0004 §Activity-tracking chokepoint helper — bounded-reply
+    /// branch. The single SOLE call site of [`uds_request`] in this
+    /// module lives inside this method by design. See
+    /// [`Self::touch_if_managed`] for the doc-comment forbidding
+    /// parallel touch sites.
+    async fn unix_request(
+        &self,
+        path: &Path,
+        method: &str,
+        target: &str,
+        headers: &[(&str, &str)],
+        body: Option<Vec<u8>>,
+    ) -> Result<(u16, HyperBytes)> {
+        self.touch_if_managed();
+        uds_request(path, method, target, headers, body).await
+    }
+
+    /// ADR-0004 §Activity-tracking chokepoint helper — streaming-reply
+    /// branch. The single SOLE call site of [`uds_stream_request`] in
+    /// this module lives inside this method by design. See
+    /// [`Self::touch_if_managed`] for the doc-comment forbidding
+    /// parallel touch sites.
+    async fn unix_stream(
+        &self,
+        path: &Path,
+        method: &str,
+        target: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<(u16, BodyStream)> {
+        self.touch_if_managed();
+        uds_stream_request(path, method, target, headers).await
+    }
+
+    /// ADR-0004 §Activity-tracking chokepoint — single site by design.
+    /// DO NOT add parallel touch sites; route every Unix dispatch
+    /// through `unix_request` or `unix_stream`. The reconciler tick
+    /// reads the resulting `last_touched` map and stops idle daemons.
+    fn touch_if_managed(&self) {
+        if let Some((id, t)) = self.activity.as_ref() {
+            t.touch(*id);
+        }
+    }
+
+    /// Inspector for the activity slot — used by
+    /// `tests/client_activity_chokepoint.rs` to verify that legacy
+    /// `from_row(&row)` does not silently bind a tracker. Exposed
+    /// unconditionally (rather than `#[cfg(test)]`) so external
+    /// integration tests can read it; returns a single `bool`, no
+    /// API-shape risk.
+    pub fn activity_is_some(&self) -> bool {
+        self.activity.is_some()
     }
 
     /// POST a single `RequestCmd` to `/v1/rpc` and return the parsed reply.
@@ -105,14 +203,15 @@ impl Client {
                 parse_rpc_response(status, &bytes)
             }
             Inner::Unix { path } => {
-                let (status, bytes) = uds_request(
-                    path,
-                    "POST",
-                    "/v1/rpc",
-                    &[("content-type", "application/json")],
-                    Some(body),
-                )
-                .await?;
+                let (status, bytes) = self
+                    .unix_request(
+                        path,
+                        "POST",
+                        "/v1/rpc",
+                        &[("content-type", "application/json")],
+                        Some(body),
+                    )
+                    .await?;
                 parse_rpc_response(status, &bytes)
             }
         }
@@ -161,9 +260,9 @@ impl Client {
             }
             Inner::Unix { path } => {
                 let target = format!("/v1/chat/events?agent={encoded_agent}");
-                let (status, body_stream) =
-                    uds_stream_request(path, "GET", &target, &[("accept", "text/event-stream")])
-                        .await?;
+                let (status, body_stream) = self
+                    .unix_stream(path, "GET", &target, &[("accept", "text/event-stream")])
+                    .await?;
                 Ok((status, body_stream))
             }
         }
@@ -199,9 +298,9 @@ impl Client {
             }
             Inner::Unix { path } => {
                 let target = format!("/v1/channel/events?channel={encoded}");
-                let (status, body_stream) =
-                    uds_stream_request(path, "GET", &target, &[("accept", "text/event-stream")])
-                        .await?;
+                let (status, body_stream) = self
+                    .unix_stream(path, "GET", &target, &[("accept", "text/event-stream")])
+                    .await?;
                 Ok((status, body_stream))
             }
         }
@@ -236,13 +335,14 @@ impl Client {
                 Ok((status, Box::pin(stream)))
             }
             Inner::Unix { path } => {
-                let (status, body_stream) = uds_stream_request(
-                    path,
-                    "GET",
-                    "/v1/events",
-                    &[("accept", "text/event-stream")],
-                )
-                .await?;
+                let (status, body_stream) = self
+                    .unix_stream(
+                        path,
+                        "GET",
+                        "/v1/events",
+                        &[("accept", "text/event-stream")],
+                    )
+                    .await?;
                 Ok((status, body_stream))
             }
         }
@@ -285,9 +385,9 @@ impl Client {
             }
             Inner::Unix { path } => {
                 let target = format!("/v1/workflow/events{suffix}");
-                let (status, body_stream) =
-                    uds_stream_request(path, "GET", &target, &[("accept", "text/event-stream")])
-                        .await?;
+                let (status, body_stream) = self
+                    .unix_stream(path, "GET", &target, &[("accept", "text/event-stream")])
+                    .await?;
                 Ok((status, body_stream))
             }
         }
@@ -322,13 +422,14 @@ impl Client {
                 Ok((status, Box::pin(stream)))
             }
             Inner::Unix { path } => {
-                let (status, body_stream) = uds_stream_request(
-                    path,
-                    "GET",
-                    "/v1/cron/events",
-                    &[("accept", "text/event-stream")],
-                )
-                .await?;
+                let (status, body_stream) = self
+                    .unix_stream(
+                        path,
+                        "GET",
+                        "/v1/cron/events",
+                        &[("accept", "text/event-stream")],
+                    )
+                    .await?;
                 Ok((status, body_stream))
             }
         }
@@ -365,13 +466,14 @@ impl Client {
                 Ok((status, Box::pin(stream)))
             }
             Inner::Unix { path } => {
-                let (status, body_stream) = uds_stream_request(
-                    path,
-                    "GET",
-                    "/v1/tasks/events",
-                    &[("accept", "text/event-stream")],
-                )
-                .await?;
+                let (status, body_stream) = self
+                    .unix_stream(
+                        path,
+                        "GET",
+                        "/v1/tasks/events",
+                        &[("accept", "text/event-stream")],
+                    )
+                    .await?;
                 Ok((status, body_stream))
             }
         }
@@ -396,7 +498,9 @@ impl Client {
                 Ok((status, body))
             }
             Inner::Unix { path } => {
-                let (status, bytes) = uds_request(path, "GET", "/v1/health", &[], None).await?;
+                let (status, bytes) = self
+                    .unix_request(path, "GET", "/v1/health", &[], None)
+                    .await?;
                 let body = String::from_utf8_lossy(&bytes).into_owned();
                 Ok((status, body))
             }
@@ -429,10 +533,7 @@ async fn uds_stream_request(
     method: &str,
     target: &str,
     headers: &[(&str, &str)],
-) -> Result<(
-    u16,
-    std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, anyhow::Error>> + Send>>,
-)> {
+) -> Result<(u16, BodyStream)> {
     let stream = UnixStream::connect(path)
         .await
         .with_context(|| format!("connecting to unix socket {}", path.display()))?;
@@ -565,6 +666,7 @@ mod tests {
             socket_path: Some(socket_path.to_string_lossy().into_owned()),
             api_key: None,
             tls_ca_path: None,
+            managed_by_id: None,
             created_at: "1970-01-01T00:00:00Z".into(),
         }
     }
