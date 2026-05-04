@@ -2944,6 +2944,15 @@ pub struct App {
     /// each fire. The supervisor-scoped `/v1/cron/events` handler
     /// subscribes here.
     pub cron_event_tx: broadcast::Sender<crate::cron::CronEvent>,
+    /// Broadcast sender for task-store mutations. Published via
+    /// [`App::emit_task_event`] from every successful task-store
+    /// mutation site (add / update / remove / take / approve / note /
+    /// todo / comment). The supervisor-scoped `/v1/tasks/events`
+    /// handler subscribes here.
+    ///
+    /// Mirrors `cron_event_tx` — see
+    /// `crates/aciddog/src/cron/mod.rs::CronEvent` for the precedent.
+    pub task_event_tx: broadcast::Sender<crate::tasks::TaskEvent>,
     /// Broadcast sender for per-agent lifecycle status transitions.
     /// Cloned into every [`AgentChat`] so [`AgentChat::set_status_and_emit`]
     /// fans out an [`crate::wire_chat::AgentStatusEvent`] on every
@@ -3145,6 +3154,13 @@ impl App {
         // `/v1/cron/events` stream subscribes here.
         let (cron_event_tx, _cron_keepalive_rx) =
             broadcast::channel::<crate::cron::CronEvent>(CHAT_BLOCK_BROADCAST_CAPACITY);
+        // Parallel broadcaster for task events. The supervisor
+        // `/v1/tasks/events` stream subscribes here. Same capacity as
+        // the cron broadcaster — task-store mutations are similarly
+        // chatty and the constant-aligned shape minimises cognitive
+        // load with the rest of the broadcasters.
+        let (task_event_tx, _task_keepalive_rx) =
+            broadcast::channel::<crate::tasks::TaskEvent>(CHAT_BLOCK_BROADCAST_CAPACITY);
         Self {
             config,
             repos: Vec::new(),
@@ -3158,6 +3174,7 @@ impl App {
             channel_message_tx,
             workflow_event_tx,
             cron_event_tx,
+            task_event_tx,
             agent_status_tx,
             layout: LayoutRects::default(),
             copied_at: None,
@@ -3211,6 +3228,28 @@ impl App {
         }
         self.cron_invalidate.notify_one();
         Ok(())
+    }
+
+    /// Funnel for every task-store mutation broadcast.
+    ///
+    /// Every successful `self.tasks.<mutator>(...)` site fans out
+    /// here so the supervisor `/v1/tasks/events` SSE stream sees
+    /// `Created` / `Updated` / `Removed` frames. Centralising this
+    /// in one helper (DECIDE-C) lets us add a single audit trace
+    /// without touching every call site again, and keeps each
+    /// mutation site to a one-liner. Mirrors the cron pattern but
+    /// without the wrapper-mutate-and-emit shape — task mutators
+    /// have heterogeneous return types (`Result<&Task, _>`,
+    /// `Result<TaskUpdateOutcome, _>`, `Result<&Todo, _>`, …) and
+    /// a wrapper would explode in lifetime/generics churn.
+    fn emit_task_event(&self, ev: crate::tasks::TaskEvent) {
+        let kind = match &ev {
+            crate::tasks::TaskEvent::Created { .. } => "created",
+            crate::tasks::TaskEvent::Updated { .. } => "updated",
+            crate::tasks::TaskEvent::Removed { .. } => "removed",
+        };
+        tracing::trace!(target: "aciddog::tasks::events", kind, "emit");
+        let _ = self.task_event_tx.send(ev);
     }
 
     pub fn current_chat(&self) -> Option<&AgentChat> {
@@ -6335,6 +6374,9 @@ impl App {
                     return;
                 }
             };
+            if let Some(task) = self.tasks.get(task_id).cloned() {
+                self.emit_task_event(crate::tasks::TaskEvent::Created { task });
+            }
             // Notify the human approver via the user inbox.
             let title_clone = self
                 .tasks
@@ -6393,6 +6435,9 @@ impl App {
                 return;
             }
         };
+        if let Some(task) = self.tasks.get(task_id).cloned() {
+            self.emit_task_event(crate::tasks::TaskEvent::Created { task });
+        }
 
         if let (Some(new_assignee), Some(kind)) = (assignee_clone, kind) {
             self.dispatch_assignment_notice(kind, &new_assignee, task_id, &title_clone, &who);
@@ -6948,6 +6993,9 @@ impl App {
                 return;
             }
         };
+        if let Some(task) = self.tasks.get(id).cloned() {
+            self.emit_task_event(crate::tasks::TaskEvent::Updated { task });
+        }
 
         if let Some(new_assignee) = outcome.reassigned_to.clone() {
             if let Some(kind) = self.classify_assignee(&new_assignee) {
@@ -6973,6 +7021,7 @@ impl App {
         }
         match self.tasks.remove(id) {
             Ok(_) => {
+                self.emit_task_event(crate::tasks::TaskEvent::Removed { id });
                 let _ = reply.send(Response::ok("task removed"));
             }
             Err(e) => {
@@ -7738,6 +7787,9 @@ impl App {
                 return;
             }
         };
+        if let Some(task) = self.tasks.get(task_id).cloned() {
+            self.emit_task_event(crate::tasks::TaskEvent::Created { task });
+        }
 
         // Drop a system block into the taker's own pane so their chat
         // history records the claim (handy when reviewing transcripts).
@@ -7761,6 +7813,9 @@ impl App {
 
         match self.tasks.add_note(id, who, body) {
             Ok(_) => {
+                if let Some(task) = self.tasks.get(id).cloned() {
+                    self.emit_task_event(crate::tasks::TaskEvent::Updated { task });
+                }
                 let _ = reply.send(Response::ok("note added"));
             }
             Err(e) => {
@@ -7804,7 +7859,11 @@ impl App {
         let who = sender.display_name.clone();
         match self.tasks.add_todo(task, body, who) {
             Ok(t) => {
-                let _ = reply.send(Response::ok(format!("todo added: {}", t.id)));
+                let todo_id = t.id;
+                if let Some(parent) = self.tasks.get(task).cloned() {
+                    self.emit_task_event(crate::tasks::TaskEvent::Updated { task: parent });
+                }
+                let _ = reply.send(Response::ok(format!("todo added: {todo_id}")));
             }
             Err(e) => {
                 let _ = reply.send(Response::err(e.to_string()));
@@ -7865,6 +7924,9 @@ impl App {
         };
         match self.tasks.update_todo(task, id, body, parsed_status) {
             Ok(_) => {
+                if let Some(parent) = self.tasks.get(task).cloned() {
+                    self.emit_task_event(crate::tasks::TaskEvent::Updated { task: parent });
+                }
                 let _ = reply.send(Response::ok("todo updated"));
             }
             Err(e) => {
@@ -7886,6 +7948,9 @@ impl App {
         }
         match self.tasks.remove_todo(task, id) {
             Ok(_) => {
+                if let Some(parent) = self.tasks.get(task).cloned() {
+                    self.emit_task_event(crate::tasks::TaskEvent::Updated { task: parent });
+                }
                 let _ = reply.send(Response::ok("todo removed"));
             }
             Err(e) => {
@@ -7909,6 +7974,9 @@ impl App {
         match self.tasks.add_comment(task, body, who.clone()) {
             Ok(c) => {
                 let cid = c.id;
+                if let Some(parent) = self.tasks.get(task).cloned() {
+                    self.emit_task_event(crate::tasks::TaskEvent::Updated { task: parent });
+                }
                 self.notify_planning_creator_of_comment(task, &who);
                 let _ = reply.send(Response::ok(format!("comment added: {cid}")));
             }
@@ -7967,6 +8035,9 @@ impl App {
         }
         match self.tasks.update_comment(task, id, body) {
             Ok(_) => {
+                if let Some(parent) = self.tasks.get(task).cloned() {
+                    self.emit_task_event(crate::tasks::TaskEvent::Updated { task: parent });
+                }
                 let _ = reply.send(Response::ok("comment updated"));
             }
             Err(e) => {
@@ -7988,6 +8059,9 @@ impl App {
         }
         match self.tasks.remove_comment(task, id) {
             Ok(_) => {
+                if let Some(parent) = self.tasks.get(task).cloned() {
+                    self.emit_task_event(crate::tasks::TaskEvent::Updated { task: parent });
+                }
                 let _ = reply.send(Response::ok("comment removed"));
             }
             Err(e) => {
@@ -8809,6 +8883,9 @@ impl App {
             return Ok(());
         }
         self.tasks.add_note(task_id, author.to_string(), note)?;
+        if let Some(task) = self.tasks.get(task_id).cloned() {
+            self.emit_task_event(crate::tasks::TaskEvent::Updated { task });
+        }
         Ok(())
     }
 
@@ -8823,6 +8900,9 @@ impl App {
         approver: &str,
     ) -> Result<String, crate::tasks::TaskError> {
         let target = self.tasks.approve(task_id, approver)?;
+        if let Some(task) = self.tasks.get(task_id).cloned() {
+            self.emit_task_event(crate::tasks::TaskEvent::Updated { task });
+        }
         let title = self
             .tasks
             .get(task_id)
@@ -8876,6 +8956,9 @@ impl App {
         let creator = self
             .tasks
             .reject_planning(task_id, reason.clone(), rejecter)?;
+        if let Some(task) = self.tasks.get(task_id).cloned() {
+            self.emit_task_event(crate::tasks::TaskEvent::Updated { task });
+        }
         let title = self
             .tasks
             .get(task_id)
@@ -8933,6 +9016,9 @@ impl App {
             .tasks
             .submit_for_review(task_id, reviewer, submitter.to_string(), report)
             .map_err(|e| e.to_string())?;
+        if let Some(task) = self.tasks.get(task_id).cloned() {
+            self.emit_task_event(crate::tasks::TaskEvent::Updated { task });
+        }
         self.add_review_note_if_present(task_id, submitter, note)
             .map_err(|e| e.to_string())?;
 
@@ -8977,6 +9063,9 @@ impl App {
             .tasks
             .review_approve(task_id, approver.to_string())
             .map_err(|e| e.to_string())?;
+        if let Some(task) = self.tasks.get(task_id).cloned() {
+            self.emit_task_event(crate::tasks::TaskEvent::Updated { task });
+        }
         self.add_review_note_if_present(task_id, approver, note)
             .map_err(|e| e.to_string())?;
 
@@ -9034,6 +9123,9 @@ impl App {
             .tasks
             .review_reject(task_id, reason.clone(), rejecter.to_string())
             .map_err(|e| e.to_string())?;
+        if let Some(task) = self.tasks.get(task_id).cloned() {
+            self.emit_task_event(crate::tasks::TaskEvent::Updated { task });
+        }
         let recipient = if implementer.is_empty() {
             prior_submitter.clone().unwrap_or_default()
         } else {
@@ -12278,8 +12370,15 @@ impl App {
                 crate::tasks::TodoStatus::InProgress => crate::tasks::TodoStatus::Completed,
                 crate::tasks::TodoStatus::Completed => crate::tasks::TodoStatus::Pending,
             };
-            if let Err(e) = self.tasks.update_todo(task_id, todo.id, None, Some(next)) {
-                self.tasks_screen.status_msg = Some(format!("error: {e}"));
+            match self.tasks.update_todo(task_id, todo.id, None, Some(next)) {
+                Ok(_) => {
+                    if let Some(parent) = self.tasks.get(task_id).cloned() {
+                        self.emit_task_event(crate::tasks::TaskEvent::Updated { task: parent });
+                    }
+                }
+                Err(e) => {
+                    self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                }
             }
         }
     }
@@ -13557,7 +13656,11 @@ impl App {
             KeyCode::Char('t') => {
                 match self.tasks.take(OPERATOR) {
                     Ok(t) => {
+                        let task_id = t.id;
                         self.tasks_screen.status_msg = Some(format!("took: {}", t.title));
+                        if let Some(taken) = self.tasks.get(task_id).cloned() {
+                            self.emit_task_event(crate::tasks::TaskEvent::Created { task: taken });
+                        }
                     }
                     Err(e) => {
                         self.tasks_screen.status_msg = Some(format!("error: {e}"));
@@ -13874,10 +13977,16 @@ impl App {
                     if !body.trim().is_empty() {
                         let id = *task_id;
                         let body = std::mem::take(body);
-                        if let Err(e) = self.tasks.add_note(id, OPERATOR.to_string(), body) {
-                            self.tasks_screen.status_msg = Some(format!("error: {e}"));
-                        } else {
-                            self.tasks_screen.status_msg = Some("note added".into());
+                        match self.tasks.add_note(id, OPERATOR.to_string(), body) {
+                            Ok(_) => {
+                                if let Some(task) = self.tasks.get(id).cloned() {
+                                    self.emit_task_event(crate::tasks::TaskEvent::Updated { task });
+                                }
+                                self.tasks_screen.status_msg = Some("note added".into());
+                            }
+                            Err(e) => {
+                                self.tasks_screen.status_msg = Some(format!("error: {e}"));
+                            }
                         }
                     }
                     self.tasks_screen.close_modal();
@@ -13894,6 +14003,7 @@ impl App {
                     let id = *task_id;
                     match self.tasks.remove(id) {
                         Ok(t) => {
+                            self.emit_task_event(crate::tasks::TaskEvent::Removed { id });
                             self.tasks_screen.status_msg = Some(format!("removed: {}", t.title));
                             self.tasks_screen.close_modal();
                             let rows = TasksScreen::rows(&self.tasks);
@@ -13928,6 +14038,11 @@ impl App {
                                 let new_id = td.id;
                                 self.tasks_screen.status_msg = Some("todo added".into());
                                 self.tasks_screen.prompt = None;
+                                if let Some(parent) = self.tasks.get(id).cloned() {
+                                    self.emit_task_event(crate::tasks::TaskEvent::Updated {
+                                        task: parent,
+                                    });
+                                }
                                 if let (Some(screen), Some(t)) =
                                     (self.task_detail.as_mut(), self.tasks.get(id))
                                 {
@@ -13970,6 +14085,11 @@ impl App {
                         let body = std::mem::take(body);
                         match self.tasks.update_todo(task_id, todo_id, Some(body), None) {
                             Ok(_) => {
+                                if let Some(parent) = self.tasks.get(task_id).cloned() {
+                                    self.emit_task_event(crate::tasks::TaskEvent::Updated {
+                                        task: parent,
+                                    });
+                                }
                                 self.tasks_screen.status_msg = Some("todo updated".into());
                             }
                             Err(e) => {
@@ -13998,6 +14118,11 @@ impl App {
                     let todo_id = *todo_id;
                     match self.tasks.remove_todo(task_id, todo_id) {
                         Ok(_) => {
+                            if let Some(parent) = self.tasks.get(task_id).cloned() {
+                                self.emit_task_event(crate::tasks::TaskEvent::Updated {
+                                    task: parent,
+                                });
+                            }
                             self.tasks_screen.status_msg = Some("todo removed".into());
                         }
                         Err(e) => {
@@ -14041,6 +14166,11 @@ impl App {
                                 let new_id = c.id;
                                 self.tasks_screen.status_msg = Some("comment added".into());
                                 self.tasks_screen.prompt = None;
+                                if let Some(parent) = self.tasks.get(id).cloned() {
+                                    self.emit_task_event(crate::tasks::TaskEvent::Updated {
+                                        task: parent,
+                                    });
+                                }
                                 if let (Some(screen), Some(t)) =
                                     (self.task_detail.as_mut(), self.tasks.get(id))
                                 {
@@ -14085,6 +14215,11 @@ impl App {
                         let body = std::mem::take(body);
                         match self.tasks.update_comment(task_id, comment_id, body) {
                             Ok(_) => {
+                                if let Some(parent) = self.tasks.get(task_id).cloned() {
+                                    self.emit_task_event(crate::tasks::TaskEvent::Updated {
+                                        task: parent,
+                                    });
+                                }
                                 self.tasks_screen.status_msg = Some("comment updated".into());
                             }
                             Err(e) => {
@@ -14113,6 +14248,11 @@ impl App {
                     let comment_id = *comment_id;
                     match self.tasks.remove_comment(task_id, comment_id) {
                         Ok(_) => {
+                            if let Some(parent) = self.tasks.get(task_id).cloned() {
+                                self.emit_task_event(crate::tasks::TaskEvent::Updated {
+                                    task: parent,
+                                });
+                            }
                             self.tasks_screen.status_msg = Some("comment removed".into());
                         }
                         Err(e) => {
@@ -26701,5 +26841,94 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"cwd:%s"
         chat.set_status_and_emit(AgentStatus::Working);
         // Status still flipped despite the swallowed send error.
         assert_eq!(chat.status, AgentStatus::Working);
+    }
+
+    /// `add` -> `Created` over the broadcast channel. Mirrors
+    /// `reapply_wcl_crons_emits_created_updated_removed_events` but for
+    /// the parallel `task_event_tx` plumbing. `tokio::test` is
+    /// required because `broadcast::Receiver::recv` needs an executor.
+    #[tokio::test]
+    async fn task_event_emitted_on_create() {
+        let mut app = App::new(sample_config());
+        let mut rx = app.task_event_tx.subscribe();
+
+        let task_id = app
+            .tasks
+            .add("alpha".into(), None, None, "alice".into(), Vec::new())
+            .expect("add succeeded")
+            .id;
+        let task = app.tasks.get(task_id).unwrap().clone();
+        app.emit_task_event(crate::tasks::TaskEvent::Created { task });
+
+        match rx.recv().await.expect("recv") {
+            crate::tasks::TaskEvent::Created { task } => {
+                assert_eq!(task.id, task_id);
+                assert_eq!(task.title, "alpha");
+            }
+            other => panic!("expected Created, got {other:?}"),
+        }
+    }
+
+    /// `update` -> `Updated`. The full row is carried in the event.
+    #[tokio::test]
+    async fn task_event_emitted_on_update() {
+        let mut app = App::new(sample_config());
+        let mut rx = app.task_event_tx.subscribe();
+
+        let task_id = app
+            .tasks
+            .add("alpha".into(), None, None, "alice".into(), Vec::new())
+            .expect("add succeeded")
+            .id;
+        // Drain the Created we don't care about for this test.
+        let task = app.tasks.get(task_id).unwrap().clone();
+        app.emit_task_event(crate::tasks::TaskEvent::Created { task });
+        let _ = rx.recv().await;
+
+        app.tasks
+            .update(
+                task_id,
+                crate::tasks::TaskPatch {
+                    title: Some("alpha-renamed".into()),
+                    ..Default::default()
+                },
+                "alice",
+            )
+            .expect("update succeeded");
+        let task = app.tasks.get(task_id).unwrap().clone();
+        app.emit_task_event(crate::tasks::TaskEvent::Updated { task });
+
+        match rx.recv().await.expect("recv") {
+            crate::tasks::TaskEvent::Updated { task } => {
+                assert_eq!(task.id, task_id);
+                assert_eq!(task.title, "alpha-renamed");
+            }
+            other => panic!("expected Updated, got {other:?}"),
+        }
+    }
+
+    /// `remove` -> `Removed { id }`. The full row is gone after the
+    /// mutator returns; only the id rides the wire.
+    #[tokio::test]
+    async fn task_event_emitted_on_remove() {
+        let mut app = App::new(sample_config());
+        let mut rx = app.task_event_tx.subscribe();
+
+        let task_id = app
+            .tasks
+            .add("alpha".into(), None, None, "alice".into(), Vec::new())
+            .expect("add succeeded")
+            .id;
+        let task = app.tasks.get(task_id).unwrap().clone();
+        app.emit_task_event(crate::tasks::TaskEvent::Created { task });
+        let _ = rx.recv().await;
+
+        app.tasks.remove(task_id).expect("remove succeeded");
+        app.emit_task_event(crate::tasks::TaskEvent::Removed { id: task_id });
+
+        match rx.recv().await.expect("recv") {
+            crate::tasks::TaskEvent::Removed { id } => assert_eq!(id, task_id),
+            other => panic!("expected Removed, got {other:?}"),
+        }
     }
 }

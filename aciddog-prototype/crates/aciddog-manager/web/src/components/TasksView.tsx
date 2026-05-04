@@ -6,11 +6,12 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  onCleanup,
   type JSX,
 } from "solid-js";
 
-import { api } from "../api";
-import type { AgentRow, Task, TaskStatus, TodoStatus } from "../types";
+import { api, tasksEventsUrl } from "../api";
+import type { AgentRow, Task, TaskEvent, TaskStatus, TodoStatus } from "../types";
 import { Badge, Button, Icon, Menu, Toast } from "./ui";
 
 interface Props {
@@ -125,6 +126,10 @@ export default function TasksView(props: Props): JSX.Element {
   const [openTaskId, setOpenTaskId] = createSignal<string | null>(null);
   const [showAddModal, setShowAddModal] = createSignal(false);
 
+  /// Top-level refetch — used by the manual Refresh button. The SSE
+  /// effect declares its own closure-local `reload()` so the
+  /// buffer-then-drain race shield (see decisions/34517188) stays
+  /// hermetic to that effect.
   const loadTasks = async () => {
     setLoading(true);
     setError(null);
@@ -143,11 +148,121 @@ export default function TasksView(props: Props): JSX.Element {
     }
   };
 
+  // SSE subscription with buffer-then-drain race shield. The closure-
+  // local `historyReady` / `pendingEvents` MUST NOT be promoted to
+  // signals: making them reactive would re-trigger the effect and
+  // re-create the very race the buffer was added to fix. Mirrors the
+  // ChatPane.tsx initial-load shield.
   createEffect(() => {
-    void props.instanceId;
+    // Read instanceId FIRST so Solid's tracking re-runs when the
+    // user switches instances.
+    const instanceId = props.instanceId;
     setOpenTaskId(null);
     setShowAddModal(false);
-    void loadTasks();
+
+    let historyReady = false;
+    const pendingEvents: TaskEvent[] = [];
+
+    const applyEvent = (ev: TaskEvent) => {
+      if (ev.kind === "created") {
+        const list = tasks();
+        const idx = list.findIndex((t) => t.id === ev.task.id);
+        if (idx === -1) {
+          setTasks([...list, ev.task]);
+        } else {
+          const next = list.slice();
+          next[idx] = ev.task;
+          setTasks(next);
+        }
+      } else if (ev.kind === "updated") {
+        const list = tasks();
+        const idx = list.findIndex((t) => t.id === ev.task.id);
+        if (idx === -1) {
+          // Loud failure: an Updated for an id we don't know about
+          // during the live phase usually means we missed a Created.
+          // Resync from the authoritative REST endpoint.
+          // (decisions/59ff479f loud-failure ethos.)
+          // eslint-disable-next-line no-console
+          console.warn("[TasksView] updated event for unknown id; reloading", {
+            id: ev.task.id,
+          });
+          void reload();
+        } else {
+          const next = list.slice();
+          next[idx] = ev.task;
+          setTasks(next);
+        }
+      } else if (ev.kind === "removed") {
+        const list = tasks();
+        const idx = list.findIndex((t) => t.id === ev.id);
+        if (idx !== -1) {
+          const next = list.slice();
+          next.splice(idx, 1);
+          setTasks(next);
+        }
+      }
+    };
+
+    const reload = async () => {
+      historyReady = false;
+      setLoading(true);
+      setError(null);
+      setTasks([]);
+      try {
+        const resp = await api.listTasks(instanceId);
+        if (!resp.ok) {
+          setError(resp.error ?? "remote returned no data");
+          setTasks([]);
+        } else {
+          setTasks(resp.tasks);
+        }
+        // Drain buffered events in arrival order.
+        while (pendingEvents.length > 0) {
+          const ev = pendingEvents.shift()!;
+          applyEvent(ev);
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("[TasksView] loadTasks failed", err);
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        // Even on the catch path: leaving historyReady=false would
+        // permanently buffer subsequent live events.
+        historyReady = true;
+        setLoading(false);
+      }
+    };
+
+    void reload();
+
+    const es = new EventSource(tasksEventsUrl(instanceId));
+
+    es.onmessage = (e) => {
+      let ev: TaskEvent;
+      try {
+        ev = JSON.parse(e.data) as TaskEvent;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("[TasksView] task event parse error", err);
+        return;
+      }
+      if (!historyReady) {
+        pendingEvents.push(ev);
+      } else {
+        applyEvent(ev);
+      }
+    };
+
+    es.addEventListener("lagged", () => {
+      // Daemon told us we missed N events. Discard the buffer (the
+      // post-reload list is authoritative) and force a fresh REST
+      // round-trip.
+      historyReady = false;
+      pendingEvents.length = 0;
+      void reload();
+    });
+
+    onCleanup(() => es.close());
   });
 
   const tasksByStatus = createMemo(() => {

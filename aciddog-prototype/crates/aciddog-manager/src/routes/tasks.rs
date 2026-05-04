@@ -3,8 +3,14 @@
 //! caller expects to re-fetch (or refresh optimistically) after
 //! the response.
 
+use std::convert::Infallible;
+
+use axum::body::Body;
 use axum::extract::{Path, State};
+use axum::http::{header, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -399,4 +405,59 @@ pub async fn delete_comment(
         })
         .await?;
     Ok(Json(MutationResponse::from_ipc(resp)))
+}
+
+/// GET /api/instances/:id/tasks/events
+///
+/// Opens an SSE stream against the webservice's `/v1/tasks/events`
+/// endpoint and forwards the raw byte stream to the browser. Mirrors
+/// `routes::cron::events` structurally — non-200 upstream statuses
+/// passthrough as the same status with the (truncated) body, while
+/// 200 wraps the bytes in a `text/event-stream` response with
+/// no-cache headers.
+pub async fn events(State(state): State<AppState>, Path(id): Path<Uuid>) -> AppResult<Response> {
+    let row = load_row_for_routes(&state, id).await?;
+    let client = Client::from_row(&row)?;
+    let (upstream_status, stream) = client.open_tasks_events().await?;
+
+    if upstream_status != 200 {
+        let status = StatusCode::from_u16(upstream_status).unwrap_or(StatusCode::BAD_GATEWAY);
+        let mut collected = Vec::new();
+        let mut s = stream;
+        while let Some(chunk) = s.next().await {
+            if let Ok(bytes) = chunk {
+                collected.extend_from_slice(&bytes);
+                if collected.len() > 4096 {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        let body = String::from_utf8_lossy(&collected).into_owned();
+        return Ok((status, body).into_response());
+    }
+
+    // Errors on the upstream stream close the SSE connection cleanly;
+    // `EventSource` auto-reconnects.
+    let byte_stream = stream.map(|res| match res {
+        Ok(b) => Ok::<_, Infallible>(b),
+        Err(e) => {
+            tracing::debug!(error = %e, "upstream task event stream ended with error");
+            Ok(bytes::Bytes::new())
+        }
+    });
+
+    let mut resp = Response::new(Body::from_stream(byte_stream));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream"),
+    );
+    resp.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+    );
+    resp.headers_mut()
+        .insert("x-accel-buffering", HeaderValue::from_static("no"));
+    Ok(resp)
 }

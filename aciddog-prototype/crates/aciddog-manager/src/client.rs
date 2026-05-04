@@ -334,6 +334,49 @@ impl Client {
         }
     }
 
+    /// Scoped SSE stream of task-store events, mirroring
+    /// [`Client::open_cron_events`] but against `/v1/tasks/events`.
+    /// No server-side filter — the supervisor always gets every
+    /// mutation (create, update, remove).
+    ///
+    /// Mirrors `open_cron_events` — see same module for the precedent.
+    pub async fn open_tasks_events(
+        &self,
+    ) -> Result<(
+        u16,
+        std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, anyhow::Error>> + Send>>,
+    )> {
+        match &self.inner {
+            Inner::Https {
+                client,
+                base_url,
+                bearer,
+            } => {
+                let url = format!("{base_url}/v1/tasks/events");
+                let mut req = client.get(&url).header("accept", "text/event-stream");
+                if let Some(token) = bearer.as_deref() {
+                    req = req.bearer_auth(token);
+                }
+                let resp = req.send().await.with_context(|| format!("GET {url}"))?;
+                let status = resp.status().as_u16();
+                let stream = resp
+                    .bytes_stream()
+                    .map(|r| r.map_err(|e| anyhow!("sse chunk: {e}")));
+                Ok((status, Box::pin(stream)))
+            }
+            Inner::Unix { path } => {
+                let (status, body_stream) = uds_stream_request(
+                    path,
+                    "GET",
+                    "/v1/tasks/events",
+                    &[("accept", "text/event-stream")],
+                )
+                .await?;
+                Ok((status, body_stream))
+            }
+        }
+    }
+
     /// GET /v1/health. Returns the raw status code and the response body.
     pub async fn health(&self) -> Result<(u16, String)> {
         match &self.inner {
@@ -499,5 +542,101 @@ fn parse_transport(s: &str) -> Result<Transport> {
         "https" => Ok(Transport::Https),
         "unix" => Ok(Transport::Unix),
         other => bail!("unknown transport `{other}` stored in DB"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use futures::StreamExt;
+    use tempfile::tempdir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixListener;
+
+    use crate::model::instance::InstanceRow;
+
+    fn stub_row(socket_path: &std::path::Path) -> InstanceRow {
+        InstanceRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "stub".into(),
+            transport: "unix".into(),
+            url: None,
+            socket_path: Some(socket_path.to_string_lossy().into_owned()),
+            api_key: None,
+            tls_ca_path: None,
+            created_at: "1970-01-01T00:00:00Z".into(),
+        }
+    }
+
+    /// Stand up a tiny Unix-socket listener that responds to any
+    /// inbound HTTP/1.1 request with `200 OK`, an SSE-shaped header
+    /// set, and a single `data: {...}\n\n` payload, then closes the
+    /// connection. Mirrors the production daemon's wire shape closely
+    /// enough to verify raw byte passthrough through `Client`.
+    async fn spawn_sse_stub(socket_path: std::path::PathBuf, payload: &'static str) {
+        let listener = UnixListener::bind(&socket_path).expect("bind unix listener");
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = match listener.accept().await {
+                    Ok(v) => v,
+                    Err(_) => return,
+                };
+                tokio::spawn(async move {
+                    // Drain the request (we don't validate the path —
+                    // the smoke test is about bytes flowing back, not
+                    // request shape).
+                    let mut buf = vec![0u8; 1024];
+                    let _ = stream.read(&mut buf).await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Type: text/event-stream\r\n\
+                         Cache-Control: no-cache\r\n\
+                         Connection: close\r\n\
+                         \r\n\
+                         {payload}"
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+    }
+
+    /// Asserts `Client::open_tasks_events` returns the upstream
+    /// status verbatim and yields the SSE payload bytes through the
+    /// returned stream. Verifies raw passthrough — the client must
+    /// not parse, transform, or buffer-collapse the SSE.
+    #[tokio::test]
+    async fn open_tasks_events_passes_raw_bytes_through() {
+        let dir = tempdir().expect("tempdir");
+        let socket_path = dir.path().join("stub.sock");
+        let payload = "data: {\"kind\":\"created\",\"task\":{\"id\":\"x\"}}\n\n";
+        spawn_sse_stub(socket_path.clone(), payload).await;
+
+        let row = stub_row(&socket_path);
+        let client = Client::from_row(&row).expect("from_row");
+
+        let (status, mut stream) = client.open_tasks_events().await.expect("open_tasks_events");
+        assert_eq!(status, 200);
+
+        let mut received = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.expect("chunk");
+            received.extend_from_slice(&bytes);
+            // Server closes after writing the payload, so once we
+            // have the full literal we can stop reading.
+            if received
+                .windows(payload.len())
+                .any(|w| w == payload.as_bytes())
+            {
+                break;
+            }
+        }
+        let body = String::from_utf8(received).expect("utf8");
+        assert!(
+            body.contains(payload),
+            "raw payload missing from byte stream — got: {body}"
+        );
     }
 }

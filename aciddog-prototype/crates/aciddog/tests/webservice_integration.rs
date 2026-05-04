@@ -41,6 +41,7 @@ fn fake_state_with(
     let (channel_message_tx, _) = broadcast::channel(64);
     let (workflow_event_tx, _) = broadcast::channel(64);
     let (cron_event_tx, _) = broadcast::channel(64);
+    let (task_event_tx, _) = broadcast::channel(64);
     let (agent_status_tx, _) = broadcast::channel(64);
     let state = WebserviceState {
         session_id: Uuid::new_v4(),
@@ -50,6 +51,7 @@ fn fake_state_with(
         channel_message_tx,
         workflow_event_tx,
         cron_event_tx,
+        task_event_tx,
         agent_status_tx: agent_status_tx.clone(),
         is_supervisor,
         api_key: api_key.map(|s| std::sync::Arc::new(s.to_string())),

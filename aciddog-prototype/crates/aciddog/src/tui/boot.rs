@@ -539,6 +539,7 @@ pub(super) fn spawn_automaton_core(app: &mut App, idx: usize, automaton: &Automa
             let channel_message_tx = app.channel_message_tx.clone();
             let workflow_event_tx = app.workflow_event_tx.clone();
             let cron_event_tx = app.cron_event_tx.clone();
+            let task_event_tx = app.task_event_tx.clone();
             let agent_status_tx = app.agent_status_tx.clone();
             tokio::spawn(crate::webservice::run_webservice_core(
                 idx,
@@ -555,6 +556,7 @@ pub(super) fn spawn_automaton_core(app: &mut App, idx: usize, automaton: &Automa
                 channel_message_tx,
                 workflow_event_tx,
                 cron_event_tx,
+                task_event_tx,
                 agent_status_tx,
             ));
         }

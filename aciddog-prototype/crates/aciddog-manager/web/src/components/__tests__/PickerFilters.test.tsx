@@ -20,6 +20,7 @@ vi.mock("../../api", () => ({
   },
   cronEventsUrl: (id: string) => `/events/${id}/cron`,
   instanceEventsUrl: (id: string) => `/events/${id}`,
+  tasksEventsUrl: (id: string) => `/events/${id}/tasks`,
 }));
 
 class MockEventSource {

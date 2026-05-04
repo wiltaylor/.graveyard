@@ -48,6 +48,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/instances/:id/agents/:agent/events", get(chat::events))
         // Tasks
         .route("/instances/:id/tasks", get(tasks::list).post(tasks::create))
+        .route("/instances/:id/tasks/events", get(tasks::events))
         .route(
             "/instances/:id/tasks/:task_id",
             patch(tasks::patch).delete(tasks::delete),

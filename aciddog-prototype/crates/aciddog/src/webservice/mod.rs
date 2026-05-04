@@ -84,6 +84,12 @@ pub struct WebserviceState {
     /// subscribes here. Populated from `App::handle_cron_*` mutation
     /// handlers and from `tick_cron` on each fire.
     pub cron_event_tx: broadcast::Sender<crate::cron::CronEvent>,
+    /// Per-`App` fan-out of task-store events. The `/v1/tasks/events`
+    /// stream subscribes here. Populated by every successful
+    /// task-store mutation through [`crate::tui::app::App::emit_task_event`].
+    ///
+    /// Mirrors `cron_event_tx` — see same module for the precedent.
+    pub task_event_tx: broadcast::Sender<crate::tasks::TaskEvent>,
     /// Per-`App` fan-out of agent lifecycle status transitions
     /// (`ready` / `working` / `error` / `hibernated` / `asleep`).
     /// Forwarded by the `/v1/chat/events?agent=<id>` handler as a
@@ -121,6 +127,7 @@ pub async fn run_webservice_core(
     channel_message_tx: broadcast::Sender<crate::wire_channel::ChannelMessageEvent>,
     workflow_event_tx: broadcast::Sender<crate::wire_workflow::WireWorkflowEvent>,
     cron_event_tx: broadcast::Sender<crate::cron::CronEvent>,
+    task_event_tx: broadcast::Sender<crate::tasks::TaskEvent>,
     agent_status_tx: broadcast::Sender<crate::wire_chat::AgentStatusEvent>,
 ) {
     let is_supervisor = automaton.supervisor;
@@ -164,6 +171,7 @@ pub async fn run_webservice_core(
         channel_message_tx,
         workflow_event_tx,
         cron_event_tx,
+        task_event_tx,
         agent_status_tx,
         is_supervisor,
         api_key,

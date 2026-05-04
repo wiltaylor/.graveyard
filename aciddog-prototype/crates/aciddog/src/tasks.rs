@@ -347,6 +347,28 @@ pub struct TaskStore {
     group_assignees: Vec<String>,
 }
 
+/// Broadcast event fan-out for task-store mutations. Published from
+/// `App`'s task-mutation handlers (add / update / remove / take /
+/// approve / note / todo / comment) via `App::emit_task_event`. The
+/// supervisor-scoped `/v1/tasks/events` SSE handler subscribes here.
+///
+/// Mirrors [`crate::cron::CronEvent`] (see
+/// `crates/aciddog/src/cron/mod.rs`) — same `tag = "kind"` /
+/// `rename_all = "snake_case"` shape, same broadcast wiring through
+/// `WebserviceState`, same browser-side consumer contract.
+///
+/// Granular `Comment` / `Todo` / `Note` sub-events are intentionally
+/// not modelled in v1 (DECIDE-A): every such mutation surfaces as
+/// `Updated` carrying the full post-mutation [`Task`] row so the
+/// frontend de-dupes naturally via id-replace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TaskEvent {
+    Created { task: Task },
+    Updated { task: Task },
+    Removed { id: Uuid },
+}
+
 impl TaskStore {
     pub fn new() -> Self {
         Self::default()

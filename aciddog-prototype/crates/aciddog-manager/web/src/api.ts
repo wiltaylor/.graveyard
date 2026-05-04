@@ -639,3 +639,10 @@ export function workflowEventsUrl(id: string, instanceId?: number): string {
 export function cronEventsUrl(id: string): string {
   return `/api/instances/${id}/cron/events`;
 }
+
+/// Path for an EventSource that streams `TaskEvent`s for the given
+/// instance. No filtering — the stream carries every created / updated /
+/// removed mutation for every task. Mirrors `cronEventsUrl`.
+export function tasksEventsUrl(id: string): string {
+  return `/api/instances/${id}/tasks/events`;
+}

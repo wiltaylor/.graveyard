@@ -280,6 +280,15 @@ export interface Task {
   comments: Comment[];
 }
 
+/// SSE event payload published by `/api/instances/:id/tasks/events`.
+/// Mirrors the daemon-side `crate::tasks::TaskEvent`. Additive — the
+/// browser consumer ignores unknown variants so adding new shapes
+/// later doesn't break older clients.
+export type TaskEvent =
+  | { kind: "created"; task: Task }
+  | { kind: "updated"; task: Task }
+  | { kind: "removed"; id: string };
+
 export interface TaskListResponse {
   ok: boolean;
   tasks: Task[];

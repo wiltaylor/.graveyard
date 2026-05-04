@@ -49,6 +49,7 @@ async fn spawn_fake_remote() -> FakeRemote {
     let (channel_message_tx, _) = broadcast::channel(32);
     let (workflow_event_tx, _) = broadcast::channel(32);
     let (cron_event_tx, _) = broadcast::channel(32);
+    let (task_event_tx, _) = broadcast::channel(32);
     let (agent_status_tx, _) = broadcast::channel(32);
     let state = WebserviceState {
         session_id: Uuid::new_v4(),
@@ -58,6 +59,7 @@ async fn spawn_fake_remote() -> FakeRemote {
         channel_message_tx,
         workflow_event_tx,
         cron_event_tx,
+        task_event_tx,
         agent_status_tx,
         is_supervisor: false,
         api_key: None,

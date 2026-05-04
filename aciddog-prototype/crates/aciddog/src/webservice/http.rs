@@ -44,7 +44,8 @@ pub fn build_router(state: WebserviceState, webhooks: Vec<Webhook>) -> Router {
         .route("/v1/chat/events", get(chat_events))
         .route("/v1/channel/events", get(channel_events))
         .route("/v1/workflow/events", get(workflow_events))
-        .route("/v1/cron/events", get(cron_events));
+        .route("/v1/cron/events", get(cron_events))
+        .route("/v1/tasks/events", get(tasks_events));
 
     for hook in webhooks {
         let path = hook.path.clone();
@@ -276,6 +277,45 @@ async fn cron_events(State(state): State<WebserviceState>) -> Response {
             .into_response();
     }
     let rx = state.cron_event_tx.subscribe();
+    let events = BroadcastStream::new(rx).filter_map(move |msg| async move {
+        match msg {
+            Ok(ev) => Event::default().json_data(&ev).ok().map(Ok),
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                let payload = serde_json::json!({ "kind": "lagged", "dropped": n });
+                Event::default()
+                    .event("lagged")
+                    .json_data(payload)
+                    .ok()
+                    .map(Ok::<_, Infallible>)
+            }
+        }
+    });
+    let stream = futures::stream::once(async { Ok::<_, Infallible>(ready_event()) }).chain(events);
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keepalive"),
+        )
+        .into_response()
+}
+
+/// Supervisor-only SSE stream of task-store events. Unfiltered —
+/// every created / updated / removed mutation fans out to every
+/// subscriber.
+///
+/// Mirrors [`cron_events`] — see same module for the precedent.
+async fn tasks_events(State(state): State<WebserviceState>) -> Response {
+    if !state.is_supervisor {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(IpcResponse::err(
+                "this webservice automaton is not flagged `supervisor = true`",
+            )),
+        )
+            .into_response();
+    }
+    let rx = state.task_event_tx.subscribe();
     let events = BroadcastStream::new(rx).filter_map(move |msg| async move {
         match msg {
             Ok(ev) => Event::default().json_data(&ev).ok().map(Ok),
