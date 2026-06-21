@@ -14,6 +14,9 @@ Each project is placed in its own subfolder and will have its own README explain
 
 ## Archived Projects
 
+### [wscript](wscript/README.md)
+A statically-typed scripting language that compiled to WebAssembly (formerly `spite-script`). Superseded by the register-VM scripting language that took over the `wscript` name. Originally at https://github.com/wiltaylor/wscript. Archived 2026-06-21.
+
 ### [Prefab](prefab/README.md)
 A simple Rust-based tool for generating project templates, heavily influenced by Cookie Cutter and using the Tera template language.
 
