@@ -1,0 +1,21 @@
+{
+  "name": "wscript",
+  "displayName": "Wscript",
+  "description": "Wscript language support",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [{
+      "id": "wscript",
+      "aliases": ["Wscript", "wscript"],
+      "extensions": [".ws"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "wscript",
+      "scopeName": "source.wscript",
+      "path": "./wscript.tmLanguage.json"
+    }]
+  }
+}

@@ -1,0 +1,10 @@
+/target
+Cargo.lock
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+.claude/
+docs/book/
+target-cross/

@@ -1,0 +1,12 @@
+[book]
+title = "Wscript Language Guide"
+authors = ["Wscript Contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
