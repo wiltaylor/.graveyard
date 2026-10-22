@@ -14,6 +14,9 @@ Each project is placed in its own subfolder and will have its own README explain
 
 ## Archived Projects
 
+### [aciddog prototype](aciddog-prototype/README.md)
+The first aciddog: a Rust TUI/daemon for orchestrating AI coding agents, with the aciddog-manager web portal (overwatch). Superseded by aciddog-tools (kb, mb, mem, ag, cu, dash, res, rs, sb). This is the local checkout of https://github.com/wiltaylor/aciddog that had diverged from GitHub (183 commits never pushed), plus untracked docs and a WIP `idle` module committed at burial. Five task branches with one extra commit each are kept as `aciddog-prototype/task/*` and `aciddog-prototype/wip/*` branches in this repo. Archived 2026-10-23.
+
 ### [wscript](wscript/README.md)
 A statically-typed scripting language that compiled to WebAssembly (formerly `spite-script`). Superseded by the register-VM scripting language that took over the `wscript` name. Originally at https://github.com/wiltaylor/wscript. Archived 2026-06-21.
 
