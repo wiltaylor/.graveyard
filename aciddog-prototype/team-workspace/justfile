@@ -1,0 +1,36 @@
+# Team-workspace justfile for the aciddog team.
+# Wraps the repo's installer and keeps the bundled skill in sync.
+
+REPO := "repos/aciddog"
+SKILL_SRC := REPO / ".claude/skills/aciddog"
+SKILL_DST := ".aciddog/skills/aciddog"
+
+[default, private]
+main:
+	@just --list
+
+# Build + install aciddog and aciddog-manager from repos/aciddog (delegates to that repo's `just install`).
+[group('install')]
+app-install:
+	cd {{REPO}} && just install
+
+# Replace .aciddog/skills/aciddog with the version from repos/aciddog/.claude/skills/aciddog.
+[group('install')]
+skill-sync:
+	rm -rf {{SKILL_DST}}
+	mkdir -p "$(dirname {{SKILL_DST}})"
+	cp -r {{SKILL_SRC}} {{SKILL_DST}}
+
+# Restart the aciddog-manager user systemd service (no-op if unit not installed).
+[group('install')]
+manager-restart:
+	@if systemctl --user is-enabled --quiet aciddog-manager.service 2>/dev/null; then \
+		systemctl --user restart aciddog-manager.service && \
+		echo "aciddog-manager.service restarted"; \
+	else \
+		echo "(aciddog-manager.service not enabled on this host — skipping restart)"; \
+	fi
+
+# Install the binaries, refresh the bundled skill, and restart aciddog-manager.
+[group('install')]
+install: app-install skill-sync manager-restart
