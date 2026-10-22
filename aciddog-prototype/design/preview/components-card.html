@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css"></head>
+<body>
+<template id="card-content">
+<div style="background:var(--bg-1);border:1px solid var(--border);border-radius:6px;overflow:hidden">
+  <div style="padding:10px 14px;border-bottom:1px solid var(--border-subtle);display:flex;align-items:center;justify-content:space-between">
+    <div style="font-weight:600;font-size:13px">api-gateway</div>
+    <div style="font-family:var(--font-mono);font-size:11px;color:var(--fg-2)">v2.4.1 · 2m ago</div>
+  </div>
+  <div style="padding:12px 14px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+    <div><div class="eyebrow">requests</div><div style="font-size:18px;font-weight:600;font-variant-numeric:tabular-nums">12,840</div></div>
+    <div><div class="eyebrow">p95</div><div style="font-size:18px;font-weight:600;font-variant-numeric:tabular-nums">142 ms</div></div>
+    <div><div class="eyebrow">errors</div><div style="font-size:18px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--danger-fg)">0.04 %</div></div>
+  </div>
+</div></template>
+<script src="_split.js"></script>
+</body>
+</html>

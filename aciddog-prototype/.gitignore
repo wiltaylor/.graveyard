@@ -1,0 +1,19 @@
+/target
+.env
+*.log
+/demo/.aciddog/tasks.json
+/demo/.aciddog/cron.json
+/demo/.aciddog/memory/
+/demo/.aciddog/chat/
+/demo/.aciddog/agent-chat/
+/demo-remote-*/.aciddog/
+/crates/aciddog/.aciddog/
+Cargo.lock
+
+# aciddog-manager
+/crates/aciddog-manager/target/
+/crates/aciddog-manager/web/node_modules/
+/crates/aciddog-manager/web/dist/
+/aciddog-manager.db
+/aciddog-manager.db-journal
+/aciddog-manager-data/

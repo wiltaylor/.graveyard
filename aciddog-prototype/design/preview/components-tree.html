@@ -1,0 +1,720 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  /* ─────────────────────────────────────────────────────────────────────
+     TREE VIEW
+     A two-pane file/resource tree with:
+       • expand / collapse (chevron + click row)
+       • drag and drop within and between folders
+       • inline add (folder / file) on any folder row
+       • inline rename (double-click row)
+       • selection
+     Built without dependencies so it can be lifted into any Forge surface.
+     ───────────────────────────────────────────────────────────────────── */
+
+  .tree-wrap {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    width: 320px;
+    font-size: 13px;
+    color: var(--fg-0);
+  }
+  .tree-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .tree-head .title {
+    font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+    font-weight: 600; color: var(--fg-2);
+    flex: 1;
+  }
+  .tree-head .count {
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3);
+  }
+  .tree-head .icon-btn {
+    width: 22px; height: 22px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: var(--r-sm);
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--fg-2);
+    cursor: pointer;
+    transition: background 80ms cubic-bezier(.2,0,0,1),
+                color 80ms cubic-bezier(.2,0,0,1);
+  }
+  .tree-head .icon-btn:hover { background: var(--bg-3); color: var(--fg-0); }
+  .tree-head .icon-btn svg { width: 13px; height: 13px; }
+
+  .tree {
+    padding: 4px 0 6px;
+    max-height: 480px;
+    overflow-y: auto;
+  }
+  .tree::-webkit-scrollbar { width: 8px; }
+  .tree::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+  .tree::-webkit-scrollbar-track { background: transparent; }
+
+  /* ── Node row ─────────────────────────────────────────────────────── */
+  .tn {
+    position: relative;
+    display: grid;
+    grid-template-columns: 16px 16px 1fr auto;
+    column-gap: 6px;
+    align-items: center;
+    height: 26px;
+    padding: 0 8px 0 4px;
+    cursor: default;
+    user-select: none;
+    color: var(--fg-1);
+  }
+  .tn:hover {
+    background: var(--bg-2);
+    color: var(--fg-0);
+  }
+  .tn[data-selected="true"] {
+    background: var(--accent-bg);
+    color: var(--accent-fg);
+  }
+  .tn[data-selected="true"] .tn-icon { color: var(--accent-fg); }
+
+  .tn[data-dragging="true"] { opacity: .35; }
+  .tn[data-drop="inside"] {
+    background: color-mix(in oklab, var(--accent) 14%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 60%, transparent);
+    border-radius: 3px;
+  }
+  /* Drop-line indicators between rows */
+  .tn[data-drop="before"]::before,
+  .tn[data-drop="after"]::after {
+    content: ""; position: absolute; left: 0; right: 8px;
+    height: 2px;
+    background: var(--accent);
+    border-radius: 2px;
+    pointer-events: none;
+  }
+  .tn[data-drop="before"]::before { top: -1px; }
+  .tn[data-drop="after"]::after  { bottom: -1px; }
+
+  /* Left guide-line per nesting level */
+  .tn-rail {
+    grid-column: 1; height: 100%;
+    position: relative;
+  }
+
+  .tn-chev {
+    grid-column: 1;
+    width: 16px; height: 16px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--fg-3);
+    cursor: pointer;
+    border-radius: 3px;
+    transition: transform 120ms cubic-bezier(.2,0,0,1),
+                background 80ms cubic-bezier(.2,0,0,1);
+  }
+  .tn-chev:hover { background: var(--bg-3); color: var(--fg-1); }
+  .tn-chev svg { width: 10px; height: 10px; }
+  .tn[data-open="true"] > .tn-chev { transform: rotate(90deg); }
+  .tn-chev.empty { visibility: hidden; }
+
+  .tn-icon {
+    grid-column: 2;
+    width: 16px; height: 16px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--fg-2);
+  }
+  .tn-icon svg { width: 14px; height: 14px; }
+  .tn[data-kind="folder"] .tn-icon { color: var(--accent-fg); }
+  .tn[data-kind="folder"][data-open="false"] .tn-icon-open { display: none; }
+  .tn[data-kind="folder"][data-open="true"]  .tn-icon-closed { display: none; }
+
+  .tn-label {
+    grid-column: 3;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 13px;
+  }
+  .tn-label .badge {
+    display: inline-block;
+    margin-left: 6px;
+    font-family: var(--font-mono); font-size: 9.5px;
+    letter-spacing: .04em; text-transform: uppercase;
+    color: var(--fg-3);
+    background: var(--bg-2);
+    border: 1px solid var(--border-subtle);
+    padding: 0 5px; border-radius: 3px;
+    line-height: 14px; vertical-align: 1px;
+  }
+  .tn[data-selected="true"] .tn-label .badge {
+    background: color-mix(in oklab, var(--accent) 8%, transparent);
+    border-color: color-mix(in oklab, var(--accent) 25%, transparent);
+    color: var(--accent-fg);
+  }
+
+  .tn-actions {
+    grid-column: 4;
+    display: inline-flex; gap: 2px;
+    opacity: 0; pointer-events: none;
+    transition: opacity 80ms cubic-bezier(.2,0,0,1);
+  }
+  .tn:hover .tn-actions,
+  .tn[data-selected="true"] .tn-actions {
+    opacity: 1; pointer-events: auto;
+  }
+  .tn-act {
+    width: 18px; height: 18px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 0; background: transparent;
+    color: var(--fg-2);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .tn-act:hover { background: var(--bg-3); color: var(--fg-0); }
+  .tn-act svg { width: 11px; height: 11px; }
+
+  /* Children container — absorb the indent via padding-left set by JS */
+  .tn-children { display: none; }
+  .tn-children.open { display: block; }
+
+  /* Inline add row */
+  .tn-input {
+    height: 22px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 3px;
+    padding: 0 6px;
+    color: var(--fg-0);
+    font: inherit; font-size: 12.5px;
+    outline: none;
+    width: 100%;
+  }
+  .tn-input:focus { border-color: var(--accent); }
+
+  /* Empty state */
+  .tree-empty {
+    padding: 16px;
+    color: var(--fg-3);
+    font-size: 12px;
+    text-align: center;
+  }
+
+  /* Layout for the two-card preview */
+  .tree-stack { display: flex; flex-direction: column; gap: 16px; }
+  .tree-caption {
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-2);
+    margin-top: 8px;
+  }
+  .tree-caption kbd {
+    display: inline-block; padding: 1px 4px; line-height: 14px;
+    background: var(--bg-2); border: 1px solid var(--border-subtle);
+    border-radius: 3px; color: var(--fg-1);
+    font-family: var(--font-mono); font-size: 10px;
+  }
+</style>
+</head>
+<body>
+<template id="card-content">
+<div class="tree-stack">
+  <div class="tree-wrap" data-tree>
+    <div class="tree-head">
+      <span class="title">Resources</span>
+      <span class="count" data-tree-count></span>
+      <button type="button" class="icon-btn" data-tree-collapse-all title="Collapse all" aria-label="Collapse all">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+      </button>
+      <button type="button" class="icon-btn" data-tree-add-root title="New folder at root" aria-label="New folder">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+      </button>
+    </div>
+    <div class="tree" data-tree-root></div>
+  </div>
+  <div class="tree-caption">
+    drag rows to reorder · drop on a folder to nest · double-click to rename ·
+    <kbd>↵</kbd> save · <kbd>esc</kbd> cancel
+  </div>
+</div>
+</template>
+<script src="_split.js"></script>
+<script>
+(function () {
+  /* ──────────────────────── Icons (Lucide, 1.5px) ───────────────────── */
+  const ICONS = {
+    chev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>',
+    folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
+    folderOpen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></svg>',
+    file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+    code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><polyline points="10 13 8 15 10 17"/><polyline points="14 13 16 15 14 17"/></svg>',
+    image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></svg>',
+    db: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>',
+    fn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+    addFolder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>',
+    addFile: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+  };
+
+  /* Map a node's iconKey to an icon — folders auto-swap on open. */
+  function iconFor(node, open) {
+    if (node.kind === 'folder') {
+      return open ? ICONS.folderOpen : ICONS.folder;
+    }
+    return ICONS[node.iconKey] || ICONS.file;
+  }
+
+  /* ──────────────────────── Sample data ─────────────────────────────── */
+  function sampleTree() {
+    let nextId = 1;
+    const id = () => 'n' + (nextId++);
+    return [
+      { id: id(), kind: 'folder', name: 'payments-api', open: true, children: [
+        { id: id(), kind: 'folder', name: 'src', open: true, children: [
+          { id: id(), kind: 'file', iconKey: 'code', name: 'checkout.ts', badge: 'ts' },
+          { id: id(), kind: 'file', iconKey: 'code', name: 'retry.ts', badge: 'ts' },
+          { id: id(), kind: 'folder', name: 'webhooks', open: false, children: [
+            { id: id(), kind: 'file', iconKey: 'code', name: 'stripe.ts', badge: 'ts' },
+            { id: id(), kind: 'file', iconKey: 'code', name: 'index.ts', badge: 'ts' },
+          ]},
+        ]},
+        { id: id(), kind: 'folder', name: 'config', open: false, children: [
+          { id: id(), kind: 'file', iconKey: 'file', name: 'app.toml' },
+          { id: id(), kind: 'file', iconKey: 'file', name: 'env.production' },
+        ]},
+        { id: id(), kind: 'file', iconKey: 'file', name: 'README.md', badge: 'md' },
+      ]},
+      { id: id(), kind: 'folder', name: 'datastore', open: false, children: [
+        { id: id(), kind: 'file', iconKey: 'db', name: 'orders', badge: 'pg' },
+        { id: id(), kind: 'file', iconKey: 'db', name: 'customers', badge: 'pg' },
+        { id: id(), kind: 'file', iconKey: 'db', name: 'sessions', badge: 'redis' },
+      ]},
+      { id: id(), kind: 'folder', name: 'edge-functions', open: false, children: [
+        { id: id(), kind: 'file', iconKey: 'fn', name: 'auth-callback' },
+        { id: id(), kind: 'file', iconKey: 'fn', name: 'webhook-router' },
+      ]},
+      { id: id(), kind: 'folder', name: 'assets', open: false, children: [
+        { id: id(), kind: 'file', iconKey: 'image', name: 'logo-mark.svg' },
+        { id: id(), kind: 'file', iconKey: 'image', name: 'og-cover.png' },
+      ]},
+    ];
+  }
+
+  /* ──────────────────────── Tiny helpers ────────────────────────────── */
+  function el(tag, attrs, ...children) {
+    const node = document.createElement(tag);
+    if (attrs) for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'class') node.className = v;
+      else if (k === 'html') node.innerHTML = v;
+      else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+      else if (v === true) node.setAttribute(k, '');
+      else if (v === false || v == null) {} else node.setAttribute(k, v);
+    }
+    for (const c of children) {
+      if (c == null || c === false) continue;
+      node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    }
+    return node;
+  }
+
+  /* find a node by id, returning {node, parent, index} */
+  function findNode(roots, id, parent = null) {
+    for (let i = 0; i < roots.length; i++) {
+      const n = roots[i];
+      if (n.id === id) return { node: n, parent, index: i, siblings: roots };
+      if (n.kind === 'folder' && n.children) {
+        const hit = findNode(n.children, id, n);
+        if (hit) return hit;
+      }
+    }
+    return null;
+  }
+  function isAncestor(roots, candidateId, ofId) {
+    // is `candidateId` an ancestor of `ofId` (or equal)?
+    if (candidateId === ofId) return true;
+    const cand = findNode(roots, candidateId);
+    if (!cand || cand.node.kind !== 'folder') return false;
+    return !!findNode(cand.node.children || [], ofId);
+  }
+  function countAll(roots) {
+    let n = 0;
+    const walk = (xs) => xs.forEach(x => { n++; if (x.children) walk(x.children); });
+    walk(roots);
+    return n;
+  }
+
+  /* ──────────────────────── Bind one tree ───────────────────────────── */
+  function bindTree(wrap) {
+    const root = wrap.querySelector('[data-tree-root]');
+    const countEl = wrap.querySelector('[data-tree-count]');
+    const collapseAllBtn = wrap.querySelector('[data-tree-collapse-all]');
+    const addRootBtn = wrap.querySelector('[data-tree-add-root]');
+
+    const data = sampleTree();
+    let selectedId = data[0].children[0].children[0].id; // pre-select checkout.ts
+    let editingId = null;     // id currently being renamed/created
+    let pendingNewParent = null; // parent id when adding a brand-new node
+    let pendingNewKind = null;
+    let dragId = null;
+    let dropTargetId = null;
+    let dropPos = null;       // 'before' | 'after' | 'inside'
+
+    /* ── render ──────────────────────────────────────────────────────── */
+    function render() {
+      root.innerHTML = '';
+      data.forEach(n => root.appendChild(renderNode(n, 0)));
+      countEl.textContent = countAll(data) + ' items';
+      if (data.length === 0) {
+        root.appendChild(el('div', { class: 'tree-empty' }, 'No items. Use + to add.'));
+      }
+    }
+
+    function renderNode(node, depth) {
+      const isFolder = node.kind === 'folder';
+      const isOpen = !!node.open;
+      const isSelected = node.id === selectedId;
+
+      const row = el('div', {
+        class: 'tn',
+        'data-id': node.id,
+        'data-kind': node.kind,
+        'data-open': isOpen ? 'true' : 'false',
+        'data-selected': isSelected ? 'true' : 'false',
+        draggable: editingId === node.id ? false : true,
+        style: `padding-left:${4 + depth * 14}px`,
+      });
+
+      // chevron (folders only)
+      const chev = el('span', {
+        class: 'tn-chev' + (isFolder ? '' : ' empty'),
+        html: ICONS.chev,
+        onclick: (e) => {
+          e.stopPropagation();
+          if (isFolder) { node.open = !node.open; render(); }
+        },
+      });
+      row.appendChild(chev);
+
+      // icon
+      row.appendChild(el('span', {
+        class: 'tn-icon',
+        html: iconFor(node, isOpen),
+      }));
+
+      // label (or input when editing)
+      if (editingId === node.id) {
+        const input = el('input', {
+          class: 'tn-input',
+          type: 'text',
+          value: node.name || '',
+          onclick: e => e.stopPropagation(),
+          onkeydown: (e) => {
+            if (e.key === 'Enter') { commitEdit(input.value); }
+            else if (e.key === 'Escape') { cancelEdit(); }
+          },
+          onblur: () => commitEdit(input.value),
+        });
+        const wrap = el('span', { class: 'tn-label' });
+        wrap.appendChild(input);
+        row.appendChild(wrap);
+        // focus once attached
+        requestAnimationFrame(() => { input.focus(); input.select(); });
+      } else {
+        const label = el('span', { class: 'tn-label' });
+        label.appendChild(document.createTextNode(node.name));
+        if (node.badge) label.appendChild(el('span', { class: 'badge' }, node.badge));
+        row.appendChild(label);
+      }
+
+      // hover actions
+      const acts = el('span', { class: 'tn-actions' });
+      if (isFolder) {
+        acts.appendChild(el('button', {
+          type: 'button', class: 'tn-act', title: 'New folder',
+          'aria-label': 'New folder', html: ICONS.addFolder,
+          onclick: (e) => { e.stopPropagation(); startAddChild(node, 'folder'); },
+        }));
+        acts.appendChild(el('button', {
+          type: 'button', class: 'tn-act', title: 'New file',
+          'aria-label': 'New file', html: ICONS.addFile,
+          onclick: (e) => { e.stopPropagation(); startAddChild(node, 'file'); },
+        }));
+      }
+      acts.appendChild(el('button', {
+        type: 'button', class: 'tn-act', title: 'Delete',
+        'aria-label': 'Delete', html: ICONS.trash,
+        onclick: (e) => { e.stopPropagation(); deleteNode(node.id); },
+      }));
+      row.appendChild(acts);
+
+      /* ── row interactions ───────────────────────────────────────── */
+      row.addEventListener('click', () => {
+        selectedId = node.id;
+        if (isFolder && editingId !== node.id) node.open = !node.open;
+        render();
+      });
+      row.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        editingId = node.id;
+        render();
+      });
+
+      /* ── drag and drop ──────────────────────────────────────────── */
+      row.addEventListener('dragstart', (e) => {
+        dragId = node.id;
+        row.setAttribute('data-dragging', 'true');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', node.id);
+      });
+      row.addEventListener('dragend', () => {
+        dragId = null;
+        clearDropMarks();
+        render();
+      });
+      row.addEventListener('dragover', (e) => {
+        if (!dragId || dragId === node.id) return;
+        // can't drop a node inside its own subtree
+        if (isAncestor(data, dragId, node.id)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const rect = row.getBoundingClientRect();
+        const y = e.clientY - rect.top;
+        let pos;
+        if (isFolder) {
+          // 0–25 % before, 25–75 % inside, 75–100 % after
+          if (y < rect.height * 0.25) pos = 'before';
+          else if (y > rect.height * 0.75) pos = 'after';
+          else pos = 'inside';
+        } else {
+          pos = y < rect.height / 2 ? 'before' : 'after';
+        }
+        if (dropTargetId !== node.id || dropPos !== pos) {
+          clearDropMarks();
+          dropTargetId = node.id;
+          dropPos = pos;
+          row.setAttribute('data-drop', pos);
+        }
+      });
+      row.addEventListener('dragleave', (e) => {
+        // Only clear if leaving the row entirely (not into a child)
+        if (!row.contains(e.relatedTarget)) {
+          if (dropTargetId === node.id) {
+            row.removeAttribute('data-drop');
+            dropTargetId = null;
+            dropPos = null;
+          }
+        }
+      });
+      row.addEventListener('drop', (e) => {
+        if (!dragId) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const sourceId = dragId;
+        const targetId = node.id;
+        const pos = dropPos;
+        clearDropMarks();
+        dragId = null;
+        dropTargetId = null;
+        dropPos = null;
+        moveNode(sourceId, targetId, pos);
+      });
+
+      // wrap the row + (if folder, open) its children in a fragment
+      const frag = document.createDocumentFragment();
+      frag.appendChild(row);
+      if (isFolder && isOpen && node.children) {
+        const kidsWrap = el('div', { class: 'tn-children open' });
+        // pending new-child input
+        if (pendingNewParent === node.id) {
+          kidsWrap.appendChild(renderNewChildInput(node, depth + 1));
+        }
+        node.children.forEach(c => kidsWrap.appendChild(renderNode(c, depth + 1)));
+        frag.appendChild(kidsWrap);
+      }
+      return frag;
+    }
+
+    function renderNewChildInput(parent, depth) {
+      const tempId = '__new__';
+      const row = el('div', {
+        class: 'tn',
+        'data-id': tempId,
+        'data-kind': pendingNewKind === 'folder' ? 'folder' : 'file',
+        'data-open': 'false',
+        style: `padding-left:${4 + depth * 14}px`,
+      });
+      row.appendChild(el('span', { class: 'tn-chev empty', html: ICONS.chev }));
+      row.appendChild(el('span', {
+        class: 'tn-icon',
+        html: pendingNewKind === 'folder' ? ICONS.folder : ICONS.file,
+      }));
+      const labelWrap = el('span', { class: 'tn-label' });
+      const placeholder = pendingNewKind === 'folder' ? 'new folder' : 'new file';
+      const input = el('input', {
+        class: 'tn-input',
+        type: 'text',
+        value: '',
+        placeholder,
+        onclick: e => e.stopPropagation(),
+        onkeydown: (e) => {
+          if (e.key === 'Enter') { commitNewChild(input.value); }
+          else if (e.key === 'Escape') { cancelNewChild(); }
+        },
+        onblur: () => {
+          // if user clicked away with no value, cancel; else commit
+          if (input.value.trim()) commitNewChild(input.value);
+          else cancelNewChild();
+        },
+      });
+      labelWrap.appendChild(input);
+      row.appendChild(labelWrap);
+      requestAnimationFrame(() => { input.focus(); });
+      return row;
+    }
+
+    function clearDropMarks() {
+      root.querySelectorAll('.tn[data-drop]').forEach(r => r.removeAttribute('data-drop'));
+    }
+
+    /* ── mutations ───────────────────────────────────────────────── */
+    function commitEdit(value) {
+      const v = value.trim();
+      if (editingId == null) return;
+      const found = findNode(data, editingId);
+      if (found && v) found.node.name = v;
+      editingId = null;
+      render();
+    }
+    function cancelEdit() {
+      editingId = null;
+      render();
+    }
+
+    function startAddChild(parent, kind) {
+      if (parent.kind !== 'folder') return;
+      parent.open = true;
+      pendingNewParent = parent.id;
+      pendingNewKind = kind;
+      render();
+    }
+    function commitNewChild(value) {
+      const v = value.trim();
+      if (!pendingNewParent) return;
+      if (!v) { cancelNewChild(); return; }
+      const found = findNode(data, pendingNewParent);
+      if (!found) { cancelNewChild(); return; }
+      const parent = found.node;
+      if (!parent.children) parent.children = [];
+      const newId = 'n' + Math.random().toString(36).slice(2, 8);
+      const newNode = pendingNewKind === 'folder'
+        ? { id: newId, kind: 'folder', name: v, open: false, children: [] }
+        : { id: newId, kind: 'file', iconKey: pickIconKeyForName(v), name: v };
+      parent.children.unshift(newNode);
+      selectedId = newId;
+      pendingNewParent = null;
+      pendingNewKind = null;
+      render();
+    }
+    function cancelNewChild() {
+      pendingNewParent = null;
+      pendingNewKind = null;
+      render();
+    }
+
+    function pickIconKeyForName(name) {
+      const lower = name.toLowerCase();
+      if (/\.(ts|js|tsx|jsx|py|rs|go|rb|java)$/i.test(lower)) return 'code';
+      if (/\.(png|jpe?g|gif|svg|webp)$/i.test(lower)) return 'image';
+      return 'file';
+    }
+
+    function deleteNode(id) {
+      const found = findNode(data, id);
+      if (!found) return;
+      found.siblings.splice(found.index, 1);
+      if (selectedId === id) selectedId = null;
+      render();
+    }
+
+    function moveNode(sourceId, targetId, pos) {
+      if (sourceId === targetId) return;
+      if (isAncestor(data, sourceId, targetId)) return;
+      const src = findNode(data, sourceId);
+      const tgt = findNode(data, targetId);
+      if (!src || !tgt) return;
+
+      // remove from current location
+      src.siblings.splice(src.index, 1);
+
+      if (pos === 'inside') {
+        if (tgt.node.kind !== 'folder') return; // shouldn't happen
+        if (!tgt.node.children) tgt.node.children = [];
+        tgt.node.children.unshift(src.node);
+        tgt.node.open = true;
+      } else {
+        // re-find target since indices may have shifted after splice
+        const tgtAfter = findNode(data, targetId);
+        if (!tgtAfter) {
+          // target was removed somehow; restore source at root
+          data.unshift(src.node);
+        } else {
+          const insertAt = pos === 'before' ? tgtAfter.index : tgtAfter.index + 1;
+          tgtAfter.siblings.splice(insertAt, 0, src.node);
+        }
+      }
+      selectedId = sourceId;
+      render();
+    }
+
+    /* ── header buttons ──────────────────────────────────────────── */
+    collapseAllBtn.addEventListener('click', () => {
+      const walk = (xs) => xs.forEach(x => {
+        if (x.kind === 'folder') { x.open = false; if (x.children) walk(x.children); }
+      });
+      walk(data);
+      render();
+    });
+    addRootBtn.addEventListener('click', () => {
+      const newId = 'n' + Math.random().toString(36).slice(2, 8);
+      data.push({ id: newId, kind: 'folder', name: '', open: false, children: [] });
+      editingId = newId;
+      selectedId = newId;
+      render();
+    });
+
+    /* ── drop on root container (append to root) ─────────────────── */
+    root.addEventListener('dragover', (e) => {
+      if (!dragId) return;
+      // only intercept if the event is on the empty bottom area, not on a row
+      if (e.target.closest('.tn')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+    });
+    root.addEventListener('drop', (e) => {
+      if (!dragId) return;
+      if (e.target.closest('.tn')) return;
+      e.preventDefault();
+      const src = findNode(data, dragId);
+      if (src) {
+        src.siblings.splice(src.index, 1);
+        data.push(src.node);
+      }
+      dragId = null;
+      clearDropMarks();
+      render();
+    });
+
+    render();
+  }
+
+  function init() {
+    document.querySelectorAll('[data-tree]').forEach(bindTree);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    setTimeout(init, 0);
+  }
+})();
+</script>
+</body>
+</html>

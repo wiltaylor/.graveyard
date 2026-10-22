@@ -1,0 +1,69 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  .stage {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  }
+  .surface {
+    border-radius: var(--r-md);
+    padding: 14px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    position: relative;
+  }
+  .surface .label {
+    font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--fg-2); font-family: var(--font-mono);
+  }
+  .nest {
+    margin-top: 8px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    padding: 10px;
+    font-family: var(--font-mono); font-size: 11px; color: var(--fg-1);
+  }
+  .float {
+    margin-top: 8px;
+    background: var(--bg-4);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-sm);
+    padding: 10px;
+    font-family: var(--font-mono); font-size: 11px; color: var(--fg-0);
+  }
+  .note {
+    font-size: 12px; color: var(--fg-1); line-height: 1.5;
+    margin-top: 12px;
+  }
+  .note strong { color: var(--fg-0); font-weight: 600; }
+  .crossed {
+    text-decoration: line-through; color: var(--fg-3);
+    font-family: var(--font-mono); font-size: 11px;
+  }
+</style>
+</head>
+<body>
+<template id="card-content">
+<div style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--fg-2);font-weight:600;font-family:var(--font-mono);margin-bottom:10px">
+  Hierarchy without elevation
+</div>
+<div class="stage">
+  <div class="surface">
+    <span class="label">resting</span>
+    <div class="nest">nested · bg-2</div>
+  </div>
+  <div class="surface">
+    <span class="label">overlay</span>
+    <div class="float">popover · bg-4 + border-strong</div>
+  </div>
+</div>
+<p class="note">
+  <strong>No drop shadows.</strong>  Layering uses background-step
+  (<span class="crossed">box-shadow</span> → <code style="font-family:var(--font-mono);font-size:11px;background:var(--bg-2);padding:1px 5px;border-radius:3px;border:1px solid var(--border-subtle)">bg-1 → bg-2 → bg-4</code>) and a stronger
+  border for floating surfaces.
+</p>
+</template>
+<script src="_split.js"></script>
+</body>
+</html>

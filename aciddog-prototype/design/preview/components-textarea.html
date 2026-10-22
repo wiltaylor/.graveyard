@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  .ta-field { display: flex; flex-direction: column; gap: 4px; }
+  .ta-field label {
+    font-size: 12px; color: var(--fg-1); font-weight: 500;
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .ta-field label .opt { font-weight: 400; color: var(--fg-3); font-size: 11px; font-family: var(--font-mono); }
+  .ta-field textarea {
+    width: 100%; min-height: 88px;
+    padding: 8px 10px;
+    background: var(--bg-1); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--fg-0);
+    font: inherit; font-size: 13px; line-height: 1.5;
+    outline: none; box-sizing: border-box;
+    resize: none;
+    transition: border-color 80ms var(--ease-out, ease-out);
+  }
+  .ta-field textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-bg);
+  }
+  .ta-field textarea:disabled {
+    background: var(--bg-2); color: var(--fg-3);
+    border-color: var(--border-subtle); cursor: not-allowed;
+  }
+  .ta-field.error textarea { border-color: var(--danger); }
+  .ta-meta {
+    display: flex; justify-content: space-between;
+    font-size: 11px; color: var(--fg-2); font-family: var(--font-mono);
+  }
+  .ta-meta .err { color: var(--danger-fg); }
+  .ta-mono textarea {
+    font-family: var(--font-mono); font-size: 12px; line-height: 1.55;
+    background: var(--bg-2);
+  }
+</style>
+</head>
+<body>
+<template id="card-content">
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;min-width:0">
+  <div class="ta-field" style="min-width:0">
+    <label>Release notes <span class="opt">markdown</span></label>
+    <textarea>### v2.4.1
+- Fix retry loop on 5xx
+- Bump node 20.10 → 20.11
+- Allow FORGE_TOKEN env</textarea>
+    <div class="ta-meta"><span>auto-saved · 12s</span><span>164 / 2000</span></div>
+  </div>
+  <div class="ta-field ta-mono error" style="min-width:0">
+    <label>Build command</label>
+    <textarea>npm ci &amp;&amp; npm run build
+postbuild: ./release.sh</textarea>
+    <div class="ta-meta"><span class="err">L2 · unknown directive</span><span>2 lines</span></div>
+  </div>
+</div>
+</template>
+<script src="_split.js"></script>
+</body>
+</html>

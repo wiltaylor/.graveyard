@@ -1,0 +1,165 @@
+// Remote-demo, server side.
+//
+// Pairs with `demo-remote-client/aciddog.wcl`. Run the two in separate
+// terminals via:
+//
+//   just run-remote-server   # this side
+//   just run-remote-client   # the dialing side
+//
+// The two instances communicate over a Unix socket at
+// `/tmp/aciddog-remote-demo.sock`. The server hosts a `:webservice`
+// automaton (`gateway`) bound to that path plus a small Claude Code
+// team; the client dials the socket with a `:remote` automaton that
+// proxies `harbor` as a local fleet member.
+//
+// Message flow:
+//
+//   client user → mothership → send_message(to=harbor) RPC
+//                             → server's `harbor` pane (AI agent replies)
+//   harbor reply → `send --to gateway` → SSE → client's mothership
+//                                            → client's `scout` pane
+//
+// No auth on the socket; filesystem perms are the trust boundary.
+
+import <aciddog.wcl>
+
+team server {
+  description    = "Remote-demo server. Unix-socket webservice + a small Claude Code team."
+  default_ai_core = "default_core"
+}
+
+// Default claudeCode core. Requires the `claude` CLI on PATH and a
+// logged-in Anthropic / Claude Code session (`claude login`).
+ai_core default_core {
+  type          = :claudeCode
+  default_tools = ["Bash", "Read", "Edit", "Grep", "Glob"]
+  systemPrompt  = <<EOT
+    You are a chat-style agent running inside a demo aciddog instance. Keep replies short and conversational — a sentence or two is plenty.
+  EOT
+}
+
+// Shared memory bank. Every agent below lists it in `memory_banks`
+// so they can jot durable facts (e.g. decisions reached in
+// `#planning`) and look them up on later turns.
+memory_bank team_notes {
+  description = "Durable notes shared across the remote-demo server team: decisions, conventions, quirks, and anything worth a future agent's attention."
+}
+
+// harbor is the front-door agent: mail from the client arrives here
+// via `gateway`, and this agent's replies go back out the same way.
+agent harbor {
+  role             = "server-side front door"
+  role_description = <<EOT
+    You are the server-side agent in a two-instance aciddog demo. Messages you receive came from the client instance via the `gateway` bridge. When you reply, `send --to gateway` and the reply will flow back to the client.
+
+    You can delegate to teammates by `send --to planner` or `send --to librarian`, and you can chat with the team in `#planning` or `#library`. Check `team_notes` before asking questions the memory bank already answers.
+  EOT
+  model        = "claude-haiku-4-5"
+  instructions = "Respond conversationally. Use `aciddog send --to gateway <body>` to reply to the client. Delegate work to `planner` or `librarian` when it's outside your scope."
+  can_message  = ["gateway", "planner", "librarian", "user"]
+  // Permit harbor (and only harbor) to kick off the `smoke` workflow
+  // via `aciddog workflow run --id smoke`. The workflow is also
+  // startable from the manager portal's Workflows tab without any
+  // allowlist — the supervisor webservice bypasses that gate.
+  can_run_workflows = ["smoke"]
+  memory_banks      = ["team_notes"]
+}
+
+// planner owns scope + sequencing. A pushy but terse PM-style voice;
+// delegates to librarian for any lookup work.
+agent planner {
+  role             = "scope + sequencing"
+  role_description = <<EOT
+    You break multi-step asks into small, ordered steps. You do not execute the steps yourself — delegate to `harbor` (for replies back to the client) or `librarian` (for lookup + memory bank writes).
+  EOT
+  model        = "claude-haiku-4-5"
+  instructions = "When asked to plan, produce 2–5 numbered steps and suggest which teammate owns each. Keep it to a few lines."
+  can_message  = ["harbor", "librarian", "user"]
+  memory_banks = ["team_notes"]
+}
+
+// librarian curates the shared memory bank.
+agent librarian {
+  role             = "memory + lookups"
+  role_description = <<EOT
+    You curate `team_notes` — store durable facts, look them up when teammates ask, and keep entries terse. If asked for something you don't know, say so plainly.
+  EOT
+  model        = "claude-haiku-4-5"
+  instructions = "Prefer `aciddog memory search team_notes <query>` before answering from first principles. Store anything that looks like a decision or convention with `aciddog memory store team_notes`."
+  can_message  = ["harbor", "planner", "user"]
+  memory_banks = ["team_notes"]
+}
+
+// Channels for the team to coordinate without clogging mailboxes.
+// The human operator (you, via the manager portal's Channels tab) is
+// always implicitly allowed to post into any channel.
+channel planning {
+  description = "Scope + sequencing chatter. Drop a goal here and planner will break it down."
+  welcome     = "Welcome to #planning. Keep messages terse; decisions worth preserving go into team_notes via librarian."
+  members     = ["harbor", "planner", "librarian"]
+}
+
+channel library {
+  description = "Memory-bank curation: `what did we decide about X?`, `note this for later`, etc."
+  welcome     = "Welcome to #library. Ping librarian when you need a lookup or want something stored."
+  members     = ["planner", "librarian"]
+}
+
+// A reusable multi-step procedure. Startable from the manager portal's
+// Workflows tab, or from agents listed in `can_run_workflows` via
+// `aciddog workflow run --id smoke`. Ships with a mix of step kinds
+// so the TUI's Workflows panel / web portal render something
+// recognisable on first open: one `command`, a `sleep` for visibility,
+// a `check` gate, and a final summary `command`.
+workflow smoke {
+  description = "Smoke-test the workflow engine with a command + gate."
+  max_retries = 2
+
+  // Visible inputs appear in the property form.
+  property branch { kind = :text default = "main" }
+  property suites { kind = :multiSelect options = ["unit","integ"] default = ["unit"] }
+
+  // Single-choice select: rendered as a dropdown in the web portal,
+  // cycled with ←/→ + Enter in the TUI.
+  property environment {
+    kind    = :select
+    options = ["dev","staging","prod"]
+    default = "dev"
+  }
+
+  // Hidden variables are never shown in the form. Seeded from
+  // `default` at instance start, mutated at runtime by the
+  // `workflow_set` tool when a worker step runs.
+  property last_check { kind = :hidden default = "ok" }
+
+  // $$VAR$$ substitution resolves at step start from the live
+  // variable map.
+  step echo { kind = :command command = "echo ran on $$branch$$ env=$$environment$$ suites=$$suites$$" }
+
+  // 10-second sleep so the instance lingers in the sidebar / portal
+  // long enough to observe progress (three commands + a gate would
+  // otherwise finish in milliseconds and flash by).
+  step wait { kind = :command command = "sleep 10" }
+
+  // Pure variable gate: pass ⇒ advance; fail ⇒ jump back to `echo`.
+  step gate { kind = :check variable = "last_check" op = :equals value = "ok" target = "echo" }
+
+  step done { kind = :command command = "echo all gates passed" }
+}
+
+// Unix-socket webservice. The client dials this path; its RPCs are
+// stamped with `gateway`'s identity before being routed locally, so
+// messages from the client appear as `from: gateway` to `harbor`.
+// `supervisor = true` is required for the manager portal to drive
+// AgentSendAsUser, channel posts, inbox, and team info through this
+// automaton. `sysadmin = true` adds server-lifecycle RPCs on top —
+// notably `ServerReload`, which powers the "Reload config" button on
+// the manager's Team screen. Sysadmin implies supervisor.
+automaton gateway {
+  type             = :webservice
+  role             = "bridge to the remote client"
+  role_description = "Unix-socket webservice at /tmp/aciddog-remote-demo.sock. Client RPCs route as `from: gateway` into the local fleet; any mail gateway itself receives is broadcast over SSE to the client."
+  socket_path      = "/tmp/aciddog-remote-demo.sock"
+  can_message      = ["harbor", "user"]
+  sysadmin         = true
+}

@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  .logo-row { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 10px; }
+  .logo-tile {
+    border-radius: var(--r-md); border: 1px solid var(--border);
+    padding: 18px 16px; display: flex; align-items: center; justify-content: center; gap: 14px;
+    min-height: 92px;
+  }
+  .logo-tile.dark  { background: #0B0D10; color: #ECEEF2; border-color: #262C36; }
+  .logo-tile.light { background: #FAFAFA; color: #0C0F14; border-color: #DCDFE4; }
+  .logo-tile.accent{ background: var(--accent); color: var(--accent-contrast); border-color: transparent; }
+  .logo-tile svg   { display: block; }
+  .caption {
+    font-family: var(--font-mono); font-size: 10px; color: var(--fg-2);
+    margin-top: 8px; display: flex; gap: 16px; flex-wrap: wrap;
+  }
+  .caption b { color: var(--fg-1); font-weight: 600; }
+</style></head>
+<body>
+<template id="card-content">
+
+<div class="logo-row">
+  <div class="logo-tile dark">
+    <svg width="120" height="28" viewBox="0 0 140 32" fill="none" aria-label="forge wordmark">
+      <g stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6 9 L26 9 L22 15 L10 15 Z"/>
+        <path d="M4 19 L28 19 L24 25 L8 25 Z"/>
+        <line x1="16" y1="15" x2="16" y2="19"/>
+      </g>
+      <text x="40" y="22" font-family="'IBM Plex Sans', sans-serif" font-size="18" font-weight="600" letter-spacing="-0.3" fill="currentColor">forge</text>
+    </svg>
+  </div>
+  <div class="logo-tile light">
+    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="forge mark">
+      <path d="M6 9 L26 9 L22 15 L10 15 Z"/>
+      <path d="M4 19 L28 19 L24 25 L8 25 Z"/>
+      <line x1="16" y1="15" x2="16" y2="19"/>
+    </svg>
+  </div>
+  <div class="logo-tile accent">
+    <svg width="28" height="28" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 9 L26 9 L22 15 L10 15 Z"/>
+      <path d="M4 19 L28 19 L24 25 L8 25 Z"/>
+      <line x1="16" y1="15" x2="16" y2="19"/>
+    </svg>
+  </div>
+</div>
+
+<div class="caption">
+  <span><b>wordmark</b> · default lockup</span>
+  <span><b>mark</b> · 24px min</span>
+  <span>renders in <code>currentColor</code> · clearspace = 1× mark height</span>
+</div></template>
+<script src="_split.js"></script>
+</body>
+</html>

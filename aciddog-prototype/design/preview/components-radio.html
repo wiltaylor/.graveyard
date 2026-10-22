@@ -1,0 +1,131 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  /* ── stacked radio list ──────────────────────────────────────────── */
+  .rg-list { display: flex; flex-direction: column; gap: 6px; }
+  .rg-item {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 10px 12px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: border-color 80ms ease-out, background 80ms ease-out;
+  }
+  .rg-item:hover { border-color: var(--border-strong); }
+  .rg-item.active { border-color: var(--accent); background: var(--accent-bg); }
+  .rg-radio {
+    flex-shrink: 0;
+    width: 16px; height: 16px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-0);
+    margin-top: 2px;
+    position: relative;
+    transition: border-color 80ms ease-out;
+  }
+  .rg-item.active .rg-radio { border-color: var(--accent); }
+  .rg-item.active .rg-radio::after {
+    content: ""; position: absolute; inset: 3px;
+    border-radius: 999px; background: var(--accent);
+  }
+  .rg-item .body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .rg-item .title { font-size: 13px; font-weight: 500; color: var(--fg-0); }
+  .rg-item .desc  { font-size: 11px; color: var(--fg-2); line-height: 1.4; }
+  .rg-item .badge {
+    margin-left: auto;
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-2); padding: 1px 6px;
+    background: var(--bg-2); border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+  }
+  .rg-item.active .badge { background: var(--bg-1); border-color: var(--accent); color: var(--accent-fg); }
+
+  /* ── segmented radio ─────────────────────────────────────────────── */
+  .seg {
+    display: inline-flex;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px;
+    gap: 1px;
+  }
+  .seg button {
+    height: 26px; padding: 0 12px;
+    background: transparent; border: 0;
+    border-radius: 3px;
+    color: var(--fg-1); font: inherit; font-size: 12px; font-weight: 500;
+    cursor: pointer;
+    transition: background 80ms ease-out, color 80ms ease-out;
+  }
+  .seg button:hover { color: var(--fg-0); }
+  .seg button.active {
+    background: var(--bg-0);
+    color: var(--fg-0);
+    border: 1px solid var(--border-strong);
+    box-shadow: none;
+  }
+  [data-theme="light"] .seg button.active {
+    background: #fff;
+    border-color: var(--border);
+  }
+
+  .grouplabel {
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--fg-2); font-weight: 600; font-family: var(--font-mono);
+    margin-bottom: 8px;
+  }
+</style>
+</head>
+<body>
+<template id="card-content">
+<div style="display:grid;grid-template-columns:1fr 280px;gap:18px">
+  <div>
+    <div class="grouplabel">Deploy strategy</div>
+    <div class="rg-list">
+      <label class="rg-item">
+        <span class="rg-radio"></span>
+        <span class="body">
+          <span class="title">Rolling</span>
+          <span class="desc">Replace instances one at a time with health checks. Zero downtime, slower.</span>
+        </span>
+        <span class="badge">~4m</span>
+      </label>
+      <label class="rg-item active">
+        <span class="rg-radio"></span>
+        <span class="body">
+          <span class="title">Blue / green</span>
+          <span class="desc">Stand up the new fleet, swap traffic, retire the old. Instant rollback.</span>
+        </span>
+        <span class="badge">~6m</span>
+      </label>
+      <label class="rg-item">
+        <span class="rg-radio"></span>
+        <span class="body">
+          <span class="title">Canary</span>
+          <span class="desc">Send 5 % of traffic to the new build, ramp on success metrics.</span>
+        </span>
+        <span class="badge">~12m</span>
+      </label>
+    </div>
+  </div>
+  <div>
+    <div class="grouplabel">Region</div>
+    <div class="seg">
+      <button>us-east</button>
+      <button class="active">us-west</button>
+      <button>eu-west</button>
+    </div>
+    <div class="grouplabel" style="margin-top:18px">Density</div>
+    <div class="seg">
+      <button>compact</button>
+      <button class="active">cozy</button>
+      <button>roomy</button>
+    </div>
+  </div>
+</div>
+</template>
+<script src="_split.js"></script>
+</body>
+</html>

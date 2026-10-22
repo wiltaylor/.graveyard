@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/aciddog"]
+# aciddog-manager uses sqlx-sqlite, which links `sqlite3`. The `aciddog`
+# crate already links `sqlite3` transitively via cozo's sqlite storage
+# backend. Cargo refuses to have two packages linking the same native
+# library in a single resolver output, so the manager lives as a
+# standalone crate with its own Cargo.lock. Build it via the
+# `just manager-*` recipes (or `cargo {check,build,test} --manifest-path
+# crates/aciddog-manager/Cargo.toml`).
+exclude = ["crates/aciddog-manager"]
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+large_enum_variant = "allow"
+enum_variant_names = "allow"

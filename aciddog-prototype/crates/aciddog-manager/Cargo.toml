@@ -1,0 +1,67 @@
+[package]
+name = "aciddog-manager"
+version = "0.1.0"
+edition = "2021"
+description = "Web-based management portal for aciddog webservice instances"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["macros", "multipart"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "http2"] }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
+http-body-util = "0.1"
+bytes = "1"
+futures = "0.3"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "macros", "migrate", "chrono"] }
+tower-http = { version = "0.5", features = ["trace"] }
+rust-embed = "8"
+mime_guess = "2"
+argon2 = "0.5"
+rand = { version = "0.8", features = ["std_rng"] }
+base64 = "0.22"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+git2 = { version = "0.19", default-features = false, features = ["https"] }
+tar = "0.4"
+flate2 = "1.0"
+tokio-stream = { version = "0.1", features = ["sync"] }
+nix = { version = "0.29", features = ["signal"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tempfile = "3"
+# Enables `tokio::time::pause`, `advance`, and the `start_paused = true`
+# attribute (gated behind `test-util` feature). Used by the
+# idle-timeout integration tests + activity-tracker unit tests
+# (ADR-0004 §Activity-tracking, edeb7d11).
+tokio = { version = "1", features = ["test-util"] }
+
+[[bin]]
+name = "aciddog-manager"
+path = "src/main.rs"
+
+[[bin]]
+name = "daemon_runner_shim"
+path = "src/bin/daemon_runner_shim.rs"
+
+[[bin]]
+name = "aciddog_init_shim"
+path = "src/bin/aciddog_init_shim.rs"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+large_enum_variant = "allow"
+enum_variant_names = "allow"

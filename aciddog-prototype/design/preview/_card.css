@@ -1,0 +1,60 @@
+/* Forge preview card framing — side-by-side dark + light split.
+   Each card gets two themed panes that share the same content via a
+   `<template id="card-content">` block.  No JS toggle needed — both
+   themes render simultaneously. */
+
+@import url('../colors_and_type.css?v=4');
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  -webkit-font-smoothing: antialiased;
+  background: #000; /* gutter between the two panes */
+}
+
+.split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  min-height: 100vh;
+}
+
+.pane {
+  padding: 16px;
+  position: relative;
+}
+.pane.dark  { background: #0B0D10; color: #ECEEF2; color-scheme: dark; }
+.pane.light { background: #FAFAFA; color: #0C0F14; color-scheme: light; }
+
+.pane::before {
+  content: attr(data-label);
+  position: absolute;
+  top: 6px; right: 8px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* Reusable primitives consumed by every card */
+.row { display: flex; align-items: center; gap: 12px; }
+.col { display: flex; flex-direction: column; gap: 8px; }
+.tok { font-family: var(--font-mono); font-size: 11px; color: var(--fg-2); }
+.eyebrow {
+  font-size: var(--fs-xs); font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-eyebrow); text-transform: uppercase;
+  color: var(--fg-2);
+}
+.swatch {
+  border-radius: var(--r-md); border: 1px solid var(--border);
+  height: 64px; display: flex; align-items: flex-end; padding: 8px 10px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--fg-1);
+}
+.swatch .label {
+  background: var(--bg-1); border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm); padding: 1px 6px; font-size: 10px; color: var(--fg-1);
+}

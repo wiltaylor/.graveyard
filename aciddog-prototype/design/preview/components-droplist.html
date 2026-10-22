@@ -1,0 +1,564 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  .dd-wrap {
+    display: grid;
+    grid-template-columns: 1fr 24px 1fr;
+    gap: 14px;
+    align-items: stretch;
+  }
+  .dd-col {
+    display: flex; flex-direction: column;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    min-width: 0;
+    min-height: 280px;
+  }
+  .dd-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg-2);
+  }
+  .dd-head .title {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+    text-transform: uppercase; color: var(--fg-1);
+    font-family: var(--font-mono);
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .dd-head .count {
+    font-family: var(--font-mono); font-size: 10px;
+    background: var(--bg-1); border: 1px solid var(--border-subtle);
+    padding: 1px 6px; border-radius: 3px; color: var(--fg-2);
+  }
+  .dd-head a {
+    font-size: 11px; color: var(--accent-fg); text-decoration: none;
+    cursor: pointer;
+  }
+  .dd-head a:hover { text-decoration: underline; }
+
+  .dd-search {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg-1);
+  }
+  .dd-search input {
+    width: 100%; height: 26px; padding: 0 8px;
+    background: var(--bg-2); border: 1px solid var(--border-subtle);
+    border-radius: 3px; color: var(--fg-0);
+    font: inherit; font-size: 12px; outline: none;
+    box-sizing: border-box;
+  }
+  .dd-search input::placeholder { color: var(--fg-3); }
+  .dd-search input:focus { border-color: var(--border-strong); background: var(--bg-1); }
+
+  .dd-list {
+    flex: 1;
+    padding: 6px;
+    display: flex; flex-direction: column; gap: 3px;
+    min-height: 220px;
+    position: relative;
+    transition: background 80ms ease-out;
+  }
+  .dd-list.drag-over {
+    background: var(--accent-bg);
+    outline: 1px dashed var(--accent);
+    outline-offset: -3px;
+  }
+
+  .dd-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 8px;
+    background: var(--bg-1);
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    cursor: grab;
+    user-select: none;
+    transition: border-color 80ms ease-out, background 80ms ease-out, opacity 80ms ease-out;
+  }
+  .dd-item:hover {
+    border-color: var(--border-strong);
+    background: var(--bg-2);
+  }
+  .dd-item:active { cursor: grabbing; }
+  .dd-item .grip {
+    flex-shrink: 0;
+    color: var(--fg-3);
+    font-family: var(--font-mono); font-size: 14px;
+    line-height: 1; letter-spacing: -2px;
+    width: 12px;
+  }
+  .dd-item .ico {
+    flex-shrink: 0;
+    width: 20px; height: 20px; border-radius: 3px;
+    background: var(--bg-2); border: 1px solid var(--border);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono); font-size: 11px; color: var(--fg-1);
+  }
+  .dd-item .body { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .dd-item .name {
+    font-size: 12.5px; color: var(--fg-0); font-weight: 500;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .dd-item .meta {
+    font-size: 10px; color: var(--fg-3); font-family: var(--font-mono);
+  }
+  .dd-item .btn {
+    flex-shrink: 0;
+    width: 22px; height: 22px;
+    border: 1px solid var(--border); background: var(--bg-2);
+    border-radius: 3px; color: var(--fg-2);
+    font: inherit; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; line-height: 1;
+  }
+  .dd-item:hover .btn.add { color: var(--accent-fg); border-color: var(--accent); }
+  .dd-item:hover .btn.rm  { color: var(--danger-fg); border-color: var(--danger); }
+  .dd-item.dragging {
+    opacity: 0.35;
+    cursor: grabbing;
+  }
+  .dd-ghost {
+    position: fixed;
+    pointer-events: none;
+    z-index: 9999;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    background: var(--bg-1);
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    transform: rotate(-1deg);
+    opacity: 0.95;
+  }
+  body.dd-dragging, body.dd-dragging * { cursor: grabbing !important; user-select: none; }
+
+  .dd-num {
+    flex-shrink: 0;
+    width: 18px; height: 18px;
+    border-radius: 999px;
+    background: var(--bg-3);
+    color: var(--fg-1);
+    font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+
+  .dd-connect {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--fg-3);
+  }
+  .dd-connect svg { width: 16px; height: 16px; }
+
+  .dd-empty {
+    border: 1px dashed var(--border);
+    border-radius: 4px;
+    padding: 24px 12px;
+    color: var(--fg-3);
+    font-size: 11px; font-family: var(--font-mono);
+    text-align: center;
+    background:
+      repeating-linear-gradient(
+        135deg,
+        transparent 0 6px,
+        var(--bg-2) 6px 7px
+      );
+    pointer-events: none;
+  }
+
+  .dd-drop-target {
+    height: 2px; background: var(--accent);
+    border-radius: 2px;
+    margin: 1px 6px;
+    position: relative;
+    pointer-events: none;
+  }
+  .dd-drop-target::before, .dd-drop-target::after {
+    content: ""; position: absolute; top: 50%; transform: translateY(-50%);
+    width: 6px; height: 6px; border-radius: 999px;
+    background: var(--accent);
+  }
+  .dd-drop-target::before { left: -3px; }
+  .dd-drop-target::after  { right: -3px; }
+
+  .dd-hint {
+    margin-top: 10px;
+    font-size: 11px; color: var(--fg-2); font-family: var(--font-mono);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .dd-hint kbd {
+    background: var(--bg-2); border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 3px;
+    padding: 0 5px; font-size: 10px; color: var(--fg-1);
+  }
+</style>
+</head>
+<body>
+<template id="card-content">
+<div class="dd-root">
+  <div class="dd-wrap">
+    <!-- ── Available pool ──────────────────────────────────── -->
+    <div class="dd-col">
+      <div class="dd-head">
+        <span class="title">Available <span class="count" data-count="available">0</span></span>
+        <a data-action="add-all">Add all →</a>
+      </div>
+      <div class="dd-search">
+        <input placeholder="Filter widgets…" data-filter />
+      </div>
+      <div class="dd-list" data-list="available"></div>
+    </div>
+
+    <div class="dd-connect">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+
+    <!-- ── Selected ────────────────────────────────────────── -->
+    <div class="dd-col">
+      <div class="dd-head">
+        <span class="title">On dashboard <span class="count" data-count="selected">0</span></span>
+        <a data-action="clear">Clear</a>
+      </div>
+      <div class="dd-list" data-list="selected"></div>
+    </div>
+  </div>
+
+  <div class="dd-hint">
+    <span><kbd>drag</kbd> between columns</span>
+    <span><kbd>+</kbd> add</span>
+    <span><kbd>×</kbd> remove</span>
+    <span data-summary style="margin-left:auto"></span>
+  </div>
+</div>
+</template>
+<script src="_split.js"></script>
+<script>
+/* Pointer-event-based drag and drop. More reliable inside sandboxed iframes
+   than the native HTML5 drag/drop API. */
+(function () {
+  const WIDGETS = [
+    { id: 'throughput', name: 'Throughput',        ico: '↗', meta: 'timeseries · 30d' },
+    { id: 'sessions',   name: 'Active sessions',   ico: '⌖', meta: 'gauge · live' },
+    { id: 'queue',      name: 'Queue depth',       ico: '⊟', meta: 'bar · 24h' },
+    { id: 'p95',        name: 'p95 latency',       ico: '◷', meta: 'timeseries · region' },
+    { id: 'errbudget',  name: 'Error budget',      ico: '∿', meta: 'progress · 28d' },
+    { id: 'cost',       name: 'Cost forecast',     ico: '∑', meta: 'number · MTD' },
+    { id: 'deploys-tbl',name: 'Recent deploys',    ico: '⎙', meta: 'table · 10 rows' },
+    { id: 'success',    name: 'Build success rate',ico: '✓', meta: '7d · pipeline.success' },
+    { id: 'deploys',    name: 'Deploys / day',     ico: '⇧', meta: '30d · deploy.count' },
+    { id: 'incidents',  name: 'Open incidents',    ico: '!', meta: 'live · severity ≥ warn' },
+  ];
+  const INITIAL_SELECTED = ['success', 'deploys', 'incidents'];
+
+  function makeState() {
+    const selected = INITIAL_SELECTED.slice();
+    const available = WIDGETS.map(w => w.id).filter(id => !selected.includes(id));
+    return { selected, available, filter: '' };
+  }
+  function byId(id) { return WIDGETS.find(w => w.id === id); }
+
+  function renderItem(w, list) {
+    const isSel = list === 'selected';
+    const el = document.createElement('div');
+    el.className = 'dd-item';
+    el.dataset.id = w.id;
+    el.innerHTML = `
+      <span class="grip">⋮⋮</span>
+      ${isSel ? '<span class="dd-num"></span>' : `<span class="ico">${w.ico}</span>`}
+      <span class="body">
+        <span class="name">${w.name}</span>
+        <span class="meta">${w.meta}</span>
+      </span>
+      <button class="btn ${isSel ? 'rm' : 'add'}" data-act="${isSel ? 'remove' : 'add'}">${isSel ? '×' : '+'}</button>
+    `;
+    return el;
+  }
+
+  function bindRoot(root) {
+    const state = makeState();
+    let dragId = null;          // id of item being dragged
+    let dragSourceList = null;  // 'available' | 'selected'
+
+    const els = {
+      avail:    root.querySelector('[data-list="available"]'),
+      sel:      root.querySelector('[data-list="selected"]'),
+      countA:   root.querySelector('[data-count="available"]'),
+      countS:   root.querySelector('[data-count="selected"]'),
+      filter:   root.querySelector('[data-filter]'),
+      summary:  root.querySelector('[data-summary]'),
+    };
+    const lists = [els.avail, els.sel];
+
+    function render() {
+      // available
+      els.avail.innerHTML = '';
+      const filtered = state.available.filter(id => {
+        if (!state.filter) return true;
+        return byId(id).name.toLowerCase().includes(state.filter.toLowerCase());
+      });
+      if (filtered.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'dd-empty';
+        empty.textContent = state.filter
+          ? 'No widgets match'
+          : 'All widgets added — drag from the right to bring them back';
+        els.avail.appendChild(empty);
+      } else {
+        filtered.forEach(id => els.avail.appendChild(renderItem(byId(id), 'available')));
+      }
+
+      // selected
+      els.sel.innerHTML = '';
+      if (state.selected.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'dd-empty';
+        empty.textContent = 'Drop widgets here';
+        els.sel.appendChild(empty);
+      } else {
+        state.selected.forEach((id, i) => {
+          const item = renderItem(byId(id), 'selected');
+          item.querySelector('.dd-num').textContent = i + 1;
+          els.sel.appendChild(item);
+        });
+      }
+
+      els.countA.textContent = state.available.length;
+      els.countS.textContent = state.selected.length;
+      els.summary.textContent = state.selected.length + ' / ' + WIDGETS.length + ' widgets selected';
+    }
+
+    // ── pointer-based drag and drop ───────────────────────────
+    let ghost = null;
+    let pointerOffset = { x: 0, y: 0 };
+    let activeItem = null;
+    let pendingItem = null;
+    let pendingStart = null; // {x, y}
+    const DRAG_THRESHOLD = 4;
+
+    function removeDropIndicator() {
+      root.querySelectorAll('.dd-drop-target').forEach(el => el.remove());
+    }
+    function showDropIndicator(list, beforeEl) {
+      removeDropIndicator();
+      const indicator = document.createElement('div');
+      indicator.className = 'dd-drop-target';
+      if (beforeEl) list.insertBefore(indicator, beforeEl);
+      else list.appendChild(indicator);
+    }
+
+    function listAtPoint(x, y) {
+      for (const list of lists) {
+        const r = list.getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return list;
+      }
+      return null;
+    }
+
+    function updateDropTarget(x, y) {
+      const list = listAtPoint(x, y);
+      lists.forEach(l => l.classList.remove('drag-over'));
+      removeDropIndicator();
+      if (!list) return;
+      if (list.dataset.list === 'selected') {
+        const items = [...list.querySelectorAll('.dd-item:not(.dragging)')];
+        let beforeEl = null;
+        for (const item of items) {
+          const r = item.getBoundingClientRect();
+          if (y < r.top + r.height / 2) { beforeEl = item; break; }
+        }
+        showDropIndicator(list, beforeEl);
+      } else {
+        list.classList.add('drag-over');
+      }
+    }
+
+    function startDrag(item, clientX, clientY) {
+      dragId = item.dataset.id;
+      dragSourceList = item.closest('[data-list]').dataset.list;
+      activeItem = item;
+      item.classList.add('dragging');
+      document.body.classList.add('dd-dragging');
+
+      // Build a visual ghost that follows the cursor
+      const r = item.getBoundingClientRect();
+      pointerOffset.x = clientX - r.left;
+      pointerOffset.y = clientY - r.top;
+      ghost = item.cloneNode(true);
+      ghost.classList.remove('dragging');
+      ghost.classList.add('dd-ghost');
+      ghost.style.width = r.width + 'px';
+      ghost.style.left = (clientX - pointerOffset.x) + 'px';
+      ghost.style.top  = (clientY - pointerOffset.y) + 'px';
+      document.body.appendChild(ghost);
+
+      updateDropTarget(clientX, clientY);
+    }
+
+    function moveDrag(clientX, clientY) {
+      if (!ghost) return;
+      ghost.style.left = (clientX - pointerOffset.x) + 'px';
+      ghost.style.top  = (clientY - pointerOffset.y) + 'px';
+      updateDropTarget(clientX, clientY);
+    }
+
+    function endDrag(clientX, clientY, committed) {
+      if (!dragId) return;
+      const targetList = committed ? listAtPoint(clientX, clientY) : null;
+      const targetName = targetList ? targetList.dataset.list : null;
+
+      // Compute insert index from indicator before tearing it down
+      let insertIdx = state.selected.length;
+      if (targetName === 'selected') {
+        const indicator = targetList.querySelector('.dd-drop-target');
+        if (indicator) {
+          let i = 0;
+          for (const child of targetList.children) {
+            if (child === indicator) break;
+            if (child.classList.contains('dd-item') && child.dataset.id !== dragId) i++;
+          }
+          insertIdx = i;
+        }
+      }
+
+      if (dragSourceList === 'available' && targetName === 'selected') {
+        state.available = state.available.filter(id => id !== dragId);
+        state.selected.splice(insertIdx, 0, dragId);
+      } else if (dragSourceList === 'selected' && targetName === 'available') {
+        state.selected = state.selected.filter(id => id !== dragId);
+        if (!state.available.includes(dragId)) {
+          // re-insert in original pool order
+          const order = WIDGETS.map(w => w.id);
+          state.available.push(dragId);
+          state.available.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+        }
+      } else if (dragSourceList === 'selected' && targetName === 'selected') {
+        state.selected = state.selected.filter(id => id !== dragId);
+        state.selected.splice(insertIdx, 0, dragId);
+      }
+      // else: no commit (cancel) or available→available — no state change
+
+      // Cleanup
+      if (ghost && ghost.parentNode) ghost.parentNode.removeChild(ghost);
+      ghost = null;
+      if (activeItem) activeItem.classList.remove('dragging');
+      activeItem = null;
+      lists.forEach(l => l.classList.remove('drag-over'));
+      removeDropIndicator();
+      document.body.classList.remove('dd-dragging');
+      dragId = null; dragSourceList = null;
+
+      render();
+    }
+
+    // Pointer event flow:
+    //   pointerdown on item     → arm pending drag (don't capture yet)
+    //   pointermove past thresh → start drag, capture pointer, build ghost
+    //   pointermove during drag → move ghost, update drop target
+    //   pointerup               → commit drop
+    //   pointercancel / Esc     → cancel
+    function onPointerDown(e) {
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      const item = e.target.closest('.dd-item');
+      if (!item) return;
+      // Don't start a drag from the +/× buttons
+      if (e.target.closest('[data-act]')) return;
+      pendingItem = item;
+      pendingStart = { x: e.clientX, y: e.clientY, pointerId: e.pointerId };
+    }
+    function onPointerMove(e) {
+      if (activeItem) {
+        e.preventDefault();
+        moveDrag(e.clientX, e.clientY);
+        return;
+      }
+      if (pendingItem && pendingStart && e.pointerId === pendingStart.pointerId) {
+        const dx = e.clientX - pendingStart.x;
+        const dy = e.clientY - pendingStart.y;
+        if (dx * dx + dy * dy >= DRAG_THRESHOLD * DRAG_THRESHOLD) {
+          // Capture pointer on the item we just promoted to active
+          try { pendingItem.setPointerCapture(e.pointerId); } catch (_) {}
+          startDrag(pendingItem, e.clientX, e.clientY);
+          pendingItem = null; pendingStart = null;
+        }
+      }
+    }
+    function onPointerUp(e) {
+      if (activeItem) {
+        endDrag(e.clientX, e.clientY, true);
+      }
+      pendingItem = null; pendingStart = null;
+    }
+    function onPointerCancel(e) {
+      if (activeItem) endDrag(e.clientX, e.clientY, false);
+      pendingItem = null; pendingStart = null;
+    }
+    function onKeyDown(e) {
+      if (e.key === 'Escape' && activeItem) endDrag(0, 0, false);
+    }
+
+    // ── click handlers ────────────────────────────────────────
+    function onClick(e) {
+      const btn = e.target.closest('[data-act]');
+      if (btn) {
+        const item = btn.closest('.dd-item');
+        const id = item.dataset.id;
+        if (btn.dataset.act === 'add') {
+          state.available = state.available.filter(x => x !== id);
+          state.selected.push(id);
+        } else if (btn.dataset.act === 'remove') {
+          state.selected = state.selected.filter(x => x !== id);
+          if (!state.available.includes(id)) state.available.push(id);
+        }
+        render();
+        return;
+      }
+      const action = e.target.closest('[data-action]');
+      if (action) {
+        if (action.dataset.action === 'add-all') {
+          state.selected.push(...state.available);
+          state.available = [];
+        } else if (action.dataset.action === 'clear') {
+          state.available.push(...state.selected.filter(id => !state.available.includes(id)));
+          // preserve original order: rebuild from WIDGETS
+          state.available = WIDGETS.map(w => w.id).filter(id => state.available.includes(id));
+          state.selected = [];
+        }
+        render();
+      }
+    }
+
+    // ── bind ──────────────────────────────────────────────────
+    // Disable native drag (images, links inside items) so it doesn't
+    // interfere with our pointer-based drag.
+    root.addEventListener('dragstart', e => e.preventDefault());
+
+    root.addEventListener('pointerdown', onPointerDown);
+    // Move/up bind on window so the drag survives leaving the root bounds
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerCancel);
+    window.addEventListener('keydown', onKeyDown);
+
+    root.addEventListener('click', onClick);
+    els.filter.addEventListener('input', e => { state.filter = e.target.value; render(); });
+
+    render();
+  }
+
+  function init() {
+    document.querySelectorAll('.dd-root').forEach(bindRoot);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    // _split.js runs synchronously during DOMContentLoaded; by the time we get
+    // here, the cloned content is in place. But just in case, defer to next tick.
+    setTimeout(init, 0);
+  }
+})();
+</script>
+</body>
+</html>

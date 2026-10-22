@@ -1,0 +1,510 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  /* ─────────────────────────────────────────────────────────────────────
+     TABS
+     A horizontal tab bar with an underline indicator + content panels.
+     Each tab can carry an icon, a count badge, and a disabled state.
+     Keyboard: ←/→/Home/End move focus between tabs; Enter/Space activate.
+     ───────────────────────────────────────────────────────────────────── */
+  .tabs {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: hidden;
+  }
+  .tablist {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+    padding: 0 6px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border-subtle);
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+  .tablist::-webkit-scrollbar { height: 4px; }
+  .tablist::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+
+  .tab {
+    position: relative;
+    display: inline-flex; align-items: center; gap: 8px;
+    height: 36px;
+    padding: 0 12px;
+    background: transparent;
+    border: 0; outline: 0;
+    color: var(--fg-1);
+    font: inherit; font-size: 13px; font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    border-radius: 0;
+    transition: color var(--dur-1) var(--ease-out),
+                background var(--dur-1) var(--ease-out);
+  }
+  .tab::after {
+    content: "";
+    position: absolute;
+    left: 8px; right: 8px; bottom: 0;
+    height: 2px;
+    background: transparent;
+    border-radius: 2px 2px 0 0;
+    transition: background var(--dur-2) var(--ease-out);
+  }
+  .tab:hover:not([aria-selected="true"]):not(:disabled) {
+    color: var(--fg-0);
+    background: color-mix(in oklab, var(--fg-0) 4%, transparent);
+  }
+  .tab[aria-selected="true"] {
+    color: var(--fg-0);
+  }
+  .tab[aria-selected="true"]::after { background: var(--accent); }
+  .tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    border-radius: 3px;
+  }
+  .tab:disabled {
+    color: var(--fg-3);
+    cursor: not-allowed;
+  }
+
+  .tab .ico {
+    width: 14px; height: 14px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: currentColor; opacity: 0.85;
+  }
+  .tab .ico svg { width: 14px; height: 14px; }
+  .tab .count {
+    display: inline-flex; align-items: center; justify-content: center;
+    height: 16px; min-width: 16px; padding: 0 5px;
+    border-radius: 999px;
+    background: var(--bg-3);
+    border: 1px solid var(--border-subtle);
+    color: var(--fg-1);
+    font-family: var(--font-mono); font-size: 10px; font-weight: 500;
+    line-height: 1;
+  }
+  .tab[aria-selected="true"] .count {
+    background: var(--accent-bg);
+    border-color: color-mix(in oklab, var(--accent) 30%, transparent);
+    color: var(--accent-fg);
+  }
+  .tab .dot {
+    width: 6px; height: 6px; border-radius: 999px;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
+  }
+
+  .tablist .actions {
+    margin-left: auto;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding-right: 4px;
+  }
+  .icon-btn {
+    width: 26px; height: 26px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border);
+    background: var(--bg-1);
+    border-radius: var(--r-sm);
+    color: var(--fg-1);
+    cursor: pointer;
+    align-self: center;
+    transition: background var(--dur-1) var(--ease-out),
+                border-color var(--dur-1) var(--ease-out),
+                color var(--dur-1) var(--ease-out);
+  }
+  .icon-btn:hover { background: var(--bg-3); border-color: var(--border-strong); color: var(--fg-0); }
+  .icon-btn svg { width: 14px; height: 14px; }
+
+  /* ── Panels ───────────────────────────────────────────────────────── */
+  .tabpanels { padding: 14px; }
+  .tabpanel { display: none; }
+  .tabpanel[data-active="true"] { display: block; }
+
+  /* ── Demo content inside panels ───────────────────────────────────── */
+  .panel-list {
+    display: flex; flex-direction: column;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    overflow: hidden;
+  }
+  .panel-row {
+    display: grid;
+    grid-template-columns: 18px 1fr auto auto;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 12px;
+    background: var(--bg-1);
+  }
+  .panel-row + .panel-row { border-top: 1px solid var(--border-subtle); }
+  .panel-row:hover { background: var(--bg-2); }
+  .panel-row .status {
+    width: 8px; height: 8px; border-radius: 999px;
+    background: var(--fg-3);
+  }
+  .panel-row .status.ok    { background: var(--success); box-shadow: 0 0 0 3px color-mix(in oklab, var(--success) 18%, transparent); }
+  .panel-row .status.warn  { background: var(--warning); }
+  .panel-row .status.fail  { background: var(--danger); }
+  .panel-row .status.muted { background: var(--fg-3); }
+  .panel-row .name { font-size: 13px; color: var(--fg-0); font-weight: 500; }
+  .panel-row .name .sub {
+    display: block; margin-top: 2px;
+    font-family: var(--font-mono); font-size: 11px; color: var(--fg-2);
+    font-weight: 400;
+  }
+  .panel-row .meta {
+    font-family: var(--font-mono); font-size: 11px; color: var(--fg-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .panel-row .chev { color: var(--fg-3); }
+  .panel-row .chev svg { width: 14px; height: 14px; }
+
+  .empty {
+    padding: 28px 16px;
+    text-align: center;
+    border: 1px dashed var(--border);
+    border-radius: var(--r-sm);
+    color: var(--fg-2);
+    font-size: 12.5px;
+    background:
+      repeating-linear-gradient(135deg, transparent 0 6px, var(--bg-2) 6px 7px);
+  }
+
+  /* ── Variant: pill / segmented (compact) ──────────────────────────── */
+  .tabs.pill { background: transparent; border: 0; }
+  .tabs.pill .tablist {
+    display: inline-flex;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+    padding: 3px;
+    gap: 0;
+  }
+  .tabs.pill .tab {
+    height: 28px;
+    padding: 0 12px;
+    border-radius: var(--r-pill);
+    font-size: 12px;
+  }
+  .tabs.pill .tab::after { display: none; }
+  .tabs.pill .tab[aria-selected="true"] {
+    background: var(--bg-1);
+    color: var(--fg-0);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .tabs.pill .tabpanels { display: none; }
+
+  /* ── Variant: vertical (sidebar) ──────────────────────────────────── */
+  .tabs.vertical {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+  }
+  .tabs.vertical .tablist {
+    flex-direction: column;
+    align-items: stretch;
+    background: var(--bg-2);
+    border-right: 1px solid var(--border-subtle);
+    border-bottom: 0;
+    padding: 6px 6px 6px 0;
+    gap: 1px;
+    overflow-x: visible;
+    overflow-y: auto;
+  }
+  .tabs.vertical .tab {
+    justify-content: flex-start;
+    height: 30px;
+    padding: 0 12px;
+    border-radius: 0 var(--r-sm) var(--r-sm) 0;
+    font-size: 12.5px;
+  }
+  .tabs.vertical .tab::after {
+    left: 0; top: 4px; bottom: 4px;
+    width: 2px; height: auto;
+    border-radius: 0 2px 2px 0;
+  }
+  .tabs.vertical .tab[aria-selected="true"] {
+    background: var(--bg-1);
+  }
+  .tabs.vertical .tab .count { margin-left: auto; }
+  .tabs.vertical .tabpanels { padding: 14px; }
+
+  .stack { display: flex; flex-direction: column; gap: 18px; }
+  .label-row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .label-row .lbl {
+    font-family: var(--font-mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--fg-2);
+  }
+</style>
+</head>
+<body>
+<template id="card-content">
+<div class="stack">
+
+  <!-- ─────────────── DEFAULT (underline) ─────────────── -->
+  <div>
+    <div class="label-row"><span class="lbl">underline · default</span><span class="lbl" style="color:var(--fg-3)">role=tablist</span></div>
+    <div class="tabs" data-tabs>
+      <div class="tablist" role="tablist" aria-label="service">
+        <button role="tab" class="tab" data-tab="overview" aria-selected="true">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg></span>
+          Overview
+        </button>
+        <button role="tab" class="tab" data-tab="logs">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg></span>
+          Logs
+          <span class="count">128</span>
+        </button>
+        <button role="tab" class="tab" data-tab="metrics">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
+          Metrics
+        </button>
+        <button role="tab" class="tab" data-tab="alerts">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></span>
+          Alerts
+          <span class="dot" title="2 active"></span>
+        </button>
+        <button role="tab" class="tab" data-tab="settings" disabled aria-disabled="true">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+          Settings
+        </button>
+        <span class="actions">
+          <button class="icon-btn" title="Add view" aria-label="Add view">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+        </span>
+      </div>
+      <div class="tabpanels">
+
+        <div class="tabpanel" data-panel="overview" data-active="true">
+          <div class="panel-list">
+            <div class="panel-row">
+              <span class="status ok"></span>
+              <span class="name">payments-api <span class="sub">v2.4.2 · us-east-1</span></span>
+              <span class="meta">p95 142 ms</span>
+              <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></span>
+            </div>
+            <div class="panel-row">
+              <span class="status ok"></span>
+              <span class="name">orders-api <span class="sub">v1.8.0 · us-east-1</span></span>
+              <span class="meta">p95 88 ms</span>
+              <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></span>
+            </div>
+            <div class="panel-row">
+              <span class="status warn"></span>
+              <span class="name">search-api <span class="sub">v0.12.4 · eu-west-1</span></span>
+              <span class="meta">p95 412 ms</span>
+              <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tabpanel" data-panel="logs">
+          <div class="panel-list">
+            <div class="panel-row">
+              <span class="status muted"></span>
+              <span class="name">14:02:11.342  POST /checkout <span class="sub">200 · 84 ms · req-c8f2a14b</span></span>
+              <span class="meta">payments-api</span>
+              <span></span>
+            </div>
+            <div class="panel-row">
+              <span class="status warn"></span>
+              <span class="name">14:02:11.480  upstream timeout <span class="sub">stripe-gateway · retry 1/2</span></span>
+              <span class="meta">payments-api</span>
+              <span></span>
+            </div>
+            <div class="panel-row">
+              <span class="status fail"></span>
+              <span class="name">14:02:11.621  POST /checkout <span class="sub">502 · 5,124 ms · req-c8f2a14d</span></span>
+              <span class="meta">payments-api</span>
+              <span></span>
+            </div>
+            <div class="panel-row">
+              <span class="status muted"></span>
+              <span class="name">14:02:12.044  GET /orders/4112 <span class="sub">200 · 22 ms</span></span>
+              <span class="meta">orders-api</span>
+              <span></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tabpanel" data-panel="metrics">
+          <div class="panel-list">
+            <div class="panel-row">
+              <span class="status ok"></span>
+              <span class="name">request rate <span class="sub">5m · all services</span></span>
+              <span class="meta">2,140 req/s</span>
+              <span></span>
+            </div>
+            <div class="panel-row">
+              <span class="status warn"></span>
+              <span class="name">error rate <span class="sub">5m · payments-api</span></span>
+              <span class="meta">0.84 %</span>
+              <span></span>
+            </div>
+            <div class="panel-row">
+              <span class="status ok"></span>
+              <span class="name">cpu utilization <span class="sub">node group: api-prod</span></span>
+              <span class="meta">38 %</span>
+              <span></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tabpanel" data-panel="alerts">
+          <div class="panel-list">
+            <div class="panel-row">
+              <span class="status fail"></span>
+              <span class="name">payments-api · p95 latency <span class="sub">threshold 600 ms · current 1,420 ms</span></span>
+              <span class="meta">firing 4m</span>
+              <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></span>
+            </div>
+            <div class="panel-row">
+              <span class="status warn"></span>
+              <span class="name">search-api · queue depth <span class="sub">threshold 200 · current 248</span></span>
+              <span class="meta">firing 12m</span>
+              <span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────── PILL / SEGMENTED ─────────────── -->
+  <div>
+    <div class="label-row"><span class="lbl">pill · compact filter</span></div>
+    <div class="tabs pill" data-tabs>
+      <div class="tablist" role="tablist" aria-label="range">
+        <button role="tab" class="tab" data-tab="1h">1h</button>
+        <button role="tab" class="tab" data-tab="24h" aria-selected="true">24h</button>
+        <button role="tab" class="tab" data-tab="7d">7d</button>
+        <button role="tab" class="tab" data-tab="30d">30d</button>
+        <button role="tab" class="tab" data-tab="custom">Custom</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────── VERTICAL ─────────────── -->
+  <div>
+    <div class="label-row"><span class="lbl">vertical · sidebar</span></div>
+    <div class="tabs vertical" data-tabs>
+      <div class="tablist" role="tablist" aria-label="settings">
+        <button role="tab" class="tab" data-tab="general" aria-selected="true">General</button>
+        <button role="tab" class="tab" data-tab="members">Members <span class="count">12</span></button>
+        <button role="tab" class="tab" data-tab="tokens">API tokens <span class="count">3</span></button>
+        <button role="tab" class="tab" data-tab="webhooks">Webhooks</button>
+        <button role="tab" class="tab" data-tab="audit">Audit log <span class="count">2.1k</span></button>
+        <button role="tab" class="tab" data-tab="billing">Billing</button>
+      </div>
+      <div class="tabpanels">
+        <div class="tabpanel" data-panel="general" data-active="true">
+          <div class="panel-list">
+            <div class="panel-row">
+              <span class="status ok"></span>
+              <span class="name">Workspace name <span class="sub">forge-prod</span></span>
+              <span class="meta">writable</span><span></span>
+            </div>
+            <div class="panel-row">
+              <span class="status ok"></span>
+              <span class="name">Default region <span class="sub">us-east-1</span></span>
+              <span class="meta">3 alt</span><span></span>
+            </div>
+            <div class="panel-row">
+              <span class="status muted"></span>
+              <span class="name">Session timeout <span class="sub">8 hours · idle</span></span>
+              <span class="meta">policy</span><span></span>
+            </div>
+          </div>
+        </div>
+        <div class="tabpanel" data-panel="members">
+          <div class="panel-list">
+            <div class="panel-row"><span class="status ok"></span><span class="name">jordan.lee <span class="sub">owner · 2fa enabled</span></span><span class="meta">3m ago</span><span></span></div>
+            <div class="panel-row"><span class="status ok"></span><span class="name">maya.r <span class="sub">admin · 2fa enabled</span></span><span class="meta">4m ago</span><span></span></div>
+            <div class="panel-row"><span class="status warn"></span><span class="name">contractor-x <span class="sub">guest · 2fa missing</span></span><span class="meta">2d ago</span><span></span></div>
+          </div>
+        </div>
+        <div class="tabpanel" data-panel="tokens">
+          <div class="panel-list">
+            <div class="panel-row"><span class="status ok"></span><span class="name">ci-deploy <span class="sub">scopes: deploy:write</span></span><span class="meta">used 2m ago</span><span></span></div>
+            <div class="panel-row"><span class="status muted"></span><span class="name">grafana-read <span class="sub">scopes: metrics:read</span></span><span class="meta">used 1h ago</span><span></span></div>
+            <div class="panel-row"><span class="status warn"></span><span class="name">legacy-bot <span class="sub">scopes: * · expires in 6 days</span></span><span class="meta">rotate</span><span></span></div>
+          </div>
+        </div>
+        <div class="tabpanel" data-panel="webhooks">
+          <div class="empty">No webhooks configured. Webhooks fire on deploy, alert, and incident events.</div>
+        </div>
+        <div class="tabpanel" data-panel="audit">
+          <div class="panel-list">
+            <div class="panel-row"><span class="status muted"></span><span class="name">jordan.lee · token created <span class="sub">ci-deploy</span></span><span class="meta">14:01</span><span></span></div>
+            <div class="panel-row"><span class="status muted"></span><span class="name">maya.r · alert silenced <span class="sub">payments-api / p95</span></span><span class="meta">13:58</span><span></span></div>
+            <div class="panel-row"><span class="status warn"></span><span class="name">contractor-x · login failed <span class="sub">2fa challenge</span></span><span class="meta">13:54</span><span></span></div>
+          </div>
+        </div>
+        <div class="tabpanel" data-panel="billing">
+          <div class="empty">Billing managed by your enterprise contract.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</template>
+<script src="_split.js"></script>
+<script>
+(function () {
+  function bindTabs(root) {
+    const list   = root.querySelector('[role="tablist"]');
+    if (!list) return;
+    const tabs   = [...list.querySelectorAll('[role="tab"]')];
+    const panels = [...root.querySelectorAll('.tabpanel')];
+
+    function activate(tab, focus) {
+      if (!tab || tab.disabled) return;
+      tabs.forEach(t => {
+        const sel = t === tab;
+        t.setAttribute('aria-selected', sel ? 'true' : 'false');
+        t.setAttribute('tabindex', sel ? '0' : '-1');
+      });
+      const id = tab.dataset.tab;
+      panels.forEach(p => {
+        p.setAttribute('data-active', p.dataset.panel === id ? 'true' : 'false');
+      });
+      if (focus) tab.focus();
+    }
+
+    // Initial state — ensure exactly one is selected
+    const initial = tabs.find(t => t.getAttribute('aria-selected') === 'true' && !t.disabled)
+                 || tabs.find(t => !t.disabled);
+    activate(initial, false);
+
+    tabs.forEach((t, i) => {
+      t.addEventListener('click', () => activate(t, false));
+      t.addEventListener('keydown', e => {
+        const enabled = tabs.filter(x => !x.disabled);
+        const cur = enabled.indexOf(t);
+        let next = null;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = enabled[(cur + 1) % enabled.length];
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = enabled[(cur - 1 + enabled.length) % enabled.length];
+        else if (e.key === 'Home') next = enabled[0];
+        else if (e.key === 'End')  next = enabled[enabled.length - 1];
+        else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(t, false); return; }
+        if (next) { e.preventDefault(); activate(next, true); }
+      });
+    });
+  }
+
+  function init() {
+    document.querySelectorAll('[data-tabs]').forEach(bindTabs);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else setTimeout(init, 0);
+})();
+</script>
+</body>
+</html>

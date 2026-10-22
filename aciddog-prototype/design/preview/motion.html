@@ -1,0 +1,165 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  .stage {
+    display: grid; grid-template-columns: 90px 1fr 80px;
+    gap: 14px; align-items: center;
+    padding: 8px 0; border-bottom: 1px solid var(--border-subtle);
+  }
+  .stage:last-of-type { border-bottom: 0; }
+  .stage .name { font-family: var(--font-mono); font-size: 11px; color: var(--fg-1); }
+  .stage .name b { color: var(--fg-0); font-weight: 600; }
+  .stage .meta { font-family: var(--font-mono); font-size: 10px; color: var(--fg-2); text-align: right; }
+
+  .track {
+    height: 32px; background: var(--bg-1); border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm); position: relative; overflow: hidden;
+  }
+  .ball {
+    position: absolute; top: 50%; left: 4px; width: 24px; height: 24px;
+    margin-top: -12px;
+    border-radius: var(--r-sm);
+    background: var(--accent);
+    will-change: transform;
+  }
+  .pill {
+    position: absolute; top: 50%; left: 4px; height: 22px; margin-top: -11px;
+    padding: 0 10px; display: inline-flex; align-items: center;
+    background: var(--accent); color: var(--accent-contrast);
+    border-radius: var(--r-sm); font-size: 11px; font-weight: 500;
+  }
+  .panel {
+    position: absolute; top: 4px; right: 4px; width: 110px; height: 24px;
+    background: var(--bg-4); border: 1px solid var(--border-strong);
+    border-radius: var(--r-sm);
+    transform: translateX(120px); opacity: 0;
+  }
+
+  @keyframes slide-1 {
+    0%, 20%   { transform: translateX(0); }
+    50%, 70%  { transform: translateX(calc(100% - 32px)); }
+    100%      { transform: translateX(0); }
+  }
+  @keyframes slide-2 {
+    0%, 15%   { transform: translateX(0); }
+    50%, 65%  { transform: translateX(calc(100% - 60px)); }
+    100%      { transform: translateX(0); }
+  }
+  @keyframes panel-3 {
+    0%, 10%   { transform: translateX(120px); opacity: 0; }
+    45%, 60%  { transform: translateX(0);     opacity: 1; }
+    95%, 100% { transform: translateX(120px); opacity: 0; }
+  }
+
+  .row-1 .ball  { animation: slide-1 0.96s infinite; animation-timing-function: cubic-bezier(0.2, 0, 0, 1); }
+  .row-2 .pill  { animation: slide-2 1.6s infinite;  animation-timing-function: cubic-bezier(0.2, 0, 0, 1); }
+  .row-3 .panel { animation: panel-3 2.6s infinite;  animation-timing-function: cubic-bezier(0.2, 0, 0, 1); }
+  .row-cmp .ball { animation: slide-1 0.96s infinite linear; background: var(--fg-3); }
+
+  /* Reduced-motion — disable when the OS asks, OR when the user toggles preview. */
+  @media (prefers-reduced-motion: reduce) {
+    .row-1 .ball, .row-2 .pill, .row-3 .panel, .row-cmp .ball {
+      animation: none !important;
+    }
+    .row-3 .panel { transform: translateX(0); opacity: 1; }
+  }
+  body.simulate-reduce .row-1 .ball,
+  body.simulate-reduce .row-2 .pill,
+  body.simulate-reduce .row-3 .panel,
+  body.simulate-reduce .row-cmp .ball {
+    animation: none !important;
+  }
+  body.simulate-reduce .row-3 .panel { transform: translateX(0); opacity: 1; }
+
+  /* Status banner — shows live OS preference */
+  .a11y-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; margin-bottom: 12px;
+    border-radius: var(--r-sm);
+    font-size: 11px; font-family: var(--font-mono);
+    background: var(--bg-2); border: 1px solid var(--border-subtle);
+    color: var(--fg-1);
+  }
+  .a11y-bar.is-reduced { background: var(--success-bg); color: var(--success-fg); border-color: color-mix(in oklab, var(--success) 30%, transparent); }
+  .a11y-bar .status { display: inline-flex; align-items: center; gap: 6px; }
+  .a11y-bar .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--fg-3); }
+  .a11y-bar.is-reduced .dot { background: var(--success); }
+  .a11y-bar code { background: var(--bg-1); border: 1px solid var(--border-subtle); padding: 1px 5px; border-radius: 3px; font-size: 10px; color: var(--fg-1); }
+  .a11y-bar button {
+    margin-left: auto; height: 22px; padding: 0 10px; font: inherit; font-size: 11px;
+    background: var(--bg-1); border: 1px solid var(--border); border-radius: 3px;
+    color: var(--fg-0); cursor: pointer;
+  }
+  .a11y-bar button:hover { background: var(--bg-3); }
+</style></head>
+<body>
+<template id="card-content">
+
+<div id="a11y" class="a11y-bar">
+  <span class="status"><span class="dot"></span> <span id="a11y-label">checking <code>prefers-reduced-motion</code>…</span></span>
+  <button id="a11y-toggle" type="button">Simulate reduced-motion</button>
+</div>
+
+<div class="stage row-1">
+  <span class="name"><b>dur-1</b> · 80ms</span>
+  <div class="track"><div class="ball"></div></div>
+  <span class="meta">hover · press</span>
+</div>
+
+<div class="stage row-2">
+  <span class="name"><b>dur-2</b> · 160ms</span>
+  <div class="track"><div class="pill">menu opens</div></div>
+  <span class="meta">panels · menus</span>
+</div>
+
+<div class="stage row-3">
+  <span class="name"><b>dur-3</b> · 240ms</span>
+  <div class="track" style="height:38px">
+    <div class="panel"></div>
+  </div>
+  <span class="meta">modals · routes</span>
+</div>
+
+<div class="stage row-cmp" style="opacity:.85">
+  <span class="name" style="color:var(--fg-2)">linear (don't)</span>
+  <div class="track"><div class="ball"></div></div>
+  <span class="meta">for contrast</span>
+</div>
+
+<div class="tok" style="margin-top:8px;font-family:var(--font-mono)">
+  ease-out · cubic-bezier(0.2, 0, 0, 1) · no spring · honors <code>prefers-reduced-motion</code>
+</div>
+
+<script>
+  const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const bar = document.getElementById('a11y');
+  const lbl = document.getElementById('a11y-label');
+  const btn = document.getElementById('a11y-toggle');
+
+  function render() {
+    const osReduced  = mq.matches;
+    const simulating = document.body.classList.contains('simulate-reduce');
+    const active     = osReduced || simulating;
+    bar.classList.toggle('is-reduced', active);
+    if (osReduced) {
+      lbl.innerHTML = 'OS preference: <code>prefers-reduced-motion: reduce</code> — animations disabled';
+      btn.disabled = true; btn.style.opacity = 0.5;
+    } else if (simulating) {
+      lbl.innerHTML = 'Simulating reduced-motion — animations disabled';
+    } else {
+      lbl.innerHTML = 'OS preference: <code>no-preference</code> — animations active';
+    }
+    btn.textContent = simulating ? 'Resume animation' : 'Simulate reduced-motion';
+  }
+
+  mq.addEventListener('change', render);
+  btn.addEventListener('click', () => {
+    document.body.classList.toggle('simulate-reduce');
+    render();
+  });
+  render();
+</script></template>
+<script src="_split.js"></script>
+</body>
+</html>

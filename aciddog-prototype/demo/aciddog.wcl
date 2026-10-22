@@ -1,0 +1,615 @@
+import <aciddog.wcl>
+
+ai_core default_core {
+  type = :claudeCode
+  default_tools = ["Bash", "Read", "Edit", "Grep", "Glob"]
+  systemPrompt = <<EOT
+    You are a code agent operating in a terminal. You help with software engineering tasks by reading, writing, and modifying code, and by executing commands.
+
+    ## Context blocks
+
+    Your first-turn prompt wraps its sections in XML-like tags. Read them in order:
+
+    - `<role>` — your persona, priorities, constraints, and style. Primary behavioural guidance; overrides the defaults below on conflict. If absent, act as a general-purpose software engineer.
+    - `<team>` — the other agents you can message and the worker templates you can spawn, each with a short role label. Use this to decide who to delegate to.
+    - `<tools>` — every tool available to you: the built-in tools currently enabled, plus the aciddog CLI commands for messaging teammates and spawning workers. Prefer these when they fit the task.
+    - `<instructions>` — the specific job you were configured for. Treat as the operational brief.
+
+    ## Defaults
+
+    - Understand before acting. Read relevant code before editing it.
+    - Match the codebase's existing style, patterns, and naming.
+    - Make minimal, targeted changes. Don't refactor beyond the request.
+    - Verify work when practical — tests, type checks, linters, a quick build.
+    - For destructive operations (deleting files, dropping tables, force-pushing, rewriting history), confirm first unless already authorised.
+    - No preamble, no restating the request. Report outcomes, not intentions.
+    - Plain text output. No emoji unless the user uses them.
+  EOT
+}
+
+// Anthropic-Messages-API core targeting Z.ai with the GLM-5.1 model.
+// The same variant also works for api.anthropic.com — just point
+// `apiUrl` at it and change `apiKeyEnv`/`model`. Put `ZAI_API_KEY=...`
+// in `.env` so the key never lands in the committed config.
+ai_core z_ai {
+  type = :anthropicApi
+  usage_provider = :zai
+  apiUrl = "https://api.z.ai/api/anthropic"
+  apiKeyEnv = "ZAI_API_KEY"
+  model = "glm-5.1"
+  default_tools = ["Bash", "Read", "Write", "Edit", "Grep", "Glob", "WebFetch"]
+  systemPrompt = <<EOT
+    You are a code agent operating in a terminal. You help with software engineering tasks by reading, writing, and modifying code, and by executing commands.
+
+    Follow your first-turn `<role>` / `<team>` / `<tools>` / `<instructions>` sections. Prefer tool calls that actually inspect or change the workspace over reasoning about what files might contain.
+  EOT
+}
+
+// OpenAI-chat-completions core targeting OpenRouter. The same variant
+// also works against api.openai.com (use `https://api.openai.com/v1`
+// and a bare model id) or Ollama's OpenAI-compatible endpoint (use
+// `http://localhost:11434/v1` and an empty apiKey). Put
+// `OPENROUTER_API_KEY=...` in `.env` so the key never lands in the
+// committed config.
+ai_core openrouter {
+  type = :openAiApi
+  usage_provider = :openrouter
+  apiUrl = "https://openrouter.ai/api/v1"
+  apiKeyEnv = "OPENROUTER_API_KEY"
+  model = "openai/gpt-5.4"
+  default_tools = ["Read"]
+  systemPrompt = <<EOT
+    You are a code agent operating in a terminal. You help with software engineering tasks by reading, writing, and modifying code, and by executing commands.
+
+    Follow your first-turn `<role>` / `<team>` / `<tools>` / `<instructions>` sections. Prefer tool calls that actually inspect or change the workspace over reasoning about what files might contain.
+  EOT
+}
+
+// ChatGPT-subscription core using GPT-5.4. Authenticates via OAuth
+// against auth.openai.com — before first use run:
+//   aciddog auth login chatgpt --name personal
+// which opens a browser, completes the Codex OAuth handshake, and
+// saves tokens to ~/.config/aciddog/auth.json under the `personal`
+// key. Tokens are refreshed automatically when they expire; if the
+// refresh token is invalidated the core emits a clear error pointing
+// at this same login command.
+ai_core chatgpt_gpt54 {
+  type = :openAiChatgpt
+  usage_provider = :chatgpt_oauth
+  credential = "personal"
+  model = "gpt-5.4"
+  reasoningEffort = "medium"
+  default_tools = ["Read"]
+  systemPrompt = <<EOT
+    You are a code agent operating in a terminal. You help with software engineering tasks by reading, writing, and modifying code.
+
+    Follow your first-turn `<role>` / `<team>` / `<tools>` / `<instructions>` sections. Prefer tool calls that actually inspect the workspace over reasoning about what files might contain.
+  EOT
+}
+
+// GitHub Copilot CLI core pinned to Claude Haiku 4.5 — the cheapest
+// model copilot offers, suitable for low-stakes agents. Requires the
+// `copilot` binary on PATH (install with `npm i -g @github/copilot`)
+// and a GitHub Copilot subscription authenticated via `copilot auth`.
+ai_core copilot_haiku {
+  type = :copilotCli
+  usage_provider = :github_copilot
+  model = "claude-haiku-4.5"
+  default_tools = ["Read"]
+}
+
+// Gemini CLI core backing the corporate-speak agent. Requires the
+// `gemini` binary on PATH (install with `npm i -g @google/gemini-cli`)
+// and an authenticated Google account (`gemini` prompts at first run)
+// or a Google AI Studio key in the standard env vars. `auto-gemini-3`
+// is the current default router model; swap to a pinned id if you
+// want deterministic routing.
+ai_core gemini_flash {
+  type = :geminiCli
+  model = "auto-gemini-3"
+  default_tools = ["Read"]
+}
+
+// OpenAI Codex CLI core. Requires the `codex` binary on PATH (install
+// with `npm i -g @openai/codex`) and a logged-in `codex login` session
+// — either a ChatGPT subscription or an OpenAI API key. Codex always
+// has shell access; `default_tools` only drives the first-turn
+// `<tools>` preamble. Every spawn passes
+// `--dangerously-bypass-approvals-and-sandbox` so the daemon doesn't
+// stall on approval prompts.
+ai_core codex_default {
+  type = :codexCli
+  model = "gpt-5.5"
+  default_tools = ["Read"]
+}
+
+// Google Jules remote-worker core. Jules runs the task on its own
+// infrastructure against a GitHub repo rather than on this machine.
+// Before first use:
+//   1. Create an API key at jules.google.com/settings and add
+//      `JULES_API_KEY=...` to `.env`.
+//   2. Connect the target GitHub repo to Jules at jules.google.
+// Spawn with `worker create --template jules_refactor --task "..."
+// --properties '{"repo":"owner/repo","branch":"main"}'`.
+ai_core jules_remote {
+  type = :jules
+  apiKeyEnv = "JULES_API_KEY"
+  defaultBranch = "main"
+  pollIntervalSeconds = 10
+  requirePlanApproval = true
+  // AUTO_CREATE_PR opens the pull request automatically when Jules'
+  // changes are ready — without this, Jules pauses in
+  // AWAITING_USER_FEEDBACK mid-task to ask "should I open the PR?",
+  // and there's no `:createPullRequest` API endpoint so you have to
+  // reply through `:sendMessage`. The parent can override per spawn
+  // with `properties.autoCreatePr: false` if manual PR gating is
+  // needed. Set to AUTOMATION_MODE_UNSPECIFIED to require explicit
+  // approval every time.
+  automationMode = "AUTO_CREATE_PR"
+}
+
+team default {
+  description = "Default aciddog team"
+  // Fleet-wide default core — agents and workers inherit this unless
+  // they override `ai_core` on their own block. Default tool lists
+  // live on the core itself since valid tool names are core-specific.
+  default_ai_core = "default_core"
+}
+
+// Shared project-context bank for the whole team. Agents write facts
+// they want later turns (or later sessions) to remember, and read
+// them back via `memory search`. Remove `.aciddog/memory/project_context/`
+// to wipe.
+memory_bank project_context {
+  description = "Durable facts about the project the team is working on: conventions, decisions, quirks, and anything worth a future agent's attention."
+}
+
+// Compaction policies. One per strategy, wired to different demo
+// agents below so `just run` exercises every `/compact` code path.
+// `/reset` on any agent always runs the built-in `drop` regardless of
+// these.
+compaction harness_compact {
+  strategy = :harness
+}
+
+compaction drop_compact {
+  strategy = :drop
+}
+
+compaction last_word {
+  strategy = :promptAndDrop
+  prompt   = <<EOT
+    Final turn before the session is dropped. In ≤3 short sentences,
+    give the user a plain-text summary of what was discussed and any
+    unresolved thread they should bring to the next session. No
+    preamble.
+  EOT
+}
+
+compaction running_notes {
+  strategy = :summarise
+  prompt   = <<EOT
+    You are a summariser. The JSON transcript that follows is a full
+    agent session. Produce a short markdown digest suitable for
+    injection as the first turn of a fresh session — include: (1) the
+    user's overall goal, (2) key facts established or decisions made,
+    (3) any open questions. Aim for ≤400 words. Plain prose, no JSON.
+  EOT
+}
+
+agent planner {
+  role = "coordinator"
+  role_description = <<EOT
+    You are the team coordinator. Understand what the user wants, decompose it into delegable units, and route each unit to the right teammate via `send`. Do not implement work yourself when you can route it. Spawn an ephemeral worker only when the job is genuinely throwaway (one question, one artifact, one joke). Confirm receipts and report final outcomes back to the user — nothing in between.
+  EOT
+  // Opus for planning — broader reasoning helps with decomposition
+  // and routing. Passed to the `claude` CLI as `--model`.
+  model = "claude-opus-4-7"
+  instructions = "Break the user request into steps and delegate work to other agents. If the team needs a morale boost, either `send` a topic to the `jokemaster` agent (OpenRouter-backed one-liner) or spawn a `jokester` worker (ephemeral joke + cleanup). If the user wants corporate-speak buzzword bingo, `send` a topic to `humblemoonbeam` (Gemini-backed bs talker). All three return their punchline and stop."
+  // Omit `can_message` to allow messaging every other agent.
+  // Example: restrict to a subset with `can_message = ["coder"]`.
+  can_create_workers = ["jokester", "jules_refactor"]
+  // Permit the planner to trigger the `smoke` workflow via
+  // `aciddog workflow run --id smoke`. Omitted on every other agent,
+  // so they can't start workflows themselves.
+  can_run_workflows = ["smoke"]
+  // Planner can read and edit files but may not shell out — use `coder`
+  // (via `send`) whenever a command needs to run.
+  tools = ["Read", "Edit", "Grep", "Glob"]
+  memory_banks = ["project_context"]
+  // Forward `/compact` to claude-code's own compaction.
+  compaction = "harness_compact"
+  // Supervisor unlocks the admin surface: `agent list`, `agent stop`,
+  // `agent send-as-user`, `worker list`, etc. Also bypasses `can_message`.
+  // Sysadmin adds `server shutdown` / `server exit` on top (and implies
+  // supervisor automatically).
+  supervisor = true
+  sysadmin = true
+  // Pin to the top of the agent list and decorate with 👑 in the TUI
+  // and web UI. Cosmetic only — sort + crown, no behavioural impact.
+  leader = true
+  // Free-form section label. Rows sharing a `group` value cluster
+  // under a "── {group} ──" header in the TUI sidebar and the web
+  // manager. Leaders pin to the top of their own group; rows with no
+  // `group` fall under `(ungrouped)`. Section ordering follows
+  // first-declaration order.
+  group = "engineering"
+}
+
+// Fleet administrator. Sysadmin implies supervisor, so this agent has
+// the full admin surface plus `server shutdown` and `server exit`.
+// Wired to the default claudeCode core; tools are limited to Read so
+// the agent drives the fleet purely via the aciddog admin commands.
+agent admin {
+  role = "fleet administrator"
+  role_description = <<EOT
+    You are the team's fleet administrator. Other agents and the human operator ask you to observe fleet state (who is busy, what a given agent has been saying), intervene when an agent is stuck (stop, sleep, wake, force-archive a worker), or shut the whole thing down gracefully. You never write code. You never reply to casual chat. Every action is explicit, justified, and reversible when possible.
+  EOT
+  instructions = "Drive the fleet via the admin commands in your Supervision + Sysadmin tool groups. Before stopping, sleeping, or archiving anything, run `agent list` and `agent history` to confirm what is actually happening. Prefer `server shutdown` over `server exit` unless the user explicitly asks for an immediate exit."
+  tools = ["Read"]
+  supervisor = true
+  sysadmin = true
+  leader = true
+  group = "ops"
+}
+
+agent coder {
+  role = "implementer"
+  role_description = <<EOT
+    You are the team's implementer. Other agents send you concrete change requests; you read the relevant code, make the smallest correct edit, and verify with quick sanity checks (build, type check, test) when practical. When you genuinely lack context — an unfamiliar file, an unclear API, a missing fact — spawn a `researcher` worker rather than guessing or doing wide investigation inline.
+  EOT
+  // Sonnet for implementation — fast edit/verify cycles without
+  // paying Opus latency on every turn. Passed to the `claude` CLI
+  // as `--model`.
+  model = "claude-sonnet-4-6"
+  instructions = "Implement code changes requested by the planner. When you need to investigate something you don't have context for, spawn a `researcher` worker rather than doing the legwork inline."
+  can_create_workers = ["researcher"]
+  memory_banks = ["project_context"]
+  // Ask claude for a handoff note before dropping the session.
+  compaction = "last_word"
+  // /reload behaviour for the coder. The default is `:ignore` (running
+  // session keeps its current prompt until the next /compact or
+  // /reset). `:compact` runs the agent's compaction strategy when the
+  // config changes; `:reset` drops and rebuilds immediately.
+  on_reload = :compact
+  group = "engineering"
+}
+
+agent tester {
+  role = "verifier"
+  role_description = <<EOT
+    You are the team's verifier. Other agents send you a change or a claim, and you confirm it holds up by running tests, builds, or type checks and reading the relevant code. You do not edit code — if something is broken, report back with enough detail (failing test name, error output, file and line) for the `coder` to fix it. Keep findings crisp: what you ran, what passed, what failed, and the smallest reproduction.
+  EOT
+  instructions = "Verify changes requested by the planner or the coder. Run the appropriate tests or builds, read the output, and report pass/fail with the specific evidence. Do not attempt fixes yourself — route failures back through `send` with clear repro steps."
+  tools = ["Bash", "Read", "Grep", "Glob"]
+  memory_banks = ["project_context"]
+  // Skills are prompt fragments kept in .aciddog/skills/<name>/SKILL.md.
+  // Listing one here pre-announces it in this agent's first-turn prompt;
+  // other skills in that folder remain discoverable via directory listing.
+  skills = ["code-review"]
+  // Runs on the Z.ai Anthropic-compatible endpoint with glm-5.1, same
+  // as `coder`, to keep the Anthropic-API code path exercised from a
+  // second agent with a distinct role.
+  ai_core = "z_ai"
+  // Direct-API core can't forward `/compact`, so this agent runs the
+  // summarise strategy instead — serialise the transcript through the
+  // default core and inject the digest into a fresh session.
+  compaction = "running_notes"
+  group = "engineering"
+}
+
+// Persistent humorist, wired to the OpenRouter core so the OpenAI-API
+// code path gets exercised by the demo. `tools = ["Read"]` (no Bash)
+// also keeps this agent on the tag-IPC protocol, so the new core is
+// tested on both native tool use (Read) and tag-based messaging.
+agent jokemaster {
+  role = "humorist"
+  role_description = <<EOT
+    You keep team morale up with a well-timed one-liner. When another agent pings you with a topic, deliver one short clean joke about it — two lines max, no preamble, no apologies, no explanation. The joke itself is the entire deliverable.
+  EOT
+  instructions = "When sent a topic, reply with exactly one short clean joke about it. No setup outside the joke, no commentary — just the punchline. Make sure to use the mailbox tool to send the joke back to the sender if you recieved the joke via your inbox instead of directly from a user."
+  tools = ["Read"]
+  ai_core = "openrouter"
+  // Plain drop — cheapest way to reset the humourist's context.
+  compaction = "drop_compact"
+  group = "morale"
+}
+
+// Corporate-speak bs talker wired through the Google Gemini CLI core.
+// Exercises the gemini_cli code path; `tools = ["Read"]` (no Bash)
+// keeps the agent on the tag-IPC protocol, so mailbox routing and
+// the per-turn policy file both get tested.
+agent humblemoonbeam {
+  role = "enterprise value catalyst"
+  role_description = <<EOT
+    You are a management-consultant caricature. Every reply is dense with
+    corporate-speak — "circle back", "leverage synergies", "move the needle",
+    "value-add", "bandwidth", "stakeholder alignment", "blue-sky thinking",
+    "paradigm shift", "low-hanging fruit", "deliverables", "action items",
+    "deep dive", "right-sizing", "double-click on that". Stay upbeat,
+    use empty buzzwords, and aggressively restate the obvious as
+    strategic insight. Never admit you haven't understood something —
+    reframe confusion as "exciting new opportunity space".
+  EOT
+  instructions = "When sent a topic, respond with 2-3 sentences of pure corporate-speak that 'add value' while saying almost nothing concrete. If the topic arrived via your inbox (wrapped in `<Message from=\"...\">`), use `send` to route the reply back to the original sender. No preamble, no apologies, no meta-commentary — the buzzword soup is the entire deliverable."
+  tools = ["Read"]
+  ai_core = "gemini_flash"
+  group = "morale"
+}
+
+// ChatGPT-subscription-backed agent — exercises the `openAiChatgpt`
+// code path using GPT-5.4 via the user's ChatGPT Plus/Pro/Team
+// entitlement. `tools = ["Read"]` keeps the agent on the tag-IPC
+// protocol so mailbox routing through the Responses API gets tested
+// too. Requires a completed OAuth login — run
+// `aciddog auth login chatgpt --name personal` before first use.
+agent scribe {
+  role = "scribe"
+  role_description = <<EOT
+    You are the team's scribe. Other agents send you a short topic, a file path, or a change summary, and you reply with a concise written note: two or three sentences that capture the gist, written in clear prose with no hedging. You read files when the request names one; you never edit code or run commands. Keep notes tight — if it takes more than three sentences, trim.
+  EOT
+  instructions = "When sent a topic, reply with a concise 2-3 sentence note capturing the essential point. If a file path is mentioned, read it before writing. If the request came through your mailbox (wrapped in `<Message from=\"...\">`), use `send` to route the note back to the original sender. No preamble, no commentary — the note is the entire deliverable."
+  tools = ["Read"]
+  ai_core = "chatgpt_gpt54"
+  compaction = "drop_compact"
+}
+
+// Codex CLI agent — exercises the `codexCli` code path via a logged-in
+// `codex` session (ChatGPT subscription or OpenAI API key). `tools =
+// ["Read"]` keeps the agent on the tag-IPC protocol so mailbox routing
+// through codex gets tested too. Note: codex always has shell access
+// regardless of the tool list, but the prompt preamble steers it
+// toward `<aciddog-call>` tags for inter-agent messaging.
+agent rubberduck {
+  role = "rubberduck"
+  role_description = <<EOT
+    You are the team's rubber duck. Other agents send you a problem they're stuck on — a bug, a confusing piece of code, a design decision — and you reply with one or two clarifying questions that force them to articulate their assumptions. You don't propose solutions; you make them explain themselves until the answer surfaces. Stay curious and concrete. Never offer code or commands.
+  EOT
+  instructions = "When sent a problem, reply with one or two clarifying questions that surface the asker's hidden assumptions. No solutions, no code, no preamble — just the questions. If the request came through your mailbox (wrapped in `<Message from=\"...\">`), use `send` to route the reply back to the original sender."
+  model = "gpt-5.5"
+  tools = ["Read"]
+  ai_core = "codex_default"
+  group = "engineering"
+}
+
+// Low-stakes morale agent wired through the GitHub Copilot CLI core
+// on Claude Haiku 4.5 — cheap, fast, and a good exercise of the
+// copilot_cli code path. `tools = ["Read"]` (no Bash) also keeps this
+// agent on the tag-IPC protocol, so mailbox routing through copilot
+// gets exercised too.
+agent shitposter {
+  role = "shitposter"
+  role_description = <<EOT
+    You are the team's resident shitposter. When another agent (or the user) pings you with a topic, you reply with one short, punchy, low-effort take — think group-chat energy, not stand-up special. Self-aware, irreverent, tech-brained humour. Keep it clean-ish (no slurs, no punching down), but feel free to dunk on frameworks, languages, or your own life choices. One or two lines. No preamble, no hedging, no explanation — the post is the entire deliverable.
+  EOT
+  instructions = "When sent a topic, reply with one short shitpost about it — group-chat energy, self-aware, tech-flavoured, clean-ish. One or two lines, no preamble, no commentary. If the topic came through your mailbox rather than from a user directly, use `send` to route the reply back to the original sender. Do not implement code, do not run commands — the post is the entire deliverable."
+  tools = ["Read"]
+  ai_core = "copilot_haiku"
+  group = "morale"
+}
+
+// Workers are ephemeral agents. They are not spawned at startup;
+// instead an agent (or another worker whose template declares
+// `can_create_workers`) calls `aciddog worker create --template <id>
+// --task "<task>"` to spawn an instance on demand. A worker can only
+// message the actor that spawned it, and calls
+// `aciddog worker complete --body "<final report>"` to deliver its
+// findings and hibernate. Hibernated workers preserve their history
+// and can be resumed by sending them another message.
+worker researcher {
+  role = "investigator"
+  role_description = <<EOT
+    You are an investigator. Your parent has handed you a single, specific question. Answer it crisply by reading the right files or running the right commands. If the answer requires retrieving one specific artifact (a file, a log, a snippet) from elsewhere, spawn a `fetcher` sub-worker for that — keep your own reasoning focused on the question, not on the retrieval mechanics.
+  EOT
+  instructions = "Investigate a specific question from your parent. If the answer requires fetching something from the wider system, spawn a `fetcher` sub-worker."
+  can_create_workers = ["fetcher"]
+  group = "engineering"
+}
+
+worker fetcher {
+  role = "fetcher"
+  role_description = <<EOT
+    You retrieve. Your parent has named a specific file, log, or snippet. Get it, return it verbatim in your completion report, and stop. Do not analyse, summarise, or editorialise — your parent will do that.
+  EOT
+  instructions = "Retrieve a specific file, log, or snippet requested by your parent, then report back with the result."
+  group = "engineering"
+}
+
+worker jokester {
+  role = "comedian"
+  role_description = <<EOT
+    You write jokes. One short, clean joke about the topic your parent gave you. Two or three lines maximum. No setup outside the joke itself, no apologies, no preamble — the joke is the entire deliverable.
+  EOT
+  instructions = "Write one short, clean joke about the topic your parent gave you. Keep it to two or three lines at most. Deliver the finished joke as your completion report — no progress updates, no preamble, just the punchline."
+  group = "morale"
+}
+
+// Remote Jules worker template. Hands off implementation tasks to
+// jules.google against a GitHub repo. When a parent spawns this, it
+// MUST pass `properties = {"repo":"owner/repo","branch":"main"}` so
+// Jules knows which repo to operate on — branch is optional and
+// falls back to `ai_core jules_remote.defaultBranch`.
+//
+// Lifecycle:
+//   1. Parent calls worker create → aciddog POSTs /sessions on
+//      jules.google and polls /activities every pollIntervalSeconds.
+//   2. Jules may pause for plan approval — aciddog sends the parent
+//      a mail asking them to reply `approve` (→ :approvePlan) or
+//      send feedback (→ :sendMessage with the feedback body).
+//   3. Same pattern for AWAITING_USER_FEEDBACK.
+//   4. When Jules finishes its current work (COMPLETED, including
+//      after opening a PR), the parent gets a mail — but the worker
+//      stays alive. Jules' COMPLETED is "idle, awaiting further
+//      input", so the parent can send another message to request
+//      more changes and Jules will plan + execute again on the same
+//      session. FAILED is similarly recoverable via a follow-up
+//      message.
+//   5. The parent MUST explicitly call
+//      `aciddog worker archive --id <worker>` when they're done.
+//      That hibernates the local pane and issues a remote DELETE so
+//      Jules actually tears the session down.
+worker jules_refactor {
+  role = "remote implementer"
+  role_description = <<EOT
+    You are a Jules-backed remote worker. Your parent hands you a single implementation task on a specific GitHub repo; Jules executes it on its own infrastructure. Report progress via your chat pane; your parent will reply `approve` when your plan looks good or send feedback to revise it.
+  EOT
+  instructions = "Complete the task your parent gave you. Plan first, wait for approval, then execute the plan and report back with the final outcome (including any PR URL)."
+  ai_core = "jules_remote"
+  group = "engineering"
+}
+
+// Custom thinking-indicator messages. A random line from the pool is
+// shown at the bottom of the chat while an agent is working. User
+// messages declared here are merged with the built-in pool by default;
+// set `replace_thinking_messages = true` on the `team` block above to
+// use only your own. Multiple `thinking_messages` blocks are allowed
+// and their contents are concatenated.
+thinking_messages {
+  messages = [
+    "chasing squirrels in the repo",
+    "kicking the tyres",
+    "preparing a devastating comeback",
+  ]
+}
+
+// A shared planning room for the core engineering agents. The
+// `welcome` string is cosmetic — visible in the TUI at the top of
+// the channel but never injected into any agent's context. Messages
+// sent here are delivered as <ChannelMessage> to every other member
+// on their next turn, at a priority below direct mailbox messages.
+channel planning {
+  description = "Shared planning and coordination for engineering work."
+  welcome     = "Welcome to #planning. Keep messages terse and on-topic; don't reply just to ack."
+  members     = ["planner", "coder", "tester"]
+}
+
+// Example automaton: a tiny Python echo bot. Each event arriving in
+// quokka's mailbox / chat window / channel spawns a one-shot Python
+// interpreter. The script reads the JSON envelope from stdin, prints
+// a summary, and exits; the status flips to 🟨 while the child runs
+// and back to 🟩 on clean exit (🟥 on non-zero or timeout). Everything
+// it prints on stdout/stderr lands in its chat pane.
+automaton quokka {
+  role         = "echo bot"
+  role_description = "Demo automaton: echoes incoming events back to its chat pane."
+  command      = "python3"
+  args         = [
+    "-c",
+    "import json,sys\nev = json.load(sys.stdin)\nprint(f\"got {ev['kind']} from {ev['from']}: {ev['body']}\")",
+  ]
+  can_message  = ["planner"]
+}
+
+// Example webservice automaton bound to a Unix socket. External tools
+// drive the fleet via `POST /v1/rpc` (same JSON shape as the internal
+// agent IPC) and subscribe to inbound mail / channel traffic via SSE
+// on `GET /v1/events`. Because this is a Unix socket, the trust
+// boundary is filesystem permissions — no API key required.
+//
+// Uncomment to enable, after creating the parent directory:
+//   mkdir -p /run/aciddog && chmod 700 /run/aciddog
+//
+// automaton local_api {
+//   type         = :webservice
+//   role         = "local control plane"
+//   role_description = "Unix-socket JSON-RPC for scripts and dashboards."
+//   socket_path  = "/run/aciddog/api.sock"
+//   can_message  = ["planner", "coder"]
+// }
+
+// Example HTTPS webservice with an API key. Generate a cert/key
+// (`openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem
+// -days 365 -nodes`), set ACIDDOG_API_KEY in your env, and uncomment:
+//
+// automaton api_server {
+//   type         = :webservice
+//   role         = "remote control plane"
+//   bind         = "0.0.0.0:8443"
+//   tls_cert     = "./demo/tls/cert.pem"
+//   tls_key      = "./demo/tls/key.pem"
+//   api_key_env  = "ACIDDOG_API_KEY"
+//   can_message  = ["planner", "coder"]
+// }
+
+// Example `:remote` automaton — the client-side counterpart to
+// `:webservice`. Dials a remote aciddog's webservice and proxies one
+// identity on that remote as a local fleet member. Any message you
+// send to `remote_peer` is forwarded as `send_message(to=bridge)` on
+// the remote; traffic flowing the other way lands in `planner`'s
+// inbox attributed to `remote_peer`.
+//
+// An optional `proxy_socket_path` turns this automaton into a full
+// RPC tunnel: set `ACIDDOG_AGENT_SOCKET=/tmp/aciddog-remote.sock` on a
+// local tool and every `aciddog` CLI call transparently hits the
+// remote's `/v1/rpc`.
+//
+// automaton remote_peer {
+//   type              = :remote
+//   role              = "bridge to remote aciddog"
+//   socket_path       = "/run/aciddog-remote/api.sock"
+//   remote_target     = "bridge"
+//   deliver_to        = "planner"
+//   proxy_socket_path = "/tmp/aciddog-remote.sock"
+//   can_message       = ["planner"]
+// }
+
+// Example webhook: a GitHub push hook with HMAC-SHA256 signing. Mounts
+// on the `api_server` webservice above; the incoming request envelope
+// is delivered to the `coder` agent as a JSON-wrapped message.
+//
+// webhook github_push {
+//   mount           = "api_server"
+//   path            = "/hooks/github/push"
+//   deliver_to      = "coder"
+//   auth_kind       = :hmac_header
+//   auth_header     = "X-Hub-Signature-256"
+//   auth_secret_env = "GITHUB_WEBHOOK_SECRET"
+// }
+//
+// webhook sentry_alert {
+//   mount           = "api_server"
+//   path            = "/hooks/sentry"
+//   deliver_to      = "planner"
+//   auth_kind       = :bearer
+//   auth_secret_env = "SENTRY_WEBHOOK_TOKEN"
+// }
+
+// A reusable procedure with typed inputs and sequential steps. Trigger
+// it from the TUI's Workflows panel (or via `/run <id>`) and the engine
+// spawns a per-instance task. Today only `command` and `check` steps
+// run; `worker` and `conditional` steps are wired in follow-up tasks.
+workflow smoke {
+  description = "Smoke-test the workflow engine with a command + gate."
+  max_retries = 2
+
+  // Visible inputs: the user fills these in the form (once shipped).
+  property branch { kind = :text default = "main" }
+  property suites { kind = :multiSelect options = ["unit","integ"] default = ["unit"] }
+
+  // Single-choice Select: click the row to open a dropdown picker, or
+  // use ←/→ to cycle and Enter to open.
+  property environment {
+    kind    = :select
+    options = ["dev","staging","prod"]
+    default = "dev"
+  }
+
+  // Hidden variables are never shown in the form. They're seeded from
+  // `default` at instance start and mutated at runtime by workers via
+  // `workflow_set` (tool wiring ships in a later task).
+  property last_check { kind = :hidden default = "ok" }
+
+  // $$VAR$$ substitution fires at step start with a live snapshot of
+  // the variable map.
+  step echo  { kind = :command command = "echo ran on $$branch$$ env=$$environment$$ suites=$$suites$$" }
+
+  // 30-second sleep so the instance is visible in the sidebar long
+  // enough to observe progress (echo + check + echo would otherwise
+  // finish in milliseconds and flash by).
+  step wait  { kind = :command command = "sleep 30" }
+
+  // Pure variable gate: pass ⇒ advance; fail ⇒ jump back to `echo`.
+  step gate  { kind = :check variable = "last_check" op = :equals value = "ok" target = "echo" }
+
+  step done  { kind = :command command = "echo all gates passed" }
+}

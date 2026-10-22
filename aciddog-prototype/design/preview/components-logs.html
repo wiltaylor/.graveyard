@@ -1,0 +1,1007 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><link rel="stylesheet" href="_frame.css">
+<style>
+  /* ─────────────────────────────────────────────────────────────────────
+     LOG VIEWER
+     A compact log explorer with: time-range + level filters, a custom
+     query language (key:value AND/OR/NOT, quoted phrases, free-text),
+     live tail, click-to-inspect detail drawer, and a follow-tail pill.
+     ───────────────────────────────────────────────────────────────────── */
+
+  .lv {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: auto auto 1fr auto;
+    height: 540px;
+  }
+
+  /* ── Toolbar 1: time range + level filters + tail toggle ──────────── */
+  .lv-toolbar {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-subtle);
+    flex-wrap: wrap;
+  }
+  .lv-group {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    overflow: hidden;
+    background: var(--bg-1);
+  }
+  .lv-chip {
+    height: 24px; padding: 0 9px;
+    border: none; background: transparent;
+    color: var(--fg-1);
+    font-family: var(--font-sans); font-size: 11.5px; font-weight: 500;
+    cursor: pointer;
+    display: inline-flex; align-items: center; gap: 5px;
+    transition: background 120ms cubic-bezier(.2,0,0,1), color 120ms cubic-bezier(.2,0,0,1);
+  }
+  .lv-chip + .lv-chip { border-left: 1px solid var(--border-subtle); }
+  .lv-chip:hover { background: var(--bg-2); }
+  .lv-chip.on {
+    background: var(--accent-bg);
+    color: var(--accent-fg);
+  }
+  .lv-chip[data-level] .ldot {
+    width: 7px; height: 7px; border-radius: 2px;
+    background: var(--fg-3);
+  }
+  .lv-chip[data-level="debug"] .ldot { background: var(--fg-3); }
+  .lv-chip[data-level="info"]  .ldot { background: var(--info); }
+  .lv-chip[data-level="warn"]  .ldot { background: var(--warning); }
+  .lv-chip[data-level="error"] .ldot { background: var(--danger); }
+  .lv-chip[data-level="fatal"] .ldot { background: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
+
+  .lv-spacer { flex: 1 1 auto; }
+
+  .lv-tail {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 24px; padding: 0 9px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--bg-1);
+    color: var(--fg-1);
+    font-family: var(--font-sans); font-size: 11.5px; font-weight: 500;
+    cursor: pointer;
+    transition: background 120ms cubic-bezier(.2,0,0,1), border-color 120ms cubic-bezier(.2,0,0,1), color 120ms cubic-bezier(.2,0,0,1);
+  }
+  .lv-tail:hover { background: var(--bg-2); }
+  .lv-tail .tdot {
+    width: 7px; height: 7px; border-radius: 999px;
+    background: var(--fg-3);
+  }
+  .lv-tail.on {
+    color: var(--success-fg);
+    border-color: color-mix(in oklab, var(--success) 35%, var(--border));
+    background: color-mix(in oklab, var(--success) 8%, var(--bg-1));
+  }
+  .lv-tail.on .tdot {
+    background: var(--success);
+    animation: lv-blink 1s ease-in-out infinite;
+  }
+  @keyframes lv-blink {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: .35; }
+  }
+
+  /* ── Toolbar 2: query input ──────────────────────────────────────── */
+  .lv-querybar {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg-2);
+  }
+  .lv-querybar .lbl {
+    font-family: var(--font-mono); font-size: 10.5px;
+    color: var(--fg-3);
+    text-transform: uppercase; letter-spacing: .08em;
+  }
+  .lv-input {
+    height: 26px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    color: var(--fg-0);
+    font-family: var(--font-mono); font-size: 12px;
+    padding: 0 8px;
+    width: 100%;
+    transition: border-color 120ms cubic-bezier(.2,0,0,1), box-shadow 120ms cubic-bezier(.2,0,0,1);
+  }
+  .lv-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .lv-input.invalid {
+    border-color: var(--danger);
+  }
+  .lv-count {
+    font-family: var(--font-mono); font-size: 10.5px;
+    color: var(--fg-2);
+    white-space: nowrap;
+  }
+  .lv-count .err { color: var(--danger-fg); }
+  .lv-clear {
+    height: 26px; width: 26px;
+    border: 1px solid var(--border);
+    background: var(--bg-1);
+    color: var(--fg-2);
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .lv-clear:hover { background: var(--bg-3); color: var(--fg-1); }
+  .lv-clear svg { width: 12px; height: 12px; }
+
+  /* Helpful examples row that surfaces under the query bar */
+  .lv-hints {
+    grid-column: 1 / -1;
+    display: flex; flex-wrap: wrap; gap: 4px;
+    padding-top: 4px;
+  }
+  .lv-hint {
+    font-family: var(--font-mono); font-size: 10.5px;
+    color: var(--fg-2);
+    background: var(--bg-1);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    padding: 1px 6px;
+    cursor: pointer;
+    transition: border-color 120ms cubic-bezier(.2,0,0,1), color 120ms cubic-bezier(.2,0,0,1), background 120ms cubic-bezier(.2,0,0,1);
+  }
+  .lv-hint:hover {
+    border-color: var(--border-strong);
+    color: var(--fg-0);
+    background: var(--bg-3);
+  }
+
+  /* ── Log list ────────────────────────────────────────────────────── */
+  .lv-listwrap {
+    position: relative;
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    background: var(--bg-1);
+    min-height: 0;
+  }
+  .lv-list-head {
+    display: grid;
+    grid-template-columns: 96px 56px 110px 1fr;
+    gap: 0;
+    font-family: var(--font-mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: .08em;
+    color: var(--fg-3);
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg-2);
+  }
+  .lv-list {
+    overflow-y: auto;
+    overflow-x: hidden;
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--fg-1);
+    scroll-behavior: smooth;
+  }
+  .lv-row {
+    display: grid;
+    grid-template-columns: 96px 56px 110px 1fr;
+    gap: 0;
+    padding: 4px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+    cursor: pointer;
+    align-items: baseline;
+    transition: background 80ms cubic-bezier(.2,0,0,1);
+  }
+  .lv-row:hover { background: var(--bg-2); }
+  .lv-row.selected {
+    background: var(--accent-bg);
+  }
+  .lv-row.selected .lv-msg { color: var(--fg-0); }
+  .lv-row .lv-time { color: var(--fg-3); font-size: 11px; }
+  .lv-row .lv-svc  { color: var(--fg-2); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 8px; }
+  .lv-row .lv-msg  {
+    color: var(--fg-0); font-size: 11.5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .lv-row.l-error .lv-msg { color: var(--danger-fg); }
+  .lv-row.l-warn  .lv-msg { color: var(--warning-fg); }
+  .lv-row.entering {
+    animation: lv-enter 220ms cubic-bezier(.2,0,0,1);
+  }
+  @keyframes lv-enter {
+    from { background: color-mix(in oklab, var(--accent) 14%, var(--bg-1)); }
+    to   { background: transparent; }
+  }
+  .lv-empty {
+    padding: 30px 12px;
+    text-align: center;
+    color: var(--fg-3);
+    font-family: var(--font-mono); font-size: 11.5px;
+  }
+  .lv-empty strong {
+    color: var(--fg-1); font-weight: 500;
+  }
+
+  /* Level badge in the row */
+  .lv-lvl {
+    display: inline-flex; align-items: center; justify-content: center;
+    height: 16px; min-width: 44px;
+    border-radius: var(--r-sm);
+    font-family: var(--font-mono); font-size: 9.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .04em;
+    background: var(--bg-2);
+    color: var(--fg-2);
+    border: 1px solid var(--border-subtle);
+    padding: 0 5px;
+  }
+  .lv-lvl.l-debug { color: var(--fg-3); }
+  .lv-lvl.l-info {
+    color: var(--info-fg);
+    background: color-mix(in oklab, var(--info) 10%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--info) 30%, var(--border-subtle));
+  }
+  .lv-lvl.l-warn {
+    color: var(--warning-fg);
+    background: color-mix(in oklab, var(--warning) 12%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--warning) 30%, var(--border-subtle));
+  }
+  .lv-lvl.l-error {
+    color: var(--danger-fg);
+    background: color-mix(in oklab, var(--danger) 10%, var(--bg-1));
+    border-color: color-mix(in oklab, var(--danger) 30%, var(--border-subtle));
+  }
+  .lv-lvl.l-fatal {
+    color: var(--accent-contrast);
+    background: var(--danger);
+    border-color: var(--danger);
+  }
+
+  /* Match highlight on free-text/quoted matches */
+  .hl {
+    background: color-mix(in oklab, var(--warning) 30%, transparent);
+    color: var(--fg-0);
+    padding: 0 2px; border-radius: 2px;
+  }
+
+  /* Follow-tail pill that floats over the list when user scrolls up */
+  .lv-follow {
+    position: absolute;
+    left: 50%; bottom: 12px; transform: translateX(-50%) translateY(8px);
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px;
+    background: var(--bg-4);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-pill);
+    color: var(--fg-0);
+    font-size: 11px; font-weight: 500;
+    cursor: pointer;
+    opacity: 0; pointer-events: none;
+    transition: opacity 160ms cubic-bezier(.2,0,0,1), transform 160ms cubic-bezier(.2,0,0,1);
+  }
+  .lv-follow.show {
+    opacity: 1; pointer-events: auto;
+    transform: translateX(-50%) translateY(0);
+  }
+  .lv-follow svg { width: 11px; height: 11px; }
+
+  /* ── Detail drawer ───────────────────────────────────────────────── */
+  .lv-detail {
+    border-top: 1px solid var(--border);
+    background: var(--bg-1);
+    display: grid;
+    grid-template-rows: auto 1fr;
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 280ms cubic-bezier(.2,0,0,1);
+  }
+  .lv-detail.open { max-height: 240px; }
+
+  .lv-detail-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--bg-2);
+  }
+  .lv-detail-title {
+    font-family: var(--font-mono); font-size: 11.5px;
+    color: var(--fg-1);
+    flex: 1; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .lv-detail-title .badge {
+    background: var(--bg-3);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    padding: 0 5px;
+    margin-right: 6px;
+    color: var(--fg-2);
+    font-size: 10px;
+  }
+  .lv-detail-actions { display: flex; gap: 4px; }
+  .lv-iconbtn {
+    height: 22px; padding: 0 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-1);
+    color: var(--fg-1);
+    border-radius: var(--r-sm);
+    font-family: var(--font-sans); font-size: 11px; font-weight: 500;
+    cursor: pointer;
+    display: inline-flex; align-items: center; gap: 4px;
+    transition: background 120ms cubic-bezier(.2,0,0,1);
+  }
+  .lv-iconbtn:hover { background: var(--bg-3); }
+  .lv-iconbtn svg { width: 11px; height: 11px; }
+
+  .lv-detail-body {
+    overflow: auto;
+    padding: 10px 12px 14px;
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 14px;
+  }
+  .lv-fields {
+    display: grid; grid-template-columns: auto 1fr;
+    column-gap: 8px; row-gap: 4px;
+    align-content: start;
+    font-family: var(--font-mono); font-size: 11.5px;
+  }
+  .lv-fields dt { color: var(--fg-3); font-size: 10.5px; }
+  .lv-fields dd { margin: 0; color: var(--fg-1); word-break: break-word; }
+  .lv-fields dd .v-num { color: var(--info-fg); }
+  .lv-fields dd .v-str { color: var(--fg-0); }
+  .lv-fields dd .v-link {
+    color: var(--accent-fg); cursor: pointer; border-bottom: 1px dashed var(--accent-fg);
+  }
+
+  .lv-json {
+    background: var(--bg-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-sm);
+    padding: 8px 10px;
+    font-family: var(--font-mono); font-size: 11.5px;
+    color: var(--fg-1);
+    white-space: pre;
+    overflow: auto;
+    max-height: 180px;
+  }
+  .lv-json .k { color: var(--accent-fg); }
+  .lv-json .s { color: var(--success-fg); }
+  .lv-json .n { color: var(--info-fg); }
+  .lv-json .b { color: var(--warning-fg); }
+  .lv-json .nu { color: var(--fg-3); }
+
+  /* footer status */
+  .lv-foot {
+    display: flex; align-items: center; gap: 12px;
+    padding: 4px 12px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--bg-1);
+    font-family: var(--font-mono); font-size: 10.5px;
+    color: var(--fg-3);
+  }
+  .lv-foot .err { color: var(--danger-fg); }
+  .lv-foot .warn { color: var(--warning-fg); }
+</style>
+</head>
+<body>
+<template id="card-content">
+<div class="lv">
+  <!-- Toolbar 1: range + levels + tail -->
+  <div class="lv-toolbar">
+    <div class="lv-group" data-range>
+      <button class="lv-chip" data-range-val="5m">5 m</button>
+      <button class="lv-chip on" data-range-val="15m">15 m</button>
+      <button class="lv-chip" data-range-val="1h">1 h</button>
+      <button class="lv-chip" data-range-val="6h">6 h</button>
+      <button class="lv-chip" data-range-val="24h">24 h</button>
+    </div>
+    <div class="lv-group" data-levels>
+      <button class="lv-chip on" data-level="debug" title="debug"><span class="ldot"></span>debug</button>
+      <button class="lv-chip on" data-level="info"  title="info"><span class="ldot"></span>info</button>
+      <button class="lv-chip on" data-level="warn"  title="warn"><span class="ldot"></span>warn</button>
+      <button class="lv-chip on" data-level="error" title="error"><span class="ldot"></span>error</button>
+      <button class="lv-chip on" data-level="fatal" title="fatal"><span class="ldot"></span>fatal</button>
+    </div>
+    <div class="lv-spacer"></div>
+    <button class="lv-tail on" data-tail>
+      <span class="tdot"></span>
+      <span data-tail-text>Live tail</span>
+    </button>
+  </div>
+
+  <!-- Toolbar 2: query -->
+  <div class="lv-querybar">
+    <span class="lbl">query</span>
+    <input class="lv-input" data-query
+      placeholder='level:error AND service:payments-api · "timeout" · NOT path:/healthz'
+      spellcheck="false" autocomplete="off">
+    <span class="lv-count" data-count>—</span>
+    <button class="lv-clear" data-clear title="Clear query">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+    </button>
+    <div class="lv-hints">
+      <button class="lv-hint" data-hint='level:error'>level:error</button>
+      <button class="lv-hint" data-hint='service:payments-api AND level:(warn OR error)'>service:payments-api AND level:(warn OR error)</button>
+      <button class="lv-hint" data-hint='"timeout"'>"timeout"</button>
+      <button class="lv-hint" data-hint='status:5xx NOT path:/healthz'>status:5xx NOT path:/healthz</button>
+      <button class="lv-hint" data-hint='trace:abc123'>trace:abc123</button>
+    </div>
+  </div>
+
+  <!-- Log list -->
+  <div class="lv-listwrap">
+    <div class="lv-list-head">
+      <div>time</div>
+      <div>lvl</div>
+      <div>service</div>
+      <div>message</div>
+    </div>
+    <div class="lv-list" data-list></div>
+    <button class="lv-follow" data-follow>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      Follow tail
+    </button>
+  </div>
+
+  <!-- Detail drawer -->
+  <div class="lv-detail" data-detail>
+    <div class="lv-detail-head">
+      <span class="lv-detail-title" data-detail-title></span>
+      <div class="lv-detail-actions">
+        <button class="lv-iconbtn" data-act="copy">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="1.5"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15"/></svg>
+          Copy JSON
+        </button>
+        <button class="lv-iconbtn" data-act="context">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 6 9 12 15 18"/><polyline points="21 6 15 12 21 18"/></svg>
+          ± 5 lines
+        </button>
+        <button class="lv-iconbtn" data-act="close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="lv-detail-body">
+      <dl class="lv-fields" data-detail-fields></dl>
+      <pre class="lv-json" data-detail-json></pre>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="lv-foot">
+    <span data-foot-summary>—</span>
+    <span class="lv-spacer" style="flex:1"></span>
+    <span data-foot-stream>tail · 2 lines/s</span>
+  </div>
+</div>
+</template>
+<script src="_split.js"></script>
+<script>
+(function () {
+  /* ────────────────────────────────────────────────────────────────────
+     QUERY LANGUAGE
+     Supports: key:value (value may be quoted, parenthesised w/ AND OR NOT,
+     or a "5xx"-style wildcard), free-text terms (substring against msg),
+     boolean operators AND OR NOT, and parentheses. Implicit AND between
+     bare terms.
+     We tokenise → parse to an AST → compile to a predicate over a record.
+     Empty query → match-all.
+     ──────────────────────────────────────────────────────────────────── */
+  function tokenize(input) {
+    const toks = [];
+    let i = 0; const s = input;
+    while (i < s.length) {
+      const c = s[i];
+      if (/\s/.test(c)) { i++; continue; }
+      if (c === '(' || c === ')') { toks.push({ t: c }); i++; continue; }
+      if (c === '"') {
+        let j = i + 1, buf = '';
+        while (j < s.length && s[j] !== '"') buf += s[j++];
+        if (j >= s.length) throw new Error('unterminated string');
+        toks.push({ t: 'str', v: buf });
+        i = j + 1; continue;
+      }
+      // word: read until whitespace, paren — colons stay in the word so
+      // we can split it into key:value below
+      let j = i, buf = '';
+      while (j < s.length && !/[\s()]/.test(s[j])) {
+        // allow quoted value after colon: key:"value with spaces"
+        if (s[j] === ':' && s[j + 1] === '"') {
+          buf += s[j]; j++;
+          buf += s[j++]; // opening quote
+          while (j < s.length && s[j] !== '"') buf += s[j++];
+          if (j < s.length) { buf += s[j++]; } // closing quote
+          continue;
+        }
+        buf += s[j++];
+      }
+      if (!buf) { i++; continue; }
+      const upper = buf.toUpperCase();
+      if (upper === 'AND' || upper === 'OR' || upper === 'NOT') {
+        toks.push({ t: upper });
+      } else {
+        toks.push({ t: 'word', v: buf });
+      }
+      i = j;
+    }
+    return toks;
+  }
+
+  function parse(toks) {
+    let p = 0;
+    function peek() { return toks[p]; }
+    function next() { return toks[p++]; }
+    function parseOr() {
+      let left = parseAnd();
+      while (peek() && peek().t === 'OR') { next(); left = { op: 'OR', a: left, b: parseAnd() }; }
+      return left;
+    }
+    function parseAnd() {
+      let left = parseUnary();
+      while (peek() && peek().t !== 'OR' && peek().t !== ')') {
+        if (peek().t === 'AND') next();
+        left = { op: 'AND', a: left, b: parseUnary() };
+      }
+      return left;
+    }
+    function parseUnary() {
+      if (peek() && peek().t === 'NOT') { next(); return { op: 'NOT', a: parseUnary() }; }
+      return parsePrimary();
+    }
+    function parsePrimary() {
+      const tk = next();
+      if (!tk) throw new Error('unexpected end of query');
+      if (tk.t === '(') {
+        const inner = parseOr();
+        const close = next();
+        if (!close || close.t !== ')') throw new Error('missing )');
+        return inner;
+      }
+      if (tk.t === 'str') return { op: 'TERM', text: tk.v };
+      if (tk.t === 'word') {
+        // key:value or key:(...) or bare term
+        const m = tk.v.match(/^([A-Za-z_][A-Za-z0-9_.-]*)\:(.*)$/s);
+        if (m) {
+          const key = m[1], rhs = m[2];
+          if (rhs.startsWith('(')) {
+            // key:(a OR b) — re-tokenise rhs without the surrounding parens
+            const innerToks = tokenize(rhs.slice(1, rhs.length - 1));
+            const innerAst = parse(innerToks);
+            // wrap so each leaf becomes a key-match
+            return wrapWithKey(innerAst, key);
+          }
+          let val = rhs;
+          if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+          return { op: 'KV', key, value: val };
+        }
+        return { op: 'TERM', text: tk.v };
+      }
+      throw new Error('unexpected token "' + (tk.v ?? tk.t) + '"');
+    }
+    function wrapWithKey(ast, key) {
+      if (ast.op === 'TERM') return { op: 'KV', key, value: ast.text };
+      if (ast.op === 'KV')   return ast; // already keyed
+      if (ast.op === 'NOT')  return { op: 'NOT', a: wrapWithKey(ast.a, key) };
+      return { op: ast.op, a: wrapWithKey(ast.a, key), b: wrapWithKey(ast.b, key) };
+    }
+    if (!toks.length) return null;
+    const ast = parseOr();
+    if (p < toks.length) throw new Error('trailing token "' + (toks[p].v ?? toks[p].t) + '"');
+    return ast;
+  }
+
+  function compile(ast) {
+    if (!ast) return () => true;
+    function ev(node, rec) {
+      switch (node.op) {
+        case 'AND': return ev(node.a, rec) && ev(node.b, rec);
+        case 'OR':  return ev(node.a, rec) || ev(node.b, rec);
+        case 'NOT': return !ev(node.a, rec);
+        case 'TERM': return rec.message.toLowerCase().includes(node.text.toLowerCase());
+        case 'KV': {
+          const v = rec[node.key];
+          if (v == null) return false;
+          // wildcard 5xx style: digit + 'xx' lower
+          if (/^\dxx$/i.test(node.value)) {
+            const prefix = node.value[0];
+            return String(v).startsWith(prefix);
+          }
+          return String(v).toLowerCase() === node.value.toLowerCase();
+        }
+      }
+    }
+    return rec => ev(ast, rec);
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     FAKE LOG STREAM
+     A per-pane simulator that produces structured records. Mix of services
+     and levels so all filters have something to bite into.
+     ──────────────────────────────────────────────────────────────────── */
+  const SERVICES = ['payments-api', 'webhooks', 'auth', 'gateway', 'inventory', 'mailer'];
+  const PATHS    = ['/v1/checkout', '/v1/customers', '/v1/charges', '/v1/refunds', '/healthz', '/v1/webhook'];
+  const STATUSES = ['200', '201', '204', '301', '400', '401', '404', '429', '500', '502', '504'];
+  const LEVELS   = ['debug', 'info', 'info', 'info', 'info', 'warn', 'warn', 'error', 'error', 'fatal'];
+  const TEMPLATES = [
+    { lvl: 'info',  msg: 'request handled', extras: ['status', 'path', 'duration_ms'] },
+    { lvl: 'info',  msg: 'cache miss for key', extras: ['key', 'ttl_s'] },
+    { lvl: 'debug', msg: 'pool stats', extras: ['idle', 'in_use', 'wait_ms'] },
+    { lvl: 'warn',  msg: 'retrying upstream call', extras: ['attempt', 'upstream', 'backoff_ms'] },
+    { lvl: 'warn',  msg: 'slow query detected', extras: ['query_ms', 'rows', 'table'] },
+    { lvl: 'error', msg: 'upstream timeout',     extras: ['upstream', 'timeout_ms', 'status'] },
+    { lvl: 'error', msg: 'database connection refused', extras: ['db', 'attempt'] },
+    { lvl: 'fatal', msg: 'unrecoverable: out of memory', extras: ['rss_mb'] },
+  ];
+  function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+  function randomTrace() {
+    const hex = '0123456789abcdef';
+    let s = ''; for (let i = 0; i < 8; i++) s += hex[Math.floor(Math.random() * 16)];
+    return s;
+  }
+
+  let id = 0;
+  function makeRecord(when) {
+    const tpl = pick(TEMPLATES);
+    const lvl = tpl.lvl === 'info' ? pick(LEVELS) : tpl.lvl;
+    const r = {
+      _id: ++id,
+      ts: when,
+      level: lvl,
+      service: pick(SERVICES),
+      path: pick(PATHS),
+      message: tpl.msg,
+      trace: randomTrace(),
+    };
+    for (const e of tpl.extras) {
+      if (e === 'status') r.status = pick(STATUSES);
+      else if (e === 'duration_ms') r.duration_ms = Math.floor(Math.random() * 600) + 8;
+      else if (e === 'key') r.key = 'cust_' + Math.random().toString(36).slice(2, 8);
+      else if (e === 'ttl_s') r.ttl_s = pick([60, 300, 900]);
+      else if (e === 'idle') r.idle = Math.floor(Math.random() * 8);
+      else if (e === 'in_use') r.in_use = Math.floor(Math.random() * 24);
+      else if (e === 'wait_ms') r.wait_ms = Math.floor(Math.random() * 50);
+      else if (e === 'attempt') r.attempt = Math.floor(Math.random() * 4) + 1;
+      else if (e === 'upstream') r.upstream = pick(['stripe.com', 'sendgrid', 'redis-2', 'auth-svc']);
+      else if (e === 'backoff_ms') r.backoff_ms = pick([100, 250, 500, 1000]);
+      else if (e === 'query_ms') r.query_ms = Math.floor(Math.random() * 1200) + 200;
+      else if (e === 'rows') r.rows = Math.floor(Math.random() * 5000);
+      else if (e === 'table') r.table = pick(['orders', 'customers', 'webhooks_log']);
+      else if (e === 'timeout_ms') r.timeout_ms = pick([2000, 5000, 10000]);
+      else if (e === 'db') r.db = pick(['orders-rw', 'analytics-ro']);
+      else if (e === 'rss_mb') r.rss_mb = Math.floor(Math.random() * 6000) + 7000;
+    }
+    if (lvl === 'error' || lvl === 'fatal') {
+      r.message = (r.upstream ? `${r.message} (${r.upstream})` : r.message);
+      if (r.status && Number(r.status) >= 500) r.message += ` — status ${r.status}`;
+    } else if (lvl === 'warn' && tpl.msg.startsWith('slow')) {
+      r.message = `${tpl.msg}: ${r.query_ms}ms on ${r.table}`;
+    } else if (tpl.msg === 'request handled') {
+      r.message = `${r.path} → ${r.status} in ${r.duration_ms}ms`;
+    } else if (tpl.msg === 'cache miss for key') {
+      r.message = `${tpl.msg} ${r.key}`;
+    }
+    return r;
+  }
+
+  function fmtTime(ts) {
+    const d = new Date(ts);
+    return d.toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+  }
+  function fmtRange(rangeMs) {
+    if (rangeMs <= 5*60*1000) return '5 m';
+    if (rangeMs <= 15*60*1000) return '15 m';
+    if (rangeMs <= 60*60*1000) return '1 h';
+    if (rangeMs <= 6*60*60*1000) return '6 h';
+    return '24 h';
+  }
+  const RANGE_MS = { '5m': 5*60*1000, '15m': 15*60*1000, '1h': 60*60*1000, '6h': 6*60*60*1000, '24h': 24*60*60*1000 };
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
+  }
+  function highlightText(s, terms) {
+    if (!terms.length) return escapeHtml(s);
+    const safe = escapeHtml(s);
+    // Build a single regex from all terms (escape each)
+    const pattern = terms.filter(Boolean).map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    if (!pattern) return safe;
+    return safe.replace(new RegExp('(' + pattern + ')', 'ig'), '<span class="hl">$1</span>');
+  }
+  function jsonHighlight(obj) {
+    const str = JSON.stringify(obj, null, 2);
+    return escapeHtml(str)
+      .replace(/(&quot;)([^&]+?)(&quot;)(\s*:)/g, '<span class="k">$1$2$3</span>$4')
+      .replace(/:\s*(&quot;[^&]*&quot;)/g, ': <span class="s">$1</span>')
+      .replace(/:\s*(-?\d+(\.\d+)?)/g, ': <span class="n">$1</span>')
+      .replace(/:\s*(true|false)/g, ': <span class="b">$1</span>')
+      .replace(/:\s*null/g, ': <span class="nu">null</span>');
+  }
+
+  /* ────────────────────────────────────────────────────────────────────
+     PER-PANE BIND
+     ──────────────────────────────────────────────────────────────────── */
+  function bind(pane) {
+    const list  = pane.querySelector('[data-list]');
+    const input = pane.querySelector('[data-query]');
+    const count = pane.querySelector('[data-count]');
+    const clear = pane.querySelector('[data-clear]');
+    const detail = pane.querySelector('[data-detail]');
+    const detailTitle = pane.querySelector('[data-detail-title]');
+    const detailFields = pane.querySelector('[data-detail-fields]');
+    const detailJson = pane.querySelector('[data-detail-json]');
+    const tailBtn = pane.querySelector('[data-tail]');
+    const tailText = pane.querySelector('[data-tail-text]');
+    const followBtn = pane.querySelector('[data-follow]');
+    const footSummary = pane.querySelector('[data-foot-summary]');
+    const footStream = pane.querySelector('[data-foot-stream]');
+    const rangeBtns = pane.querySelectorAll('[data-range-val]');
+    const levelBtns = pane.querySelectorAll('[data-level]');
+    const hints = pane.querySelectorAll('.lv-hint');
+
+    const state = {
+      records: [],          // newest-last
+      selectedId: null,
+      query: '',
+      ast: null,
+      err: null,
+      tail: true,
+      rangeMs: RANGE_MS['15m'],
+      levels: new Set(['debug', 'info', 'warn', 'error', 'fatal']),
+      following: true,
+      freeTerms: [],        // for highlighting
+    };
+
+    /* Seed: ~120 records distributed across the visible window. */
+    const now = Date.now();
+    const seedCount = 120;
+    for (let i = seedCount - 1; i >= 0; i--) {
+      const ts = now - i * (state.rangeMs / seedCount) * (0.6 + Math.random() * 0.8);
+      state.records.push(makeRecord(ts));
+    }
+    state.records.sort((a, b) => a.ts - b.ts);
+
+    /* ── Compile query ─────────────────────────────────────────────── */
+    function recompile() {
+      const q = state.query.trim();
+      try {
+        state.ast = q ? parse(tokenize(q)) : null;
+        state.err = null;
+        input.classList.remove('invalid');
+        // Collect free-text terms for highlighting
+        const terms = [];
+        function walk(n) {
+          if (!n) return;
+          if (n.op === 'TERM') terms.push(n.text);
+          else if (n.op === 'AND' || n.op === 'OR') { walk(n.a); walk(n.b); }
+          else if (n.op === 'NOT') walk(n.a);
+        }
+        walk(state.ast);
+        state.freeTerms = terms;
+      } catch (e) {
+        state.err = e.message;
+        input.classList.add('invalid');
+        state.ast = null;
+      }
+    }
+
+    /* ── Filter ────────────────────────────────────────────────────── */
+    function filteredRecords() {
+      const cutoff = Date.now() - state.rangeMs;
+      const pred = compile(state.ast);
+      return state.records.filter(r => r.ts >= cutoff && state.levels.has(r.level) && pred(r));
+    }
+
+    /* ── Render list ───────────────────────────────────────────────── */
+    function buildRow(r) {
+      const row = document.createElement('div');
+      row.className = `lv-row l-${r.level}`;
+      row.dataset.id = r._id;
+      row.innerHTML =
+        `<span class="lv-time">${escapeHtml(fmtTime(r.ts))}</span>` +
+        `<span><span class="lv-lvl l-${r.level}">${r.level}</span></span>` +
+        `<span class="lv-svc">${escapeHtml(r.service)}</span>` +
+        `<span class="lv-msg">${highlightText(r.message, state.freeTerms)}</span>`;
+      row.addEventListener('click', () => selectRecord(r._id));
+      return row;
+    }
+
+    function render() {
+      const recs = filteredRecords();
+      // Smart re-render: rebuild from scratch when filtering changes,
+      // append-only during tail. We rebuild always for simplicity but
+      // animate only newly-arriving tail rows.
+      const wasFollowing = state.following;
+      list.innerHTML = '';
+      if (!recs.length) {
+        const empty = document.createElement('div');
+        empty.className = 'lv-empty';
+        empty.innerHTML = state.err
+          ? `<strong>Query error</strong> · ${escapeHtml(state.err)}`
+          : '<strong>No matching log lines</strong> · adjust filters or query';
+        list.appendChild(empty);
+      } else {
+        const frag = document.createDocumentFragment();
+        for (const r of recs) {
+          const row = buildRow(r);
+          if (r._id === state.selectedId) row.classList.add('selected');
+          frag.appendChild(row);
+        }
+        list.appendChild(frag);
+      }
+      // Counters
+      count.innerHTML = state.err
+        ? `<span class="err">err: ${escapeHtml(state.err)}</span>`
+        : `${recs.length.toLocaleString()} of ${state.records.length.toLocaleString()}`;
+      const lvlSummary = ['fatal', 'error', 'warn', 'info', 'debug']
+        .map(l => `${recs.filter(r => r.level === l).length} ${l}`)
+        .join(' · ');
+      footSummary.textContent = `${recs.length} lines · ${lvlSummary} · range ${fmtRange(state.rangeMs)}`;
+      footStream.textContent = state.tail ? 'tail · live' : 'tail · paused';
+
+      // Auto-scroll if following
+      if (wasFollowing && state.tail) scrollToBottom();
+      checkFollow();
+    }
+
+    function scrollToBottom() {
+      list.scrollTop = list.scrollHeight;
+    }
+
+    function checkFollow() {
+      const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 4;
+      state.following = atBottom;
+      followBtn.classList.toggle('show', !atBottom && state.tail);
+    }
+
+    list.addEventListener('scroll', checkFollow);
+    followBtn.addEventListener('click', () => { state.following = true; scrollToBottom(); checkFollow(); });
+
+    /* ── Selection / detail drawer ─────────────────────────────────── */
+    function selectRecord(id) {
+      if (state.selectedId === id) {
+        // toggle close
+        state.selectedId = null;
+        detail.classList.remove('open');
+        list.querySelectorAll('.lv-row.selected').forEach(r => r.classList.remove('selected'));
+        return;
+      }
+      state.selectedId = id;
+      list.querySelectorAll('.lv-row').forEach(r => r.classList.toggle('selected', r.dataset.id == id));
+      const r = state.records.find(x => x._id === id);
+      if (!r) return;
+      detail.classList.add('open');
+      // title
+      detailTitle.innerHTML =
+        `<span class="badge">${r.level}</span>` +
+        `${escapeHtml(fmtTime(r.ts))} · ${escapeHtml(r.service)} · ${escapeHtml(r.message)}`;
+      // fields
+      detailFields.innerHTML = '';
+      for (const [k, v] of Object.entries(r)) {
+        if (k === '_id' || k === 'message') continue;
+        const dt = document.createElement('dt'); dt.textContent = k;
+        const dd = document.createElement('dd');
+        const cls = typeof v === 'number' ? 'v-num' : (k === 'trace' || k === 'service' ? 'v-link' : 'v-str');
+        dd.innerHTML = `<span class="${cls}">${escapeHtml(String(v))}</span>`;
+        // Clicking a field value adds it to the query
+        dd.addEventListener('click', () => {
+          const expr = `${k}:${typeof v === 'string' && /\s/.test(v) ? `"${v}"` : v}`;
+          input.value = state.query ? `${state.query} AND ${expr}` : expr;
+          state.query = input.value;
+          recompile(); render();
+        });
+        dd.style.cursor = 'pointer';
+        detailFields.appendChild(dt);
+        detailFields.appendChild(dd);
+      }
+      // json
+      detailJson.innerHTML = jsonHighlight({ ...r, _id: undefined });
+    }
+
+    pane.querySelector('[data-act="close"]').addEventListener('click', () => {
+      state.selectedId = null;
+      detail.classList.remove('open');
+      list.querySelectorAll('.lv-row.selected').forEach(r => r.classList.remove('selected'));
+    });
+    pane.querySelector('[data-act="copy"]').addEventListener('click', e => {
+      const r = state.records.find(x => x._id === state.selectedId);
+      if (!r) return;
+      const txt = JSON.stringify({ ...r, _id: undefined }, null, 2);
+      try { navigator.clipboard.writeText(txt); } catch (_) {}
+      const btn = e.currentTarget;
+      const old = btn.textContent;
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="1.5"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15"/></svg> Copy JSON`; }, 1100);
+    });
+    pane.querySelector('[data-act="context"]').addEventListener('click', () => {
+      // Filter to ±5 lines around selected, ignoring filters
+      const r = state.records.find(x => x._id === state.selectedId);
+      if (!r) return;
+      const idx = state.records.indexOf(r);
+      const slice = state.records.slice(Math.max(0, idx - 5), idx + 6);
+      list.innerHTML = '';
+      for (const x of slice) {
+        const row = buildRow(x);
+        if (x._id === state.selectedId) row.classList.add('selected');
+        list.appendChild(row);
+      }
+      // After a delay, restore normal render (next tick / next filter change)
+      footSummary.textContent = `Showing ±5 lines around line #${r._id} · click anywhere to clear`;
+      const restore = () => { render(); list.removeEventListener('click', once); };
+      const once = () => { setTimeout(restore, 150); };
+      list.addEventListener('click', once);
+    });
+
+    /* ── Toolbar wiring ────────────────────────────────────────────── */
+    rangeBtns.forEach(b => b.addEventListener('click', () => {
+      rangeBtns.forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      state.rangeMs = RANGE_MS[b.dataset.rangeVal];
+      render();
+    }));
+    levelBtns.forEach(b => b.addEventListener('click', () => {
+      const lvl = b.dataset.level;
+      if (state.levels.has(lvl)) state.levels.delete(lvl); else state.levels.add(lvl);
+      b.classList.toggle('on');
+      render();
+    }));
+    tailBtn.addEventListener('click', () => {
+      state.tail = !state.tail;
+      tailBtn.classList.toggle('on', state.tail);
+      tailText.textContent = state.tail ? 'Live tail' : 'Paused';
+      footStream.textContent = state.tail ? 'tail · live' : 'tail · paused';
+      checkFollow();
+    });
+
+    let typingTimer = null;
+    input.addEventListener('input', () => {
+      state.query = input.value;
+      clearTimeout(typingTimer);
+      typingTimer = setTimeout(() => { recompile(); render(); }, 100);
+    });
+    clear.addEventListener('click', () => { input.value = ''; state.query = ''; recompile(); render(); input.focus(); });
+    hints.forEach(h => h.addEventListener('click', () => {
+      input.value = h.dataset.hint; state.query = input.value; recompile(); render(); input.focus();
+    }));
+
+    /* ── Live tail ────────────────────────────────────────────────── */
+    setInterval(() => {
+      if (!state.tail) return;
+      // 1–3 records per second, with occasional bursts
+      const burst = Math.random() < 0.15 ? 4 : 1 + Math.floor(Math.random() * 2);
+      for (let i = 0; i < burst; i++) {
+        const r = makeRecord(Date.now() - Math.floor(Math.random() * 200));
+        state.records.push(r);
+      }
+      // cap memory
+      if (state.records.length > 1500) state.records.splice(0, state.records.length - 1500);
+      render();
+    }, 1100);
+
+    // Initial render
+    recompile();
+    render();
+    // Start at tail
+    requestAnimationFrame(scrollToBottom);
+  }
+
+  function init() {
+    document.querySelectorAll('.pane').forEach(bind);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    setTimeout(init, 0);
+  }
+})();
+</script>
+</body>
+</html>

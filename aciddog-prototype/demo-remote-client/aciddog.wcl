@@ -1,0 +1,64 @@
+// Remote-demo, client side.
+//
+// Pairs with `demo-remote-server/aciddog.wcl`. See that file for the
+// end-to-end scenario and how messages flow in each direction.
+//
+// Start the server first:
+//
+//   just run-remote-server
+//
+// …then in another terminal:
+//
+//   just run-remote-client
+//
+// If you start the client first, the `:remote` automaton will log a
+// retry line each time its SSE subscription fails, then connect
+// automatically once the socket appears.
+//
+// Message flow:
+//
+//   local user → mothership pane → send_message(to=harbor) RPC
+//                                 → server's `harbor` pane
+//   harbor reply over SSE → mothership → local `scout` pane
+
+import <aciddog.wcl>
+
+team client {
+  description    = "Remote-demo client. Dials the server's webservice and routes traffic to a local agent."
+  default_ai_core = "default_core"
+}
+
+ai_core default_core {
+  type          = :claudeCode
+  default_tools = ["Bash", "Read", "Edit", "Grep", "Glob"]
+  systemPrompt  = <<EOT
+    You are a chat-style agent running inside a demo aciddog instance. Keep replies short and conversational — a sentence or two is plenty.
+  EOT
+}
+
+// Agent that receives traffic forwarded from the server side. When
+// `scout` replies it can `send --to mothership` and the body is
+// forwarded over the socket to the server's `harbor` agent.
+agent scout {
+  role             = "client-side demo agent"
+  role_description = <<EOT
+    You are the client-side agent in a two-instance aciddog demo. Messages you receive came from the server instance via the `mothership` bridge. Send replies via `aciddog send --to mothership <body>` to reach the server.
+  EOT
+  model        = "claude-haiku-4-5"
+  instructions = "Respond conversationally to whatever the server sends. Send your reply via `aciddog send --to mothership <body>` so it reaches the server."
+  can_message  = ["mothership", "user"]
+}
+
+// Dials the server's Unix socket and proxies `harbor` as a local
+// fleet member. Local messages sent here become
+// `send_message(to=harbor)` RPCs; inbound SSE events from the server
+// are delivered to `scout`.
+automaton mothership {
+  type             = :remote
+  role             = "bridge to the remote server"
+  role_description = "Dials /tmp/aciddog-remote-demo.sock. Local messages → send_message(to=harbor) RPC. Inbound SSE from the server lands in `scout`'s inbox."
+  socket_path      = "/tmp/aciddog-remote-demo.sock"
+  remote_target    = "harbor"
+  deliver_to       = "scout"
+  can_message      = ["scout", "user"]
+}

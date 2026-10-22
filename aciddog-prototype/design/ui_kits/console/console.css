@@ -1,0 +1,261 @@
+/* Forge Console UI Kit — component CSS.
+   All values reference tokens defined in colors_and_type.css. */
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  grid-template-rows: 48px 1fr;
+  grid-template-areas:
+    "topbar topbar"
+    "sidebar main";
+  height: 100vh;
+  background: var(--bg-0);
+}
+
+.app-shell > .ftopbar  { grid-area: topbar; }
+.app-shell > .fsidebar { grid-area: sidebar; }
+.app-shell > .app-main { grid-area: main; }
+
+/* ---------------- Sidebar -------------------------------------------------- */
+.fsidebar {
+  background: var(--bg-0);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  padding: 12px 8px;
+  gap: 2px;
+}
+.fsidebar-section {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  padding: 14px 10px 6px;
+}
+.fsidebar a {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px; border-radius: 4px;
+  font-size: 13px; color: var(--fg-1);
+  text-decoration: none; border-bottom: 0;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+  cursor: pointer;
+}
+.fsidebar a:hover { background: var(--bg-2); color: var(--fg-0); }
+.fsidebar a.is-active { background: var(--bg-2); color: var(--fg-0); box-shadow: inset 2px 0 0 var(--accent); }
+.fsidebar a .count {
+  margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--fg-2);
+}
+
+/* ---------------- Top bar -------------------------------------------------- */
+.ftopbar {
+  background: var(--bg-0);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex; align-items: center;
+  padding: 0 16px; gap: 14px;
+  position: sticky; top: 0; z-index: 10;
+}
+.ftopbar-brand { display: flex; align-items: center; gap: 10px; color: var(--fg-0); }
+.ftopbar-brand img { height: 22px; }
+.ftopbar-crumbs { display: flex; align-items: center; gap: 6px; color: var(--fg-1); font-size: 13px; }
+.ftopbar-crumbs .sep { color: var(--fg-3); }
+.ftopbar-search {
+  margin-left: auto;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg-1); border: 1px solid var(--border);
+  padding: 0 10px; height: 28px; border-radius: 4px;
+  width: 280px; color: var(--fg-2); font-size: 12px;
+  cursor: text;
+}
+.ftopbar-search input {
+  flex: 1; background: transparent; border: 0; outline: none;
+  color: var(--fg-0); font: inherit; font-size: 13px;
+}
+.ftopbar-icon-btn {
+  width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; border-radius: 4px; color: var(--fg-1); cursor: pointer;
+}
+.ftopbar-icon-btn:hover { background: var(--bg-2); color: var(--fg-0); }
+
+/* ---------------- Main content -------------------------------------------- */
+.app-main { overflow: auto; padding: 24px 28px; }
+.page-head { display: flex; align-items: end; justify-content: space-between; margin-bottom: 20px; gap: 16px; }
+.page-head h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+.page-head .sub { color: var(--fg-2); font-size: 13px; margin-top: 4px; }
+.page-actions { display: flex; gap: 8px; }
+
+/* ---------------- Buttons -------------------------------------------------- */
+.fbtn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 12px;
+  border-radius: 4px; border: 1px solid transparent;
+  font-family: inherit; font-size: 13px; font-weight: 500;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.fbtn-sm { height: 28px; padding: 0 10px; font-size: 12px; }
+.fbtn-lg { height: 40px; padding: 0 16px; font-size: 14px; }
+.fbtn-primary { background: var(--accent); color: var(--accent-contrast); }
+.fbtn-primary:hover { background: var(--accent-hover); }
+.fbtn-primary:active { background: var(--accent-press); }
+.fbtn-secondary { background: var(--bg-1); color: var(--fg-0); border-color: var(--border); }
+.fbtn-secondary:hover { background: var(--bg-2); border-color: var(--border-strong); }
+.fbtn-ghost { background: transparent; color: var(--fg-1); }
+.fbtn-ghost:hover { background: var(--bg-2); color: var(--fg-0); }
+.fbtn-danger { background: var(--danger); color: #fff; }
+.fbtn-danger:hover { filter: brightness(1.08); }
+.fbtn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ---------------- Inputs --------------------------------------------------- */
+.ffield { display: flex; flex-direction: column; gap: 4px; }
+.ffield-label { font-size: 12px; color: var(--fg-1); font-weight: 500; }
+.ffield-input {
+  display: flex; align-items: center; gap: 8px;
+  height: 32px; padding: 0 10px;
+  background: var(--bg-1); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--fg-2); transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out);
+}
+.ffield-input:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.ffield-input.is-error { border-color: var(--danger); }
+.ffield-input input {
+  flex: 1; background: transparent; border: 0; outline: none;
+  color: var(--fg-0); font: inherit; font-size: 13px;
+}
+.ffield-input input::placeholder { color: var(--fg-3); }
+.ffield-help { font-size: 11px; color: var(--fg-2); }
+.ffield-help.is-error { color: var(--danger-fg); }
+
+/* ---------------- Badges --------------------------------------------------- */
+.fbadge {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 20px; padding: 0 8px; border-radius: 4px;
+  font-size: 11px; font-weight: 500;
+}
+.fbadge-neutral { background: var(--bg-2); color: var(--fg-1); border: 1px solid var(--border); }
+.fbadge-success { background: var(--success-bg); color: var(--success-fg); }
+.fbadge-warning { background: var(--warning-bg); color: var(--warning-fg); }
+.fbadge-danger  { background: var(--danger-bg);  color: var(--danger-fg); }
+.fbadge-info    { background: var(--info-bg);    color: var(--info-fg); }
+.fbadge-accent  { background: var(--accent-bg);  color: var(--accent-fg); }
+.fbadge-dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+
+/* ---------------- Status dot ---------------------------------------------- */
+.fdot { width: 6px; height: 6px; border-radius: 999px; display: inline-block; vertical-align: middle; }
+.fdot-success { background: var(--success); }
+.fdot-warning { background: var(--warning); }
+.fdot-danger  { background: var(--danger); }
+.fdot-info    { background: var(--info); }
+.fdot-neutral { background: var(--fg-3); }
+
+/* ---------------- Cards ---------------------------------------------------- */
+.fcard {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.fcard-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--border-subtle);
+}
+.fcard-title { font-size: 13px; font-weight: 600; }
+.fcard-body { padding: 16px; }
+
+/* ---------------- Stat ----------------------------------------------------- */
+.fstat { display: flex; flex-direction: column; gap: 6px; }
+.fstat-value { font-size: 24px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.fstat-delta { font-size: 12px; font-family: var(--font-mono); }
+.fstat-delta.tone-success { color: var(--success-fg); }
+.fstat-delta.tone-danger  { color: var(--danger-fg); }
+.fstat-delta.tone-neutral { color: var(--fg-2); }
+
+/* ---------------- Tables --------------------------------------------------- */
+.ftable { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.ftable th {
+  text-align: left; padding: 8px 14px;
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  font-weight: 600; color: var(--fg-2);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+  position: sticky; top: 0;
+}
+.ftable td {
+  padding: 9px 14px; border-bottom: 1px solid var(--border-subtle);
+  color: var(--fg-0);
+}
+.ftable tbody tr { cursor: pointer; }
+.ftable tbody tr:hover td { background: var(--bg-2); }
+.ftable .col-mono { font-family: var(--font-mono); font-size: 12px; color: var(--fg-1); }
+
+/* ---------------- Toasts --------------------------------------------------- */
+.ftoast {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-radius: 6px;
+  font-size: 13px;
+  border: 1px solid transparent;
+}
+.ftoast-success { background: var(--success-bg); color: var(--success-fg); border-color: color-mix(in oklab, var(--success) 30%, transparent); }
+.ftoast-warning { background: var(--warning-bg); color: var(--warning-fg); border-color: color-mix(in oklab, var(--warning) 30%, transparent); }
+.ftoast-danger  { background: var(--danger-bg);  color: var(--danger-fg);  border-color: color-mix(in oklab, var(--danger) 30%, transparent); }
+.ftoast-info    { background: var(--info-bg);    color: var(--info-fg);    border-color: color-mix(in oklab, var(--info) 30%, transparent); }
+
+/* ---------------- Kbd ------------------------------------------------------ */
+.fkbd {
+  background: var(--bg-2); border: 1px solid var(--border); border-bottom-width: 2px;
+  border-radius: 4px; padding: 1px 6px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--fg-1);
+}
+
+/* ---------------- Logs ----------------------------------------------------- */
+.flogs {
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-family: var(--font-mono); font-size: 12px;
+  height: calc(100vh - 220px);
+  overflow: auto;
+  padding: 8px 0;
+}
+.flog-line {
+  display: grid; grid-template-columns: 80px 60px 1fr; gap: 12px;
+  padding: 2px 16px; line-height: 1.5;
+}
+.flog-line:hover { background: var(--bg-1); }
+.flog-time { color: var(--fg-2); }
+.flog-level { font-weight: 500; }
+.flog-level.info { color: var(--info-fg); }
+.flog-level.warn { color: var(--warning-fg); }
+.flog-level.error { color: var(--danger-fg); }
+.flog-level.debug { color: var(--fg-2); }
+.flog-msg { color: var(--fg-0); white-space: pre-wrap; word-break: break-word; }
+
+/* ---------------- Settings layout ----------------------------------------- */
+.settings-layout { display: grid; grid-template-columns: 200px 1fr; gap: 32px; max-width: 960px; }
+.settings-nav { position: sticky; top: 24px; align-self: start; display: flex; flex-direction: column; gap: 2px; }
+.settings-nav a {
+  font-size: 13px; padding: 6px 10px; border-radius: 4px;
+  color: var(--fg-1); text-decoration: none; border-bottom: 0; cursor: pointer;
+}
+.settings-nav a.is-active { background: var(--bg-2); color: var(--fg-0); }
+.settings-section { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-md); padding: 20px; margin-bottom: 16px; }
+.settings-section h2 { font-size: 16px; margin-bottom: 4px; }
+.settings-section .sub { color: var(--fg-2); font-size: 13px; margin-bottom: 16px; }
+.settings-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 12px; }
+
+/* ---------------- Misc ----------------------------------------------------- */
+.eyebrow {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--fg-2);
+}
+
+.empty {
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  padding: 32px;
+  text-align: center;
+  color: var(--fg-2);
+}
+.empty h3 { color: var(--fg-1); font-size: 14px; margin-bottom: 4px; }
